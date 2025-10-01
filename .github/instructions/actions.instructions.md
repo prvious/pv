@@ -11,7 +11,7 @@ This document provides step-by-step instructions for AI agents and developers to
 Each action in PV CLI is a self-contained package that:
 
 -   Lives in `internal/actions/`
--   Auto-registers itself using `init()` functions
+-   Auto-registers itself using `init()` functions with command-style identifiers (e.g., "docker:install", "laravel:artisan")
 -   Can include embedded template files using `go:embed`
 -   Follows a consistent structure and naming convention
 
@@ -53,7 +53,7 @@ import (
 var [templateName] []byte
 
 func init() {
-	app.RegisterAction("[Human Readable Action Name]", Setup)
+	app.RegisterAction("[action-name]:[command]", Setup)
 }
 
 func Setup() error {
@@ -108,6 +108,16 @@ Your action should appear in the TUI menu automatically.
 
 ## 📝 Action Examples
 
+### Command Format
+
+Actions are registered using the format `package:command`:
+
+-   `docker:install` - Install Docker
+-   `docker:compose` - Setup Docker Compose
+-   `traefik:setup` - Setup Traefik reverse proxy
+-   `nginx:config` - Configure Nginx
+-   `git:init` - Initialize Git repository
+
 ### Simple Action (No Dependencies)
 
 ```go
@@ -121,7 +131,7 @@ import (
 )
 
 func init() {
-	app.RegisterAction("Initialize Git Repository", Setup)
+	app.RegisterAction("git:init", Setup)
 }
 
 func Setup() error {
@@ -155,7 +165,7 @@ import (
 var nginxConfigStub []byte
 
 func init() {
-	app.RegisterAction("Setup Nginx Configuration", Setup)
+	app.RegisterAction("nginx:setup", Setup)
 }
 
 func Setup() error {
@@ -184,7 +194,7 @@ import (
 )
 
 func init() {
-	app.RegisterAction("Setup Full-Stack Environment", Setup)
+	app.RegisterAction("fullstack:setup", Setup)
 }
 
 func Setup() error {
@@ -210,7 +220,7 @@ func Setup() error {
 
 -   **Package name:** lowercase, single word (e.g., `docker`, `laravel`, `nginx`)
 -   **Function name:** `Setup()` for main action function
--   **Action display name:** Human-readable with proper capitalization (e.g., "Setup Laravel Project")
+-   **Action command:** Format as `package:command` (e.g., "docker:install", "laravel:new", "traefik:setup")
 
 ### Error Handling
 
@@ -275,7 +285,7 @@ import (
 )
 
 func init() {
-	app.RegisterAction("Your Action Name", Setup)
+	app.RegisterAction("ACTIONNAME:setup", Setup)
 }
 
 func Setup() error {
