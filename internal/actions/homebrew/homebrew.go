@@ -31,7 +31,8 @@ func Setup() error {
 	log.Info("Running Homebrew installation script...")
 
 	// Run the official Homebrew installation script
-	cmd := exec.Command("/bin/bash", "-c", "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)")
+	installScript := "curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | /bin/bash"
+	cmd := exec.Command("/bin/bash", "-c", installScript)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
