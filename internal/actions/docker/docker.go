@@ -7,8 +7,14 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/log"
 	"github.com/prvious/pv/internal/app"
+)
+
+const (
+	DockerDesktop = "Docker Desktop"
+	DockerEngine  = "Docker Engine"
 )
 
 func init() {
@@ -37,7 +43,47 @@ func Setup() error {
 	}
 
 	log.Info("Docker not found, proceeding with installation...")
-	return installDocker(osType, arch)
+
+	// Ask user to choose between Docker Desktop and Docker Engine
+	dockerType, err := promptDockerType(osType)
+	if err != nil {
+		return fmt.Errorf("failed to get user choice: %w", err)
+	}
+
+	return installDocker(osType, arch, dockerType)
+}
+
+func promptDockerType(osType string) (string, error) {
+	var dockerType string
+
+	// On macOS, only Docker Desktop is available
+	if osType == "darwin" {
+		log.Info("Installing Docker Desktop (only option available on macOS)")
+		return DockerDesktop, nil
+	}
+
+	// On Linux, give user a choice
+	options := []huh.Option[string]{
+		huh.NewOption("Docker Desktop (GUI application with Docker Engine)", DockerDesktop),
+		huh.NewOption("Docker Engine (CLI and daemon only)", DockerEngine),
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Choose Docker installation type").
+				Description("Docker Desktop includes a GUI and Docker Engine. Docker Engine is CLI/daemon only.").
+				Options(options...).
+				Value(&dockerType),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+
+	log.Info("User selected", "type", dockerType)
+	return dockerType, nil
 }
 
 func checkDockerInstalled() bool {
@@ -67,12 +113,15 @@ func updateDocker(osType string) error {
 	}
 }
 
-func installDocker(osType, arch string) error {
+func installDocker(osType, arch, dockerType string) error {
 	switch osType {
 	case "darwin":
-		return installDockerMacOS(arch)
+		return installDockerDesktopMacOS(arch)
 	case "linux":
-		return installDockerLinux(arch)
+		if dockerType == DockerDesktop {
+			return installDockerDesktopLinux(arch)
+		}
+		return installDockerEngineLinux(arch)
 	default:
 		return fmt.Errorf("unsupported operating system: %s", osType)
 	}
@@ -99,8 +148,8 @@ func updateDockerMacOS() error {
 	return nil
 }
 
-func installDockerMacOS(arch string) error {
-	log.Info("Installing Docker on macOS", "arch", arch)
+func installDockerDesktopMacOS(arch string) error {
+	log.Info("Installing Docker Desktop on macOS", "arch", arch)
 
 	// Check if Homebrew is available
 	if !checkCommandExists("brew") {
@@ -138,20 +187,40 @@ func updateDockerLinux() error {
 	}
 }
 
-func installDockerLinux(arch string) error {
-	log.Info("Installing Docker on Linux", "arch", arch)
+func installDockerEngineLinux(arch string) error {
+	log.Info("Installing Docker Engine on Linux", "arch", arch)
 
 	distro := detectLinuxDistro()
 	log.Info("Linux distribution detected", "distro", distro)
 
 	switch distro {
 	case "ubuntu", "debian":
-		return installDockerDebian(arch)
+		return installDockerEngineDebian(arch)
 	case "fedora", "centos", "rhel":
-		return installDockerRHEL(arch)
+		return installDockerEngineRHEL(arch)
 	default:
 		log.Warn("Unknown Linux distribution, attempting Debian-based installation")
-		return installDockerDebian(arch)
+		return installDockerEngineDebian(arch)
+	}
+}
+
+func installDockerDesktopLinux(arch string) error {
+	log.Info("Installing Docker Desktop on Linux", "arch", arch)
+
+	distro := detectLinuxDistro()
+	log.Info("Linux distribution detected", "distro", distro)
+
+	switch distro {
+	case "ubuntu":
+		return installDockerDesktopUbuntu(arch)
+	case "debian":
+		return installDockerDesktopDebian(arch)
+	case "fedora":
+		return installDockerDesktopFedora(arch)
+	case "arch":
+		return installDockerDesktopArch(arch)
+	default:
+		return fmt.Errorf("Docker Desktop is not officially supported on %s. Please use Docker Engine instead or install manually from https://docs.docker.com/desktop/install/linux/", distro)
 	}
 }
 
@@ -202,8 +271,8 @@ func updateDockerDebian() error {
 	return nil
 }
 
-func installDockerDebian(arch string) error {
-	log.Info("Installing Docker on Debian-based system")
+func installDockerEngineDebian(arch string) error {
+	log.Info("Installing Docker Engine on Debian-based system")
 
 	// Update package list
 	log.Info("Updating package list...")
@@ -311,8 +380,8 @@ func updateDockerRHEL() error {
 	return nil
 }
 
-func installDockerRHEL(arch string) error {
-	log.Info("Installing Docker on RHEL-based system")
+func installDockerEngineRHEL(arch string) error {
+	log.Info("Installing Docker Engine on RHEL-based system")
 
 	// Install prerequisites
 	log.Info("Installing prerequisites...")
@@ -398,4 +467,242 @@ func installDockerRHEL(arch string) error {
 func checkCommandExists(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
+}
+
+func installDockerDesktopUbuntu(arch string) error {
+	log.Info("Installing Docker Desktop on Ubuntu", "arch", arch)
+
+	// Update package list
+	log.Info("Updating package list...")
+	cmd := exec.Command("sudo", "apt-get", "update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to update package list: %w", err)
+	}
+
+	// Install prerequisites
+	log.Info("Installing prerequisites...")
+	cmd = exec.Command("sudo", "apt-get", "install", "-y",
+		"ca-certificates", "curl", "gnupg", "lsb-release")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install prerequisites: %w", err)
+	}
+
+	// Add Docker's GPG key
+	log.Info("Adding Docker's official GPG key...")
+	cmd = exec.Command("sudo", "mkdir", "-p", "/etc/apt/keyrings")
+	if err := cmd.Run(); err != nil {
+		log.Warn("Failed to create keyrings directory", "error", err)
+	}
+
+	keyCmd := `curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg`
+	cmd = exec.Command("bash", "-c", keyCmd)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to add Docker GPG key: %w", err)
+	}
+
+	// Set up the repository
+	log.Info("Setting up Docker repository...")
+	repoCmd := `echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null`
+	cmd = exec.Command("bash", "-c", repoCmd)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to set up Docker repository: %w", err)
+	}
+
+	// Update package list again
+	log.Info("Updating package list with Docker repository...")
+	cmd = exec.Command("sudo", "apt-get", "update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to update package list: %w", err)
+	}
+
+	// Install Docker Desktop
+	log.Info("Downloading and installing Docker Desktop...")
+
+	// Determine the architecture for the download URL
+	debArch := arch
+	if arch == "amd64" {
+		debArch = "amd64"
+	} else if arch == "arm64" {
+		debArch = "arm64"
+	}
+
+	downloadURL := fmt.Sprintf("https://desktop.docker.com/linux/main/%s/docker-desktop-latest-%s.deb", debArch, debArch)
+	debFile := fmt.Sprintf("/tmp/docker-desktop-%s.deb", debArch)
+
+	log.Info("Downloading Docker Desktop...", "url", downloadURL)
+	cmd = exec.Command("curl", "-fsSL", "-o", debFile, downloadURL)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to download Docker Desktop: %w", err)
+	}
+
+	log.Info("Installing Docker Desktop package...")
+	cmd = exec.Command("sudo", "apt-get", "install", "-y", debFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install Docker Desktop: %w", err)
+	}
+
+	log.Info("Docker Desktop installed successfully!")
+	log.Info("You can start Docker Desktop from your applications menu or run 'systemctl --user start docker-desktop'")
+	return nil
+}
+
+func installDockerDesktopDebian(arch string) error {
+	log.Info("Installing Docker Desktop on Debian", "arch", arch)
+
+	// Update package list
+	log.Info("Updating package list...")
+	cmd := exec.Command("sudo", "apt-get", "update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to update package list: %w", err)
+	}
+
+	// Install prerequisites
+	log.Info("Installing prerequisites...")
+	cmd = exec.Command("sudo", "apt-get", "install", "-y",
+		"ca-certificates", "curl", "gnupg", "lsb-release")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install prerequisites: %w", err)
+	}
+
+	// Add Docker's GPG key
+	log.Info("Adding Docker's official GPG key...")
+	cmd = exec.Command("sudo", "mkdir", "-p", "/etc/apt/keyrings")
+	if err := cmd.Run(); err != nil {
+		log.Warn("Failed to create keyrings directory", "error", err)
+	}
+
+	keyCmd := `curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg`
+	cmd = exec.Command("bash", "-c", keyCmd)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to add Docker GPG key: %w", err)
+	}
+
+	// Set up the repository
+	log.Info("Setting up Docker repository...")
+	repoCmd := `echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null`
+	cmd = exec.Command("bash", "-c", repoCmd)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to set up Docker repository: %w", err)
+	}
+
+	// Update package list again
+	log.Info("Updating package list with Docker repository...")
+	cmd = exec.Command("sudo", "apt-get", "update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to update package list: %w", err)
+	}
+
+	// Install Docker Desktop
+	log.Info("Downloading and installing Docker Desktop...")
+
+	// Determine the architecture for the download URL
+	debArch := arch
+	if arch == "amd64" {
+		debArch = "amd64"
+	} else if arch == "arm64" {
+		debArch = "arm64"
+	}
+
+	downloadURL := fmt.Sprintf("https://desktop.docker.com/linux/main/%s/docker-desktop-latest-%s.deb", debArch, debArch)
+	debFile := fmt.Sprintf("/tmp/docker-desktop-%s.deb", debArch)
+
+	log.Info("Downloading Docker Desktop...", "url", downloadURL)
+	cmd = exec.Command("curl", "-fsSL", "-o", debFile, downloadURL)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to download Docker Desktop: %w", err)
+	}
+
+	log.Info("Installing Docker Desktop package...")
+	cmd = exec.Command("sudo", "apt-get", "install", "-y", debFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install Docker Desktop: %w", err)
+	}
+
+	log.Info("Docker Desktop installed successfully!")
+	log.Info("You can start Docker Desktop from your applications menu or run 'systemctl --user start docker-desktop'")
+	return nil
+}
+
+func installDockerDesktopFedora(arch string) error {
+	log.Info("Installing Docker Desktop on Fedora", "arch", arch)
+
+	// Determine the architecture for the download URL
+	rpmArch := arch
+	if arch == "amd64" {
+		rpmArch = "x86_64"
+	} else if arch == "arm64" {
+		rpmArch = "aarch64"
+	}
+
+	downloadURL := fmt.Sprintf("https://desktop.docker.com/linux/main/%s/docker-desktop-latest-%s.rpm", arch, rpmArch)
+	rpmFile := fmt.Sprintf("/tmp/docker-desktop-%s.rpm", rpmArch)
+
+	log.Info("Downloading Docker Desktop...", "url", downloadURL)
+	cmd := exec.Command("curl", "-fsSL", "-o", rpmFile, downloadURL)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to download Docker Desktop: %w", err)
+	}
+
+	log.Info("Installing Docker Desktop package...")
+	cmd = exec.Command("sudo", "dnf", "install", "-y", rpmFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install Docker Desktop: %w", err)
+	}
+
+	log.Info("Docker Desktop installed successfully!")
+	log.Info("You can start Docker Desktop from your applications menu or run 'systemctl --user start docker-desktop'")
+	return nil
+}
+
+func installDockerDesktopArch(arch string) error {
+	log.Info("Installing Docker Desktop on Arch Linux", "arch", arch)
+
+	log.Info("Checking if yay is available...")
+	if !checkCommandExists("yay") {
+		return fmt.Errorf("yay AUR helper is required to install Docker Desktop on Arch Linux. Please install yay first: https://github.com/Jguer/yay")
+	}
+
+	log.Info("Installing Docker Desktop from AUR...")
+	cmd := exec.Command("yay", "-S", "--noconfirm", "docker-desktop")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to install Docker Desktop: %w", err)
+	}
+
+	log.Info("Docker Desktop installed successfully!")
+	log.Info("You can start Docker Desktop from your applications menu or run 'systemctl --user start docker-desktop'")
+	return nil
 }
