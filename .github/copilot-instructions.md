@@ -34,3 +34,9 @@ This is a Go CLI tool for managing local dev environments, built with Charmbrace
 -   Follow Go standard library patterns
 -   Keep dependencies minimal and focused
 -   Use structured logging for all output
+
+## Important Restrictions
+
+-   **NEVER create README files** that summarize implemented changes or PR work
+-   Do not generate summary documentation files when working on pull requests
+-   Avoid creating any auto-generated documentation that describes what was implemented
