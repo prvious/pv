@@ -70,7 +70,7 @@ func TestBinaryExecution(t *testing.T) {
 	// but we can verify it starts without crashing
 	cmd = exec.Command(binaryPath)
 	cmd.Dir = projectRoot
-	
+
 	// Start the command but don't wait for it to complete
 	// Just verify it can start without immediate error
 	if err := cmd.Start(); err != nil {
@@ -81,7 +81,7 @@ func TestBinaryExecution(t *testing.T) {
 	if err := cmd.Process.Kill(); err != nil {
 		t.Logf("Warning: failed to kill process: %v", err)
 	}
-	
+
 	// Wait for the process to finish
 	cmd.Wait()
 }
@@ -90,7 +90,7 @@ func TestBinaryExecution(t *testing.T) {
 func TestActionRegistry(t *testing.T) {
 	// This test verifies the basic action registry functionality
 	// In a real scenario, you would test actual action registration
-	
+
 	// Get the project root directory
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
