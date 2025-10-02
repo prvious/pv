@@ -30,9 +30,6 @@ jobs:
       
       - name: Run unit tests
         run: go test ./...
-      
-      - name: Run integration tests
-        run: go test -tags=integration ./test/integration/...
 
   lint:
     name: Lint

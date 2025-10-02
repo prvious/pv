@@ -39,9 +39,11 @@ func TestActionRegistry(t *testing.T) {
 go test ./...
 ```
 
-### Integration Tests (`test/integration/`)
+### Integration Tests (`test/integration/`) - Future Enhancement
 
-**Location:** All integration tests are in the `test/integration/` directory
+**Status:** Integration tests are planned for future implementation once concrete actions are available to test.
+
+**Location:** All integration tests will be in the `test/integration/` directory
 
 **Purpose:**
 - Full end-to-end tests that build and execute the actual binary
@@ -50,9 +52,9 @@ go test ./...
 - Test the full action pipeline
 - Validate real-world usage scenarios
 
-**Build Tag:** Integration tests use the `//go:build integration` build tag to separate them from unit tests
+**Build Tag:** Integration tests will use the `//go:build integration` build tag to separate them from unit tests
 
-**Example:**
+**Example (for future reference):**
 ```go
 //go:build integration
 
@@ -84,40 +86,46 @@ func TestDockerInstall(t *testing.T) {
 }
 ```
 
-**Running integration tests:**
+**Running integration tests (when available):**
 ```bash
 go test -tags=integration ./test/integration/...
 ```
 
 ## 🏗️ Build Tags
 
-Integration tests use Go's build tag system to enable selective test execution:
+Integration tests will use Go's build tag system to enable selective test execution:
 
-- **Build Tag:** `//go:build integration` at the top of integration test files
+- **Build Tag:** `//go:build integration` at the top of integration test files (when created)
 - **Purpose:** Separates fast unit tests from slower integration tests
 - **Benefits:**
   - Fast feedback from unit tests during development
-  - Full validation via integration tests in CI/CD
+  - Full validation via integration tests in CI/CD (once available)
   - Flexible test execution based on context
 
 ## 🚀 Running Tests
 
 ### During Development (Fast)
 
-Run only unit tests for quick feedback:
+Run unit tests for quick feedback:
 ```bash
 go test ./...
 ```
 
-### Before Committing (Full)
+### Before Committing
 
-Run all tests including integration tests:
+Run all tests and checks:
 ```bash
 # Unit tests
 go test ./...
 
-# Integration tests
-go test -tags=integration ./test/integration/...
+# Code formatting
+go fmt ./...
+
+# Static analysis
+go vet ./...
+
+# Build
+go build -o bin/pv .
 ```
 
 ### Complete Test Suite
@@ -125,11 +133,12 @@ go test -tags=integration ./test/integration/...
 Run everything like CI does:
 ```bash
 go test ./...
-go test -tags=integration ./test/integration/...
 go fmt ./...
 go vet ./...
 go build -o bin/pv .
 ```
+
+**Note:** Integration tests will be added in the future once concrete actions are available to test.
 
 ## 🔄 CI/CD Integration
 
@@ -148,7 +157,7 @@ The GitHub Actions workflow (`.github/workflows/test.yml`) automatically runs te
 - **Go Version:** 1.22.x
 
 - **Test Jobs:**
-  1. **Test Job:** Builds binary, runs unit tests, runs integration tests (on all 3 platforms)
+  1. **Test Job:** Builds binary and runs unit tests (on all 3 platforms)
   2. **Lint Job:** Validates code formatting (`gofmt`) and runs static analysis (`go vet`)
 
 ## ✍️ Writing New Tests
@@ -177,7 +186,9 @@ func TestInitialModel(t *testing.T) {
 }
 ```
 
-### Creating an Integration Test
+### Creating an Integration Test (Future)
+
+Integration tests will be added once concrete actions are available. When creating them:
 
 1. Create a file in `test/integration/` directory
 2. Add `//go:build integration` as the first line
@@ -185,7 +196,7 @@ func TestInitialModel(t *testing.T) {
 4. Build and execute the actual binary
 5. Verify outputs, exit codes, and filesystem changes
 
-**Example file:** `test/integration/laravel_test.go`
+**Example file (for future reference):** `test/integration/laravel_test.go`
 
 ```go
 //go:build integration
@@ -252,7 +263,7 @@ go test -run TestName ./path/to/package
 go test -v ./...
 ```
 
-### Running Integration Tests with Verbose Output
+### Running Integration Tests with Verbose Output (when available)
 
 ```bash
 go test -v -tags=integration ./test/integration/...
@@ -281,8 +292,9 @@ dlv test ./path/to/package -- -test.run TestName
 - Keep tests fast (milliseconds, not seconds)
 - Test public APIs, not internal implementation
 
-### For Integration Tests
+### For Integration Tests (Future)
 
+When integration tests are added, they should:
 - Test real-world scenarios
 - Verify complete workflows from start to finish
 - Check actual file creation and content
@@ -292,7 +304,6 @@ dlv test ./path/to/package -- -test.run TestName
 ## 🚫 Common Pitfalls
 
 - **Don't:** Commit test binaries or generated files (use `.gitignore`)
-- **Don't:** Make integration tests depend on each other
 - **Don't:** Use hardcoded paths or system-specific assumptions
 - **Don't:** Leave test resources on the filesystem after tests complete
 - **Don't:** Test implementation details instead of behavior
@@ -306,8 +317,9 @@ dlv test ./path/to/package -- -test.run TestName
 - Look for timing issues or race conditions
 - Review CI logs for additional error details
 
-### Integration Tests Are Slow
+### Integration Tests Are Slow (Future)
 
+When integration tests are added, if they become slow:
 - Ensure build tags are properly set
 - Consider parallelizing tests with `t.Parallel()`
 - Cache built binaries when possible
