@@ -1,56 +1,80 @@
 name: Test
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  workflow_dispatch:
+    pull_request:
+        branches: [main]
+    push:
+        branches: [main]
+    workflow_dispatch:
 
 jobs:
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: [1.22.x]
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go-version }}
-      
-      - name: Build
-        run: go build -o pv .
-      
-      - name: Run unit tests
-        run: go test ./...
+    test:
+        name: Test
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os:
+                    # x64 Linux
+                    - ubuntu-24.04
+                    - ubuntu-22.04
 
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 1.22.x
-      
-      - name: Run go fmt
-        run: |
-          if [ -n "$(gofmt -l .)" ]; then
-            echo "Go code is not formatted:"
-            gofmt -d .
-            exit 1
-          fi
-      
-      - name: Run go vet
-        run: go vet ./...
+                    # x64 Windows
+                    - windows-2025
+                    - windows-2022
+
+                    # arm Linux
+                    - ubuntu-24.04-arm
+                    - ubuntu-22.04-arm
+
+                    # arm Windows
+                    - windows-11-arm
+
+                    # intel macOS
+                    - macos-13
+                    - macos-15-intel
+
+                    # M series macOS
+                    - macos-14
+                    - macos-15
+                    - macos-26
+
+                go-version: [1.25.x]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: ${{ matrix.go-version }}
+
+            - name: Build
+              run: go build -o pv .
+
+            - name: Run unit tests
+              run: go test ./...
+
+    lint:
+        name: Lint
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: 1.22.x
+
+            - name: Run go fmt
+              run: |
+                  if [ -n "$(gofmt -l .)" ]; then
+                    echo "Go code is not formatted:"
+                    gofmt -d .
+                    exit 1
+                  fi
+
+            - name: Run go vet
+              run: go vet ./...
