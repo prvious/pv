@@ -53,6 +53,15 @@ jobs:
         env:
           PHP_VERSION: ${{ matrix.php }}
           HOMEBREW_NO_AUTO_UPDATE: "1"
+          # Curated extension list for web dev. The default set includes pgsql/ldap/etc
+          # which can fail to cross-compile on macOS ARM64 runners.
+          PHP_EXTENSIONS: >-
+            bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,
+            gd,gmp,iconv,igbinary,intl,mbregex,mbstring,memcached,
+            mysqli,mysqlnd,opcache,openssl,password-argon2,pcntl,
+            pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,
+            readline,redis,session,simplexml,soap,sockets,sodium,
+            sqlite3,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib,zstd
         run: ./build-static.sh
 
       - name: List build output
