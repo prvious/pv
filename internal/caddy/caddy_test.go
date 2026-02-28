@@ -217,6 +217,9 @@ func TestGenerateCaddyfile(t *testing.T) {
 	if !strings.Contains(content, "frankenphp") {
 		t.Error("expected 'frankenphp' in Caddyfile")
 	}
+	if !strings.Contains(content, "local_certs") {
+		t.Error("expected 'local_certs' in Caddyfile")
+	}
 	if !strings.Contains(content, "import sites/*") {
 		t.Error("expected 'import sites/*' in Caddyfile")
 	}

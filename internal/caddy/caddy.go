@@ -11,6 +11,7 @@ import (
 )
 
 const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
+    tls internal
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -25,6 +26,7 @@ const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
 `
 
 const laravelTmpl = `{{.Name}}.{{.TLD}} {
+    tls internal
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -33,6 +35,7 @@ const laravelTmpl = `{{.Name}}.{{.TLD}} {
 `
 
 const phpTmpl = `{{.Name}}.{{.TLD}} {
+    tls internal
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -41,6 +44,7 @@ const phpTmpl = `{{.Name}}.{{.TLD}} {
 `
 
 const staticTmpl = `{{.Name}}.{{.TLD}} {
+    tls internal
     root * {{.RootPath}}
     file_server
 }
@@ -48,6 +52,7 @@ const staticTmpl = `{{.Name}}.{{.TLD}} {
 
 const mainCaddyfile = `{
     frankenphp
+    local_certs
 }
 
 import sites/*

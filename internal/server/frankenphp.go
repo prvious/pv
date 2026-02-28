@@ -45,7 +45,10 @@ func StartFrankenPHP() (*FrankenPHP, error) {
 		done:    make(chan error, 1),
 		logFile: logFile,
 	}
-	go func() { fp.done <- cmd.Wait() }()
+	go func() {
+		fp.done <- cmd.Wait()
+		close(fp.done)
+	}()
 
 	// Wait for admin API to become ready.
 	deadline := time.Now().Add(5 * time.Second)
