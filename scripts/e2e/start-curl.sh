@@ -12,6 +12,11 @@ assert_contains "$STATUS" "running" "server not running"
 assert_contains "$STATUS" "8.4 (global)" "global PHP not shown"
 assert_contains "$STATUS" "5 linked" "wrong site count"
 
+# Version Caddyfile for 8.3 generated at start time
+echo "--- php-8.3.Caddyfile ---"
+cat ~/.pv/config/php-8.3.Caddyfile
+grep -q "8830" ~/.pv/config/php-8.3.Caddyfile || { echo "FAIL: 8.3 Caddyfile missing port 8830"; exit 1; }
+
 setup_curl
 
 curl_site "e2e-static.test" "static works"

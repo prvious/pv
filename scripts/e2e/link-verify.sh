@@ -41,9 +41,4 @@ grep -q "frankenphp-worker.php" ~/.pv/config/sites/e2e-octane.caddy || { echo "F
 # e2e-static: has file_server
 grep -q "file_server" ~/.pv/config/sites/e2e-static.caddy || { echo "FAIL: static missing file_server"; exit 1; }
 
-# Version Caddyfile for 8.3 with correct port
-echo "--- php-8.3.Caddyfile ---"
-cat ~/.pv/config/php-8.3.Caddyfile
-grep -q "8830" ~/.pv/config/php-8.3.Caddyfile || { echo "FAIL: 8.3 Caddyfile missing port 8830"; exit 1; }
-
-echo "OK: all configs verified"
+echo "OK: all site configs verified"
