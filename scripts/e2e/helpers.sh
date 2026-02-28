@@ -11,12 +11,21 @@ setup_curl() {
   export CACERT RESOLVE
 }
 
-# curl_site DOMAIN TEXT — curl the domain and grep for TEXT.
+# curl_site DOMAIN TEXT — curl the domain and grep for TEXT (with retries).
 curl_site() {
   local domain="$1"
   local text="$2"
-  curl -sf --cacert "$CACERT" $RESOLVE "https://${domain}/" | grep "$text"
-  echo "OK: ${domain}"
+  local i
+  for i in 1 2 3; do
+    if curl -sf --max-time 5 --cacert "$CACERT" $RESOLVE "https://${domain}/" 2>/dev/null | grep -q "$text"; then
+      echo "OK: ${domain}"
+      return 0
+    fi
+    [ "$i" -lt 3 ] && sleep 2
+  done
+  echo "FAIL: ${domain} did not return expected text: ${text}"
+  curl -v --max-time 5 --cacert "$CACERT" $RESOLVE "https://${domain}/" 2>&1 || true
+  exit 1
 }
 
 # assert_contains TEXT PATTERN MSG — grep TEXT for PATTERN or fail with MSG.
