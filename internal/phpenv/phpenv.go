@@ -106,21 +106,16 @@ func Remove(version string) error {
 	return os.RemoveAll(config.PhpVersionDir(version))
 }
 
-// updateSymlinks repoints ~/.pv/bin/frankenphp and ~/.pv/bin/php to the given version.
+// updateSymlinks repoints ~/.pv/bin/frankenphp to the given version.
+// PHP CLI is handled by the shim script from WriteShims(), not a symlink.
 func updateSymlinks(version string) error {
 	binDir := config.BinDir()
-	links := map[string]string{
-		"frankenphp": FrankenPHPPath(version),
-		"php":        PHPPath(version),
-	}
-
-	for name, target := range links {
-		linkPath := filepath.Join(binDir, name)
-		// Remove existing file/symlink.
-		os.Remove(linkPath)
-		if err := os.Symlink(target, linkPath); err != nil {
-			return fmt.Errorf("cannot create symlink %s → %s: %w", linkPath, target, err)
-		}
+	linkPath := filepath.Join(binDir, "frankenphp")
+	target := FrankenPHPPath(version)
+	// Remove existing file/symlink.
+	os.Remove(linkPath)
+	if err := os.Symlink(target, linkPath); err != nil {
+		return fmt.Errorf("cannot create symlink %s → %s: %w", linkPath, target, err)
 	}
 	return nil
 }

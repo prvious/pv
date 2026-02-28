@@ -96,19 +96,16 @@ func TestSetGlobal_Success(t *testing.T) {
 		t.Errorf("GlobalVersion() = %q, want %q", v, "8.4")
 	}
 
-	// Verify symlinks.
+	// Verify frankenphp symlink (php is managed by shim, not symlink).
 	binDir := config.BinDir()
-	for _, name := range []string{"frankenphp", "php"} {
-		link := filepath.Join(binDir, name)
-		target, err := os.Readlink(link)
-		if err != nil {
-			t.Errorf("expected symlink %s: %v", name, err)
-			continue
-		}
-		expected := filepath.Join(config.PhpVersionDir("8.4"), name)
-		if target != expected {
-			t.Errorf("symlink %s → %s, want %s", name, target, expected)
-		}
+	link := filepath.Join(binDir, "frankenphp")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("expected frankenphp symlink: %v", err)
+	}
+	expected := FrankenPHPPath("8.4")
+	if target != expected {
+		t.Errorf("symlink frankenphp → %s, want %s", target, expected)
 	}
 }
 

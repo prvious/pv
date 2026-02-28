@@ -36,7 +36,7 @@ jobs:
           echo "--- install output above ---"
 
       - name: Verify installation
-        timeout-minutes: 2
+        timeout-minutes: 1
         run: |
           set -euo pipefail
           echo "==> pv php list"
@@ -45,6 +45,8 @@ jobs:
           ls -la ~/.pv/php/8.4/frankenphp
           echo "==> ls bin dir"
           ls -la ~/.pv/bin/
+          echo "==> file type of php shim"
+          file ~/.pv/bin/php
           echo "==> php shim --version"
           ~/.pv/bin/php --version
           echo "==> resolver file"
