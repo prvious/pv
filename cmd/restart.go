@@ -15,11 +15,11 @@ var restartCmd = &cobra.Command{
 			return fmt.Errorf("pv is not running")
 		}
 
-		if err := server.Reload(); err != nil {
-			return fmt.Errorf("reload failed: %w", err)
+		if err := server.ReconfigureServer(); err != nil {
+			return fmt.Errorf("reconfigure failed: %w", err)
 		}
 
-		fmt.Println("FrankenPHP configuration reloaded")
+		fmt.Println("Server configuration reloaded")
 		return nil
 	},
 }

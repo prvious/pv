@@ -133,6 +133,64 @@ func TestDNSPort(t *testing.T) {
 	}
 }
 
+func TestPhpDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "php")) {
+		t.Errorf("PhpDir() = %q, want suffix .pv/php", got)
+	}
+}
+
+func TestPhpVersionDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpVersionDir("8.4")
+	if !strings.HasSuffix(got, filepath.Join(".pv", "php", "8.4")) {
+		t.Errorf("PhpVersionDir(8.4) = %q, want suffix .pv/php/8.4", got)
+	}
+}
+
+func TestVersionSitesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := VersionSitesDir("8.3")
+	if !strings.HasSuffix(got, filepath.Join(".pv", "config", "sites-8.3")) {
+		t.Errorf("VersionSitesDir(8.3) = %q, want suffix .pv/config/sites-8.3", got)
+	}
+}
+
+func TestVersionCaddyfilePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := VersionCaddyfilePath("8.3")
+	if !strings.HasSuffix(got, filepath.Join(".pv", "config", "php-8.3.Caddyfile")) {
+		t.Errorf("VersionCaddyfilePath(8.3) = %q, want suffix .pv/config/php-8.3.Caddyfile", got)
+	}
+}
+
+func TestPortForVersion(t *testing.T) {
+	tests := []struct {
+		version string
+		want    int
+	}{
+		{"8.3", 8830},
+		{"8.4", 8840},
+		{"8.5", 8850},
+		{"9.0", 8900},
+	}
+	for _, tt := range tests {
+		got := PortForVersion(tt.version)
+		if got != tt.want {
+			t.Errorf("PortForVersion(%q) = %d, want %d", tt.version, got, tt.want)
+		}
+	}
+}
+
 func TestEnsureDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -147,6 +205,7 @@ func TestEnsureDirs(t *testing.T) {
 		LogsDir(),
 		DataDir(),
 		BinDir(),
+		PhpDir(),
 	}
 	for _, dir := range dirs {
 		info, err := os.Stat(dir)

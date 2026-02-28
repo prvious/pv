@@ -8,7 +8,8 @@ import (
 )
 
 type Settings struct {
-	TLD string `json:"tld"`
+	TLD       string `json:"tld"`
+	GlobalPHP string `json:"global_php,omitempty"`
 }
 
 var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)

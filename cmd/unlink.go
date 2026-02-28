@@ -55,8 +55,8 @@ var unlinkCmd = &cobra.Command{
 		fmt.Printf("Unlinked %s\n", name)
 
 		if server.IsRunning() {
-			if err := server.Reload(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not reload FrankenPHP: %v\n", err)
+			if err := server.ReconfigureServer(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not reconfigure server: %v\n", err)
 			}
 		}
 

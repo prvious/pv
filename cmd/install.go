@@ -7,6 +7,7 @@ import (
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 var (
 	forceInstall bool
 	installTLD   string
+	installPHP   string
 )
 
 var installCmd = &cobra.Command{
@@ -51,9 +53,37 @@ var installCmd = &cobra.Command{
 		}
 		fmt.Printf("  ✓ TLD set to .%s\n", installTLD)
 
-		// 3. Download binaries.
-		fmt.Println("\nDownloading binaries...")
 		client := &http.Client{}
+
+		// 3. Install PHP version via phpenv.
+		phpVersion := installPHP
+		if phpVersion == "" {
+			fmt.Println("\nDetecting available PHP versions...")
+			available, err := phpenv.AvailableVersions(client)
+			if err != nil {
+				return fmt.Errorf("cannot detect available PHP versions: %w", err)
+			}
+			if len(available) == 0 {
+				return fmt.Errorf("no PHP versions found in releases")
+			}
+			// Pick the highest available version.
+			phpVersion = available[len(available)-1]
+			fmt.Printf("  Latest available: PHP %s\n", phpVersion)
+		}
+
+		fmt.Printf("\nInstalling PHP %s...\n", phpVersion)
+		if err := phpenv.Install(client, phpVersion); err != nil {
+			return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
+		}
+
+		// Set as global default.
+		if err := phpenv.SetGlobal(phpVersion); err != nil {
+			return fmt.Errorf("cannot set global PHP: %w", err)
+		}
+		fmt.Printf("  ✓ PHP %s set as global default\n", phpVersion)
+
+		// 4. Download other tools (Mago, Composer).
+		fmt.Println("\nDownloading tools...")
 		vs, err := binaries.LoadVersions()
 		if err != nil {
 			return fmt.Errorf("cannot load version state: %w", err)
@@ -77,20 +107,16 @@ var installCmd = &cobra.Command{
 			vs.Set(b.Name, latest)
 		}
 
-		// 3b. Install PHP CLI (version derived from FrankenPHP).
-		fmt.Println("\nInstalling PHP CLI...")
-		phpVersion, err := binaries.DetectPHPVersion(config.BinDir())
-		if err != nil {
-			return fmt.Errorf("cannot detect PHP version from FrankenPHP: %w", err)
+		// Write php shim.
+		fmt.Println("\nWriting PHP shim...")
+		if err := phpenv.WriteShims(); err != nil {
+			return fmt.Errorf("cannot write shims: %w", err)
 		}
-		if err := binaries.InstallBinary(client, binaries.PHP, phpVersion); err != nil {
-			return fmt.Errorf("cannot install PHP CLI: %w", err)
-		}
-		vs.Set("php", phpVersion)
-		fmt.Printf("  ✓ PHP CLI %s installed\n", phpVersion)
+		fmt.Println("  ✓ PHP shim created")
 
-		// 4. Write version manifest.
+		// 5. Write version manifest.
 		fmt.Println("\nWriting version manifest...")
+		vs.Set("php", phpVersion)
 		if err := vs.Save(); err != nil {
 			return fmt.Errorf("cannot save versions: %w", err)
 		}
@@ -146,30 +172,27 @@ var installCmd = &cobra.Command{
 
 		// 11. Summary.
 		fmt.Println()
-		printInstallSummary(vs)
+		fmt.Println("pv installed!")
+		fmt.Println()
+		fmt.Printf("  PHP:        %s (global default)\n", phpVersion)
+		for _, b := range binaries.All() {
+			v := vs.Get(b.Name)
+			if v == "" {
+				v = "unknown"
+			}
+			fmt.Printf("  %-12s %s\n", b.DisplayName+":", v)
+		}
+		fmt.Println()
+		fmt.Println("Install additional PHP versions with: pv php install <version>")
+		fmt.Println("Run `pv link .` in a project to get started.")
 
 		return nil
 	},
 }
 
-func printInstallSummary(vs *binaries.VersionState) {
-	fmt.Println("pv installed!")
-	fmt.Println()
-	// All() binaries plus PHP (which has a special install flow).
-	summaryBinaries := append(binaries.All(), binaries.PHP)
-	for _, b := range summaryBinaries {
-		v := vs.Get(b.Name)
-		if v == "" {
-			v = "unknown"
-		}
-		fmt.Printf("  %-12s %s\n", b.DisplayName, v)
-	}
-	fmt.Println()
-	fmt.Println("Run `pv link .` in a project to get started.")
-}
-
 func init() {
 	installCmd.Flags().BoolVar(&forceInstall, "force", false, "Reinstall even if already installed")
 	installCmd.Flags().StringVar(&installTLD, "tld", "test", "Top-level domain for local sites (e.g., test, pv-test)")
+	installCmd.Flags().StringVar(&installPHP, "php", "", "PHP version to install (e.g., 8.4). Auto-detects latest if omitted.")
 	rootCmd.AddCommand(installCmd)
 }

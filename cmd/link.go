@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
+	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/spf13/cobra"
@@ -49,7 +51,19 @@ var linkCmd = &cobra.Command{
 
 		projectType := detection.Detect(absPath)
 
-		project := registry.Project{Name: name, Path: absPath, Type: projectType}
+		// Resolve PHP version for this project.
+		settings, err := config.LoadSettings()
+		if err != nil {
+			return fmt.Errorf("cannot load settings: %w", err)
+		}
+		globalPHP := settings.GlobalPHP
+
+		phpVersion := globalPHP
+		if v, err := phpenv.ResolveVersion(absPath); err == nil && v != "" {
+			phpVersion = v
+		}
+
+		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
 
 		if err := reg.Add(project); err != nil {
 			return err
@@ -59,7 +73,7 @@ var linkCmd = &cobra.Command{
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
-		if err := caddy.GenerateSiteConfig(project); err != nil {
+		if err := caddy.GenerateSiteConfig(project, globalPHP); err != nil {
 			return fmt.Errorf("cannot generate site config: %w", err)
 		}
 		if err := caddy.GenerateCaddyfile(); err != nil {
@@ -70,11 +84,20 @@ var linkCmd = &cobra.Command{
 		if typeLabel == "" {
 			typeLabel = "unknown"
 		}
-		fmt.Printf("Linked %s → %s (%s)\n", name, absPath, typeLabel)
+		phpLabel := ""
+		if phpVersion != "" && phpVersion != globalPHP {
+			phpLabel = fmt.Sprintf(", PHP %s", phpVersion)
+		}
+		fmt.Printf("Linked %s → %s (%s%s)\n", name, absPath, typeLabel, phpLabel)
 
 		if server.IsRunning() {
-			if err := server.Reload(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not reload FrankenPHP: %v\n", err)
+			if err := server.ReconfigureServer(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not reconfigure server: %v\n", err)
+			}
+			// If this project uses a non-global PHP version, secondary processes
+			// need a server restart to pick up the new project.
+			if phpVersion != "" && phpVersion != globalPHP {
+				fmt.Println("Note: restart the server to serve this project (pv stop && pv start)")
 			}
 		}
 

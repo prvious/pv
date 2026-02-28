@@ -12,6 +12,7 @@ type Project struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
 	Type string `json:"type"`
+	PHP  string `json:"php,omitempty"`
 }
 
 type Registry struct {
@@ -83,4 +84,18 @@ func (r *Registry) FindByPath(path string) *Project {
 
 func (r *Registry) List() []Project {
 	return r.Projects
+}
+
+// GroupByPHP groups projects by their PHP version.
+// Projects with an empty PHP field are grouped under the given defaultVersion.
+func (r *Registry) GroupByPHP(defaultVersion string) map[string][]Project {
+	groups := make(map[string][]Project)
+	for _, p := range r.Projects {
+		v := p.PHP
+		if v == "" {
+			v = defaultVersion
+		}
+		groups[v] = append(groups[v], p)
+	}
+	return groups
 }

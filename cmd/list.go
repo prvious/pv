@@ -25,13 +25,17 @@ var listCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tPATH\tTYPE")
+		fmt.Fprintln(w, "NAME\tPATH\tTYPE\tPHP")
 		for _, p := range projects {
 			typ := p.Type
 			if typ == "" {
 				typ = "-"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Path, typ)
+			php := p.PHP
+			if php == "" {
+				php = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, p.Path, typ, php)
 		}
 		return w.Flush()
 	},
