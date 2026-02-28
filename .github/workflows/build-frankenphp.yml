@@ -40,10 +40,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.2", "8.3", "8.4", "8.5"]
-        platform: ["arm64", "x86_64"]
-    name: PHP ${{ matrix.php }} / macOS ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform == 'arm64' && 'macos-14' || 'macos-15-intel' }}
+        php: ["8.3", "8.4", "8.5"]
+    name: PHP ${{ matrix.php }}
+    runs-on: macos-26
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
@@ -59,6 +58,10 @@ jobs:
             go.sum
             caddy/go.sum
 
+      - name: Detect architecture
+        id: arch
+        run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
       - name: Build FrankenPHP with PHP ${{ matrix.php }}
         env:
           PHP_VERSION: ${{ matrix.php }}
@@ -70,26 +73,27 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-php${{ matrix.php }}-${{ matrix.platform }}
+          name: build-log-php${{ matrix.php }}
           path: dist/static-php-cli/log
 
       - name: Run sanity checks
         run: |
+          BINARY="dist/frankenphp-mac-${{ steps.arch.outputs.arch }}"
           "${BINARY}" version
           "${BINARY}" build-info
           "${BINARY}" list-modules | grep frankenphp
           "${BINARY}" php-cli -r "echo 'Sanity check passed';"
-        env:
-          BINARY: dist/frankenphp-mac-${{ matrix.platform }}
 
       - name: Rename binary
-        run: mv dist/frankenphp-mac-${{ matrix.platform }} dist/frankenphp-mac-${{ matrix.platform }}-php${{ matrix.php }}
+        run: |
+          ARCH="${{ steps.arch.outputs.arch }}"
+          mv "dist/frankenphp-mac-${ARCH}" "dist/frankenphp-mac-${ARCH}-php${{ matrix.php }}"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: frankenphp-mac-${{ matrix.platform }}-php${{ matrix.php }}
-          path: dist/frankenphp-mac-${{ matrix.platform }}-php${{ matrix.php }}
+          name: frankenphp-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}
+          path: dist/frankenphp-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}
           compression-level: 0
 
   release:
@@ -120,31 +124,11 @@ jobs:
           VERSION="${{ needs.resolve-version.outputs.version }}"
           TAG="frankenphp-${VERSION}"
 
-          NOTES=$(cat <<'NOTES'
-          Pre-built FrankenPHP binaries with multiple PHP versions for pv.
-
-          **FrankenPHP version:** `VERSION_PLACEHOLDER`
-
-          ## Binaries
-          | File | PHP | Platform |
-          |------|-----|----------|
-          | `frankenphp-mac-arm64-php8.2` | 8.2 | macOS ARM64 (Apple Silicon) |
-          | `frankenphp-mac-arm64-php8.3` | 8.3 | macOS ARM64 (Apple Silicon) |
-          | `frankenphp-mac-arm64-php8.4` | 8.4 | macOS ARM64 (Apple Silicon) |
-          | `frankenphp-mac-arm64-php8.5` | 8.5 | macOS ARM64 (Apple Silicon) |
-          | `frankenphp-mac-x86_64-php8.2` | 8.2 | macOS x86_64 (Intel) |
-          | `frankenphp-mac-x86_64-php8.3` | 8.3 | macOS x86_64 (Intel) |
-          | `frankenphp-mac-x86_64-php8.4` | 8.4 | macOS x86_64 (Intel) |
-          | `frankenphp-mac-x86_64-php8.5` | 8.5 | macOS x86_64 (Intel) |
-          NOTES
-          )
-          NOTES="${NOTES//VERSION_PLACEHOLDER/$VERSION}"
-
           if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
             gh release upload "$TAG" release/* --repo "${{ github.repository }}" --clobber
           else
             gh release create "$TAG" release/* \
               --repo "${{ github.repository }}" \
               --title "FrankenPHP ${VERSION}" \
-              --notes "$NOTES"
+              --generate-notes
           fi
