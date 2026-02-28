@@ -118,17 +118,27 @@ var installCmd = &cobra.Command{
 		}
 		fmt.Println("  ✓ registry.json created")
 
-		// 8. DNS resolver + CA trust (combined sudo).
-		fmt.Println("\nSetting up DNS resolver and trusting certificates...")
+		// 8a. DNS resolver (sudo).
+		fmt.Println("\nSetting up DNS resolver...")
 		fmt.Println("  This requires administrator privileges.")
-		if err := setup.RunSudoSetup(installTLD); err != nil {
-			fmt.Printf("  x sudo setup failed: %v\n", err)
+		if err := setup.RunSudoResolver(installTLD); err != nil {
+			fmt.Printf("  x DNS resolver setup failed: %v\n", err)
 			fmt.Println("  You can set this up manually later:")
 			fmt.Println("    sudo mkdir -p /etc/resolver")
 			fmt.Printf("    echo 'nameserver 127.0.0.1' | sudo tee /etc/resolver/%s\n", installTLD)
-			fmt.Printf("    sudo %s/frankenphp trust\n", config.BinDir())
 		} else {
 			fmt.Println("  ✓ DNS resolver configured")
+		}
+
+		// 8b. Trust CA certificate (start server, trust, stop).
+		fmt.Println("\nTrusting CA certificate...")
+		if err := setup.RunSudoTrustWithServer(); err != nil {
+			fmt.Printf("  x CA trust failed: %v\n", err)
+			fmt.Println("  You can set this up manually later:")
+			fmt.Printf("    %s/frankenphp run --config %s --adapter caddyfile &\n", config.BinDir(), config.CaddyfilePath())
+			fmt.Printf("    sudo %s/frankenphp trust\n", config.BinDir())
+			fmt.Println("    kill %%1")
+		} else {
 			fmt.Println("  ✓ Caddy CA certificate trusted")
 		}
 

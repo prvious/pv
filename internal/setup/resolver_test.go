@@ -53,6 +53,39 @@ func TestSudoSetupScript_UsesFrankenPHPPath(t *testing.T) {
 	}
 }
 
+func TestResolverSetupScript_ContainsResolver(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	script := ResolverSetupScript("test")
+	if !strings.Contains(script, "/etc/resolver/test") {
+		t.Errorf("script missing /etc/resolver/test: %s", script)
+	}
+	if !strings.Contains(script, "nameserver 127.0.0.1") {
+		t.Errorf("script missing nameserver line: %s", script)
+	}
+}
+
+func TestResolverSetupScript_NoTrust(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	script := ResolverSetupScript("test")
+	if strings.Contains(script, "trust") {
+		t.Errorf("DNS-only script should not contain trust: %s", script)
+	}
+}
+
+func TestResolverSetupScript_CustomTLD(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	script := ResolverSetupScript("pv-test")
+	if !strings.Contains(script, "/etc/resolver/pv-test") {
+		t.Errorf("script missing /etc/resolver/pv-test: %s", script)
+	}
+}
+
 func TestCheckResolverFile_Missing(t *testing.T) {
 	err := CheckResolverFile("test")
 	_ = err
