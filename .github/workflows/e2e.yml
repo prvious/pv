@@ -116,7 +116,7 @@ jobs:
       - name: Test unlink
         run: |
           set -euo pipefail
-          pv unlink e2e-static
+          sudo -E pv unlink e2e-static
           # Verify e2e-static no longer appears in list
           if pv list | grep "e2e-static"; then
             echo "FAIL: e2e-static still in list after unlink"
