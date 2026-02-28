@@ -43,7 +43,7 @@ jobs:
         php: ["8.2", "8.3", "8.4", "8.5"]
         platform: ["arm64", "x86_64"]
     name: PHP ${{ matrix.php }} / macOS ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform == 'arm64' && 'macos-14' || 'macos-13' }}
+    runs-on: ${{ matrix.platform == 'arm64' && 'macos-14' || 'macos-15-intel' }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
