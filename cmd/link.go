@@ -8,6 +8,7 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -70,6 +71,13 @@ var linkCmd = &cobra.Command{
 			typeLabel = "unknown"
 		}
 		fmt.Printf("Linked %s → %s (%s)\n", name, absPath, typeLabel)
+
+		if server.IsRunning() {
+			if err := server.Reload(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not reload FrankenPHP: %v\n", err)
+			}
+		}
+
 		return nil
 	},
 }

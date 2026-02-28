@@ -13,7 +13,7 @@ import (
 
 const (
 	resolverDir     = "/etc/resolver"
-	resolverContent = "nameserver 127.0.0.1\n"
+	resolverContent = "nameserver 127.0.0.1\nport 10053\n"
 )
 
 // SudoSetupScript returns the shell script for the combined sudo operations:
@@ -22,7 +22,7 @@ func SudoSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
 	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\n' > %s && "%s" trust`,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && "%s" trust`,
 		resolverDir, resolverFile, frankenphp,
 	)
 }
@@ -42,7 +42,7 @@ func RunSudoSetup(tld string) error {
 func ResolverSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\n' > %s`,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s`,
 		resolverDir, resolverFile,
 	)
 }

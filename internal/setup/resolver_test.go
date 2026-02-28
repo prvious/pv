@@ -20,6 +20,9 @@ func TestSudoSetupScript_ContainsResolver(t *testing.T) {
 	if !strings.Contains(script, "nameserver 127.0.0.1") {
 		t.Errorf("script missing nameserver line: %s", script)
 	}
+	if !strings.Contains(script, "port 10053") {
+		t.Errorf("script missing port 10053: %s", script)
+	}
 }
 
 func TestSudoSetupScript_CustomTLD(t *testing.T) {
@@ -63,6 +66,9 @@ func TestResolverSetupScript_ContainsResolver(t *testing.T) {
 	}
 	if !strings.Contains(script, "nameserver 127.0.0.1") {
 		t.Errorf("script missing nameserver line: %s", script)
+	}
+	if !strings.Contains(script, "port 10053") {
+		t.Errorf("script missing port 10053: %s", script)
 	}
 }
 

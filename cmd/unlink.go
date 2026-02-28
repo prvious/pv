@@ -7,6 +7,7 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +53,13 @@ var unlinkCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Unlinked %s\n", name)
+
+		if server.IsRunning() {
+			if err := server.Reload(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not reload FrankenPHP: %v\n", err)
+			}
+		}
+
 		return nil
 	},
 }

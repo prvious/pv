@@ -107,6 +107,32 @@ func TestCaddyfilePath(t *testing.T) {
 	}
 }
 
+func TestPidFilePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PidFilePath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "data", "pv.pid")) {
+		t.Errorf("PidFilePath() = %q, want suffix .pv/data/pv.pid", got)
+	}
+}
+
+func TestCaddyLogPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := CaddyLogPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "logs", "caddy.log")) {
+		t.Errorf("CaddyLogPath() = %q, want suffix .pv/logs/caddy.log", got)
+	}
+}
+
+func TestDNSPort(t *testing.T) {
+	if DNSPort != 10053 {
+		t.Errorf("DNSPort = %d, want 10053", DNSPort)
+	}
+}
+
 func TestEnsureDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

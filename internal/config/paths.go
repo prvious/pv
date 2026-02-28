@@ -34,6 +34,16 @@ func RegistryPath() string {
 	return filepath.Join(DataDir(), "registry.json")
 }
 
+func PidFilePath() string {
+	return filepath.Join(DataDir(), "pv.pid")
+}
+
+func CaddyLogPath() string {
+	return filepath.Join(LogsDir(), "caddy.log")
+}
+
+const DNSPort = 10053
+
 func VersionsPath() string {
 	return filepath.Join(DataDir(), "versions.json")
 }
