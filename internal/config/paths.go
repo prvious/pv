@@ -34,6 +34,18 @@ func RegistryPath() string {
 	return filepath.Join(DataDir(), "registry.json")
 }
 
+func VersionsPath() string {
+	return filepath.Join(DataDir(), "versions.json")
+}
+
+func SettingsPath() string {
+	return filepath.Join(ConfigDir(), "settings.json")
+}
+
+func CaddyfilePath() string {
+	return filepath.Join(ConfigDir(), "Caddyfile")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),

@@ -77,6 +77,36 @@ func TestRegistryPath(t *testing.T) {
 	}
 }
 
+func TestVersionsPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := VersionsPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "data", "versions.json")) {
+		t.Errorf("VersionsPath() = %q, want suffix .pv/data/versions.json", got)
+	}
+}
+
+func TestSettingsPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := SettingsPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "config", "settings.json")) {
+		t.Errorf("SettingsPath() = %q, want suffix .pv/config/settings.json", got)
+	}
+}
+
+func TestCaddyfilePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := CaddyfilePath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "config", "Caddyfile")) {
+		t.Errorf("CaddyfilePath() = %q, want suffix .pv/config/Caddyfile", got)
+	}
+}
+
 func TestEnsureDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

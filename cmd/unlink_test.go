@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/spf13/cobra"
 )
@@ -50,5 +53,53 @@ func TestUnlink_NonExistentName(t *testing.T) {
 	cmd.SetArgs([]string{"unlink", "nope"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error for non-existent name, got nil")
+	}
+}
+
+func TestUnlink_RemovesCaddySnippet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Seed registry and create a .caddy file
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	reg := &registry.Registry{}
+	_ = reg.Add(registry.Project{Name: "webapp", Path: "/tmp/webapp", Type: "laravel"})
+	if err := reg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	siteFile := filepath.Join(config.SitesDir(), "webapp.caddy")
+	if err := os.WriteFile(siteFile, []byte("webapp.test { }"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newUnlinkCmd()
+	cmd.SetArgs([]string{"unlink", "webapp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unlink command error = %v", err)
+	}
+
+	if _, err := os.Stat(siteFile); !os.IsNotExist(err) {
+		t.Error("expected .caddy file to be removed after unlink")
+	}
+}
+
+func TestUnlink_NoErrorWhenNoCaddySnippet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Seed registry without creating a .caddy file
+	reg := &registry.Registry{}
+	_ = reg.Add(registry.Project{Name: "nosnippet", Path: "/tmp/nosnippet", Type: ""})
+	if err := reg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	cmd := newUnlinkCmd()
+	cmd.SetArgs([]string{"unlink", "nosnippet"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unlink command error = %v, expected nil", err)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/spf13/cobra"
 )
@@ -44,10 +46,11 @@ var linkCmd = &cobra.Command{
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		if err := reg.Add(registry.Project{
-			Name: name,
-			Path: absPath,
-		}); err != nil {
+		projectType := detection.Detect(absPath)
+
+		project := registry.Project{Name: name, Path: absPath, Type: projectType}
+
+		if err := reg.Add(project); err != nil {
 			return err
 		}
 
@@ -55,7 +58,18 @@ var linkCmd = &cobra.Command{
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
-		fmt.Printf("Linked %s → %s\n", name, absPath)
+		if err := caddy.GenerateSiteConfig(project); err != nil {
+			return fmt.Errorf("cannot generate site config: %w", err)
+		}
+		if err := caddy.GenerateCaddyfile(); err != nil {
+			return fmt.Errorf("cannot generate Caddyfile: %w", err)
+		}
+
+		typeLabel := projectType
+		if typeLabel == "" {
+			typeLabel = "unknown"
+		}
+		fmt.Printf("Linked %s → %s (%s)\n", name, absPath, typeLabel)
 		return nil
 	},
 }

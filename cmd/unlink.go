@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,13 @@ var unlinkCmd = &cobra.Command{
 
 		if err := reg.Save(); err != nil {
 			return fmt.Errorf("cannot save registry: %w", err)
+		}
+
+		if err := caddy.RemoveSiteConfig(name); err != nil {
+			return fmt.Errorf("cannot remove site config: %w", err)
+		}
+		if err := caddy.GenerateCaddyfile(); err != nil {
+			return fmt.Errorf("cannot generate Caddyfile: %w", err)
 		}
 
 		fmt.Printf("Unlinked %s\n", name)
