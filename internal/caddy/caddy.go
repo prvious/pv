@@ -16,8 +16,9 @@ const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
     encode zstd gzip
 
     php_server {
+        root {{.RootPath}}
         worker {
-            file {{.RootPath}}/frankenphp-worker.php
+            file frankenphp-worker.php
             num 1
             watch {{.Path}}/**/*.php
         }
@@ -30,7 +31,10 @@ const laravelTmpl = `{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
-    php_server
+    php_server {
+        root {{.RootPath}}
+        worker index.php
+    }
 }
 `
 
@@ -39,7 +43,10 @@ const phpTmpl = `{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
-    php_server
+    php_server {
+        root {{.RootPath}}
+        worker index.php
+    }
 }
 `
 

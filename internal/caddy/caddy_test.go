@@ -80,8 +80,11 @@ func TestGenerateSiteConfig_Laravel(t *testing.T) {
 	if !strings.Contains(content, "php_server") {
 		t.Error("expected php_server")
 	}
-	if strings.Contains(content, "worker {") {
-		t.Error("did not expect worker block for plain laravel")
+	if !strings.Contains(content, "worker index.php") {
+		t.Error("expected worker index.php for plain laravel")
+	}
+	if strings.Contains(content, "frankenphp-worker.php") {
+		t.Error("did not expect frankenphp-worker.php for plain laravel")
 	}
 	if !strings.Contains(content, filepath.Join(projDir, "public")) {
 		t.Errorf("expected root with /public, got:\n%s", content)
