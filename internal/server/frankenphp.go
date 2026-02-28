@@ -50,6 +50,7 @@ func startFrankenPHPInstance(fpPath, caddyfile, logPath, healthURL, version stri
 	}
 
 	cmd := exec.Command(fpPath, "run", "--config", caddyfile, "--adapter", "caddyfile")
+	cmd.Env = append(os.Environ(), config.CaddyEnv()...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -144,6 +145,7 @@ func Reload() error {
 	caddyfile := config.CaddyfilePath()
 
 	cmd := exec.Command(frankenphp, "reload", "--config", caddyfile, "--adapter", "caddyfile")
+	cmd.Env = append(os.Environ(), config.CaddyEnv()...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("reload failed: %w: %s", err, string(output))

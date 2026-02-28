@@ -21,9 +21,10 @@ const (
 func SudoSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
 	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
+	pvDir := config.PvDir()
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && "%s" trust`,
-		resolverDir, resolverFile, frankenphp,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && XDG_DATA_HOME="%s" XDG_CONFIG_HOME="%s" "%s" trust`,
+		resolverDir, resolverFile, pvDir, pvDir, frankenphp,
 	)
 }
 
@@ -65,6 +66,7 @@ func RunSudoTrustWithServer() error {
 
 	// Start FrankenPHP in the background.
 	srv := exec.Command(frankenphp, "run", "--config", caddyfile, "--adapter", "caddyfile")
+	srv.Env = append(os.Environ(), config.CaddyEnv()...)
 	srv.Stdout = nil
 	srv.Stderr = nil
 	if err := srv.Start(); err != nil {
@@ -95,8 +97,10 @@ func RunSudoTrustWithServer() error {
 		return fmt.Errorf("FrankenPHP admin API did not become ready within 5s")
 	}
 
-	// Run trust with sudo.
-	trust := exec.Command("sudo", frankenphp, "trust")
+	// Run trust with sudo — use sh -c with explicit env vars since sudo clears env.
+	pvDir := config.PvDir()
+	script := fmt.Sprintf(`XDG_DATA_HOME="%s" XDG_CONFIG_HOME="%s" "%s" trust`, pvDir, pvDir, frankenphp)
+	trust := exec.Command("sudo", "sh", "-c", script)
 	trust.Stdin = os.Stdin
 	trust.Stdout = os.Stdout
 	trust.Stderr = os.Stderr

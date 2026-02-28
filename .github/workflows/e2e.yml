@@ -101,7 +101,7 @@ jobs:
 
           sudo -E pv status || true
 
-          CACERT="${HOME}/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+          CACERT="${HOME}/.pv/caddy/pki/authorities/local/root.crt"
           RESOLVE="--resolve e2e-static.test:443:127.0.0.1 --resolve e2e-php.test:443:127.0.0.1 --resolve e2e-laravel.test:443:127.0.0.1"
 
           curl -sf --cacert "$CACERT" $RESOLVE https://e2e-static.test/ | grep "static works"

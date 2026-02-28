@@ -85,6 +85,21 @@ func CaddyfilePath() string {
 	return filepath.Join(ConfigDir(), "Caddyfile")
 }
 
+// CaddyEnv returns environment variable strings that direct Caddy to store
+// data under ~/.pv/caddy/ instead of platform-default directories.
+func CaddyEnv() []string {
+	pvDir := PvDir()
+	return []string{
+		"XDG_DATA_HOME=" + pvDir,
+		"XDG_CONFIG_HOME=" + pvDir,
+	}
+}
+
+// CACertPath returns the path to Caddy's local CA root certificate.
+func CACertPath() string {
+	return filepath.Join(PvDir(), "caddy", "pki", "authorities", "local", "root.crt")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),

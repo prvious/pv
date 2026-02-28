@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,7 @@ func checkFrankenPHPBoots() TestResult {
 	caddyfile := config.CaddyfilePath()
 
 	cmd := exec.Command(frankenphp, "run", "--config", caddyfile, "--adapter", "caddyfile")
+	cmd.Env = append(os.Environ(), config.CaddyEnv()...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 

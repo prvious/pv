@@ -191,6 +191,34 @@ func TestPortForVersion(t *testing.T) {
 	}
 }
 
+func TestCaddyEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	env := CaddyEnv()
+	if len(env) != 2 {
+		t.Fatalf("CaddyEnv() returned %d entries, want 2", len(env))
+	}
+	pvDir := filepath.Join(home, ".pv")
+	if env[0] != "XDG_DATA_HOME="+pvDir {
+		t.Errorf("CaddyEnv()[0] = %q, want %q", env[0], "XDG_DATA_HOME="+pvDir)
+	}
+	if env[1] != "XDG_CONFIG_HOME="+pvDir {
+		t.Errorf("CaddyEnv()[1] = %q, want %q", env[1], "XDG_CONFIG_HOME="+pvDir)
+	}
+}
+
+func TestCACertPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := CACertPath()
+	want := filepath.Join(home, ".pv", "caddy", "pki", "authorities", "local", "root.crt")
+	if got != want {
+		t.Errorf("CACertPath() = %q, want %q", got, want)
+	}
+}
+
 func TestEnsureDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
