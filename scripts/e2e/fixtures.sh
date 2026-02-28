@@ -41,6 +41,8 @@ for (;;) {
     if (!\frankenphp_handle_request($handler)) break;
 }
 PHPEOF
+# index.php needed so try_files resolves to a PHP file and routes to the worker
+touch /tmp/e2e-octane/public/index.php
 
 # 5. PHP 8.3 site (multi-version via .pv-php override)
 mkdir -p /tmp/e2e-php83/public
