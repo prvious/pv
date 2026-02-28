@@ -89,18 +89,13 @@ var installCmd = &cobra.Command{
 			return fmt.Errorf("cannot load version state: %w", err)
 		}
 
-		for _, b := range binaries.All() {
+		for _, b := range binaries.Tools() {
 			latest, err := binaries.FetchLatestVersion(client, b)
 			if err != nil {
 				return fmt.Errorf("cannot check %s version: %w", b.DisplayName, err)
 			}
 
-			version := latest
-			if b.Name == "frankenphp" && len(version) > 0 && version[0] == 'v' {
-				version = version[1:]
-			}
-
-			if err := binaries.InstallBinary(client, b, version); err != nil {
+			if err := binaries.InstallBinary(client, b, latest); err != nil {
 				return fmt.Errorf("cannot install %s: %w", b.DisplayName, err)
 			}
 
@@ -175,7 +170,7 @@ var installCmd = &cobra.Command{
 		fmt.Println("pv installed!")
 		fmt.Println()
 		fmt.Printf("  PHP:        %s (global default)\n", phpVersion)
-		for _, b := range binaries.All() {
+		for _, b := range binaries.Tools() {
 			v := vs.Get(b.Name)
 			if v == "" {
 				v = "unknown"

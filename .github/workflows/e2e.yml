@@ -1,0 +1,111 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: macos-26
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          go build -o pv .
+          sudo cp pv /usr/local/bin/pv
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Install pv
+        run: |
+          set -euo pipefail
+          pv install --php 8.4
+          echo "--- install output above ---"
+
+      - name: Verify installation
+        run: |
+          set -euo pipefail
+          pv php list
+          ls ~/.pv/php/8.4/frankenphp
+          ~/.pv/bin/php --version
+          cat /etc/resolver/test
+
+      - name: Create test fixtures
+        run: |
+          set -euo pipefail
+
+          # Static site
+          mkdir -p /tmp/e2e-static
+          echo '<h1>static works</h1>' > /tmp/e2e-static/index.html
+
+          # PHP site
+          mkdir -p /tmp/e2e-php/public
+          echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-php/composer.json
+          echo '<?php echo "php works";' > /tmp/e2e-php/public/index.php
+
+          # Laravel-like site
+          mkdir -p /tmp/e2e-laravel/public
+          echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > /tmp/e2e-laravel/composer.json
+          echo '<?php echo "laravel works";' > /tmp/e2e-laravel/public/index.php
+
+      - name: Link projects
+        run: |
+          set -euo pipefail
+          pv link /tmp/e2e-static --name e2e-static
+          pv link /tmp/e2e-php --name e2e-php
+          pv link /tmp/e2e-laravel --name e2e-laravel
+          pv list
+
+      - name: Start server and curl sites
+        run: |
+          set -euo pipefail
+          pv start &
+          sleep 5
+
+          pv status
+
+          CACERT="${HOME}/.local/share/caddy/pki/authorities/local/root.crt"
+          RESOLVE="--resolve e2e-static.test:443:127.0.0.1 --resolve e2e-php.test:443:127.0.0.1 --resolve e2e-laravel.test:443:127.0.0.1"
+
+          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-static.test/ | grep "static works"
+          echo "OK: static site"
+
+          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-php.test/ | grep "php works"
+          echo "OK: php site"
+
+          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-laravel.test/ | grep "laravel works"
+          echo "OK: laravel site"
+
+      - name: Test unlink
+        run: |
+          set -euo pipefail
+          pv unlink e2e-static
+          # Verify e2e-static no longer appears in list
+          if pv list | grep "e2e-static"; then
+            echo "FAIL: e2e-static still in list after unlink"
+            exit 1
+          fi
+          echo "OK: unlink works"
+
+      - name: Stop server
+        run: |
+          set -euo pipefail
+          pv stop
+          sleep 2
+          pv status
+
+      - name: Cleanup
+        if: always()
+        run: pv stop 2>/dev/null || true

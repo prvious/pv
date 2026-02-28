@@ -19,7 +19,7 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("cannot load version state: %w", err)
 		}
 
-		for _, b := range binaries.All() {
+		for _, b := range binaries.Tools() {
 			fmt.Printf("Checking %s...\n", b.DisplayName)
 
 			latest, err := binaries.FetchLatestVersion(client, b)
@@ -32,17 +32,7 @@ var updateCmd = &cobra.Command{
 				continue
 			}
 
-			// Strip "v" prefix for download URL construction (FrankenPHP adds it back).
-			version := latest
-			if b.Name == "frankenphp" {
-				// FrankenPHP tag format: v1.11.3 — DownloadURL prepends "v"
-				// so pass the bare version number.
-				if len(version) > 0 && version[0] == 'v' {
-					version = version[1:]
-				}
-			}
-
-			if err := binaries.InstallBinary(client, b, version); err != nil {
+			if err := binaries.InstallBinary(client, b, latest); err != nil {
 				return fmt.Errorf("cannot install %s: %w", b.DisplayName, err)
 			}
 

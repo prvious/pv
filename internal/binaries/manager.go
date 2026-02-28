@@ -35,10 +35,10 @@ var Composer = Binary{
 	NeedsExtract: false,
 }
 
-// All returns all managed binaries in install order.
-// FrankenPHP must be first because Composer depends on it.
-func All() []Binary {
-	return []Binary{FrankenPHP, Mago, Composer}
+// Tools returns the standalone tool binaries (Mago, Composer).
+// FrankenPHP and PHP CLI are managed by phpenv, not here.
+func Tools() []Binary {
+	return []Binary{Mago, Composer}
 }
 
 // DownloadURL returns the platform-specific download URL for a binary at the given version.

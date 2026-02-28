@@ -5,17 +5,20 @@ import (
 	"testing"
 )
 
-func TestAll_ReturnsThreeBinaries(t *testing.T) {
-	all := All()
-	if len(all) != 3 {
-		t.Fatalf("All() returned %d binaries, want 3", len(all))
+func TestTools_ReturnsTwoBinaries(t *testing.T) {
+	tools := Tools()
+	if len(tools) != 2 {
+		t.Fatalf("Tools() returned %d binaries, want 2", len(tools))
 	}
 }
 
-func TestAll_FrankenPHPFirst(t *testing.T) {
-	all := All()
-	if all[0].Name != "frankenphp" {
-		t.Errorf("All()[0].Name = %q, want %q", all[0].Name, "frankenphp")
+func TestTools_MagoFirst(t *testing.T) {
+	tools := Tools()
+	if tools[0].Name != "mago" {
+		t.Errorf("Tools()[0].Name = %q, want %q", tools[0].Name, "mago")
+	}
+	if tools[1].Name != "composer" {
+		t.Errorf("Tools()[1].Name = %q, want %q", tools[1].Name, "composer")
 	}
 }
 
