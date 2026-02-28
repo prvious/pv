@@ -41,8 +41,15 @@ for (;;) {
     if (!\frankenphp_handle_request($handler)) break;
 }
 PHPEOF
-# index.php needed so try_files resolves to a PHP file and routes to the worker
-touch /tmp/e2e-octane/public/index.php
+# index.php needed so try_files resolves to a PHP file (same code as worker)
+cat > /tmp/e2e-octane/public/index.php << 'PHPEOF'
+<?php
+ignore_user_abort(true);
+$handler = static function () { echo "octane works"; };
+for (;;) {
+    if (!\frankenphp_handle_request($handler)) break;
+}
+PHPEOF
 
 # 5. PHP 8.3 site (multi-version via .pv-php override)
 mkdir -p /tmp/e2e-php83/public
