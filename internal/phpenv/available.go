@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+
+	"github.com/prvious/pv/internal/binaries"
 )
 
 // AvailableVersions fetches the PHP versions available in the latest
@@ -22,7 +24,7 @@ func AvailableVersions(client *http.Client) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	binaries.SetGitHubHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {

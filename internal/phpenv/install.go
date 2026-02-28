@@ -89,7 +89,7 @@ func latestReleaseTag(client *http.Client) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	binaries.SetGitHubHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {

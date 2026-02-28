@@ -72,7 +72,7 @@ func FetchLatestVersion(client *http.Client, b Binary) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	SetGitHubHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -111,6 +111,15 @@ func NeedsUpdate(vs *VersionState, b Binary, latestVersion string) bool {
 
 func normalizeVersion(v string) string {
 	return strings.TrimPrefix(v, "v")
+}
+
+// SetGitHubHeaders sets standard GitHub API headers on a request,
+// including Authorization from GITHUB_TOKEN if available.
+func SetGitHubHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 // ParseFrankenPHPPhpVersion extracts the PHP version from `frankenphp version` output.
