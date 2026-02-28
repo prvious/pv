@@ -70,7 +70,7 @@ const proxyTmpl = `{{.Name}}.{{.TLD}} {
 
 // --- Templates for secondary FrankenPHP instances ---
 
-const versionLaravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
+const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -85,7 +85,7 @@ const versionLaravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
 }
 `
 
-const versionLaravelTmpl = `{{.Name}}.{{.TLD}} {
+const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -96,7 +96,7 @@ const versionLaravelTmpl = `{{.Name}}.{{.TLD}} {
 }
 `
 
-const versionPhpTmpl = `{{.Name}}.{{.TLD}} {
+const versionPhpTmpl = `http://{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
