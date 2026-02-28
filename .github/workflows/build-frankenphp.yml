@@ -1,0 +1,119 @@
+name: Build FrankenPHP Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      frankenphp_ref:
+        description: "FrankenPHP git ref (tag/branch/SHA). Leave empty for latest release."
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 0 * * 1"
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve FrankenPHP version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          INPUT_REF="${{ inputs.frankenphp_ref }}"
+          if [ -n "$INPUT_REF" ]; then
+            echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
+            echo "version=${INPUT_REF}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh api repos/dunglas/frankenphp/releases/latest --jq '.tag_name')
+            echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3", "8.4", "8.5"]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: dunglas/frankenphp
+          ref: ${{ needs.resolve-version.outputs.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build FrankenPHP with PHP ${{ matrix.php }}
+        env:
+          PHP_VERSION: ${{ matrix.php }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: ./build-static.sh
+
+      - name: List build output
+        run: ls -la dist/
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: frankenphp-mac-arm64-php${{ matrix.php }}
+          path: dist/frankenphp-*
+
+  release:
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/frankenphp-*; do
+            name=$(basename "$dir")
+            for f in "$dir"/frankenphp-*; do
+              cp "$f" "release/${name}"
+              chmod +x "release/${name}"
+            done
+          done
+          ls -la release/
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          TAG="frankenphp-${VERSION}"
+
+          NOTES=$(cat <<'EOF'
+          Pre-built FrankenPHP binaries with multiple PHP versions.
+
+          **FrankenPHP version:** `VERSION_PLACEHOLDER`
+
+          ## Binaries
+          | File | PHP Version | Platform |
+          |------|------------|----------|
+          | `frankenphp-mac-arm64-php8.2` | 8.2 | macOS ARM64 |
+          | `frankenphp-mac-arm64-php8.3` | 8.3 | macOS ARM64 |
+          | `frankenphp-mac-arm64-php8.4` | 8.4 | macOS ARM64 |
+          | `frankenphp-mac-arm64-php8.5` | 8.5 | macOS ARM64 |
+          EOF
+          )
+          NOTES="${NOTES//VERSION_PLACEHOLDER/$VERSION}"
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release upload "$TAG" release/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$TAG" release/* \
+              --repo "${{ github.repository }}" \
+              --title "FrankenPHP ${VERSION}" \
+              --notes "$NOTES"
+          fi
