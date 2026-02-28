@@ -29,17 +29,25 @@ jobs:
         run: go test ./...
 
       - name: Install pv
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           pv install --php 8.4
           echo "--- install output above ---"
 
       - name: Verify installation
+        timeout-minutes: 2
         run: |
           set -euo pipefail
+          echo "==> pv php list"
           pv php list
-          ls ~/.pv/php/8.4/frankenphp
+          echo "==> ls frankenphp binary"
+          ls -la ~/.pv/php/8.4/frankenphp
+          echo "==> ls bin dir"
+          ls -la ~/.pv/bin/
+          echo "==> php shim --version"
           ~/.pv/bin/php --version
+          echo "==> resolver file"
           cat /etc/resolver/test
 
       - name: Create test fixtures
@@ -69,6 +77,7 @@ jobs:
           pv list
 
       - name: Start server and curl sites
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           pv start &
