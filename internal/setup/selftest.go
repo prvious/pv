@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/prvious/pv/internal/config"
 )
+
+const checkTimeout = 10 * time.Second
 
 // TestResult holds the outcome of a single self-test check.
 type TestResult struct {
@@ -29,8 +32,13 @@ func RunSelfTest(tld string) []TestResult {
 
 func checkBinary(displayName, binaryName string, args ...string) TestResult {
 	binPath := filepath.Join(config.BinDir(), binaryName)
-	cmd := exec.Command(binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return TestResult{displayName, fmt.Errorf("timed out after %s", checkTimeout)}
+	}
 	if err != nil {
 		return TestResult{displayName, fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))}
 	}
