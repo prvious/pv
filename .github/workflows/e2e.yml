@@ -11,6 +11,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      # ── Phase 1: Build & Unit Tests ────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -28,118 +29,78 @@ jobs:
       - name: Unit tests
         run: go test ./...
 
-      - name: Install pv
+      # ── Phase 2: Install + Multi-PHP Setup ─────────────────────────
+      - name: Install pv with PHP 8.4 and 8.3
         timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          pv install --php 8.4
-          echo "--- install output above ---"
+        run: scripts/e2e/install.sh
 
-      - name: Verify installation
+      # ── Phase 3: Verify Installation ───────────────────────────────
+      - name: Verify both PHP versions installed
         timeout-minutes: 1
-        run: |
-          set -euo pipefail
-          echo "==> pv php list"
-          pv php list
-          echo "==> ls frankenphp binary"
-          ls -la ~/.pv/php/8.4/frankenphp
-          echo "==> ls bin dir"
-          ls -la ~/.pv/bin/
-          echo "==> file type of php shim"
-          file ~/.pv/bin/php
-          echo "==> php shim --version"
-          ~/.pv/bin/php --version
-          echo "==> resolver file"
-          cat /etc/resolver/test
+        run: scripts/e2e/verify-install.sh
 
+      # ── Phase 4: Create Fixtures ───────────────────────────────────
       - name: Create test fixtures
-        run: |
-          set -euo pipefail
+        run: scripts/e2e/fixtures.sh
 
-          # Static site
-          mkdir -p /tmp/e2e-static
-          echo '<h1>static works</h1>' > /tmp/e2e-static/index.html
+      # ── Phase 5: Link & Verify ─────────────────────────────────────
+      - name: Link projects and verify config
+        run: scripts/e2e/link-verify.sh
 
-          # PHP site
-          mkdir -p /tmp/e2e-php/public
-          echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-php/composer.json
-          cat > /tmp/e2e-php/public/index.php << 'PHPEOF'
-          <?php
-          ignore_user_abort(true);
-          $handler = static function () { echo "php works"; };
-          for (;;) {
-              if (!\frankenphp_handle_request($handler)) break;
-          }
-          PHPEOF
-
-          # Laravel-like site
-          mkdir -p /tmp/e2e-laravel/public
-          echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > /tmp/e2e-laravel/composer.json
-          cat > /tmp/e2e-laravel/public/index.php << 'PHPEOF'
-          <?php
-          ignore_user_abort(true);
-          $handler = static function () { echo "laravel works"; };
-          for (;;) {
-              if (!\frankenphp_handle_request($handler)) break;
-          }
-          PHPEOF
-
-      - name: Link projects
-        run: |
-          set -euo pipefail
-          pv link /tmp/e2e-static --name e2e-static
-          pv link /tmp/e2e-php --name e2e-php
-          pv link /tmp/e2e-laravel --name e2e-laravel
-          pv list
-
-      - name: Start server and curl sites
+      # ── Phase 6: Start & Curl All Sites ────────────────────────────
+      - name: Start server and curl all sites
         timeout-minutes: 2
-        run: |
-          set -euo pipefail
-          sudo -E pv start &
-          sleep 5
+        run: scripts/e2e/start-curl.sh
 
-          sudo -E pv status || true
+      # ── Phase 7: Dynamic Link While Running ────────────────────────
+      - name: Dynamic link while server running
+        timeout-minutes: 1
+        run: scripts/e2e/dynamic-link.sh
 
-          CACERT="${HOME}/.pv/caddy/pki/authorities/local/root.crt"
-          RESOLVE="--resolve e2e-static.test:443:127.0.0.1 --resolve e2e-php.test:443:127.0.0.1 --resolve e2e-laravel.test:443:127.0.0.1"
+      # ── Phase 8: Dynamic Unlink While Running ──────────────────────
+      - name: Dynamic unlink while server running
+        timeout-minutes: 1
+        run: scripts/e2e/dynamic-unlink.sh
 
-          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-static.test/ | grep "static works"
-          echo "OK: static site"
+      # ── Phase 9: Test pv log ───────────────────────────────────────
+      - name: Test pv log
+        run: scripts/e2e/log.sh
 
-          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-php.test/ | grep "php works"
-          echo "OK: php site"
+      # ── Phase 10: Test pv restart ──────────────────────────────────
+      - name: Test pv restart
+        timeout-minutes: 1
+        run: scripts/e2e/restart.sh
 
-          curl -sf --cacert "$CACERT" $RESOLVE https://e2e-laravel.test/ | grep "laravel works"
-          echo "OK: laravel site"
+      # ── Phase 11: PHP Shim Resolution ──────────────────────────────
+      - name: Test PHP shim per-project resolution
+        run: scripts/e2e/shim.sh
 
-      - name: Test unlink
-        run: |
-          set -euo pipefail
-          sudo -E pv unlink e2e-static
-          # Verify e2e-static no longer appears in list
-          if pv list | grep "e2e-static"; then
-            echo "FAIL: e2e-static still in list after unlink"
-            exit 1
-          fi
-          echo "OK: unlink works"
+      # ── Phase 12: Error Handling ───────────────────────────────────
+      - name: Test error handling
+        run: scripts/e2e/errors.sh
 
+      # ── Phase 13: Stop Server ──────────────────────────────────────
       - name: Stop server
-        run: |
-          set -euo pipefail
-          sudo -E pv stop
-          sleep 2
-          pv status
+        run: scripts/e2e/stop.sh
 
+      # ── Phase 14: PHP Version Lifecycle ────────────────────────────
+      - name: Test PHP version lifecycle
+        run: scripts/e2e/lifecycle.sh
+
+      # ── Phase 15: Test pv update ───────────────────────────────────
+      - name: Test pv update
+        timeout-minutes: 3
+        run: scripts/e2e/update.sh
+
+      # ── Phase 16: Verify Server After PHP Changes ──────────────────
+      - name: Verify server with remaining projects
+        timeout-minutes: 2
+        run: scripts/e2e/verify-final.sh
+
+      # ── Phase 17: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
-        run: |
-          echo "==> caddy.log"
-          cat ~/.pv/logs/caddy.log 2>/dev/null || echo "(no caddy.log)"
-          echo "==> sites dir"
-          ls -la ~/.pv/config/sites/ 2>/dev/null || echo "(no sites dir)"
-          echo "==> Caddyfile"
-          cat ~/.pv/config/Caddyfile 2>/dev/null || echo "(no Caddyfile)"
+        run: scripts/e2e/diagnostics.sh
 
       - name: Cleanup
         if: always()
