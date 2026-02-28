@@ -63,12 +63,24 @@ jobs:
           # PHP site
           mkdir -p /tmp/e2e-php/public
           echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-php/composer.json
-          echo '<?php echo "php works";' > /tmp/e2e-php/public/index.php
+          cat > /tmp/e2e-php/public/index.php << 'PHPEOF'
+          <?php
+          // FrankenPHP worker mode: loop on each request
+          do {
+              echo "php works";
+          } while (function_exists('frankenphp_handle_request') && frankenphp_handle_request());
+          PHPEOF
 
           # Laravel-like site
           mkdir -p /tmp/e2e-laravel/public
           echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > /tmp/e2e-laravel/composer.json
-          echo '<?php echo "laravel works";' > /tmp/e2e-laravel/public/index.php
+          cat > /tmp/e2e-laravel/public/index.php << 'PHPEOF'
+          <?php
+          // FrankenPHP worker mode: loop on each request
+          do {
+              echo "laravel works";
+          } while (function_exists('frankenphp_handle_request') && frankenphp_handle_request());
+          PHPEOF
 
       - name: Link projects
         run: |
