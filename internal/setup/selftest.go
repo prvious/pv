@@ -21,7 +21,7 @@ func RunSelfTest(tld string) []TestResult {
 	var results []TestResult
 	results = append(results, checkBinary("FrankenPHP", "frankenphp", "version"))
 	results = append(results, checkBinary("Mago", "mago", "--version"))
-	results = append(results, checkShim("PHP CLI", "php", "--version"))
+	results = append(results, checkBinary("PHP CLI", "php", "--version"))
 	results = append(results, checkResolverConfigured(tld))
 	results = append(results, checkFrankenPHPBoots())
 	return results
@@ -37,15 +37,6 @@ func checkBinary(displayName, binaryName string, args ...string) TestResult {
 	return TestResult{displayName, nil}
 }
 
-func checkShim(displayName, shimName string, args ...string) TestResult {
-	shimPath := filepath.Join(config.BinDir(), shimName)
-	cmd := exec.Command(shimPath, args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return TestResult{displayName, fmt.Errorf("%v: %s", err, strings.TrimSpace(string(output)))}
-	}
-	return TestResult{displayName, nil}
-}
 
 func checkResolverConfigured(tld string) TestResult {
 	if err := CheckResolverFile(tld); err != nil {

@@ -43,23 +43,6 @@ func TestCheckBinary_MissingBinary(t *testing.T) {
 	}
 }
 
-func TestCheckShim_WithFakeShim(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	fakeShim := filepath.Join(config.BinDir(), "fakeshim")
-	if err := os.WriteFile(fakeShim, []byte("#!/bin/sh\necho 'OK'\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	result := checkShim("FakeShim", "fakeshim")
-	if result.Err != nil {
-		t.Errorf("checkShim() error = %v, want nil", result.Err)
-	}
-}
 
 func TestPrintResults_AllPass(t *testing.T) {
 	results := []TestResult{

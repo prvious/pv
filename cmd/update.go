@@ -54,11 +54,6 @@ var updateCmd = &cobra.Command{
 			fmt.Printf("  %s updated to %s\n", b.DisplayName, latest)
 		}
 
-		fmt.Println("Generating shims...")
-		if err := binaries.WriteAllShims(); err != nil {
-			return fmt.Errorf("cannot write shims: %w", err)
-		}
-
 		fmt.Println("Done.")
 		return nil
 	},

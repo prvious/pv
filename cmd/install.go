@@ -89,14 +89,7 @@ var installCmd = &cobra.Command{
 		vs.Set("php", phpVersion)
 		fmt.Printf("  ✓ PHP CLI %s installed\n", phpVersion)
 
-		// 4. Generate shims.
-		fmt.Println("\nGenerating shims...")
-		if err := binaries.WriteAllShims(); err != nil {
-			return fmt.Errorf("cannot write shims: %w", err)
-		}
-		fmt.Println("  ✓ composer shim created")
-
-		// 5. Write version manifest.
+		// 4. Write version manifest.
 		fmt.Println("\nWriting version manifest...")
 		if err := vs.Save(); err != nil {
 			return fmt.Errorf("cannot save versions: %w", err)

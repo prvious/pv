@@ -100,7 +100,7 @@ func installPHP(client *http.Client, url string, b Binary, binDir string) error 
 }
 
 func installComposer(client *http.Client, url string, b Binary, version string, binDir string) error {
-	destPath := filepath.Join(binDir, "composer.phar")
+	destPath := filepath.Join(binDir, "composer")
 
 	fmt.Printf("  Downloading %s...\n", b.DisplayName)
 	if err := Download(client, url, destPath); err != nil {
@@ -123,5 +123,5 @@ func installComposer(client *http.Client, url string, b Binary, version string, 
 		}
 	}
 
-	return nil
+	return MakeExecutable(destPath)
 }

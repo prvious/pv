@@ -86,7 +86,7 @@ func TestInstallBinary_Composer(t *testing.T) {
 	}
 
 	binDir := config.BinDir()
-	destPath := filepath.Join(binDir, "composer.phar")
+	destPath := filepath.Join(binDir, "composer")
 
 	if err := Download(srv.Client(), srv.URL+"/phar", destPath); err != nil {
 		t.Fatalf("Download() error = %v", err)
@@ -101,7 +101,15 @@ func TestInstallBinary_Composer(t *testing.T) {
 		t.Fatalf("VerifyChecksum() error = %v", err)
 	}
 
-	if _, err := os.Stat(destPath); err != nil {
-		t.Fatalf("composer.phar not found: %v", err)
+	if err := MakeExecutable(destPath); err != nil {
+		t.Fatalf("MakeExecutable() error = %v", err)
+	}
+
+	info, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatalf("composer not found: %v", err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Error("composer is not executable")
 	}
 }
