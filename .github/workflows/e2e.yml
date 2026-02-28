@@ -82,7 +82,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          pv start &
+          sudo -E pv start &
           sleep 5
 
           pv status
@@ -113,10 +113,20 @@ jobs:
       - name: Stop server
         run: |
           set -euo pipefail
-          pv stop
+          sudo -E pv stop
           sleep 2
           pv status
 
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "==> caddy.log"
+          cat ~/.pv/logs/caddy.log 2>/dev/null || echo "(no caddy.log)"
+          echo "==> sites dir"
+          ls -la ~/.pv/config/sites/ 2>/dev/null || echo "(no sites dir)"
+          echo "==> Caddyfile"
+          cat ~/.pv/config/Caddyfile 2>/dev/null || echo "(no Caddyfile)"
+
       - name: Cleanup
         if: always()
-        run: pv stop 2>/dev/null || true
+        run: sudo -E pv stop 2>/dev/null || true
