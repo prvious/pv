@@ -226,7 +226,7 @@ func TestGenerateSiteConfig_ProxyOnNonGlobalVersion(t *testing.T) {
 		t.Error("expected reverse_proxy for non-global version project")
 	}
 	port := config.PortForVersion("8.3")
-	if !strings.Contains(content, fmt.Sprintf("localhost:%d", port)) {
+	if !strings.Contains(content, fmt.Sprintf("127.0.0.1:%d", port)) {
 		t.Errorf("expected port %d in proxy config, got:\n%s", port, content)
 	}
 

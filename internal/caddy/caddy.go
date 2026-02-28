@@ -64,7 +64,7 @@ const staticTmpl = `{{.Name}}.{{.TLD}} {
 
 const proxyTmpl = `{{.Name}}.{{.TLD}} {
     tls internal
-    reverse_proxy localhost:{{.Port}}
+    reverse_proxy 127.0.0.1:{{.Port}}
 }
 `
 
