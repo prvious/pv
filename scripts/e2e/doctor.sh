@@ -2,8 +2,10 @@
 set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
+# Run doctor with sudo -E so it sees the same HOME and PID file as the server
+# (the server was started with sudo -E pv start &).
 echo "==> Run pv doctor (server running)"
-OUTPUT=$(pv doctor 2>&1 || true)
+OUTPUT=$(sudo -E pv doctor 2>&1 || true)
 echo "$OUTPUT"
 
 # Binaries should be found.
@@ -41,7 +43,7 @@ reg['projects'].append({'name': 'ghost-app', 'path': '/nonexistent/ghost', 'type
 json.dump(reg, sys.stdout, indent=2)
 " > "$REGISTRY"
 
-OUTPUT=$(pv doctor 2>&1 || true)
+OUTPUT=$(sudo -E pv doctor 2>&1 || true)
 echo "$OUTPUT"
 assert_contains "$OUTPUT" "ghost-app" "ghost project not checked"
 assert_contains "$OUTPUT" "directory missing" "missing directory not detected"
