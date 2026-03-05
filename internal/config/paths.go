@@ -43,6 +43,14 @@ func CaddyLogPath() string {
 	return filepath.Join(LogsDir(), "caddy.log")
 }
 
+func DaemonLogPath() string {
+	return filepath.Join(LogsDir(), "pv.log")
+}
+
+func DaemonErrLogPath() string {
+	return filepath.Join(LogsDir(), "pv.err.log")
+}
+
 func CaddyLogPathForVersion(version string) string {
 	return filepath.Join(LogsDir(), "caddy-"+version+".log")
 }

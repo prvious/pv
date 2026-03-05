@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
+	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/server"
 	"github.com/spf13/cobra"
@@ -37,9 +37,17 @@ var useCmd = &cobra.Command{
 
 		fmt.Printf("Global PHP switched to %s\n", version)
 
-		if oldV != version && server.IsRunning() {
+		// If daemon is running, sync the plist and restart.
+		if oldV != version && daemon.IsLoaded() {
+			cfg := daemon.DefaultPlistConfig()
+			if err := daemon.SyncIfNeeded(cfg); err != nil {
+				fmt.Printf("Warning: cannot sync daemon plist: %v\n", err)
+			} else {
+				fmt.Println("Daemon restarted with new PHP version")
+			}
+		} else if oldV != version && server.IsRunning() {
 			fmt.Println("Server is running — restart required for changes to take effect.")
-			fmt.Fprintln(os.Stderr, "Run: pv stop && pv start")
+			fmt.Println("Run: pv restart")
 		}
 
 		return nil
