@@ -26,7 +26,7 @@ func StartFrankenPHP() (*FrankenPHP, error) {
 	return startFrankenPHPInstance(
 		filepath.Join(config.BinDir(), "frankenphp"),
 		config.CaddyfilePath(),
-		config.CaddyLogPath(),
+		config.CaddyStderrPath(),
 		"http://localhost:2019/config/",
 		"",
 	)
@@ -37,10 +37,10 @@ func StartFrankenPHP() (*FrankenPHP, error) {
 func StartVersionFrankenPHP(version string) (*FrankenPHP, error) {
 	fpPath := filepath.Join(config.PhpVersionDir(version), "frankenphp")
 	caddyfile := config.VersionCaddyfilePath(version)
-	logPath := config.CaddyLogPathForVersion(version)
+	stderrPath := config.CaddyStderrPathForVersion(version)
 
 	// Secondary instances have admin disabled, so no health check URL.
-	return startFrankenPHPInstance(fpPath, caddyfile, logPath, "", version)
+	return startFrankenPHPInstance(fpPath, caddyfile, stderrPath, "", version)
 }
 
 func startFrankenPHPInstance(fpPath, caddyfile, logPath, healthURL, version string) (*FrankenPHP, error) {
@@ -51,7 +51,7 @@ func startFrankenPHPInstance(fpPath, caddyfile, logPath, healthURL, version stri
 
 	cmd := exec.Command(fpPath, "run", "--config", caddyfile, "--adapter", "caddyfile")
 	cmd.Env = append(os.Environ(), config.CaddyEnv()...)
-	cmd.Stdout = logFile
+	cmd.Stdout = nil
 	cmd.Stderr = logFile
 
 	if err := cmd.Start(); err != nil {

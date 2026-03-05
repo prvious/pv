@@ -55,6 +55,14 @@ func CaddyLogPathForVersion(version string) string {
 	return filepath.Join(LogsDir(), "caddy-"+version+".log")
 }
 
+func CaddyStderrPath() string {
+	return filepath.Join(LogsDir(), "caddy-stderr.log")
+}
+
+func CaddyStderrPathForVersion(version string) string {
+	return filepath.Join(LogsDir(), "caddy-"+version+"-stderr.log")
+}
+
 const DNSPort = 10053
 
 func ComposerDir() string {
