@@ -71,7 +71,7 @@ var statusCmd = &cobra.Command{
 			var labels []string
 			for _, v := range versions {
 				if v == globalPHP {
-					labels = append(labels, ui.Green.Bold(true).Render(v)+" "+ui.Muted.Render("(global)"))
+					labels = append(labels, ui.Green.Bold(true).Render(v)+" "+ui.Muted.Render("(default)"))
 				} else {
 					labels = append(labels, ui.Purple.Render(v))
 				}

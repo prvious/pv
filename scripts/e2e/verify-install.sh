@@ -13,7 +13,7 @@ ls -la ~/.pv/php/8.3/php
 echo "==> pv php list"
 OUTPUT=$(pv php list 2>&1)
 echo "$OUTPUT"
-assert_contains "$OUTPUT" "(global)" "8.4 not marked as default"
+assert_contains "$OUTPUT" "(default)" "8.4 not marked as default"
 assert_contains "$OUTPUT" "8.3" "8.3 not listed"
 
 echo "==> Verify frankenphp symlink points to 8.4"

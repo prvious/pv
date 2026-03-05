@@ -51,7 +51,7 @@ var phpListCmd = &cobra.Command{
 			// Version number
 			if v == globalV {
 				parts = append(parts, ui.Green.Bold(true).Render(v))
-				parts = append(parts, ui.Muted.Render("(global)"))
+				parts = append(parts, ui.Muted.Render("(default)"))
 			} else {
 				parts = append(parts, ui.Purple.Render(v))
 			}

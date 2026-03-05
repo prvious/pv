@@ -9,7 +9,7 @@ echo "==> pv status"
 STATUS=$(sudo -E pv status 2>&1)
 echo "$STATUS"
 assert_contains "$STATUS" "Running" "server not running"
-assert_contains "$STATUS" "8.4 (global)" "global PHP not shown"
+assert_contains "$STATUS" "8.4 (default)" "global PHP not shown"
 assert_contains "$STATUS" "5 linked" "wrong site count"
 
 # Version Caddyfile for 8.3 generated at start time
