@@ -26,7 +26,8 @@ var uninstallCmd = &cobra.Command{
 		// Task 1: Confirmation prompt.
 		fmt.Println()
 		fmt.Println("This will remove:")
-		fmt.Println("  • All pv binaries and PHP versions")
+		fmt.Println("  • The pv binary")
+		fmt.Println("  • All PHP versions and FrankenPHP binaries")
 		fmt.Println("  • All Composer global packages and cache")
 		fmt.Println("  • All project links (your project files are NOT deleted)")
 		fmt.Println("  • DNS resolver configuration")
@@ -176,6 +177,25 @@ var uninstallCmd = &cobra.Command{
 			fmt.Println("  Done")
 		}
 
+		// Remove the pv binary itself.
+		fmt.Println("Removing pv binary...")
+		if pvBin, err := os.Executable(); err == nil {
+			// Resolve symlinks to get the real path.
+			if resolved, err := filepath.EvalSymlinks(pvBin); err == nil {
+				pvBin = resolved
+			}
+			if err := os.Remove(pvBin); err != nil {
+				// May need sudo if installed in /usr/local/bin.
+				if runSudo(fmt.Sprintf("rm -f '%s'", pvBin)) {
+					fmt.Printf("  Removed %s\n", pvBin)
+				} else {
+					fmt.Printf("  Warning: could not remove %s. Delete it manually.\n", pvBin)
+				}
+			} else {
+				fmt.Printf("  Removed %s\n", pvBin)
+			}
+		}
+
 		// Task 8: Report scattered .pv-php files.
 		fmt.Println()
 		var found []string
@@ -199,10 +219,11 @@ var uninstallCmd = &cobra.Command{
 		configFile := setup.ShellConfigFile(shell)
 		exportLine := setup.PathExportLine(shell)
 
-		fmt.Println("Done! Just remove the pv PATH lines from your shell config:")
+		fmt.Println("Done! Just remove the pv lines from your shell config:")
 		fmt.Println()
 		fmt.Printf("  # Remove from %s:\n", configFile)
 		fmt.Printf("  %s\n", exportLine)
+		fmt.Println("  eval \"$(pv env)\"   # if present")
 		fmt.Println()
 		fmt.Println("pv has been completely uninstalled. Your projects were not modified.")
 

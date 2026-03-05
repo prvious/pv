@@ -10,6 +10,8 @@ sleep 1
 echo "==> Pre-uninstall checks"
 [ -d ~/.pv ] || { echo "FAIL: ~/.pv does not exist before uninstall"; exit 1; }
 echo "OK: ~/.pv exists"
+PV_BIN=$(which pv)
+echo "pv binary at: $PV_BIN"
 
 # Run uninstall by piping "uninstall" and "n" (decline auth backup).
 # Don't wrap in sudo — pv handles sudo internally via sudo -n.
@@ -46,5 +48,12 @@ if pgrep -f frankenphp > /dev/null 2>&1; then
   exit 1
 fi
 echo "OK: no frankenphp processes"
+
+# Verify pv binary is gone.
+if [ -f "$PV_BIN" ]; then
+  echo "FAIL: pv binary still exists at $PV_BIN"
+  exit 1
+fi
+echo "OK: pv binary removed"
 
 echo "==> pv uninstall e2e passed"
