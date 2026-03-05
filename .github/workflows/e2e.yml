@@ -102,11 +102,18 @@ jobs:
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 18: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 18: Uninstall ───────────────────────────────────────
+      - name: Test pv uninstall
+        timeout-minutes: 1
+        run: scripts/e2e/uninstall.sh
+
+      # ── Phase 19: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
 
       - name: Cleanup
         if: always()
-        run: sudo -E pv stop 2>/dev/null || true
+        run: |
+          sudo -E pv stop 2>/dev/null || true
+          rm -rf ~/.pv 2>/dev/null || true
