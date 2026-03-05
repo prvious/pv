@@ -177,9 +177,12 @@ download_with_progress() {
     trap "trap - RETURN; rm -f \"$tracefile\"; printf '\033[?25h' >&4; exec 4>&-" RETURN
 
     (
-        curl --trace-ascii "$tracefile" -s -L -o "$output" "$url"
+        curl --trace-ascii "$tracefile" -fsL -o "$output" "$url"
     ) &
     local curl_pid=$!
+
+    # Kill background curl on script exit (Ctrl+C, set -e, etc.)
+    trap "kill $curl_pid 2>/dev/null; rm -f \"$tracefile\"; printf '\033[?25h' >&4" EXIT
 
     unbuffered_sed \
         -e 'y/ACDEGHLNORTV/acdeghlnortv/' \
@@ -211,6 +214,10 @@ download_with_progress() {
     wait "$curl_pid"
     local ret=$?
     echo "" >&4
+
+    # Restore default EXIT trap now that curl is done
+    trap - EXIT
+
     return "$ret"
 }
 
@@ -252,10 +259,10 @@ resolve_version() {
 # ── Check existing installation ──────────────────────────────────────────────
 
 check_existing() {
-    if command -v pv >/dev/null 2>&1; then
-        local existing
-        existing=$(which pv)
+    local existing
+    existing=$(command -v pv 2>/dev/null || true)
 
+    if [[ -n "$existing" ]]; then
         # Check if it's our pv (not the pipe viewer utility)
         if "$existing" --help 2>&1 | grep -q "FrankenPHP\|prvious\|pv install"; then
             local installed_version
@@ -310,7 +317,7 @@ setup_path() {
             ;;
         fish)
             config_file="$HOME/.config/fish/config.fish"
-            export_line='set -gx PATH "$HOME/.pv/bin" "$HOME/.pv/composer/vendor/bin" $PATH'
+            export_line='fish_add_path "$HOME/.pv/bin" "$HOME/.pv/composer/vendor/bin"'
             ;;
         *)
             config_file="$HOME/.profile"
