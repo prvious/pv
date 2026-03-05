@@ -75,6 +75,11 @@ internal/
 - **Port scheme**: `8000 + major*100 + minor*10` (e.g., PHP 8.3 → 8830).
 - FrankenPHP binaries come from `prvious/pv` GitHub releases (format: `frankenphp-{platform}-php{version}`).
 
+## Testing strategy
+
+- **Unit tests** (`go test ./...`): Run locally. Use `t.Setenv("HOME", t.TempDir())` for filesystem isolation. Fake binaries (bash scripts) can stand in for real PHP when testing shims.
+- **E2E tests** (`.github/workflows/e2e.yml` + `scripts/e2e/`): Run on GitHub Actions (macOS runner) to simulate real end-user flows. These tests use real PHP, real Composer, real FrankenPHP — things we can't easily run locally. **When your feature involves real binary execution, network calls, DNS, HTTPS, or anything that needs a full `pv install` environment, add an e2e script in `scripts/e2e/` and wire it into the workflow.** Each script sources `scripts/e2e/helpers.sh` for `assert_contains`, `assert_fails`, `curl_site`, etc. The workflow phases run sequentially: install → verify → fixtures → link → start → curl → shim → composer → errors → stop → lifecycle → update → verify-final.
+
 ## Key patterns
 
 - **Test isolation**: Tests use `t.Setenv("HOME", t.TempDir())` so filesystem ops go to a temp dir.
