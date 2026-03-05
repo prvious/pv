@@ -21,6 +21,7 @@ Usage: install.sh [options]
 Options:
     -h, --help              Display this help message
     -v, --version <version> Install a specific pv version (e.g., 0.1.0)
+    --install-dir <path>    Where to install the pv binary (default: ~/.local/bin)
     --php <version>         PHP version to install (e.g., 8.4). Auto-detects if omitted.
     --tld <tld>             Top-level domain for local sites (default: test)
     --no-modify-path        Don't modify shell config files (.zshrc, .bashrc, etc.)
@@ -29,6 +30,7 @@ Examples:
     curl -fsSL https://pv.prvious.dev/install | bash
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --php 8.4
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --version 0.2.0
+    curl -fsSL https://pv.prvious.dev/install | bash -s -- --install-dir /usr/local/bin
 EOF
 }
 
@@ -38,6 +40,7 @@ requested_version=""
 no_modify_path=false
 php_version=""
 tld=""
+install_dir=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -69,6 +72,15 @@ while [[ $# -gt 0 ]]; do
                 shift 2
             else
                 echo -e "${RED}Error: --tld requires a value${NC}"
+                exit 1
+            fi
+            ;;
+        --install-dir)
+            if [[ -n "${2:-}" ]]; then
+                install_dir="$2"
+                shift 2
+            else
+                echo -e "${RED}Error: --install-dir requires a path${NC}"
                 exit 1
             fi
             ;;
@@ -373,12 +385,15 @@ main() {
     echo -e "  ${MUTED}Detected:${NC} macOS ${platform#darwin-}"
     echo ""
 
-    # Acquire sudo credentials upfront (single prompt for the entire install).
-    # pv needs sudo to install the binary to /usr/local/bin and to set up
-    # the DNS resolver in /etc/resolver/ and trust the CA certificate.
+    # Resolve install directory: flag → default (~/.local/bin)
+    local dest_dir="${install_dir:-$HOME/.local/bin}"
+    mkdir -p "$dest_dir"
+
+    # Acquire sudo credentials upfront if pv install needs it
+    # (DNS resolver in /etc/resolver/ and CA trust require sudo).
     # Skip in CI where passwordless sudo is available.
     if [[ -z "${GITHUB_ACTIONS-}" ]]; then
-        echo -e "  ${MUTED}pv requires sudo for installation. You may be prompted for your password.${NC}"
+        echo -e "  ${MUTED}pv needs sudo for DNS and certificate setup. You may be prompted for your password.${NC}"
         sudo -v
         echo ""
     fi
@@ -410,19 +425,14 @@ main() {
 
     chmod 755 "$tmp_dir/pv"
 
-    # Install to /usr/local/bin
-    echo -e "  ${MUTED}Installing to /usr/local/bin/pv...${NC}"
-
-    if [[ -w "/usr/local/bin" ]]; then
-        mv "$tmp_dir/pv" /usr/local/bin/pv
-    else
-        sudo mv "$tmp_dir/pv" /usr/local/bin/pv
-    fi
+    # Install to destination directory
+    echo -e "  ${MUTED}Installing to ${dest_dir}/pv...${NC}"
+    mv "$tmp_dir/pv" "$dest_dir/pv"
 
     echo -e "  ${GREEN}✓${NC} pv v${version} installed"
     echo ""
 
-    # Run pv install (full bootstrap)
+    # Run pv install (full bootstrap — this calls sudo internally for DNS/CA)
     echo -e "  ${PURPLE}Setting up environment...${NC}"
     echo ""
 
@@ -434,7 +444,7 @@ main() {
         install_args+=(--tld "$tld")
     fi
 
-    /usr/local/bin/pv "${install_args[@]}"
+    "$dest_dir/pv" "${install_args[@]}"
 
     # Set up PATH
     echo ""
@@ -444,6 +454,7 @@ main() {
 
     # GitHub Actions support
     if [[ -n "${GITHUB_ACTIONS-}" ]] && [[ "${GITHUB_ACTIONS}" == "true" ]]; then
+        echo "$dest_dir" >> "$GITHUB_PATH"
         echo "$HOME/.pv/bin" >> "$GITHUB_PATH"
         echo "$HOME/.pv/composer/vendor/bin" >> "$GITHUB_PATH"
         echo -e "  ${GREEN}✓${NC} Added to \$GITHUB_PATH"
