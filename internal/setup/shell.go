@@ -48,10 +48,20 @@ func PrintPathInstructions() {
 
 	fmt.Println("Add pv to your PATH:")
 	fmt.Println()
-	fmt.Printf("  echo 'eval \"$(pv env)\"' >> %s\n", configFile)
+	switch shell {
+	case "fish":
+		fmt.Printf("  echo 'pv env | source' >> %s\n", configFile)
+	default:
+		fmt.Printf("  echo 'eval \"$(pv env)\"' >> %s\n", configFile)
+	}
 	fmt.Printf("  source %s\n", configFile)
 	fmt.Println()
 	fmt.Println("Or configure your current session:")
 	fmt.Println()
-	fmt.Println("  eval \"$(pv env)\"")
+	switch shell {
+	case "fish":
+		fmt.Println("  pv env | source")
+	default:
+		fmt.Println("  eval \"$(pv env)\"")
+	}
 }
