@@ -163,8 +163,15 @@ var uninstallCmd = &cobra.Command{
 
 		// Task 7: Remove ~/.pv directory.
 		fmt.Println("Removing ~/.pv...")
-		if err := os.RemoveAll(config.PvDir()); err != nil {
-			fmt.Printf("  Warning: could not fully remove %s: %v\n", config.PvDir(), err)
+		pvDir := config.PvDir()
+		if err := os.RemoveAll(pvDir); err != nil {
+			// Some files may be owned by root (e.g. from sudo -E pv start).
+			// Fall back to sudo rm -rf.
+			if runSudo(fmt.Sprintf("rm -rf '%s'", pvDir)) {
+				fmt.Println("  Done")
+			} else {
+				fmt.Printf("  Warning: could not fully remove %s: %v\n", pvDir, err)
+			}
 		} else {
 			fmt.Println("  Done")
 		}
