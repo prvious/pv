@@ -7,7 +7,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.1.0"
+// version is set at build time via ldflags:
+//
+//	go build -ldflags "-X github.com/prvious/pv/cmd.version=1.0.0"
+var version = "dev"
 
 var rootCmd = &cobra.Command{
 	Use:     "pv",
