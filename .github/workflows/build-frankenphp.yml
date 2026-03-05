@@ -117,18 +117,24 @@ jobs:
           done
           ls -la release/
 
-      - name: Create or update release
+      - name: Upload to latest pv release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ needs.resolve-version.outputs.version }}"
-          TAG="frankenphp-${VERSION}"
+          set -euo pipefail
 
-          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
-            gh release upload "$TAG" release/* --repo "${{ github.repository }}" --clobber
-          else
-            gh release create "$TAG" release/* \
-              --repo "${{ github.repository }}" \
-              --title "FrankenPHP ${VERSION}" \
-              --generate-notes
+          # Find the latest pv release (v* tag).
+          LATEST_TAG=$(gh release list --repo "${{ github.repository }}" --limit 10 \
+            --json tagName --jq '[.[] | select(.tagName | startswith("v"))][0].tagName')
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::No pv release found. Create a release (e.g., v0.0.1) first."
+            exit 1
           fi
+
+          echo "Uploading FrankenPHP assets to $LATEST_TAG"
+          gh release upload "$LATEST_TAG" release/* \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+          echo "FrankenPHP assets uploaded to $LATEST_TAG"

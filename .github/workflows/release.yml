@@ -32,3 +32,44 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy FrankenPHP assets from previous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          NEW_TAG="${GITHUB_REF_NAME}"
+
+          # Find the previous release (skip the one we just created).
+          PREV_TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 \
+            --json tagName --jq "[.[] | select(.tagName != \"$NEW_TAG\" and (.tagName | startswith(\"v\")))][0].tagName")
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous release found — skipping FrankenPHP asset copy"
+            exit 0
+          fi
+
+          echo "Copying FrankenPHP assets from $PREV_TAG to $NEW_TAG"
+
+          # Download frankenphp-* assets from previous release.
+          mkdir -p /tmp/fp-assets
+          gh release download "$PREV_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'frankenphp-*' \
+            --dir /tmp/fp-assets 2>/dev/null || true
+
+          ASSET_COUNT=$(find /tmp/fp-assets -type f | wc -l | tr -d ' ')
+          if [ "$ASSET_COUNT" -eq 0 ]; then
+            echo "No FrankenPHP assets found in $PREV_TAG — skipping"
+            exit 0
+          fi
+
+          echo "Found $ASSET_COUNT FrankenPHP assets"
+          ls -la /tmp/fp-assets/
+
+          # Upload to the new release.
+          gh release upload "$NEW_TAG" /tmp/fp-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          echo "FrankenPHP assets copied to $NEW_TAG"
