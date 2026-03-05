@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +16,7 @@ var (
 	logFollow bool
 	logLines  int
 	logError  bool
-	logAccess bool
+	logDaemon bool
 )
 
 var logCmd = &cobra.Command{
@@ -25,19 +24,11 @@ var logCmd = &cobra.Command{
 	Short: "Tail the FrankenPHP log",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Explicit flags take priority, otherwise auto-detect.
-		var logPath string
-		switch {
-		case logError:
+		logPath := config.CaddyLogPath()
+		if logError {
 			logPath = config.DaemonErrLogPath()
-		case logAccess:
-			logPath = config.CaddyLogPath()
-		default:
-			if daemon.IsLoaded() {
-				logPath = config.DaemonLogPath()
-			} else {
-				logPath = config.CaddyLogPath()
-			}
+		} else if logDaemon {
+			logPath = config.DaemonLogPath()
 		}
 		f, err := os.Open(logPath)
 		if err != nil {
@@ -112,6 +103,6 @@ func init() {
 	logCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output")
 	logCmd.Flags().IntVarP(&logLines, "lines", "n", 50, "Number of lines to show")
 	logCmd.Flags().BoolVar(&logError, "error", false, "Show daemon stderr log")
-	logCmd.Flags().BoolVar(&logAccess, "access", false, "Show FrankenPHP access log")
+	logCmd.Flags().BoolVar(&logDaemon, "daemon", false, "Show daemon stdout log")
 	rootCmd.AddCommand(logCmd)
 }
