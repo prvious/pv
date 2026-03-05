@@ -36,6 +36,10 @@ func TestEnv_Zsh(t *testing.T) {
 	if !strings.HasPrefix(out, "export PATH=") {
 		t.Errorf("expected 'export PATH=' prefix, got:\n%s", out)
 	}
+	localBinDir := filepath.Join(home, ".local", "bin")
+	if !strings.Contains(out, localBinDir) {
+		t.Errorf("expected %q in output, got:\n%s", localBinDir, out)
+	}
 	binDir := filepath.Join(home, ".pv", "bin")
 	if !strings.Contains(out, binDir) {
 		t.Errorf("expected %q in output, got:\n%s", binDir, out)
@@ -84,6 +88,10 @@ func TestEnv_Fish(t *testing.T) {
 	out := buf.String()
 	if !strings.HasPrefix(out, "fish_add_path") {
 		t.Errorf("expected 'fish_add_path' prefix, got:\n%s", out)
+	}
+	localBinDir := filepath.Join(home, ".local", "bin")
+	if !strings.Contains(out, localBinDir) {
+		t.Errorf("expected %q in output, got:\n%s", localBinDir, out)
 	}
 	binDir := filepath.Join(home, ".pv", "bin")
 	if !strings.Contains(out, binDir) {
