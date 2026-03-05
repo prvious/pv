@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/prvious/pv/internal/config"
@@ -58,11 +59,13 @@ var logCmd = &cobra.Command{
 		}
 
 		// Follow mode: seek to end and poll for new content.
+		// Uses inode detection to handle log rotation (like tail -F).
 		if _, err := f.Seek(0, io.SeekEnd); err != nil {
 			return fmt.Errorf("cannot seek: %w", err)
 		}
 
 		scanner := bufio.NewScanner(f)
+		checkCount := 0
 		for {
 			for scanner.Scan() {
 				line := scanner.Text()
@@ -71,6 +74,29 @@ var logCmd = &cobra.Command{
 				}
 			}
 			time.Sleep(200 * time.Millisecond)
+
+			// Every 5 polls (~1s), check if the file was rotated.
+			checkCount++
+			if checkCount >= 5 {
+				checkCount = 0
+				openInfo, err := f.Stat()
+				if err != nil {
+					continue
+				}
+				diskInfo, err := os.Stat(logPath)
+				if err != nil {
+					continue
+				}
+				if getInode(openInfo) != getInode(diskInfo) {
+					f.Close()
+					f, err = os.Open(logPath)
+					if err != nil {
+						return fmt.Errorf("cannot reopen rotated log: %w", err)
+					}
+					defer f.Close()
+					scanner = bufio.NewScanner(f)
+				}
+			}
 		}
 	},
 }
@@ -97,6 +123,13 @@ func tailLines(f *os.File, n int, filter string) ([]string, error) {
 		all = all[len(all)-n:]
 	}
 	return all, nil
+}
+
+func getInode(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return stat.Ino
+	}
+	return 0
 }
 
 func init() {
