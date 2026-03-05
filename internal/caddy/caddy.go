@@ -109,9 +109,17 @@ const versionPhpTmpl = `http://{{.Name}}.{{.TLD}} {
 
 // --- Caddyfile templates ---
 
-const mainCaddyfile = `{
+const mainCaddyfileTmpl = `{
     frankenphp
     local_certs
+    log {
+        output file {{.LogPath}} {
+            roll_size 10MiB
+            roll_keep 3
+            roll_keep_for 168h
+        }
+        format console
+    }
 }
 
 import sites/*
@@ -122,6 +130,14 @@ const versionCaddyfileTmpl = `{
     auto_https off
     admin off
     http_port {{.Port}}
+    log {
+        output file {{.LogPath}} {
+            roll_size 10MiB
+            roll_keep 3
+            roll_keep_for 168h
+        }
+        format console
+    }
 }
 
 import sites-{{.Version}}/*
@@ -137,9 +153,14 @@ type siteData struct {
 	Port     int
 }
 
+type mainCaddyData struct {
+	LogPath string
+}
+
 type versionCaddyData struct {
 	Version string
 	Port    int
+	LogPath string
 }
 
 // GenerateSiteConfig generates caddy config files for a project.
@@ -220,7 +241,18 @@ func GenerateCaddyfile() error {
 	if err := config.EnsureDirs(); err != nil {
 		return err
 	}
-	return os.WriteFile(config.CaddyfilePath(), []byte(mainCaddyfile), 0644)
+
+	tmpl, err := template.New("mainCaddyfile").Parse(mainCaddyfileTmpl)
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, mainCaddyData{LogPath: config.CaddyLogPath()}); err != nil {
+		return err
+	}
+
+	return os.WriteFile(config.CaddyfilePath(), buf.Bytes(), 0644)
 }
 
 // GenerateVersionCaddyfile generates a secondary Caddyfile for a specific PHP version.
@@ -236,7 +268,7 @@ func GenerateVersionCaddyfile(version string) error {
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, versionCaddyData{Version: version, Port: port}); err != nil {
+	if err := tmpl.Execute(&buf, versionCaddyData{Version: version, Port: port, LogPath: config.CaddyLogPathForVersion(version)}); err != nil {
 		return err
 	}
 

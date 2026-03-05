@@ -288,6 +288,18 @@ func TestGenerateVersionCaddyfile(t *testing.T) {
 	if !strings.Contains(content, "import sites-8.3/*") {
 		t.Error("expected import sites-8.3/*")
 	}
+	if !strings.Contains(content, "log {") {
+		t.Error("expected 'log {' in version Caddyfile")
+	}
+	if !strings.Contains(content, "output file") {
+		t.Error("expected 'output file' in version Caddyfile")
+	}
+	if !strings.Contains(content, "roll_size 10MiB") {
+		t.Error("expected 'roll_size 10MiB' in version Caddyfile")
+	}
+	if !strings.Contains(content, config.CaddyLogPathForVersion("8.3")) {
+		t.Errorf("expected log path %s in version Caddyfile", config.CaddyLogPathForVersion("8.3"))
+	}
 }
 
 func TestActiveVersions(t *testing.T) {
@@ -429,6 +441,18 @@ func TestGenerateCaddyfile(t *testing.T) {
 	}
 	if !strings.Contains(content, "import sites/*") {
 		t.Error("expected 'import sites/*' in Caddyfile")
+	}
+	if !strings.Contains(content, "log {") {
+		t.Error("expected 'log {' in Caddyfile")
+	}
+	if !strings.Contains(content, "output file") {
+		t.Error("expected 'output file' in Caddyfile")
+	}
+	if !strings.Contains(content, "roll_size 10MiB") {
+		t.Error("expected 'roll_size 10MiB' in Caddyfile")
+	}
+	if !strings.Contains(content, config.CaddyLogPath()) {
+		t.Errorf("expected log path %s in Caddyfile", config.CaddyLogPath())
 	}
 }
 
