@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
@@ -20,10 +21,23 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("cannot load settings: %w", err)
 		}
 
-		running := server.IsRunning()
+		// Determine running state and mode.
+		var running bool
+		var mode string
+		var pid int
+
+		if daemon.IsLoaded() {
+			running = true
+			mode = "daemon"
+			pid, _ = daemon.GetPID()
+		} else if server.IsRunning() {
+			running = true
+			mode = "foreground"
+			pid, _ = server.ReadPID()
+		}
+
 		if running {
-			pid, _ := server.ReadPID()
-			fmt.Printf("Status:  running (PID %d)\n", pid)
+			fmt.Printf("Status:  running (PID %d, %s mode)\n", pid, mode)
 		} else {
 			fmt.Println("Status:  stopped")
 		}
