@@ -85,6 +85,9 @@ func TestPathExportLine_Zsh(t *testing.T) {
 	if !strings.Contains(got, ".pv/bin") {
 		t.Errorf("PathExportLine(zsh) = %q, want .pv/bin", got)
 	}
+	if !strings.Contains(got, ".pv/composer/vendor/bin") {
+		t.Errorf("PathExportLine(zsh) = %q, want .pv/composer/vendor/bin", got)
+	}
 }
 
 func TestPathExportLine_Fish(t *testing.T) {
@@ -94,5 +97,8 @@ func TestPathExportLine_Fish(t *testing.T) {
 	}
 	if !strings.Contains(got, ".pv/bin") {
 		t.Errorf("PathExportLine(fish) = %q, want .pv/bin", got)
+	}
+	if !strings.Contains(got, ".pv/composer/vendor/bin") {
+		t.Errorf("PathExportLine(fish) = %q, want .pv/composer/vendor/bin", got)
 	}
 }

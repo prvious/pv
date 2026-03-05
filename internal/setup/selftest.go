@@ -26,6 +26,7 @@ func RunSelfTest(tld string) []TestResult {
 	results = append(results, checkBinary("FrankenPHP", "frankenphp", "version"))
 	results = append(results, checkBinary("Mago", "mago", "--version"))
 	results = append(results, checkBinary("PHP CLI", "php", "--version"))
+	results = append(results, checkComposerIsolation())
 	results = append(results, checkResolverConfigured(tld))
 	results = append(results, checkFrankenPHPBoots())
 	return results
@@ -46,6 +47,27 @@ func checkBinary(displayName, binaryName string, args ...string) TestResult {
 	return TestResult{displayName, nil}
 }
 
+
+func checkComposerIsolation() TestResult {
+	composerShim := filepath.Join(config.BinDir(), "composer")
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, composerShim, "config", "--global", "home")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return TestResult{"Composer isolation", fmt.Errorf("timed out after %s", checkTimeout)}
+	}
+	if err != nil {
+		return TestResult{"Composer isolation", fmt.Errorf("cannot run composer: %v: %s", err, strings.TrimSpace(string(output)))}
+	}
+	home := strings.TrimSpace(string(output))
+	expected := config.ComposerDir()
+	if home != expected {
+		return TestResult{"Composer isolation", fmt.Errorf("COMPOSER_HOME is %q, want %q", home, expected)}
+	}
+	return TestResult{"Composer isolation", nil}
+}
 
 func checkResolverConfigured(tld string) TestResult {
 	if err := CheckResolverFile(tld); err != nil {

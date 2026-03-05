@@ -75,29 +75,34 @@ jobs:
       - name: Test PHP shim per-project resolution
         run: scripts/e2e/shim.sh
 
-      # ── Phase 12: Error Handling ───────────────────────────────────
+      # ── Phase 12: Composer Containment ──────────────────────────────
+      - name: Test Composer isolation and global install
+        timeout-minutes: 3
+        run: scripts/e2e/composer.sh
+
+      # ── Phase 13: Error Handling ───────────────────────────────────
       - name: Test error handling
         run: scripts/e2e/errors.sh
 
-      # ── Phase 13: Stop Server ──────────────────────────────────────
+      # ── Phase 14: Stop Server ──────────────────────────────────────
       - name: Stop server
         run: scripts/e2e/stop.sh
 
-      # ── Phase 14: PHP Version Lifecycle ────────────────────────────
+      # ── Phase 15: PHP Version Lifecycle ────────────────────────────
       - name: Test PHP version lifecycle
         run: scripts/e2e/lifecycle.sh
 
-      # ── Phase 15: Test pv update ───────────────────────────────────
+      # ── Phase 16: Test pv update ───────────────────────────────────
       - name: Test pv update
         timeout-minutes: 3
         run: scripts/e2e/update.sh
 
-      # ── Phase 16: Verify Server After PHP Changes ──────────────────
+      # ── Phase 17: Verify Server After PHP Changes ──────────────────
       - name: Verify server with remaining projects
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 17: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 18: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
