@@ -12,7 +12,6 @@ builds:
       - -X github.com/prvious/pv/cmd.version={{ .Version }}
     goos:
       - darwin
-      - linux
     goarch:
       - amd64
       - arm64
