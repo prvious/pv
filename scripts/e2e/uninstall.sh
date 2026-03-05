@@ -12,7 +12,8 @@ echo "==> Pre-uninstall checks"
 echo "OK: ~/.pv exists"
 
 # Run uninstall by piping "uninstall" and "n" (decline auth backup).
-echo -e "uninstall\nn" | sudo -E pv uninstall
+# Don't wrap in sudo — pv handles sudo internally via sudo -n.
+printf 'uninstall\nn\n' | pv uninstall
 
 # Verify ~/.pv is gone.
 echo "==> Post-uninstall checks"

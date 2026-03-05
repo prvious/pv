@@ -124,20 +124,34 @@ var uninstallCmd = &cobra.Command{
 
 		caCertPath := config.CACertPath()
 		sudoScript := buildSudoCleanupScript(tld, caCertPath)
-		sudoCmd := exec.Command("sudo", "sh", "-c", sudoScript)
-		sudoCmd.Stdin = os.Stdin
-		sudoCmd.Stdout = os.Stdout
-		sudoCmd.Stderr = os.Stderr
 
-		if err := sudoCmd.Run(); err != nil {
+		// Try non-interactive sudo first (works in CI and when cached).
+		// Fall back to interactive sudo if that fails (user has a TTY).
+		sudoOk := false
+		nonInteractive := exec.Command("sudo", "-n", "sh", "-c", sudoScript)
+		nonInteractive.Stdout = os.Stdout
+		nonInteractive.Stderr = os.Stderr
+		if err := nonInteractive.Run(); err == nil {
+			sudoOk = true
+		} else if isTerminal() {
+			interactive := exec.Command("sudo", "sh", "-c", sudoScript)
+			interactive.Stdin = os.Stdin
+			interactive.Stdout = os.Stdout
+			interactive.Stderr = os.Stderr
+			if err := interactive.Run(); err == nil {
+				sudoOk = true
+			}
+		}
+
+		if sudoOk {
+			fmt.Println("  Done")
+		} else {
 			fmt.Println()
 			fmt.Println("  Warning: could not remove system files (sudo required). Clean up manually:")
 			fmt.Printf("    sudo rm -f /etc/resolver/%s\n", tld)
 			if _, err := os.Stat(caCertPath); err == nil {
 				fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
 			}
-		} else {
-			fmt.Println("  Done")
 		}
 
 		// Task 7: Remove ~/.pv directory.
@@ -214,6 +228,15 @@ func buildSudoCleanupScript(tld, caCertPath string) string {
 		parts = append(parts, fmt.Sprintf("security remove-trusted-cert -d '%s'", caCertPath))
 	}
 	return strings.Join(parts, " && ")
+}
+
+// isTerminal reports whether stdin is connected to a terminal.
+func isTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func init() {
