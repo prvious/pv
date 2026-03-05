@@ -58,36 +58,6 @@ func TestCopyFile(t *testing.T) {
 	}
 }
 
-func TestBuildSudoCleanupScript_WithCert(t *testing.T) {
-	// Create a temp file to simulate the CA cert existing.
-	dir := t.TempDir()
-	certPath := filepath.Join(dir, "root.crt")
-	if err := os.WriteFile(certPath, []byte("cert"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	script := buildSudoCleanupScript("test", certPath)
-	if script == "" {
-		t.Fatal("expected non-empty script")
-	}
-	if !contains(script, "rm -f /etc/resolver/test") {
-		t.Errorf("script missing resolver removal: %s", script)
-	}
-	if !contains(script, "security remove-trusted-cert") {
-		t.Errorf("script missing cert removal: %s", script)
-	}
-}
-
-func TestBuildSudoCleanupScript_NoCert(t *testing.T) {
-	script := buildSudoCleanupScript("test", "/does/not/exist/root.crt")
-	if !contains(script, "rm -f /etc/resolver/test") {
-		t.Errorf("script missing resolver removal: %s", script)
-	}
-	if contains(script, "security") {
-		t.Errorf("script should not have cert removal when cert doesn't exist: %s", script)
-	}
-}
-
 func TestUninstall_RemovesPvDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -236,13 +206,4 @@ func TestUninstall_SettingsLoadFallback(t *testing.T) {
 	if settings.TLD != "test" {
 		t.Errorf("TLD = %q, want %q", settings.TLD, "test")
 	}
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -122,34 +122,41 @@ var uninstallCmd = &cobra.Command{
 		fmt.Println("Removing system configuration...")
 		fmt.Println("  This requires administrator privileges.")
 
-		caCertPath := config.CACertPath()
-		sudoScript := buildSudoCleanupScript(tld, caCertPath)
-
-		// Try non-interactive sudo first (works in CI and when cached).
-		// Fall back to interactive sudo if that fails (user has a TTY).
-		sudoOk := false
-		nonInteractive := exec.Command("sudo", "-n", "sh", "-c", sudoScript)
-		nonInteractive.Stdout = os.Stdout
-		nonInteractive.Stderr = os.Stderr
-		if err := nonInteractive.Run(); err == nil {
-			sudoOk = true
-		} else if isTerminal() {
-			interactive := exec.Command("sudo", "sh", "-c", sudoScript)
-			interactive.Stdin = os.Stdin
-			interactive.Stdout = os.Stdout
-			interactive.Stderr = os.Stderr
-			if err := interactive.Run(); err == nil {
-				sudoOk = true
-			}
+		// Remove DNS resolver file.
+		resolverRemoved := runSudo(fmt.Sprintf("rm -f /etc/resolver/%s", tld))
+		if resolverRemoved {
+			fmt.Println("  Removed DNS resolver")
+		} else {
+			fmt.Printf("  Warning: could not remove /etc/resolver/%s. Clean up manually:\n", tld)
+			fmt.Printf("    sudo rm -f /etc/resolver/%s\n", tld)
 		}
 
-		if sudoOk {
-			fmt.Println("  Done")
-		} else {
-			fmt.Println()
-			fmt.Println("  Warning: could not remove system files (sudo required). Clean up manually:")
-			fmt.Printf("    sudo rm -f /etc/resolver/%s\n", tld)
-			if _, err := os.Stat(caCertPath); err == nil {
+		// Untrust CA certificate (may trigger keychain dialog, so use a timeout).
+		caCertPath := config.CACertPath()
+		if _, err := os.Stat(caCertPath); err == nil {
+			certCmd := exec.Command("sudo", "-n", "security", "remove-trusted-cert", "-d", caCertPath)
+			certCmd.Stdout = os.Stdout
+			certCmd.Stderr = os.Stderr
+
+			if err := certCmd.Start(); err == nil {
+				done := make(chan error, 1)
+				go func() { done <- certCmd.Wait() }()
+				select {
+				case err := <-done:
+					if err == nil {
+						fmt.Println("  Removed CA certificate")
+					} else {
+						fmt.Println("  Warning: could not untrust CA certificate. Clean up manually:")
+						fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
+					}
+				case <-time.After(10 * time.Second):
+					certCmd.Process.Kill()
+					<-done
+					fmt.Println("  Warning: CA certificate removal timed out. Clean up manually:")
+					fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
+				}
+			} else {
+				fmt.Println("  Warning: could not untrust CA certificate. Clean up manually:")
 				fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
 			}
 		}
@@ -218,25 +225,12 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0644)
 }
 
-// buildSudoCleanupScript returns the shell script for removing system-level
-// configuration: the DNS resolver file and the trusted CA certificate.
-func buildSudoCleanupScript(tld, caCertPath string) string {
-	parts := []string{
-		fmt.Sprintf("rm -f /etc/resolver/%s", tld),
-	}
-	if _, err := os.Stat(caCertPath); err == nil {
-		parts = append(parts, fmt.Sprintf("security remove-trusted-cert -d '%s'", caCertPath))
-	}
-	return strings.Join(parts, " && ")
-}
-
-// isTerminal reports whether stdin is connected to a terminal.
-func isTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+// runSudo runs a command via sudo -n (non-interactive). Returns true on success.
+func runSudo(script string) bool {
+	cmd := exec.Command("sudo", "-n", "sh", "-c", script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run() == nil
 }
 
 func init() {
