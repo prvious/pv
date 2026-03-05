@@ -39,70 +39,75 @@ jobs:
         timeout-minutes: 1
         run: scripts/e2e/verify-install.sh
 
-      # ── Phase 4: Create Fixtures ───────────────────────────────────
+      # ── Phase 4: Test pv env ─────────────────────────────────────────
+      - name: Test pv env PATH setup
+        timeout-minutes: 1
+        run: scripts/e2e/env.sh
+
+      # ── Phase 5: Create Fixtures ───────────────────────────────────
       - name: Create test fixtures
         run: scripts/e2e/fixtures.sh
 
-      # ── Phase 5: Link & Verify ─────────────────────────────────────
+      # ── Phase 6: Link & Verify ─────────────────────────────────────
       - name: Link projects and verify config
         run: scripts/e2e/link-verify.sh
 
-      # ── Phase 6: Start & Curl All Sites ────────────────────────────
+      # ── Phase 7: Start & Curl All Sites ────────────────────────────
       - name: Start server and curl all sites
         timeout-minutes: 2
         run: scripts/e2e/start-curl.sh
 
-      # ── Phase 7: Dynamic Link While Running ────────────────────────
+      # ── Phase 8: Dynamic Link While Running ────────────────────────
       - name: Dynamic link while server running
         timeout-minutes: 1
         run: scripts/e2e/dynamic-link.sh
 
-      # ── Phase 8: Dynamic Unlink While Running ──────────────────────
+      # ── Phase 9: Dynamic Unlink While Running ──────────────────────
       - name: Dynamic unlink while server running
         timeout-minutes: 1
         run: scripts/e2e/dynamic-unlink.sh
 
-      # ── Phase 9: Test pv log ───────────────────────────────────────
+      # ── Phase 10: Test pv log ──────────────────────────────────────
       - name: Test pv log
         run: scripts/e2e/log.sh
 
-      # ── Phase 10: Test pv restart ──────────────────────────────────
+      # ── Phase 11: Test pv restart ──────────────────────────────────
       - name: Test pv restart
         timeout-minutes: 1
         run: scripts/e2e/restart.sh
 
-      # ── Phase 11: PHP Shim Resolution ──────────────────────────────
+      # ── Phase 12: PHP Shim Resolution ──────────────────────────────
       - name: Test PHP shim per-project resolution
         run: scripts/e2e/shim.sh
 
-      # ── Phase 12: Composer Containment ──────────────────────────────
+      # ── Phase 13: Composer Containment ─────────────────────────────
       - name: Test Composer isolation and global install
         timeout-minutes: 3
         run: scripts/e2e/composer.sh
 
-      # ── Phase 13: Error Handling ───────────────────────────────────
+      # ── Phase 14: Error Handling ───────────────────────────────────
       - name: Test error handling
         run: scripts/e2e/errors.sh
 
-      # ── Phase 14: Stop Server ──────────────────────────────────────
+      # ── Phase 15: Stop Server ──────────────────────────────────────
       - name: Stop server
         run: scripts/e2e/stop.sh
 
-      # ── Phase 15: PHP Version Lifecycle ────────────────────────────
+      # ── Phase 16: PHP Version Lifecycle ────────────────────────────
       - name: Test PHP version lifecycle
         run: scripts/e2e/lifecycle.sh
 
-      # ── Phase 16: Test pv update ───────────────────────────────────
+      # ── Phase 17: Test pv update ───────────────────────────────────
       - name: Test pv update
         timeout-minutes: 3
         run: scripts/e2e/update.sh
 
-      # ── Phase 17: Verify Server After PHP Changes ──────────────────
+      # ── Phase 18: Verify Server After PHP Changes ──────────────────
       - name: Verify server with remaining projects
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 18: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 19: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh

@@ -2,12 +2,15 @@
 set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
+# Set up PATH via pv env so we can use bare `php` command
+eval "$(pv env)"
+
 # Switch global to 8.3
 pv use php:8.3
 echo "==> Verify settings after switching to 8.3"
 grep -q '"global_php": "8.3"' ~/.pv/config/settings.json || { echo "FAIL: settings not updated"; exit 1; }
 readlink ~/.pv/bin/frankenphp | grep -q "8.3" || { echo "FAIL: symlink not pointing to 8.3"; exit 1; }
-OUT=$(cd /tmp && ~/.pv/bin/php --version)
+OUT=$(cd /tmp && php --version)
 echo "$OUT"
 echo "$OUT" | grep -qi "8\.3" || { echo "FAIL: shim not resolving to 8.3"; exit 1; }
 echo "OK: pv use php:8.3 works"
