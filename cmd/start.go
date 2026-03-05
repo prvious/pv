@@ -83,7 +83,7 @@ func startDaemon() error {
 	} else {
 		fmt.Println("pv daemon started (waiting for process...)")
 	}
-	fmt.Println("Run `pv log --daemon` to view logs")
+	fmt.Println("Run `pv log` to view logs")
 	return nil
 }
 
