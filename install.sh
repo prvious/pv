@@ -373,6 +373,16 @@ main() {
     echo -e "  ${MUTED}Detected:${NC} macOS ${platform#darwin-}"
     echo ""
 
+    # Acquire sudo credentials upfront (single prompt for the entire install).
+    # pv needs sudo to install the binary to /usr/local/bin and to set up
+    # the DNS resolver in /etc/resolver/ and trust the CA certificate.
+    # Skip in CI where passwordless sudo is available.
+    if [[ -z "${GITHUB_ACTIONS-}" ]]; then
+        echo -e "  ${MUTED}pv requires sudo for installation. You may be prompted for your password.${NC}"
+        sudo -v
+        echo ""
+    fi
+
     # Check for existing installation
     check_existing
 
@@ -400,13 +410,12 @@ main() {
 
     chmod 755 "$tmp_dir/pv"
 
-    # Install to /usr/local/bin (requires sudo)
+    # Install to /usr/local/bin
     echo -e "  ${MUTED}Installing to /usr/local/bin/pv...${NC}"
 
     if [[ -w "/usr/local/bin" ]]; then
         mv "$tmp_dir/pv" /usr/local/bin/pv
     else
-        echo -e "  ${MUTED}sudo required to install to /usr/local/bin${NC}"
         sudo mv "$tmp_dir/pv" /usr/local/bin/pv
     fi
 
