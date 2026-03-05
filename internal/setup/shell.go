@@ -41,14 +41,17 @@ func PathExportLine(shell string) string {
 	}
 }
 
-// PrintPathInstructions prints the instructions for adding ~/.pv/bin to the user's PATH.
+// PrintPathInstructions prints the instructions for adding pv to the user's PATH.
 func PrintPathInstructions() {
 	shell := DetectShell()
 	configFile := ShellConfigFile(shell)
-	exportLine := PathExportLine(shell)
 
-	fmt.Println("Add ~/.pv/bin to your PATH by running:")
+	fmt.Println("Add pv to your PATH:")
 	fmt.Println()
-	fmt.Printf("  echo '%s' >> %s\n", exportLine, configFile)
+	fmt.Printf("  echo 'eval \"$(pv env)\"' >> %s\n", configFile)
 	fmt.Printf("  source %s\n", configFile)
+	fmt.Println()
+	fmt.Println("Or configure your current session:")
+	fmt.Println()
+	fmt.Println("  eval \"$(pv env)\"")
 }
