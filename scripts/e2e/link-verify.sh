@@ -9,7 +9,7 @@ pv link /tmp/e2e-octane --name e2e-octane
 pv link /tmp/e2e-php83 --name e2e-php83
 
 echo "==> pv list"
-OUTPUT=$(pv list)
+OUTPUT=$(pv list 2>&1)
 echo "$OUTPUT"
 assert_contains "$OUTPUT" "e2e-static" "e2e-static not in list"
 assert_contains "$OUTPUT" "e2e-php" "e2e-php not in list"
@@ -20,10 +20,10 @@ echo "$OUTPUT" | grep "e2e-octane" | grep -q "laravel-octane" || { echo "FAIL: o
 echo "$OUTPUT" | grep "e2e-php83" | grep -q "8.3" || { echo "FAIL: php83 version wrong"; exit 1; }
 
 echo "==> pv php list (project associations)"
-PHP_OUTPUT=$(pv php list)
+PHP_OUTPUT=$(pv php list 2>&1)
 echo "$PHP_OUTPUT"
 echo "$PHP_OUTPUT" | grep "8.3" | grep -q "e2e-php83" || { echo "FAIL: php83 not associated with 8.3"; exit 1; }
-echo "$PHP_OUTPUT" | grep "8.4" | grep -q "(default)" || { echo "FAIL: 8.4 not marked default"; exit 1; }
+echo "$PHP_OUTPUT" | grep "8.4" | grep -q "(global)" || { echo "FAIL: 8.4 not marked default"; exit 1; }
 
 echo "==> Verify site configs"
 
