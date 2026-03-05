@@ -29,4 +29,15 @@ grep -q '"global_php": "8.4"' ~/.pv/config/settings.json || { echo "FAIL: settin
 echo "==> Verify resolver"
 cat /etc/resolver/test
 
-echo "OK: both PHP versions verified"
+echo "==> Verify composer shim and phar"
+test -x ~/.pv/bin/composer || { echo "FAIL: composer shim not executable"; exit 1; }
+test -f ~/.pv/data/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
+
+echo "==> Verify composer directories"
+test -d ~/.pv/composer || { echo "FAIL: ~/.pv/composer not created"; exit 1; }
+test -d ~/.pv/composer/cache || { echo "FAIL: ~/.pv/composer/cache not created"; exit 1; }
+
+echo "==> Verify composer runs"
+~/.pv/bin/composer --version
+
+echo "OK: both PHP versions and composer verified"
