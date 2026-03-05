@@ -76,38 +76,43 @@ jobs:
         timeout-minutes: 1
         run: scripts/e2e/restart.sh
 
-      # ── Phase 12: PHP Shim Resolution ──────────────────────────────
+      # ── Phase 12: Doctor ────────────────────────────────────────────
+      - name: Test pv doctor
+        timeout-minutes: 1
+        run: scripts/e2e/doctor.sh
+
+      # ── Phase 13: PHP Shim Resolution ──────────────────────────────
       - name: Test PHP shim per-project resolution
         run: scripts/e2e/shim.sh
 
-      # ── Phase 13: Composer Containment ─────────────────────────────
+      # ── Phase 14: Composer Containment ─────────────────────────────
       - name: Test Composer isolation and global install
         timeout-minutes: 3
         run: scripts/e2e/composer.sh
 
-      # ── Phase 14: Error Handling ───────────────────────────────────
+      # ── Phase 15: Error Handling ───────────────────────────────────
       - name: Test error handling
         run: scripts/e2e/errors.sh
 
-      # ── Phase 15: Stop Server ──────────────────────────────────────
+      # ── Phase 16: Stop Server ──────────────────────────────────────
       - name: Stop server
         run: scripts/e2e/stop.sh
 
-      # ── Phase 16: PHP Version Lifecycle ────────────────────────────
+      # ── Phase 17: PHP Version Lifecycle ────────────────────────────
       - name: Test PHP version lifecycle
         run: scripts/e2e/lifecycle.sh
 
-      # ── Phase 17: Test pv update ───────────────────────────────────
+      # ── Phase 18: Test pv update ───────────────────────────────────
       - name: Test pv update
         timeout-minutes: 3
         run: scripts/e2e/update.sh
 
-      # ── Phase 18: Verify Server After PHP Changes ──────────────────
+      # ── Phase 19: Verify Server After PHP Changes ──────────────────
       - name: Verify server with remaining projects
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 19: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 20: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
