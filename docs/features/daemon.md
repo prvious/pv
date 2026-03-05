@@ -171,11 +171,13 @@ Add to `internal/daemon/` — runs on any OS, no launchd needed.
 
 Use `t.Setenv("HOME", t.TempDir())` for isolation, same as existing tests.
 
-### Task 12: E2E Tests — Daemon Lifecycle (Bash Scripts)
+### Task 12: E2E Tests — Daemon Mode (Bash Scripts)
 
-New bash scripts in `scripts/e2e/`. All follow existing conventions: `set -euo pipefail`, `source helpers.sh`, assertions via `assert_contains` / `assert_fails`.
+Three focused scripts in `scripts/e2e/`. All follow existing conventions: `set -euo pipefail`, `source helpers.sh`, assertions via `assert_contains` / `assert_fails`.
 
-**`scripts/e2e/daemon-start.sh`** — Start pv in background mode via launchd:
+The existing foreground e2e tests (`start-curl.sh`, `restart.sh`, `log.sh`, `stop.sh`) already cover DNS, HTTP, restart, and log behavior — those don't need daemon-specific duplicates. These three scripts test what's unique to daemon mode: launchd integration, crash recovery, and the full daemon stack.
+
+**`scripts/e2e/daemon-start-stop.sh`** — Start and stop via launchd, verify the full lifecycle:
 
 ```bash
 # Start in background mode
@@ -201,85 +203,7 @@ sleep 2
 ls ~/.pv/logs/pv.log
 ls ~/.pv/logs/pv.err.log
 echo "OK: daemon log files exist"
-```
 
-**`scripts/e2e/daemon-health.sh`** — Health check after background start (DNS + HTTP):
-
-```bash
-setup_curl
-
-# DNS responds
-DIG_OUT=$(dig @127.0.0.1 -p 15353 anything.test +short)
-echo "$DIG_OUT"
-assert_contains "$DIG_OUT" "127.0.0.1" "DNS not responding in daemon mode"
-echo "OK: DNS responds in daemon mode"
-
-# HTTP responds — curl linked sites
-curl_site "e2e-php.test" "php works"
-echo "OK: HTTP works in daemon mode"
-
-curl_site "e2e-php83.test" "php83 works"
-echo "OK: multi-version proxy works in daemon mode"
-```
-
-**`scripts/e2e/daemon-crash-recovery.sh`** — Kill the process, verify launchd restarts it:
-
-```bash
-# Get current PID
-OLD_PID=$(launchctl list dev.prvious.pv | awk 'NR==1{print $1}')
-echo "Current PID: $OLD_PID"
-
-# Kill it rudely
-kill -9 "$OLD_PID"
-
-# Wait for launchd to restart (KeepAlive: true)
-sleep 8
-
-# Confirm new PID exists and is different
-NEW_PID=$(launchctl list dev.prvious.pv | awk 'NR==1{print $1}')
-echo "New PID: $NEW_PID"
-[ "$NEW_PID" != "$OLD_PID" ] || { echo "FAIL: PID did not change after kill"; exit 1; }
-[ -n "$NEW_PID" ] || { echo "FAIL: no PID after crash recovery"; exit 1; }
-echo "OK: launchd restarted process ($OLD_PID → $NEW_PID)"
-
-# Verify it's actually healthy after recovery
-setup_curl
-sleep 3
-curl_site "e2e-php.test" "php works"
-echo "OK: site works after crash recovery"
-```
-
-**`scripts/e2e/daemon-restart.sh`** — Test `pv restart` in daemon mode:
-
-```bash
-# Restart via pv command (should use launchctl kickstart)
-pv restart
-sleep 5
-
-# Verify still running
-STATUS=$(pv status)
-echo "$STATUS"
-assert_contains "$STATUS" "running" "server not running after restart"
-
-# Verify sites still work
-setup_curl
-curl_site "e2e-php.test" "php works"
-echo "OK: site works after daemon restart"
-```
-
-**`scripts/e2e/daemon-idempotent.sh`** — Start when already running, stop when not running:
-
-```bash
-# Start when already running — should not error, just report
-OUTPUT=$(pv start --background 2>&1)
-echo "$OUTPUT"
-assert_contains "$OUTPUT" "already running" "expected 'already running' message"
-echo "OK: start --background is idempotent"
-```
-
-**`scripts/e2e/daemon-stop.sh`** — Stop daemon and verify cleanup:
-
-```bash
 # Stop daemon
 pv stop
 sleep 3
@@ -306,106 +230,42 @@ echo "$OUTPUT"
 echo "OK: stop when not running is safe"
 ```
 
-**`scripts/e2e/daemon-rapid-restart.sh`** — Stress test with rapid restart cycles:
-
-```bash
-# Start fresh in daemon mode
-pv start --background
-sleep 5
-
-for i in 1 2 3 4 5; do
-  echo "==> Restart cycle $i"
-  pv restart
-  sleep 3
-  STATUS=$(pv status)
-  assert_contains "$STATUS" "running" "server not running after restart cycle $i"
-done
-echo "OK: 5 rapid restart cycles passed"
-
-# Clean stop
-pv stop
-sleep 3
-```
-
-### Task 13: E2E Tests — Plist Regeneration & Version Switch
-
-**`scripts/e2e/daemon-version-switch.sh`** — Switch PHP version while daemon is running, verify plist regenerated and process restarted:
+**`scripts/e2e/daemon-crash-recovery.sh`** — Kill the process, verify launchd restarts it (the definitive daemon test):
 
 ```bash
 # Start in daemon mode
 pv start --background
 sleep 5
+
+# Get current PID
 OLD_PID=$(launchctl list dev.prvious.pv | awk 'NR==1{print $1}')
-echo "PID before version switch: $OLD_PID"
+echo "Current PID: $OLD_PID"
 
-# Switch global PHP to 8.3
-pv use php:8.3
-sleep 5
+# Kill it rudely
+kill -9 "$OLD_PID"
 
-# PID should change (full restart triggered by plist regen)
+# Wait for launchd to restart (KeepAlive: true)
+sleep 8
+
+# Confirm new PID exists and is different
 NEW_PID=$(launchctl list dev.prvious.pv | awk 'NR==1{print $1}')
-echo "PID after version switch: $NEW_PID"
-[ "$NEW_PID" != "$OLD_PID" ] || { echo "FAIL: PID did not change after version switch"; exit 1; }
-echo "OK: daemon restarted after version switch"
+echo "New PID: $NEW_PID"
+[ "$NEW_PID" != "$OLD_PID" ] || { echo "FAIL: PID did not change after kill"; exit 1; }
+[ -n "$NEW_PID" ] || { echo "FAIL: no PID after crash recovery"; exit 1; }
+echo "OK: launchd restarted process ($OLD_PID → $NEW_PID)"
 
-# Plist should reference the new version's binary path
-grep -q "8.3" ~/Library/LaunchAgents/dev.prvious.pv.plist || { echo "FAIL: plist not updated for 8.3"; exit 1; }
-echo "OK: plist regenerated with new PHP version"
-
-# Switch back to 8.4
-pv use php:8.4
-sleep 5
+# Verify it's actually healthy after recovery
+setup_curl
+sleep 3
+curl_site "e2e-php.test" "php works"
+echo "OK: site works after crash recovery"
 
 # Clean stop
 pv stop
 sleep 3
 ```
 
-### Task 14: E2E Tests — Service Install/Uninstall
-
-**`scripts/e2e/daemon-service.sh`** — Test `pv service install` and `pv service uninstall`:
-
-```bash
-# Install as a service (RunAtLoad: true)
-pv service install
-sleep 3
-
-# Verify plist exists with RunAtLoad true
-ls ~/Library/LaunchAgents/dev.prvious.pv.plist
-grep -q "RunAtLoad" ~/Library/LaunchAgents/dev.prvious.pv.plist || { echo "FAIL: RunAtLoad not in plist"; exit 1; }
-echo "OK: service installed"
-
-# Verify it's loaded
-launchctl list dev.prvious.pv
-echo "OK: service loaded via install"
-
-# Verify pv status shows it
-STATUS=$(pv status)
-echo "$STATUS"
-assert_contains "$STATUS" "running" "service not running after install"
-
-# Uninstall the service
-pv service uninstall
-sleep 3
-
-# Verify plist is removed
-if [ -f ~/Library/LaunchAgents/dev.prvious.pv.plist ]; then
-  echo "FAIL: plist still exists after uninstall"
-  exit 1
-fi
-echo "OK: plist removed after uninstall"
-
-# Verify service is not loaded
-if launchctl list dev.prvious.pv 2>/dev/null; then
-  echo "FAIL: service still loaded after uninstall"
-  exit 1
-fi
-echo "OK: service uninstalled"
-```
-
-### Task 15: E2E Tests — Full Stack (Daemon + Linked Projects)
-
-**`scripts/e2e/daemon-full-stack.sh`** — The definitive end-to-end: link a project, start daemon, curl it:
+**`scripts/e2e/daemon-full-stack.sh`** — Link a project, start daemon, curl it, tear down:
 
 ```bash
 # Create a test project
@@ -443,48 +303,19 @@ pv unlink e2e-daemon
 rm -rf /tmp/e2e-daemon
 ```
 
-### Task 16: Update CI Workflow & Diagnostics
+### Task 13: Update CI Workflow & Diagnostics
 
-Update `.github/workflows/e2e.yml` to include daemon test phases. These run **after** the existing foreground tests complete, as a separate daemon test block.
-
-Insert after the existing "Stop server" phase (Phase 13) and before "PHP Version Lifecycle" (Phase 14):
+Update `.github/workflows/e2e.yml` to include daemon test phases. These run **after** the existing foreground tests complete (after "Stop server"), as a separate daemon test block before "PHP Version Lifecycle":
 
 ```yaml
-# ── Phase 13b: Daemon Mode Tests ─────────────────────────────
-- name: Daemon — start in background
+# ── Daemon Mode Tests ─────────────────────────────────────────
+- name: Daemon — start and stop lifecycle
   timeout-minutes: 2
-  run: scripts/e2e/daemon-start.sh
-
-- name: Daemon — health check (DNS + HTTP)
-  timeout-minutes: 1
-  run: scripts/e2e/daemon-health.sh
+  run: scripts/e2e/daemon-start-stop.sh
 
 - name: Daemon — crash recovery
   timeout-minutes: 2
   run: scripts/e2e/daemon-crash-recovery.sh
-
-- name: Daemon — restart
-  timeout-minutes: 1
-  run: scripts/e2e/daemon-restart.sh
-
-- name: Daemon — idempotent start
-  run: scripts/e2e/daemon-idempotent.sh
-
-- name: Daemon — stop and verify
-  timeout-minutes: 1
-  run: scripts/e2e/daemon-stop.sh
-
-- name: Daemon — rapid restart cycles
-  timeout-minutes: 3
-  run: scripts/e2e/daemon-rapid-restart.sh
-
-- name: Daemon — version switch plist regen
-  timeout-minutes: 2
-  run: scripts/e2e/daemon-version-switch.sh
-
-- name: Daemon — service install/uninstall
-  timeout-minutes: 2
-  run: scripts/e2e/daemon-service.sh
 
 - name: Daemon — full stack
   timeout-minutes: 2
@@ -500,7 +331,7 @@ Update `scripts/e2e/diagnostics.sh` to also dump:
 - `~/Library/LaunchAgents/dev.prvious.pv.plist` contents
 - `launchctl list dev.prvious.pv` output
 
-Also update the CI cleanup step:
+Update the CI cleanup step:
 
 ```yaml
 - name: Cleanup
@@ -519,20 +350,16 @@ Also update the CI cleanup step:
 |---|---|---|
 | Plist XML correctness | Go unit test | `internal/daemon/plist_test.go` |
 | Plist sync/diff detection | Go unit test | `internal/daemon/sync_test.go` |
-| Daemon start (launchd load) | E2E bash | `scripts/e2e/daemon-start.sh` |
-| Health check (DNS + HTTP) | E2E bash | `scripts/e2e/daemon-health.sh` |
+| Daemon start + stop (launchd lifecycle) | E2E bash | `scripts/e2e/daemon-start-stop.sh` |
 | Crash recovery (KeepAlive) | E2E bash | `scripts/e2e/daemon-crash-recovery.sh` |
-| Restart in daemon mode | E2E bash | `scripts/e2e/daemon-restart.sh` |
-| Idempotent start | E2E bash | `scripts/e2e/daemon-idempotent.sh` |
-| Stop + verify unload | E2E bash | `scripts/e2e/daemon-stop.sh` |
-| Rapid restart cycles (5x) | E2E bash | `scripts/e2e/daemon-rapid-restart.sh` |
-| PHP version switch + plist regen | E2E bash | `scripts/e2e/daemon-version-switch.sh` |
-| Service install/uninstall | E2E bash | `scripts/e2e/daemon-service.sh` |
 | Full stack (link → daemon → curl) | E2E bash | `scripts/e2e/daemon-full-stack.sh` |
+| DNS + HTTP serving | E2E bash | Covered by existing `start-curl.sh` |
+| Restart behavior | E2E bash | Covered by existing `restart.sh` |
+| Log output | E2E bash | Covered by existing `log.sh` |
 | Auto-start on login (RunAtLoad) | Manual only | Not testable in CI |
 
 ---
 
-**Order:** 2 → 3 → 11 → 4 → 1 → 5 → 6 → 7 → 9 → 8 → 10 → 12 → 13 → 14 → 15 → 16
+**Order:** 2 → 3 → 11 → 4 → 1 → 5 → 6 → 7 → 9 → 8 → 10 → 12 → 13
 
-Start with plist template and launchctl wrapper, then immediately write unit tests for them (Task 11) to validate before wiring up commands. Logs next for debugging. Wire up commands (Tasks 1, 5–7, 9, 8, 10). Then write e2e tests (Tasks 12–15) once the commands work. CI integration (Task 16) comes last.
+Start with plist template and launchctl wrapper, then immediately write unit tests for them (Task 11) to validate before wiring up commands. Logs next for debugging. Wire up commands (Tasks 1, 5–7, 9, 8, 10). Then write e2e tests (Task 12) once the commands work. CI integration (Task 13) comes last.
