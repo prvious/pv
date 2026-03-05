@@ -102,12 +102,17 @@ var installCmd = &cobra.Command{
 			vs.Set(b.Name, latest)
 		}
 
-		// Write php shim.
-		fmt.Println("\nWriting PHP shim...")
+		// Write shims (PHP + Composer).
+		fmt.Println("\nWriting shims...")
 		if err := phpenv.WriteShims(); err != nil {
 			return fmt.Errorf("cannot write shims: %w", err)
 		}
 		fmt.Println("  ✓ PHP shim created")
+		fmt.Println("  ✓ Composer shim created")
+
+		// Migrate existing Composer config if present.
+		fmt.Println("\nChecking for existing Composer configuration...")
+		setup.MigrateComposerConfig()
 
 		// 5. Write version manifest.
 		fmt.Println("\nWriting version manifest...")

@@ -196,8 +196,8 @@ func TestCaddyEnv(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	env := CaddyEnv()
-	if len(env) != 2 {
-		t.Fatalf("CaddyEnv() returned %d entries, want 2", len(env))
+	if len(env) != 4 {
+		t.Fatalf("CaddyEnv() returned %d entries, want 4", len(env))
 	}
 	pvDir := filepath.Join(home, ".pv")
 	if env[0] != "XDG_DATA_HOME="+pvDir {
@@ -205,6 +205,12 @@ func TestCaddyEnv(t *testing.T) {
 	}
 	if env[1] != "XDG_CONFIG_HOME="+pvDir {
 		t.Errorf("CaddyEnv()[1] = %q, want %q", env[1], "XDG_CONFIG_HOME="+pvDir)
+	}
+	if env[2] != "COMPOSER_HOME="+filepath.Join(pvDir, "composer") {
+		t.Errorf("CaddyEnv()[2] = %q, want COMPOSER_HOME", env[2])
+	}
+	if env[3] != "COMPOSER_CACHE_DIR="+filepath.Join(pvDir, "composer", "cache") {
+		t.Errorf("CaddyEnv()[3] = %q, want COMPOSER_CACHE_DIR", env[3])
 	}
 }
 
@@ -216,6 +222,46 @@ func TestCACertPath(t *testing.T) {
 	want := filepath.Join(home, ".pv", "caddy", "pki", "authorities", "local", "root.crt")
 	if got != want {
 		t.Errorf("CACertPath() = %q, want %q", got, want)
+	}
+}
+
+func TestComposerDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ComposerDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "composer")) {
+		t.Errorf("ComposerDir() = %q, want suffix .pv/composer", got)
+	}
+}
+
+func TestComposerCacheDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ComposerCacheDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "composer", "cache")) {
+		t.Errorf("ComposerCacheDir() = %q, want suffix .pv/composer/cache", got)
+	}
+}
+
+func TestComposerBinDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ComposerBinDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "composer", "vendor", "bin")) {
+		t.Errorf("ComposerBinDir() = %q, want suffix .pv/composer/vendor/bin", got)
+	}
+}
+
+func TestComposerPharPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ComposerPharPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "data", "composer.phar")) {
+		t.Errorf("ComposerPharPath() = %q, want suffix .pv/data/composer.phar", got)
 	}
 }
 
@@ -234,6 +280,8 @@ func TestEnsureDirs(t *testing.T) {
 		DataDir(),
 		BinDir(),
 		PhpDir(),
+		ComposerDir(),
+		ComposerCacheDir(),
 	}
 	for _, dir := range dirs {
 		info, err := os.Stat(dir)

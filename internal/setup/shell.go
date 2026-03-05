@@ -30,13 +30,14 @@ func ShellConfigFile(shell string) string {
 	}
 }
 
-// PathExportLine returns the shell-specific line to add ~/.pv/bin to PATH.
+// PathExportLine returns the shell-specific line to add ~/.pv/bin and
+// ~/.pv/composer/vendor/bin to PATH.
 func PathExportLine(shell string) string {
 	switch shell {
 	case "fish":
-		return `set -gx PATH "$HOME/.pv/bin" $PATH`
+		return `set -gx PATH "$HOME/.pv/bin" "$HOME/.pv/composer/vendor/bin" $PATH`
 	default:
-		return `export PATH="$HOME/.pv/bin:$PATH"`
+		return `export PATH="$HOME/.pv/bin:$HOME/.pv/composer/vendor/bin:$PATH"`
 	}
 }
 

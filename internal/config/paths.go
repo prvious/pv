@@ -49,6 +49,22 @@ func CaddyLogPathForVersion(version string) string {
 
 const DNSPort = 10053
 
+func ComposerDir() string {
+	return filepath.Join(PvDir(), "composer")
+}
+
+func ComposerCacheDir() string {
+	return filepath.Join(ComposerDir(), "cache")
+}
+
+func ComposerBinDir() string {
+	return filepath.Join(ComposerDir(), "vendor", "bin")
+}
+
+func ComposerPharPath() string {
+	return filepath.Join(DataDir(), "composer.phar")
+}
+
 func PhpDir() string {
 	return filepath.Join(PvDir(), "php")
 }
@@ -86,12 +102,15 @@ func CaddyfilePath() string {
 }
 
 // CaddyEnv returns environment variable strings that direct Caddy to store
-// data under ~/.pv/caddy/ instead of platform-default directories.
+// data under ~/.pv/caddy/ instead of platform-default directories, and
+// isolate Composer under ~/.pv/composer/.
 func CaddyEnv() []string {
 	pvDir := PvDir()
 	return []string{
 		"XDG_DATA_HOME=" + pvDir,
 		"XDG_CONFIG_HOME=" + pvDir,
+		"COMPOSER_HOME=" + ComposerDir(),
+		"COMPOSER_CACHE_DIR=" + ComposerCacheDir(),
 	}
 }
 
@@ -108,6 +127,8 @@ func EnsureDirs() error {
 		DataDir(),
 		BinDir(),
 		PhpDir(),
+		ComposerDir(),
+		ComposerCacheDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
