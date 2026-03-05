@@ -9,8 +9,23 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
+// Verbose controls whether install functions print progress details.
+var Verbose bool
+
+func logf(format string, args ...any) {
+	if Verbose {
+		fmt.Printf(format, args...)
+	}
+}
+
 // InstallBinary downloads and installs a single binary at the given version.
+// If progress is non-nil, it is called during download with bytes written and total.
 func InstallBinary(client *http.Client, b Binary, version string) error {
+	return InstallBinaryProgress(client, b, version, nil)
+}
+
+// InstallBinaryProgress downloads and installs a single binary with optional progress.
+func InstallBinaryProgress(client *http.Client, b Binary, version string, progress ProgressFunc) error {
 	if err := config.EnsureDirs(); err != nil {
 		return err
 	}
@@ -24,23 +39,23 @@ func InstallBinary(client *http.Client, b Binary, version string) error {
 
 	switch b.Name {
 	case "frankenphp":
-		return installFrankenPHP(client, url, b, version, binDir)
+		return installFrankenPHP(client, url, b, version, binDir, progress)
 	case "mago":
-		return installMago(client, url, b, binDir)
+		return installMago(client, url, b, binDir, progress)
 	case "composer":
-		return installComposer(client, url, b, version, binDir)
+		return installComposer(client, url, b, version, binDir, progress)
 	case "php":
-		return installPHP(client, url, b, binDir)
+		return installPHP(client, url, b, binDir, progress)
 	default:
 		return fmt.Errorf("unknown binary: %s", b.Name)
 	}
 }
 
-func installFrankenPHP(client *http.Client, url string, b Binary, version string, binDir string) error {
+func installFrankenPHP(client *http.Client, url string, b Binary, version string, binDir string, progress ProgressFunc) error {
 	destPath := filepath.Join(binDir, "frankenphp")
 
-	fmt.Printf("  Downloading %s...\n", b.DisplayName)
-	if err := Download(client, url, destPath); err != nil {
+	logf("  Downloading %s...\n", b.DisplayName)
+	if err := DownloadProgress(client, url, destPath, progress); err != nil {
 		return err
 	}
 
@@ -49,7 +64,7 @@ func installFrankenPHP(client *http.Client, url string, b Binary, version string
 		return err
 	}
 	if checksumURL != "" {
-		fmt.Printf("  Verifying checksum...\n")
+		logf("  Verifying checksum...\n")
 		expected, err := FetchChecksum(client, checksumURL)
 		if err != nil {
 			return err
@@ -63,16 +78,16 @@ func installFrankenPHP(client *http.Client, url string, b Binary, version string
 	return MakeExecutable(destPath)
 }
 
-func installMago(client *http.Client, url string, b Binary, binDir string) error {
+func installMago(client *http.Client, url string, b Binary, binDir string, progress ProgressFunc) error {
 	archivePath := filepath.Join(binDir, "mago.tar.gz")
 	destPath := filepath.Join(binDir, "mago")
 
-	fmt.Printf("  Downloading %s...\n", b.DisplayName)
-	if err := Download(client, url, archivePath); err != nil {
+	logf("  Downloading %s...\n", b.DisplayName)
+	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
 		return err
 	}
 
-	fmt.Printf("  Extracting...\n")
+	logf("  Extracting...\n")
 	if err := ExtractTarGz(archivePath, destPath, "mago"); err != nil {
 		return err
 	}
@@ -81,16 +96,16 @@ func installMago(client *http.Client, url string, b Binary, binDir string) error
 	return MakeExecutable(destPath)
 }
 
-func installPHP(client *http.Client, url string, b Binary, binDir string) error {
+func installPHP(client *http.Client, url string, b Binary, binDir string, progress ProgressFunc) error {
 	archivePath := filepath.Join(binDir, "php.tar.gz")
 	destPath := filepath.Join(binDir, "php")
 
-	fmt.Printf("  Downloading %s...\n", b.DisplayName)
-	if err := Download(client, url, archivePath); err != nil {
+	logf("  Downloading %s...\n", b.DisplayName)
+	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
 		return err
 	}
 
-	fmt.Printf("  Extracting...\n")
+	logf("  Extracting...\n")
 	if err := ExtractTarGz(archivePath, destPath, "php"); err != nil {
 		return err
 	}
@@ -99,11 +114,11 @@ func installPHP(client *http.Client, url string, b Binary, binDir string) error 
 	return MakeExecutable(destPath)
 }
 
-func installComposer(client *http.Client, url string, b Binary, version string, binDir string) error {
+func installComposer(client *http.Client, url string, b Binary, version string, binDir string, progress ProgressFunc) error {
 	destPath := config.ComposerPharPath()
 
-	fmt.Printf("  Downloading %s...\n", b.DisplayName)
-	if err := Download(client, url, destPath); err != nil {
+	logf("  Downloading %s...\n", b.DisplayName)
+	if err := DownloadProgress(client, url, destPath, progress); err != nil {
 		return err
 	}
 
@@ -112,7 +127,7 @@ func installComposer(client *http.Client, url string, b Binary, version string, 
 		return err
 	}
 	if checksumURL != "" {
-		fmt.Printf("  Verifying checksum...\n")
+		logf("  Verifying checksum...\n")
 		expected, err := FetchChecksum(client, checksumURL)
 		if err != nil {
 			return err

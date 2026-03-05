@@ -11,6 +11,7 @@ import (
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -65,6 +66,16 @@ var linkCmd = &cobra.Command{
 
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
 
+		if existing := reg.Find(name); existing != nil {
+			domain := "https://" + name + "." + settings.TLD
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("%s is already linked", ui.Purple.Bold(true).Render(domain)))
+			ui.FailDetail(fmt.Sprintf("Path: %s", existing.Path))
+			ui.FailDetail("To re-link, run: pv unlink " + name + " && pv link " + path)
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
+		}
 		if err := reg.Add(project); err != nil {
 			return err
 		}
@@ -84,20 +95,23 @@ var linkCmd = &cobra.Command{
 		if typeLabel == "" {
 			typeLabel = "unknown"
 		}
-		phpLabel := ""
-		if phpVersion != "" && phpVersion != globalPHP {
-			phpLabel = fmt.Sprintf(", PHP %s", phpVersion)
-		}
-		fmt.Printf("Linked %s → %s (%s%s)\n", name, absPath, typeLabel, phpLabel)
+
+		domain := "https://" + name + "." + settings.TLD
+
+		fmt.Fprintln(os.Stderr)
+		ui.Success(fmt.Sprintf("Linked %s", ui.Purple.Bold(true).Render(domain)))
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Path"), absPath)
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Type"), typeLabel)
+		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(phpVersion))
+		fmt.Fprintln(os.Stderr)
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not reconfigure server: %v\n", err)
+				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)))
 			}
-			// If this project uses a non-global PHP version, secondary processes
-			// need a server restart to pick up the new project.
 			if phpVersion != "" && phpVersion != globalPHP {
-				fmt.Println("Note: restart the server to serve this project (pv stop && pv start)")
+				ui.Subtle("Restart the server to serve this project: pv stop && pv start")
 			}
 		}
 

@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +30,11 @@ var startCmd = &cobra.Command{
 
 func startFG() error {
 	if server.IsRunning() {
-		return fmt.Errorf("pv is already running (PID file exists and process is alive)")
+		fmt.Fprintln(os.Stderr)
+		ui.Fail("pv is already running")
+		ui.FailDetail("PID file exists and process is alive")
+		fmt.Fprintln(os.Stderr)
+		return ui.ErrAlreadyPrinted
 	}
 
 	settings, err := config.LoadSettings()
@@ -44,7 +50,9 @@ func startDaemon() error {
 	if daemon.IsLoaded() {
 		pid, err := daemon.GetPID()
 		if err == nil && pid > 0 {
-			fmt.Printf("pv is already running (PID %d)\n", pid)
+			fmt.Fprintln(os.Stderr)
+			ui.Success(fmt.Sprintf("pv is already running %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
+			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 	}
@@ -52,38 +60,48 @@ func startDaemon() error {
 	// Also check foreground PID file.
 	if server.IsRunning() {
 		pid, _ := server.ReadPID()
-		fmt.Printf("pv is already running in foreground (PID %d)\n", pid)
+		fmt.Fprintln(os.Stderr)
+		ui.Success(fmt.Sprintf("pv is already running in foreground %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
+		fmt.Fprintln(os.Stderr)
 		return nil
 	}
 
-	// Generate and write plist.
-	cfg := daemon.DefaultPlistConfig()
-	if err := daemon.Install(cfg); err != nil {
-		return fmt.Errorf("cannot install plist: %w", err)
-	}
+	fmt.Fprintln(os.Stderr)
 
-	// Load the service.
-	if err := daemon.Load(); err != nil {
-		return fmt.Errorf("cannot start daemon: %w", err)
-	}
-
-	// Wait for the process to appear.
-	var pid int
-	for i := 0; i < 15; i++ {
-		time.Sleep(200 * time.Millisecond)
-		p, err := daemon.GetPID()
-		if err == nil && p > 0 {
-			pid = p
-			break
+	if err := ui.Step("Starting pv daemon...", func() (string, error) {
+		// Generate and write plist.
+		cfg := daemon.DefaultPlistConfig()
+		if err := daemon.Install(cfg); err != nil {
+			return "", fmt.Errorf("cannot install plist: %w", err)
 		}
+
+		// Load the service.
+		if err := daemon.Load(); err != nil {
+			return "", fmt.Errorf("cannot start daemon: %w", err)
+		}
+
+		// Wait for the process to appear.
+		var pid int
+		for i := 0; i < 15; i++ {
+			time.Sleep(200 * time.Millisecond)
+			p, err := daemon.GetPID()
+			if err == nil && p > 0 {
+				pid = p
+				break
+			}
+		}
+
+		if pid > 0 {
+			return fmt.Sprintf("Running in background (PID %d)", pid), nil
+		}
+		return "Daemon started (waiting for process...)", nil
+	}); err != nil {
+		return err
 	}
 
-	if pid > 0 {
-		fmt.Printf("pv is running in the background (PID %d)\n", pid)
-	} else {
-		fmt.Println("pv daemon started (waiting for process...)")
-	}
-	fmt.Println("Run `pv log` to view logs")
+	ui.Subtle("Run pv log to view logs")
+	fmt.Fprintln(os.Stderr)
+
 	return nil
 }
 

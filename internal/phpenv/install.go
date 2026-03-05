@@ -17,9 +17,23 @@ const (
 	releaseRepo = "prvious/pv"
 )
 
+// Verbose controls whether install functions print progress details.
+var Verbose bool
+
+func logf(format string, args ...any) {
+	if Verbose {
+		fmt.Printf(format, args...)
+	}
+}
+
 // Install downloads and installs a PHP version (FrankenPHP + PHP CLI).
 // The phpVersion is a major.minor string like "8.4".
 func Install(client *http.Client, phpVersion string) error {
+	return InstallProgress(client, phpVersion, nil)
+}
+
+// InstallProgress downloads and installs a PHP version with optional progress reporting.
+func InstallProgress(client *http.Client, phpVersion string, progress binaries.ProgressFunc) error {
 	versionDir := config.PhpVersionDir(phpVersion)
 	if err := os.MkdirAll(versionDir, 0755); err != nil {
 		return fmt.Errorf("cannot create version directory: %w", err)
@@ -40,8 +54,8 @@ func Install(client *http.Client, phpVersion string) error {
 	fpURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", releaseRepo, tag, assetName)
 	fpDest := FrankenPHPPath(phpVersion)
 
-	fmt.Printf("  Downloading FrankenPHP (PHP %s)...\n", phpVersion)
-	if err := binaries.Download(client, fpURL, fpDest); err != nil {
+	logf("  Downloading FrankenPHP (PHP %s)...\n", phpVersion)
+	if err := binaries.DownloadProgress(client, fpURL, fpDest, progress); err != nil {
 		return fmt.Errorf("download FrankenPHP: %w", err)
 	}
 	if err := binaries.MakeExecutable(fpDest); err != nil {
@@ -51,7 +65,7 @@ func Install(client *http.Client, phpVersion string) error {
 	// 3. Detect the full PHP version from the binary.
 	fullVersion, err := binaries.DetectPHPVersion(versionDir)
 	if err != nil {
-		fmt.Printf("  (could not detect full PHP version: %v)\n", err)
+		logf("  (could not detect full PHP version: %v)\n", err)
 		fullVersion = phpVersion + ".0"
 	}
 
@@ -64,8 +78,8 @@ func Install(client *http.Client, phpVersion string) error {
 	phpArchive := fpDest + ".php.tar.gz"
 	phpDest := PHPPath(phpVersion)
 
-	fmt.Printf("  Downloading PHP CLI %s...\n", fullVersion)
-	if err := binaries.Download(client, phpURL, phpArchive); err != nil {
+	logf("  Downloading PHP CLI %s...\n", fullVersion)
+	if err := binaries.DownloadProgress(client, phpURL, phpArchive, progress); err != nil {
 		return fmt.Errorf("download PHP CLI: %w", err)
 	}
 
@@ -78,7 +92,7 @@ func Install(client *http.Client, phpVersion string) error {
 		return err
 	}
 
-	fmt.Printf("  ✓ PHP %s installed\n", phpVersion)
+	logf("  ✓ PHP %s installed\n", phpVersion)
 	return nil
 }
 

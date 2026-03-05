@@ -3,9 +3,11 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 
 	"github.com/prvious/pv/internal/phpenv"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -18,27 +20,42 @@ var phpInstallCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version := args[0]
 		if !validPHPVersion.MatchString(version) {
-			return fmt.Errorf("invalid version format %q: use major.minor (e.g., 8.4)", version)
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("Invalid version format %s", ui.Bold.Render(version)))
+			ui.FailDetail("Use major.minor (e.g., 8.4)")
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
 		}
 
 		if phpenv.IsInstalled(version) {
-			return fmt.Errorf("PHP %s is already installed", version)
+			fmt.Fprintln(os.Stderr)
+			ui.Success(fmt.Sprintf("PHP %s is already installed", ui.Green.Bold(true).Render(version)))
+			fmt.Fprintln(os.Stderr)
+			return nil
 		}
 
-		fmt.Printf("Installing PHP %s...\n", version)
+		fmt.Fprintln(os.Stderr)
+
 		client := &http.Client{}
-		if err := phpenv.Install(client, version); err != nil {
+		if err := ui.StepProgress("Installing PHP "+version+"...", func(progress func(written, total int64)) (string, error) {
+			if err := phpenv.InstallProgress(client, version, progress); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("PHP %s installed", version), nil
+		}); err != nil {
 			return err
 		}
 
 		// If no global default, set this as the default.
 		if _, err := phpenv.GlobalVersion(); err != nil {
-			fmt.Printf("Setting PHP %s as global default...\n", version)
 			if err := phpenv.SetGlobal(version); err != nil {
 				return err
 			}
+			ui.Success(fmt.Sprintf("PHP %s set as global default", version))
 		}
 
+		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

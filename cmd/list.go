@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"text/tabwriter"
+	"os"
 
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -18,27 +20,45 @@ var listCmd = &cobra.Command{
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
+		settings, _ := config.LoadSettings()
+		tld := "test"
+		if settings != nil {
+			tld = settings.TLD
+		}
+
 		projects := reg.List()
 		if len(projects) == 0 {
-			fmt.Println("No projects linked yet. Run `pv link` in a project directory to get started.")
+			fmt.Fprintln(os.Stderr)
+			ui.Subtle("No projects linked yet. Run pv link in a project directory to get started.")
+			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 
-		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tPATH\tTYPE\tPHP")
-		for _, p := range projects {
-			typ := p.Type
-			if typ == "" {
-				typ = "-"
-			}
-			php := p.PHP
-			if php == "" {
-				php = "-"
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, p.Path, typ, php)
-		}
-		return w.Flush()
+		fmt.Fprintln(os.Stderr)
+		rows := projectTableRows(projects, tld)
+		ui.Table([]string{"Site", "Type", "PHP", "Path"}, rows)
+		fmt.Fprintln(os.Stderr)
+
+		return nil
 	},
+}
+
+func projectTableRows(projects []registry.Project, tld string) [][]string {
+	rows := make([][]string, len(projects))
+	for i, p := range projects {
+		typ := p.Type
+		if typ == "" {
+			typ = "unknown"
+		}
+		php := p.PHP
+		if php == "" {
+			php = "-"
+		}
+		domain := "https://" + p.Name + "." + tld
+
+		rows[i] = []string{domain, typ, php, p.Path}
+	}
+	return rows
 }
 
 func init() {

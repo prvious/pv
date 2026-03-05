@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +21,9 @@ var phpListCmd = &cobra.Command{
 			return err
 		}
 		if len(versions) == 0 {
-			fmt.Println("No PHP versions installed. Run: pv php install <version>")
+			fmt.Fprintln(os.Stderr)
+			ui.Subtle("No PHP versions installed. Run: pv php install <version>")
+			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 
@@ -40,21 +44,29 @@ var phpListCmd = &cobra.Command{
 			}
 		}
 
+		fmt.Fprintln(os.Stderr)
 		for _, v := range versions {
-			marker := "  "
+			var parts []string
+
+			// Version number
 			if v == globalV {
-				marker = "* "
+				parts = append(parts, ui.Green.Bold(true).Render(v))
+				parts = append(parts, ui.Muted.Render("(global)"))
+			} else {
+				parts = append(parts, ui.Purple.Render(v))
 			}
 
-			line := marker + v
+			// Projects using this version
 			if projects, ok := versionProjects[v]; ok && len(projects) > 0 {
-				line += "  <- " + strings.Join(projects, ", ")
+				parts = append(parts, ui.Muted.Render("← "+strings.Join(projects, ", ")))
 			}
-			if v == globalV {
-				line += " (default)"
-			}
-			fmt.Println(line)
+
+			fmt.Fprintf(os.Stderr, "  %s %s\n",
+				ui.Green.Render("●"),
+				strings.Join(parts, " "),
+			)
 		}
+		fmt.Fprintln(os.Stderr)
 
 		return nil
 	},
