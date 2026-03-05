@@ -299,12 +299,12 @@ setup_path() {
     current_shell=$(basename "${SHELL:-/bin/sh}")
 
     local config_file=""
-    local export_line=""
+    local eval_line=""
 
     case "$current_shell" in
         zsh)
             config_file="${ZDOTDIR:-$HOME}/.zshrc"
-            export_line='export PATH="$HOME/.pv/bin:$HOME/.pv/composer/vendor/bin:$PATH"'
+            eval_line='eval "$(pv env)"'
             ;;
         bash)
             # Prefer .bashrc, fall back to .bash_profile
@@ -313,15 +313,15 @@ setup_path() {
             else
                 config_file="$HOME/.bash_profile"
             fi
-            export_line='export PATH="$HOME/.pv/bin:$HOME/.pv/composer/vendor/bin:$PATH"'
+            eval_line='eval "$(pv env)"'
             ;;
         fish)
             config_file="$HOME/.config/fish/config.fish"
-            export_line='fish_add_path "$HOME/.pv/bin" "$HOME/.pv/composer/vendor/bin"'
+            eval_line='pv env | source'
             ;;
         *)
             config_file="$HOME/.profile"
-            export_line='export PATH="$HOME/.pv/bin:$HOME/.pv/composer/vendor/bin:$PATH"'
+            eval_line='eval "$(pv env)"'
             ;;
     esac
 
@@ -329,7 +329,7 @@ setup_path() {
         touch "$config_file"
     fi
 
-    add_to_path "$config_file" "$export_line"
+    add_to_path "$config_file" "$eval_line"
 }
 
 # ── Header ───────────────────────────────────────────────────────────────────
