@@ -22,7 +22,8 @@ var serviceStartCmd = &cobra.Command{
 
 		if colima.IsInstalled() {
 			if err := colima.EnsureRunning(); err != nil {
-				return fmt.Errorf("cannot start container runtime: %w", err)
+				fmt.Fprintln(os.Stderr)
+				ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
 			}
 		}
 
