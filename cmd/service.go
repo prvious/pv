@@ -7,7 +7,7 @@ import (
 var serviceCmd = &cobra.Command{
 	Use:     "service",
 	Aliases: []string{"svc"},
-	Short:   "Manage backing services (MySQL, PostgreSQL, Redis, RustFS)",
+	Short:   "Manage backing services (MySQL, PostgreSQL, Redis, S3, Mail)",
 }
 
 func init() {

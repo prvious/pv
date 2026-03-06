@@ -6,6 +6,13 @@ import (
 	"github.com/prvious/pv/internal/container"
 )
 
+// WebRoute maps a subdomain under pv.{tld} to a local port.
+// For example, {Subdomain: "s3", Port: 9001} routes s3.pv.test → 127.0.0.1:9001.
+type WebRoute struct {
+	Subdomain string
+	Port      int
+}
+
 type Service interface {
 	Name() string
 	DisplayName() string
@@ -14,6 +21,7 @@ type Service interface {
 	DefaultVersion() string
 	Port(version string) int
 	ConsolePort(version string) int
+	WebRoutes() []WebRoute // HTTP endpoints exposed under *.pv.{tld}
 	CreateOpts(version string) container.CreateOpts
 	EnvVars(projectName string, port int) map[string]string
 	CreateDatabase(engine *container.Engine, containerID, dbName string) error
@@ -21,22 +29,23 @@ type Service interface {
 }
 
 var registry = map[string]Service{
+	"mail":     &Mail{},
 	"mysql":    &MySQL{},
 	"postgres": &Postgres{},
 	"redis":    &Redis{},
-	"rustfs":   &RustFS{},
+	"s3":       &S3{},
 }
 
 func Lookup(name string) (Service, error) {
 	svc, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown service %q (available: mysql, postgres, redis, rustfs)", name)
+		return nil, fmt.Errorf("unknown service %q (available: mail, mysql, postgres, redis, s3)", name)
 	}
 	return svc, nil
 }
 
 func Available() []string {
-	return []string{"mysql", "postgres", "redis", "rustfs"}
+	return []string{"mail", "mysql", "postgres", "redis", "s3"}
 }
 
 // ServiceKey returns the registry key for a service instance.

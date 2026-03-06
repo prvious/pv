@@ -21,7 +21,8 @@ func (r *Redis) ContainerName(version string) string {
 }
 
 func (r *Redis) Port(_ string) int        { return 6379 }
-func (r *Redis) ConsolePort(_ string) int  { return 0 }
+func (r *Redis) ConsolePort(_ string) int { return 0 }
+func (r *Redis) WebRoutes() []WebRoute    { return nil }
 
 func (r *Redis) CreateOpts(version string) container.CreateOpts {
 	return container.CreateOpts{

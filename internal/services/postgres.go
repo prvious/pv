@@ -37,6 +37,7 @@ func (p *Postgres) Port(version string) int {
 }
 
 func (p *Postgres) ConsolePort(_ string) int { return 0 }
+func (p *Postgres) WebRoutes() []WebRoute    { return nil }
 
 func (p *Postgres) CreateOpts(version string) container.CreateOpts {
 	port := p.Port(version)

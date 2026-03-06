@@ -16,10 +16,11 @@ type ServiceInstance struct {
 }
 
 type ProjectServices struct {
+	Mail     bool   `json:"mail,omitempty"`
 	MySQL    string `json:"mysql,omitempty"`
 	Postgres string `json:"postgres,omitempty"`
 	Redis    bool   `json:"redis,omitempty"`
-	RustFS   bool   `json:"rustfs,omitempty"`
+	S3       bool   `json:"s3,omitempty"`
 }
 
 type Project struct {
@@ -138,6 +139,10 @@ func (r *Registry) ProjectsUsingService(serviceName string) []string {
 			continue
 		}
 		switch serviceName {
+		case "mail":
+			if p.Services.Mail {
+				names = append(names, p.Name)
+			}
 		case "mysql":
 			if p.Services.MySQL != "" {
 				names = append(names, p.Name)
@@ -150,8 +155,8 @@ func (r *Registry) ProjectsUsingService(serviceName string) []string {
 			if p.Services.Redis {
 				names = append(names, p.Name)
 			}
-		case "rustfs":
-			if p.Services.RustFS {
+		case "s3":
+			if p.Services.S3 {
 				names = append(names, p.Name)
 			}
 		}
@@ -166,14 +171,16 @@ func (r *Registry) UnbindService(serviceName string) {
 			continue
 		}
 		switch serviceName {
+		case "mail":
+			r.Projects[i].Services.Mail = false
 		case "mysql":
 			r.Projects[i].Services.MySQL = ""
 		case "postgres":
 			r.Projects[i].Services.Postgres = ""
 		case "redis":
 			r.Projects[i].Services.Redis = false
-		case "rustfs":
-			r.Projects[i].Services.RustFS = false
+		case "s3":
+			r.Projects[i].Services.S3 = false
 		}
 	}
 }

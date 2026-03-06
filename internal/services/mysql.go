@@ -40,7 +40,8 @@ func (m *MySQL) Port(version string) int {
 	return 33000
 }
 
-func (m *MySQL) ConsolePort(_ string) int { return 0 }
+func (m *MySQL) ConsolePort(_ string) int  { return 0 }
+func (m *MySQL) WebRoutes() []WebRoute     { return nil }
 
 func (m *MySQL) CreateOpts(version string) container.CreateOpts {
 	port := m.Port(version)

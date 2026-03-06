@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
@@ -16,7 +17,7 @@ import (
 var serviceAddCmd = &cobra.Command{
 	Use:   "add <service> [version]",
 	Short: "Add and start a service",
-	Long:  "Add a backing service (mysql, postgres, redis, rustfs). Optionally specify a version.",
+	Long:  "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		svcName := args[0]
@@ -107,6 +108,11 @@ var serviceAddCmd = &cobra.Command{
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
+		// Regenerate Caddy configs for service consoles (*.pv.{tld}).
+		if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
+		}
+
 		// Print connection details.
 		port := svc.Port(version)
 		if containerReady {
@@ -127,7 +133,14 @@ var serviceAddCmd = &cobra.Command{
 			}
 			fmt.Fprintf(os.Stderr, "    %s  %s\n", ui.Muted.Render("Pass"), pw)
 		}
-		if consolePt := svc.ConsolePort(version); consolePt > 0 {
+		if routes := svc.WebRoutes(); len(routes) > 0 {
+			settings, _ := config.LoadSettings()
+			if settings != nil {
+				for _, route := range routes {
+					fmt.Fprintf(os.Stderr, "    %s  https://%s.pv.%s\n", ui.Muted.Render(route.Subdomain), route.Subdomain, settings.TLD)
+				}
+			}
+		} else if consolePt := svc.ConsolePort(version); consolePt > 0 {
 			fmt.Fprintf(os.Stderr, "    %s  :%d\n", ui.Muted.Render("Console"), consolePt)
 		}
 		fmt.Fprintln(os.Stderr)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/ui"
@@ -47,6 +48,9 @@ var serviceRemoveCmd = &cobra.Command{
 		if err := reg.Save(); err != nil {
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
+
+		// Regenerate Caddy configs for service consoles.
+		_ = caddy.GenerateServiceSiteConfigs(reg)
 
 		// Determine data path for the message.
 		svcName := key

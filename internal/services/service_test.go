@@ -5,7 +5,7 @@ import (
 )
 
 func TestLookup_Valid(t *testing.T) {
-	for _, name := range []string{"mysql", "postgres", "redis", "rustfs"} {
+	for _, name := range []string{"mail", "mysql", "postgres", "redis", "s3"} {
 		svc, err := Lookup(name)
 		if err != nil {
 			t.Errorf("Lookup(%q) error = %v", name, err)
@@ -43,7 +43,7 @@ func TestServiceKey(t *testing.T) {
 
 func TestAvailable(t *testing.T) {
 	names := Available()
-	if len(names) != 4 {
-		t.Errorf("Available() returned %d services, want 4", len(names))
+	if len(names) != 5 {
+		t.Errorf("Available() returned %d services, want 5", len(names))
 	}
 }

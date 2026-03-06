@@ -61,15 +61,27 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 		}
 	}
 
-	// Detect RustFS (S3-compatible).
-	if endpoint, ok := envVars["AWS_ENDPOINT"]; ok && strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1") {
-		svcKey := findServiceByName(reg, "rustfs")
+	// Detect Mail (Mailpit).
+	if host, ok := envVars["MAIL_HOST"]; ok && (strings.Contains(host, "localhost") || strings.Contains(host, "127.0.0.1")) {
+		svcKey := findServiceByName(reg, "mail")
 		if svcKey != "" {
-			detected = append(detected, fmt.Sprintf("AWS_ENDPOINT -> %s", svcKey))
-			bindProjectService(reg, projectName, "rustfs", svcKey)
+			detected = append(detected, fmt.Sprintf("MAIL_HOST -> %s", svcKey))
+			bindProjectService(reg, projectName, "mail", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "AWS_ENDPOINT (localhost) detected but no RustFS service running.\n    Run: pv service add rustfs")
+			suggestions = append(suggestions, "MAIL_HOST (localhost) detected but no Mail service running.\n    Run: pv service add mail")
+		}
+	}
+
+	// Detect S3 (S3-compatible storage).
+	if endpoint, ok := envVars["AWS_ENDPOINT"]; ok && strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1") {
+		svcKey := findServiceByName(reg, "s3")
+		if svcKey != "" {
+			detected = append(detected, fmt.Sprintf("AWS_ENDPOINT -> %s", svcKey))
+			bindProjectService(reg, projectName, "s3", svcKey)
+			needsEnvUpdate = true
+		} else {
+			suggestions = append(suggestions, "AWS_ENDPOINT (localhost) detected but no S3 service running.\n    Run: pv service add s3")
 		}
 	}
 
@@ -138,8 +150,10 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 			reg.Projects[i].Services.Postgres = version
 		case "redis":
 			reg.Projects[i].Services.Redis = true
-		case "rustfs":
-			reg.Projects[i].Services.RustFS = true
+		case "mail":
+			reg.Projects[i].Services.Mail = true
+		case "s3":
+			reg.Projects[i].Services.S3 = true
 		}
 		break
 	}
