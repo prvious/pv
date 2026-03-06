@@ -20,8 +20,10 @@ var serviceStartCmd = &cobra.Command{
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		if err := colima.EnsureRunning(); err != nil {
-			return fmt.Errorf("cannot start container runtime: %w", err)
+		if colima.IsInstalled() {
+			if err := colima.EnsureRunning(); err != nil {
+				return fmt.Errorf("cannot start container runtime: %w", err)
+			}
 		}
 
 		fmt.Fprintln(os.Stderr)
