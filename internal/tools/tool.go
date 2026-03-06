@@ -13,7 +13,7 @@ import (
 type ExposureType int
 
 const (
-	ExposureNone    ExposureType = iota // never exposed (e.g. colima)
+	ExposureNone    ExposureType = iota // never exposed automatically or manually
 	ExposureSymlink                     // symlink internal/bin/X -> bin/X
 	ExposureShim                        // custom bash shim script
 )
@@ -84,7 +84,7 @@ var All = map[string]*Tool{
 		Name:        "colima",
 		DisplayName: "Colima",
 		AutoExpose:  false,
-		Exposure:    ExposureNone,
+		Exposure:    ExposureSymlink,
 		InternalPath: func() string {
 			return config.ColimaPath()
 		},

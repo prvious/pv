@@ -1,0 +1,33 @@
+package cmd
+
+import (
+	"os"
+
+	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/tools"
+	"github.com/prvious/pv/internal/ui"
+	"github.com/spf13/cobra"
+)
+
+var magoUninstallCmd = &cobra.Command{
+	Use:   "mago:uninstall",
+	Short: "Remove Mago binary and PATH entry",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return ui.Step("Removing Mago...", func() (string, error) {
+			t := tools.Get("mago")
+			if t != nil {
+				_ = tools.Unexpose(t)
+			}
+
+			if err := os.Remove(config.MagoPath()); err != nil && !os.IsNotExist(err) {
+				return "", err
+			}
+
+			return "Mago removed", nil
+		})
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(magoUninstallCmd)
+}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/prvious/pv/internal/colima"
+	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +25,15 @@ var colimaUpdateCmd = &cobra.Command{
 			if err := colima.Install(client, progress); err != nil {
 				return "", fmt.Errorf("cannot download Colima: %w", err)
 			}
+
+			// Re-expose if already on PATH.
+			t := tools.Get("colima")
+			if t != nil && tools.IsExposed(t) {
+				if err := tools.Expose(t); err != nil {
+					return "", fmt.Errorf("cannot expose Colima: %w", err)
+				}
+			}
+
 			return "Colima updated", nil
 		})
 	},
