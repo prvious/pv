@@ -14,7 +14,7 @@ var colimaPathCmd = &cobra.Command{
 	Use:   "colima:path",
 	Short: "Expose or remove Colima from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		t := tools.Get("colima")
+		t := tools.MustGet("colima")
 
 		if colimaPathRemove {
 			if err := tools.Unexpose(t); err != nil {

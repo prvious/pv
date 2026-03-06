@@ -20,8 +20,8 @@ var composerInstallCmd = &cobra.Command{
 		}
 
 		// Expose to PATH.
-		t := tools.Get("composer")
-		if t != nil && t.AutoExpose {
+		t := tools.MustGet("composer")
+		if t.AutoExpose {
 			if err := tools.Expose(t); err != nil {
 				return fmt.Errorf("cannot expose Composer: %w", err)
 			}

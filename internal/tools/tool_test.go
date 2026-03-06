@@ -191,13 +191,46 @@ func TestGet(t *testing.T) {
 
 func TestList(t *testing.T) {
 	list := List()
-	if len(list) != len(All) {
-		t.Errorf("List() returned %d tools, want %d", len(list), len(All))
+	if len(list) != len(registry) {
+		t.Errorf("List() returned %d tools, want %d", len(list), len(registry))
 	}
 	// Verify sorted.
 	for i := 1; i < len(list); i++ {
 		if list[i].Name < list[i-1].Name {
 			t.Errorf("List() not sorted: %s before %s", list[i-1].Name, list[i].Name)
+		}
+	}
+}
+
+func TestMustGet(t *testing.T) {
+	// Known tool should not panic.
+	tool := MustGet("php")
+	if tool == nil {
+		t.Error("MustGet(php) = nil")
+	}
+
+	// Unknown tool should panic.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("MustGet(unknown) did not panic")
+		}
+	}()
+	MustGet("nonexistent")
+}
+
+func TestRegistryIntegrity(t *testing.T) {
+	for name, tool := range registry {
+		if tool.Name != name {
+			t.Errorf("tool %q: Name=%q does not match registry key", name, tool.Name)
+		}
+		if tool.DisplayName == "" {
+			t.Errorf("tool %q: DisplayName is empty", name)
+		}
+		if tool.InternalPath == nil {
+			t.Errorf("tool %q: InternalPath is nil", name)
+		}
+		if tool.Exposure == ExposureShim && tool.WriteShim == nil {
+			t.Errorf("tool %q: ExposureShim requires WriteShim func", name)
 		}
 	}
 }

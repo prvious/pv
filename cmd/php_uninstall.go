@@ -16,11 +16,8 @@ var phpUninstallCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Removing PHP...", func() (string, error) {
 			for _, name := range []string{"php", "frankenphp"} {
-				t := tools.Get(name)
-				if t != nil {
-					if err := tools.Unexpose(t); err != nil {
-						return "", fmt.Errorf("cannot unexpose %s: %w", name, err)
-					}
+				if err := tools.Unexpose(tools.MustGet(name)); err != nil {
+					return "", fmt.Errorf("cannot unexpose %s: %w", name, err)
 				}
 			}
 

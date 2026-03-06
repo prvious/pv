@@ -14,7 +14,7 @@ var magoPathCmd = &cobra.Command{
 	Use:   "mago:path",
 	Short: "Expose or remove Mago from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		t := tools.Get("mago")
+		t := tools.MustGet("mago")
 
 		if magoPathRemove {
 			if err := tools.Unexpose(t); err != nil {

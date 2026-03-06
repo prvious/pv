@@ -39,8 +39,8 @@ var phpUpdateCmd = &cobra.Command{
 
 		// Re-expose only if already on PATH.
 		for _, name := range []string{"php", "frankenphp"} {
-			t := tools.Get(name)
-			if t != nil && tools.IsExposed(t) {
+			t := tools.MustGet(name)
+			if tools.IsExposed(t) {
 				if err := tools.Expose(t); err != nil {
 					return fmt.Errorf("cannot re-expose %s: %w", name, err)
 				}

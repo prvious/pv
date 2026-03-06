@@ -20,8 +20,8 @@ var magoInstallCmd = &cobra.Command{
 		}
 
 		// Expose to PATH.
-		t := tools.Get("mago")
-		if t != nil && t.AutoExpose {
+		t := tools.MustGet("mago")
+		if t.AutoExpose {
 			if err := tools.Expose(t); err != nil {
 				return fmt.Errorf("cannot expose Mago: %w", err)
 			}

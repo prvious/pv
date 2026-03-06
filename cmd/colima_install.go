@@ -20,8 +20,8 @@ var colimaInstallCmd = &cobra.Command{
 		}
 
 		// Expose (no-op for colima since AutoExpose=false).
-		t := tools.Get("colima")
-		if t != nil && t.AutoExpose {
+		t := tools.MustGet("colima")
+		if t.AutoExpose {
 			if err := tools.Expose(t); err != nil {
 				return fmt.Errorf("cannot expose Colima: %w", err)
 			}

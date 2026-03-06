@@ -15,11 +15,8 @@ var magoUninstallCmd = &cobra.Command{
 	Short: "Remove Mago binary and PATH entry",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Removing Mago...", func() (string, error) {
-			t := tools.Get("mago")
-			if t != nil {
-				if err := tools.Unexpose(t); err != nil {
-					return "", fmt.Errorf("cannot unexpose mago: %w", err)
-				}
+			if err := tools.Unexpose(tools.MustGet("mago")); err != nil {
+				return "", fmt.Errorf("cannot unexpose mago: %w", err)
 			}
 
 			if err := os.Remove(config.MagoPath()); err != nil && !os.IsNotExist(err) {

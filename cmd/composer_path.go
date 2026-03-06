@@ -14,7 +14,7 @@ var composerPathCmd = &cobra.Command{
 	Use:   "composer:path",
 	Short: "Expose or remove Composer from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		t := tools.Get("composer")
+		t := tools.MustGet("composer")
 
 		if composerPathRemove {
 			if err := tools.Unexpose(t); err != nil {

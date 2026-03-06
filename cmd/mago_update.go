@@ -48,8 +48,8 @@ var magoUpdateCmd = &cobra.Command{
 				return "", fmt.Errorf("cannot save versions: %w", err)
 			}
 
-			t := tools.Get("mago")
-			if t != nil && tools.IsExposed(t) {
+			t := tools.MustGet("mago")
+			if tools.IsExposed(t) {
 				if err := tools.Expose(t); err != nil {
 					return "", fmt.Errorf("cannot expose Mago: %w", err)
 				}

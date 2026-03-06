@@ -20,7 +20,7 @@ const (
 
 // Tool describes a managed binary.
 type Tool struct {
-	Name        string
+	Name        string       // set automatically from registry key
 	DisplayName string
 	AutoExpose  bool         // :install auto-calls :path
 	Exposure    ExposureType
@@ -40,10 +40,9 @@ func globalPHPVersion() string {
 	return s.GlobalPHP
 }
 
-// Registry of all managed tools, keyed by name.
-var All = map[string]*Tool{
+// registry of all managed tools, keyed by name.
+var registry = map[string]*Tool{
 	"php": {
-		Name:        "php",
 		DisplayName: "PHP",
 		AutoExpose:  true,
 		Exposure:    ExposureShim,
@@ -53,7 +52,6 @@ var All = map[string]*Tool{
 		WriteShim: writePhpShim,
 	},
 	"frankenphp": {
-		Name:        "frankenphp",
 		DisplayName: "FrankenPHP",
 		AutoExpose:  true,
 		Exposure:    ExposureSymlink,
@@ -62,7 +60,6 @@ var All = map[string]*Tool{
 		},
 	},
 	"composer": {
-		Name:        "composer",
 		DisplayName: "Composer",
 		AutoExpose:  true,
 		Exposure:    ExposureShim,
@@ -72,7 +69,6 @@ var All = map[string]*Tool{
 		WriteShim: writeComposerShim,
 	},
 	"mago": {
-		Name:        "mago",
 		DisplayName: "Mago",
 		AutoExpose:  true,
 		Exposure:    ExposureSymlink,
@@ -81,7 +77,6 @@ var All = map[string]*Tool{
 		},
 	},
 	"colima": {
-		Name:        "colima",
 		DisplayName: "Colima",
 		AutoExpose:  false,
 		Exposure:    ExposureSymlink,
@@ -91,15 +86,32 @@ var All = map[string]*Tool{
 	},
 }
 
+func init() {
+	// Derive Name from map key so they can never diverge.
+	for name, t := range registry {
+		t.Name = name
+	}
+}
+
 // Get returns the tool with the given name, or nil.
 func Get(name string) *Tool {
-	return All[name]
+	return registry[name]
+}
+
+// MustGet returns the tool with the given name, or panics.
+// Use for compile-time constant names where a missing tool is a programming error.
+func MustGet(name string) *Tool {
+	t := registry[name]
+	if t == nil {
+		panic(fmt.Sprintf("tools: unknown tool %q", name))
+	}
+	return t
 }
 
 // List returns all tools sorted by name.
 func List() []*Tool {
 	var out []*Tool
-	for _, t := range All {
+	for _, t := range registry {
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -123,7 +135,9 @@ func Expose(t *Tool) error {
 	case ExposureSymlink:
 		target := t.InternalPath()
 		linkPath := filepath.Join(binDir, t.Name)
-		os.Remove(linkPath) // remove existing
+		if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("cannot remove existing %s: %w", linkPath, err)
+		}
 		if err := os.Symlink(target, linkPath); err != nil {
 			return fmt.Errorf("cannot create symlink %s -> %s: %w", linkPath, target, err)
 		}
@@ -154,7 +168,7 @@ func IsExposed(t *Tool) bool {
 
 // ExposeAll exposes all tools that have AutoExpose=true.
 func ExposeAll() error {
-	for _, t := range All {
+	for _, t := range registry {
 		if !t.AutoExpose {
 			continue
 		}

@@ -37,8 +37,8 @@ var composerUpdateCmd = &cobra.Command{
 				return "", fmt.Errorf("cannot save versions: %w", err)
 			}
 
-			t := tools.Get("composer")
-			if t != nil && tools.IsExposed(t) {
+			t := tools.MustGet("composer")
+			if tools.IsExposed(t) {
 				if err := tools.Expose(t); err != nil {
 					return "", fmt.Errorf("cannot expose Composer: %w", err)
 				}

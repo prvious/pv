@@ -34,11 +34,8 @@ var colimaUninstallCmd = &cobra.Command{
 				return "", err
 			}
 
-			t := tools.Get("colima")
-			if t != nil {
-				if err := tools.Unexpose(t); err != nil {
-					return "", fmt.Errorf("cannot unexpose colima: %w", err)
-				}
+			if err := tools.Unexpose(tools.MustGet("colima")); err != nil {
+				return "", fmt.Errorf("cannot unexpose colima: %w", err)
 			}
 
 			return "Colima removed", nil

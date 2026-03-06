@@ -14,8 +14,8 @@ var phpPathCmd = &cobra.Command{
 	Use:   "php:path",
 	Short: "Expose or remove PHP and FrankenPHP from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		php := tools.Get("php")
-		fp := tools.Get("frankenphp")
+		php := tools.MustGet("php")
+		fp := tools.MustGet("frankenphp")
 
 		if phpPathRemove {
 			if err := tools.Unexpose(php); err != nil {

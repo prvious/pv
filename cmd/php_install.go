@@ -52,8 +52,8 @@ var phpInstallCmd = &cobra.Command{
 
 		// Expose PHP and FrankenPHP to PATH.
 		for _, name := range []string{"php", "frankenphp"} {
-			t := tools.Get(name)
-			if t != nil && t.AutoExpose {
+			t := tools.MustGet(name)
+			if t.AutoExpose {
 				if err := tools.Expose(t); err != nil {
 					return fmt.Errorf("cannot expose %s: %w", name, err)
 				}

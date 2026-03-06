@@ -27,8 +27,8 @@ var colimaUpdateCmd = &cobra.Command{
 			}
 
 			// Re-expose if already on PATH.
-			t := tools.Get("colima")
-			if t != nil && tools.IsExposed(t) {
+			t := tools.MustGet("colima")
+			if tools.IsExposed(t) {
 				if err := tools.Expose(t); err != nil {
 					return "", fmt.Errorf("cannot expose Colima: %w", err)
 				}
