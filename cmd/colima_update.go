@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/tools"
@@ -19,23 +18,20 @@ var colimaUpdateCmd = &cobra.Command{
 			return nil
 		}
 
-		client := &http.Client{}
+		// Delegate download to :download.
+		if err := colimaDownloadCmd.RunE(colimaDownloadCmd, nil); err != nil {
+			return err
+		}
 
-		return ui.StepProgress("Updating Colima...", func(progress func(written, total int64)) (string, error) {
-			if err := colima.Install(client, progress); err != nil {
-				return "", fmt.Errorf("cannot download Colima: %w", err)
+		// Re-expose if already on PATH.
+		t := tools.MustGet("colima")
+		if tools.IsExposed(t) {
+			if err := tools.Expose(t); err != nil {
+				return fmt.Errorf("cannot expose Colima: %w", err)
 			}
+		}
 
-			// Re-expose if already on PATH.
-			t := tools.MustGet("colima")
-			if tools.IsExposed(t) {
-				if err := tools.Expose(t); err != nil {
-					return "", fmt.Errorf("cannot expose Colima: %w", err)
-				}
-			}
-
-			return "Colima updated", nil
-		})
+		return nil
 	},
 }
 
