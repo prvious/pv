@@ -10,6 +10,10 @@ on:
   schedule:
     - cron: "0 0 * * 1"
 
+concurrency:
+  group: build-frankenphp
+  cancel-in-progress: true
+
 env:
   GOTOOLCHAIN: local
 
@@ -43,6 +47,8 @@ jobs:
         php: ["8.3", "8.4", "8.5"]
     name: PHP ${{ matrix.php }}
     runs-on: macos-26
+    permissions:
+      contents: read
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
@@ -78,7 +84,7 @@ jobs:
 
       - name: Run sanity checks
         run: |
-          BINARY="dist/frankenphp-mac-${{ steps.arch.outputs.arch }}"
+          BINARY=$(ls dist/frankenphp-mac-*)
           "${BINARY}" version
           "${BINARY}" build-info
           "${BINARY}" list-modules | grep frankenphp
@@ -87,7 +93,7 @@ jobs:
       - name: Rename binary
         run: |
           ARCH="${{ steps.arch.outputs.arch }}"
-          mv "dist/frankenphp-mac-${ARCH}" "dist/frankenphp-mac-${ARCH}-php${{ matrix.php }}"
+          mv dist/frankenphp-mac-* "dist/frankenphp-mac-${ARCH}-php${{ matrix.php }}"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
