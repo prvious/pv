@@ -11,8 +11,8 @@ ls -la ~/.pv/bin/composer
 test -x ~/.pv/bin/composer || { echo "FAIL: composer shim not executable"; exit 1; }
 
 echo "==> Verify composer.phar exists"
-ls -la ~/.pv/data/composer.phar
-test -f ~/.pv/data/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
+ls -la ~/.pv/internal/bin/composer.phar
+test -f ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
 
 # ── 2. Verify COMPOSER_HOME isolation ──────────────────────────────────
 echo "==> Verify COMPOSER_HOME points to ~/.pv/composer"

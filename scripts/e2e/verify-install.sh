@@ -31,7 +31,7 @@ cat /etc/resolver/test
 
 echo "==> Verify composer shim and phar"
 test -x ~/.pv/bin/composer || { echo "FAIL: composer shim not executable"; exit 1; }
-test -f ~/.pv/data/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
+test -f ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
 
 echo "==> Verify composer directories"
 test -d ~/.pv/composer || { echo "FAIL: ~/.pv/composer not created"; exit 1; }
