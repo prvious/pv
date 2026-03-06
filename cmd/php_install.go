@@ -30,7 +30,7 @@ var phpInstallCmd = &cobra.Command{
 
 		if phpenv.IsInstalled(version) {
 			fmt.Fprintln(os.Stderr)
-			ui.Success(fmt.Sprintf("PHP %s is already installed", ui.Green.Bold(true).Render(version)))
+			ui.Success(fmt.Sprintf("PHP %s is already installed", version))
 			fmt.Fprintln(os.Stderr)
 			return nil
 		}
