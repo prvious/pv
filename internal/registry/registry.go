@@ -8,15 +8,32 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
+type ServiceInstance struct {
+	Image       string `json:"image"`
+	Port        int    `json:"port"`
+	ConsolePort int    `json:"console_port,omitempty"`
+	ContainerID string `json:"container_id,omitempty"`
+}
+
+type ProjectServices struct {
+	MySQL    string `json:"mysql,omitempty"`
+	Postgres string `json:"postgres,omitempty"`
+	Redis    bool   `json:"redis,omitempty"`
+	RustFS   bool   `json:"rustfs,omitempty"`
+}
+
 type Project struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Type string `json:"type"`
-	PHP  string `json:"php,omitempty"`
+	Name      string           `json:"name"`
+	Path      string           `json:"path"`
+	Type      string           `json:"type"`
+	PHP       string           `json:"php,omitempty"`
+	Services  *ProjectServices `json:"services,omitempty"`
+	Databases []string         `json:"databases,omitempty"`
 }
 
 type Registry struct {
-	Projects []Project `json:"projects"`
+	Services map[string]*ServiceInstance `json:"services,omitempty"`
+	Projects []Project                   `json:"projects"`
 }
 
 func Load() (*Registry, error) {
@@ -24,13 +41,16 @@ func Load() (*Registry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Registry{}, nil
+			return &Registry{Services: make(map[string]*ServiceInstance)}, nil
 		}
 		return nil, err
 	}
 	var reg Registry
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, err
+	}
+	if reg.Services == nil {
+		reg.Services = make(map[string]*ServiceInstance)
 	}
 	return &reg, nil
 }
@@ -84,6 +104,78 @@ func (r *Registry) FindByPath(path string) *Project {
 
 func (r *Registry) List() []Project {
 	return r.Projects
+}
+
+func (r *Registry) AddService(key string, svc *ServiceInstance) error {
+	if _, exists := r.Services[key]; exists {
+		return fmt.Errorf("service %q is already added", key)
+	}
+	r.Services[key] = svc
+	return nil
+}
+
+func (r *Registry) RemoveService(key string) error {
+	if _, exists := r.Services[key]; !exists {
+		return fmt.Errorf("service %q not found", key)
+	}
+	delete(r.Services, key)
+	return nil
+}
+
+func (r *Registry) FindService(key string) *ServiceInstance {
+	return r.Services[key]
+}
+
+func (r *Registry) ListServices() map[string]*ServiceInstance {
+	return r.Services
+}
+
+// ProjectsUsingService returns project names that reference a given service.
+func (r *Registry) ProjectsUsingService(serviceName string) []string {
+	var names []string
+	for _, p := range r.Projects {
+		if p.Services == nil {
+			continue
+		}
+		switch serviceName {
+		case "mysql":
+			if p.Services.MySQL != "" {
+				names = append(names, p.Name)
+			}
+		case "postgres":
+			if p.Services.Postgres != "" {
+				names = append(names, p.Name)
+			}
+		case "redis":
+			if p.Services.Redis {
+				names = append(names, p.Name)
+			}
+		case "rustfs":
+			if p.Services.RustFS {
+				names = append(names, p.Name)
+			}
+		}
+	}
+	return names
+}
+
+// UnbindService removes a service binding from all projects.
+func (r *Registry) UnbindService(serviceName string) {
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		switch serviceName {
+		case "mysql":
+			r.Projects[i].Services.MySQL = ""
+		case "postgres":
+			r.Projects[i].Services.Postgres = ""
+		case "redis":
+			r.Projects[i].Services.Redis = false
+		case "rustfs":
+			r.Projects[i].Services.RustFS = false
+		}
+	}
 }
 
 // GroupByPHP groups projects by their PHP version.

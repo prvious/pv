@@ -307,3 +307,169 @@ func TestSave_CreatesDirectories(t *testing.T) {
 		t.Fatalf("registry file does not exist after Save(): %v", err)
 	}
 }
+
+// --- Service CRUD tests ---
+
+func TestAddService(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	err := r.AddService("mysql:8.0.32", &ServiceInstance{Image: "mysql:8.0.32", Port: 33032})
+	if err != nil {
+		t.Fatalf("AddService() error = %v", err)
+	}
+	if len(r.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(r.Services))
+	}
+}
+
+func TestAddService_Duplicate(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("redis", &ServiceInstance{Image: "redis:latest", Port: 6379})
+	err := r.AddService("redis", &ServiceInstance{Image: "redis:latest", Port: 6379})
+	if err == nil {
+		t.Fatal("expected error for duplicate service, got nil")
+	}
+}
+
+func TestRemoveService(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("redis", &ServiceInstance{Image: "redis:latest", Port: 6379})
+	err := r.RemoveService("redis")
+	if err != nil {
+		t.Fatalf("RemoveService() error = %v", err)
+	}
+	if len(r.Services) != 0 {
+		t.Fatalf("expected 0 services, got %d", len(r.Services))
+	}
+}
+
+func TestRemoveService_NotFound(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	err := r.RemoveService("mysql")
+	if err == nil {
+		t.Fatal("expected error for non-existent service")
+	}
+}
+
+func TestFindService(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("redis", &ServiceInstance{Image: "redis:latest", Port: 6379})
+
+	svc := r.FindService("redis")
+	if svc == nil {
+		t.Fatal("FindService() returned nil")
+	}
+	if svc.Port != 6379 {
+		t.Errorf("Port = %d, want 6379", svc.Port)
+	}
+
+	if r.FindService("mysql") != nil {
+		t.Error("FindService(mysql) should return nil")
+	}
+}
+
+func TestProjectsUsingService(t *testing.T) {
+	r := &Registry{
+		Services: make(map[string]*ServiceInstance),
+		Projects: []Project{
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.0.32", Redis: true}},
+			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.0.32"}},
+			{Name: "app3", Path: "/c"},
+		},
+	}
+
+	mysqlProjects := r.ProjectsUsingService("mysql")
+	if len(mysqlProjects) != 2 {
+		t.Errorf("expected 2 mysql projects, got %d", len(mysqlProjects))
+	}
+
+	redisProjects := r.ProjectsUsingService("redis")
+	if len(redisProjects) != 1 {
+		t.Errorf("expected 1 redis project, got %d", len(redisProjects))
+	}
+
+	pgProjects := r.ProjectsUsingService("postgres")
+	if len(pgProjects) != 0 {
+		t.Errorf("expected 0 postgres projects, got %d", len(pgProjects))
+	}
+}
+
+func TestUnbindService(t *testing.T) {
+	r := &Registry{
+		Services: make(map[string]*ServiceInstance),
+		Projects: []Project{
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.0.32"}},
+			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.0.32"}},
+		},
+	}
+	r.UnbindService("mysql")
+	for _, p := range r.Projects {
+		if p.Services != nil && p.Services.MySQL != "" {
+			t.Errorf("project %s still has MySQL binding", p.Name)
+		}
+	}
+}
+
+func TestLoad_BackwardCompat_NoServicesField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	// Old-format JSON without services field.
+	data := `{"projects":[{"name":"myapp","path":"/srv/myapp","type":"laravel"}]}`
+	if err := os.WriteFile(config.RegistryPath(), []byte(data), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	reg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if reg.Services == nil {
+		t.Fatal("Services map should be initialized")
+	}
+	if len(reg.Services) != 0 {
+		t.Errorf("expected 0 services, got %d", len(reg.Services))
+	}
+	if len(reg.Projects) != 1 {
+		t.Errorf("expected 1 project, got %d", len(reg.Projects))
+	}
+}
+
+func TestServiceSaveLoad_RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	reg := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = reg.Add(Project{Name: "app1", Path: "/srv/app1", Type: "laravel"})
+	_ = reg.AddService("mysql:8.0.32", &ServiceInstance{
+		Image:       "mysql:8.0.32",
+		Port:        33032,
+		ContainerID: "abc123",
+	})
+	_ = reg.AddService("redis", &ServiceInstance{
+		Image: "redis:latest",
+		Port:  6379,
+	})
+
+	if err := reg.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(loaded.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(loaded.Services))
+	}
+	if loaded.Services["mysql:8.0.32"].Port != 33032 {
+		t.Errorf("mysql port = %d, want 33032", loaded.Services["mysql:8.0.32"].Port)
+	}
+	if loaded.Services["redis"].Port != 6379 {
+		t.Errorf("redis port = %d, want 6379", loaded.Services["redis"].Port)
+	}
+}

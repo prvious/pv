@@ -98,26 +98,36 @@ jobs:
       - name: Stop server
         run: scripts/e2e/stop.sh
 
-      # ── Phase 17: PHP Version Lifecycle ────────────────────────────
+      # ── Phase 17: Service Lifecycle ──────────────────────────────────
+      - name: Test service lifecycle
+        timeout-minutes: 5
+        run: scripts/e2e/services.sh
+
+      # ── Phase 18: Service Auto-Wiring ──────────────────────────────
+      - name: Test service auto-wiring during link
+        timeout-minutes: 3
+        run: scripts/e2e/service-link.sh
+
+      # ── Phase 19: PHP Version Lifecycle ────────────────────────────
       - name: Test PHP version lifecycle
         run: scripts/e2e/lifecycle.sh
 
-      # ── Phase 18: Test pv update ───────────────────────────────────
+      # ── Phase 20: Test pv update ───────────────────────────────────
       - name: Test pv update
         timeout-minutes: 3
         run: scripts/e2e/update.sh
 
-      # ── Phase 19: Verify Server After PHP Changes ──────────────────
+      # ── Phase 21: Verify Server After PHP Changes ──────────────────
       - name: Verify server with remaining projects
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 20: Uninstall ───────────────────────────────────────
+      # ── Phase 22: Uninstall ───────────────────────────────────────
       - name: Test pv uninstall
         timeout-minutes: 1
         run: scripts/e2e/uninstall.sh
 
-      # ── Phase 21: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 23: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
