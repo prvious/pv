@@ -17,9 +17,11 @@ func Install(client *http.Client, progress func(written, total int64)) error {
 	arch := runtime.GOARCH
 	platform := runtime.GOOS
 
-	// Map Go arch to Colima naming.
+	// Map Go arch to Colima release naming.
+	// Darwin uses: arm64, x86_64
+	// Linux uses: aarch64, x86_64
 	colimaArch := arch
-	if arch == "arm64" {
+	if platform == "linux" && arch == "arm64" {
 		colimaArch = "aarch64"
 	} else if arch == "amd64" {
 		colimaArch = "x86_64"
