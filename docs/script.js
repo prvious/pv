@@ -202,6 +202,141 @@
   }
 
   // --------------------------------------------------------------------------
+  // Color Palette Switcher
+  // --------------------------------------------------------------------------
+
+  var palettes = [
+    {
+      name: 'Electric Blue',
+      accent: '#155dfc',
+      accentHover: '#3b82f6',
+      swatch: '#155dfc',
+    },
+    {
+      name: 'Emerald',
+      accent: '#10b981',
+      accentHover: '#34d399',
+      swatch: '#10b981',
+    },
+    {
+      name: 'Violet',
+      accent: '#8b5cf6',
+      accentHover: '#a78bfa',
+      swatch: '#8b5cf6',
+    },
+    {
+      name: 'Rose',
+      accent: '#f43f5e',
+      accentHover: '#fb7185',
+      swatch: '#f43f5e',
+    },
+    {
+      name: 'Amber',
+      accent: '#f59e0b',
+      accentHover: '#fbbf24',
+      swatch: '#f59e0b',
+    },
+    {
+      name: 'Cyan',
+      accent: '#06b6d4',
+      accentHover: '#22d3ee',
+      swatch: '#06b6d4',
+    },
+    {
+      name: 'Orange',
+      accent: '#f97316',
+      accentHover: '#fb923c',
+      swatch: '#f97316',
+    },
+    {
+      name: 'Pink',
+      accent: '#ec4899',
+      accentHover: '#f472b6',
+      swatch: '#ec4899',
+    },
+    {
+      name: 'Teal',
+      accent: '#14b8a6',
+      accentHover: '#2dd4bf',
+      swatch: '#14b8a6',
+    },
+    {
+      name: 'Indigo',
+      accent: '#6366f1',
+      accentHover: '#818cf8',
+      swatch: '#6366f1',
+    },
+  ];
+
+  // Convert hex to RGB components
+  function hexToRgb(hex) {
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    return { r: r, g: g, b: b };
+  }
+
+  function applyPalette(index) {
+    var p = palettes[index];
+    var root = document.documentElement;
+    var rgb = hexToRgb(p.accent);
+    var r = rgb.r, g = rgb.g, b = rgb.b;
+
+    root.style.setProperty('--accent', p.accent);
+    root.style.setProperty('--accent-hover', p.accentHover);
+    root.style.setProperty('--accent-glow', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.25)');
+    root.style.setProperty('--accent-bg-subtle', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.1)');
+    root.style.setProperty('--accent-bg-medium', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.12)');
+    root.style.setProperty('--accent-border', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.25)');
+    root.style.setProperty('--accent-border-strong', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.3)');
+    root.style.setProperty('--accent-radial', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.18)');
+    root.style.setProperty('--accent-card-glow', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.08)');
+    root.style.setProperty('--accent-code-bg', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.12)');
+    root.style.setProperty('--accent-code-border', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.2)');
+    root.style.setProperty('--border-hover', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.4)');
+  }
+
+  function initColorSwitcher() {
+    var currentIndex = 0;
+
+    // Build the widget
+    var widget = document.createElement('div');
+    widget.className = 'color-switcher';
+
+    // Swatch (the clickable circle)
+    var swatch = document.createElement('button');
+    swatch.className = 'color-switcher__swatch';
+    swatch.style.background = palettes[0].swatch;
+    swatch.setAttribute('aria-label', 'Switch color palette');
+    swatch.title = palettes[0].name;
+
+    // Label
+    var label = document.createElement('span');
+    label.className = 'color-switcher__label';
+    label.textContent = palettes[0].name;
+
+    widget.appendChild(label);
+    widget.appendChild(swatch);
+    document.body.appendChild(widget);
+
+    swatch.addEventListener('click', function () {
+      currentIndex = (currentIndex + 1) % palettes.length;
+      applyPalette(currentIndex);
+
+      // Update swatch color and label
+      swatch.style.background = palettes[currentIndex].swatch;
+      swatch.title = palettes[currentIndex].name;
+      label.textContent = palettes[currentIndex].name;
+
+      // Flash the label visible
+      label.classList.remove('color-switcher__label--visible');
+      // Force reflow
+      void label.offsetWidth;
+      label.classList.add('color-switcher__label--visible');
+    });
+  }
+
+  // --------------------------------------------------------------------------
   // Init
   // --------------------------------------------------------------------------
 
@@ -210,5 +345,6 @@
     initCopyButton();
     initScrollAnimations();
     initSmoothScroll();
+    initColorSwitcher();
   });
 })();
