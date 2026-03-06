@@ -111,14 +111,14 @@ For Caddyfile-only changes (like after `pv link`), you don't need a full restart
 
 ### Task 8: Auto-Start on Login
 
-Add `pv service install` and `pv service uninstall`:
+Add `pv daemon install` and `pv daemon uninstall`:
 
-- **`pv service install`** → write plist with `RunAtLoad: true`, load it. pv starts on every login automatically.
-- **`pv service uninstall`** → unload, remove plist. No more auto-start.
+- **`pv daemon install`** → write plist with `RunAtLoad: true`, load it. pv starts on every login automatically.
+- **`pv daemon uninstall`** → unload, remove plist. No more auto-start.
 
 This is separate from `pv start --background` because auto-start is a one-time preference. The user explicitly opts into "I want pv always running".
 
-Could also be a flag: `pv service install --start-on-login` vs without.
+Could also be a flag: `pv daemon install --start-on-login` vs without.
 
 ### Task 9: `pv status` Enhancement
 
