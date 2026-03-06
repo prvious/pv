@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/prvious/pv/internal/colima"
@@ -21,8 +22,12 @@ var colimaUninstallCmd = &cobra.Command{
 
 		return ui.Step("Removing Colima...", func() (string, error) {
 			if colima.IsRunning() {
-				_ = colima.Stop()
-				_ = colima.Delete()
+				if err := colima.Stop(); err != nil {
+					return "", fmt.Errorf("cannot stop Colima VM (stop it manually before uninstalling): %w", err)
+				}
+				if err := colima.Delete(); err != nil {
+					return "", fmt.Errorf("cannot delete Colima VM: %w", err)
+				}
 			}
 
 			if err := os.Remove(config.ColimaPath()); err != nil && !os.IsNotExist(err) {
@@ -31,7 +36,9 @@ var colimaUninstallCmd = &cobra.Command{
 
 			t := tools.Get("colima")
 			if t != nil {
-				_ = tools.Unexpose(t)
+				if err := tools.Unexpose(t); err != nil {
+					return "", fmt.Errorf("cannot unexpose colima: %w", err)
+				}
 			}
 
 			return "Colima removed", nil

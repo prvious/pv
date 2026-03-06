@@ -78,10 +78,18 @@ var uninstallCmd = &cobra.Command{
 		tld := settings.TLD
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
-		_ = colimaUninstallCmd.RunE(colimaUninstallCmd, nil)
-		_ = phpUninstallCmd.RunE(phpUninstallCmd, nil)
-		_ = magoUninstallCmd.RunE(magoUninstallCmd, nil)
-		_ = composerUninstallCmd.RunE(composerUninstallCmd, nil)
+		if err := colimaUninstallCmd.RunE(colimaUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Colima uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := phpUninstallCmd.RunE(phpUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s PHP uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := magoUninstallCmd.RunE(magoUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Mago uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := composerUninstallCmd.RunE(composerUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Composer uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
 
 		// Stop services.
 		if err := ui.Step("Stopping services...", func() (string, error) {

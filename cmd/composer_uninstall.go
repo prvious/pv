@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/prvious/pv/internal/config"
@@ -16,7 +17,9 @@ var composerUninstallCmd = &cobra.Command{
 		return ui.Step("Removing Composer...", func() (string, error) {
 			t := tools.Get("composer")
 			if t != nil {
-				_ = tools.Unexpose(t)
+				if err := tools.Unexpose(t); err != nil {
+					return "", fmt.Errorf("cannot unexpose composer: %w", err)
+				}
 			}
 
 			if err := os.Remove(config.ComposerPharPath()); err != nil && !os.IsNotExist(err) {

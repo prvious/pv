@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/prvious/pv/internal/config"
@@ -16,7 +17,9 @@ var magoUninstallCmd = &cobra.Command{
 		return ui.Step("Removing Mago...", func() (string, error) {
 			t := tools.Get("mago")
 			if t != nil {
-				_ = tools.Unexpose(t)
+				if err := tools.Unexpose(t); err != nil {
+					return "", fmt.Errorf("cannot unexpose mago: %w", err)
+				}
 			}
 
 			if err := os.Remove(config.MagoPath()); err != nil && !os.IsNotExist(err) {

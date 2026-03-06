@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,25 +41,35 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Step 2: Update tools.
+		var failures []string
+
 		if err := phpUpdateCmd.RunE(phpUpdateCmd, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s PHP update failed: %v\n", ui.Red.Render("!"), err)
+			failures = append(failures, "PHP")
 		}
 
 		if err := magoUpdateCmd.RunE(magoUpdateCmd, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s Mago update failed: %v\n", ui.Red.Render("!"), err)
+			failures = append(failures, "Mago")
 		}
 
 		if err := composerUpdateCmd.RunE(composerUpdateCmd, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s Composer update failed: %v\n", ui.Red.Render("!"), err)
+			failures = append(failures, "Composer")
 		}
 
 		if colima.IsInstalled() {
 			if err := colimaUpdateCmd.RunE(colimaUpdateCmd, nil); err != nil {
 				fmt.Fprintf(os.Stderr, "  %s Colima update failed: %v\n", ui.Red.Render("!"), err)
+				failures = append(failures, "Colima")
 			}
 		}
 
 		ui.Footer(start, "")
+
+		if len(failures) > 0 {
+			return fmt.Errorf("some updates failed: %s", strings.Join(failures, ", "))
+		}
 
 		return nil
 	},

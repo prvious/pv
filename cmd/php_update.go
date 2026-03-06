@@ -41,7 +41,9 @@ var phpUpdateCmd = &cobra.Command{
 		for _, name := range []string{"php", "frankenphp"} {
 			t := tools.Get(name)
 			if t != nil && tools.IsExposed(t) {
-				_ = tools.Expose(t)
+				if err := tools.Expose(t); err != nil {
+					return fmt.Errorf("cannot re-expose %s: %w", name, err)
+				}
 			}
 		}
 
