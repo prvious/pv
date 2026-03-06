@@ -143,8 +143,12 @@ func ServiceDataDir(service, version string) string {
 	return filepath.Join(ServicesDir(), service, version, "data")
 }
 
+func InternalBinDir() string {
+	return filepath.Join(PvDir(), "internal", "bin")
+}
+
 func ColimaPath() string {
-	return filepath.Join(BinDir(), "colima")
+	return filepath.Join(InternalBinDir(), "colima")
 }
 
 func ColimaSocketPath() string {
@@ -163,6 +167,7 @@ func EnsureDirs() error {
 		ComposerDir(),
 		ComposerCacheDir(),
 		ServicesDir(),
+		InternalBinDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
