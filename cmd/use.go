@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +19,12 @@ var useCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		arg := args[0]
 		if !strings.HasPrefix(arg, "php:") {
-			return fmt.Errorf("invalid format %q: use php:<version> (e.g., pv use php:8.4)", arg)
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("Invalid format %s", ui.Bold.Render(arg)))
+			ui.FailDetail("Use php:<version> (e.g., pv use php:8.4)")
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
 		}
 
 		version := strings.TrimPrefix(arg, "php:")
@@ -26,7 +33,12 @@ var useCmd = &cobra.Command{
 		}
 
 		if !phpenv.IsInstalled(version) {
-			return fmt.Errorf("PHP %s is not installed (run: pv php install %s)", version, version)
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("PHP %s is not installed", ui.Bold.Render(version)))
+			ui.FailDetail(fmt.Sprintf("Run: pv php install %s", version))
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
 		}
 
 		oldV, _ := phpenv.GlobalVersion()
@@ -35,21 +47,35 @@ var useCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Global PHP switched to %s\n", version)
+		fmt.Fprintln(os.Stderr)
+
+		if oldV != "" && oldV != version {
+			ui.Success(fmt.Sprintf("Global PHP switched %s %s %s",
+				ui.Muted.Render(oldV),
+				ui.Purple.Render("→"),
+				ui.Green.Bold(true).Render(version),
+			))
+		} else {
+			ui.Success(fmt.Sprintf("Global PHP set to %s", ui.Green.Bold(true).Render(version)))
+		}
 
 		// If daemon is running, sync the plist and restart.
 		if oldV != version && daemon.IsLoaded() {
 			cfg := daemon.DefaultPlistConfig()
 			if err := daemon.SyncIfNeeded(cfg); err != nil {
-				fmt.Printf("Warning: cannot sync daemon plist: %v\n", err)
+				fmt.Fprintf(os.Stderr, "  %s %s\n",
+					ui.Red.Render("!"),
+					ui.Muted.Render(fmt.Sprintf("Cannot sync daemon plist: %v", err)),
+				)
 			} else {
-				fmt.Println("Daemon restarted with new PHP version")
+				ui.Success("Daemon restarted with new PHP version")
 			}
 		} else if oldV != version && server.IsRunning() {
-			fmt.Println("Server is running — restart required for changes to take effect.")
-			fmt.Println("Run: pv restart")
+			ui.Subtle("Server is running — restart required for changes to take effect.")
+			ui.Subtle("Run: pv restart")
 		}
 
+		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

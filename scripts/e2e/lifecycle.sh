@@ -22,7 +22,7 @@ echo "OK: pv use php:8.4 works"
 
 # Unlink e2e-php83 to free PHP 8.3
 sudo -E pv unlink e2e-php83
-if pv list | grep -q "e2e-php83"; then
+if pv list 2>&1 | grep -q "e2e-php83"; then
   echo "FAIL: e2e-php83 still in list"; exit 1
 fi
 echo "OK: e2e-php83 unlinked"
@@ -32,7 +32,7 @@ pv php remove 8.3
 if [ -d ~/.pv/php/8.3 ]; then
   echo "FAIL: PHP 8.3 directory still exists"; exit 1
 fi
-PHP_OUT=$(pv php list)
+PHP_OUT=$(pv php list 2>&1)
 echo "$PHP_OUT"
 if echo "$PHP_OUT" | grep -qE "8\.3"; then
   echo "FAIL: 8.3 still in php list"; exit 1

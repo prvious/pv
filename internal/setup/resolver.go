@@ -48,13 +48,18 @@ func ResolverSetupScript(tld string) string {
 	)
 }
 
+// Verbose controls whether sudo commands show output.
+var Verbose bool
+
 // RunSudoResolver executes the sudo command for DNS resolver setup only.
 func RunSudoResolver(tld string) error {
 	script := ResolverSetupScript(tld)
 	cmd := exec.Command("sudo", "sh", "-c", script)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	return cmd.Run()
 }
 
@@ -102,8 +107,10 @@ func RunSudoTrustWithServer() error {
 	script := fmt.Sprintf(`XDG_DATA_HOME="%s" XDG_CONFIG_HOME="%s" "%s" trust`, pvDir, pvDir, frankenphp)
 	trust := exec.Command("sudo", "sh", "-c", script)
 	trust.Stdin = os.Stdin
-	trust.Stdout = os.Stdout
-	trust.Stderr = os.Stderr
+	if Verbose {
+		trust.Stdout = os.Stdout
+		trust.Stderr = os.Stderr
+	}
 	if err := trust.Run(); err != nil {
 		return fmt.Errorf("frankenphp trust: %w", err)
 	}

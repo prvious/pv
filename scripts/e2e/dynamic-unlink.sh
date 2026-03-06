@@ -6,7 +6,7 @@ sudo -E pv unlink e2e-static
 sleep 2
 
 # Verify removed from list
-if pv list | grep -q "e2e-static"; then
+if pv list 2>&1 | grep -q "e2e-static"; then
   echo "FAIL: e2e-static still in list after unlink"
   exit 1
 fi
