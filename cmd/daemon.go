@@ -66,7 +66,27 @@ var daemonDisableCmd = &cobra.Command{
 	},
 }
 
+var daemonRestartCmd = &cobra.Command{
+	Use:   "daemon:restart",
+	Short: "Restart the pv daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !daemon.IsLoaded() {
+			ui.Subtle("Daemon is not running")
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
+		}
+
+		return ui.Step("Restarting pv daemon...", func() (string, error) {
+			if err := daemon.Restart(); err != nil {
+				return "", fmt.Errorf("cannot restart daemon: %w", err)
+			}
+			return "Daemon restarted", nil
+		})
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(daemonEnableCmd)
 	rootCmd.AddCommand(daemonDisableCmd)
+	rootCmd.AddCommand(daemonRestartCmd)
 }

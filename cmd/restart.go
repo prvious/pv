@@ -16,19 +16,9 @@ var restartCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr)
 
-		// Daemon mode — use launchctl kickstart for atomic restart.
+		// Daemon mode — delegate to daemon:restart.
 		if daemon.IsLoaded() {
-			if err := ui.Step("Restarting pv daemon...", func() (string, error) {
-				if err := daemon.Restart(); err != nil {
-					return "", fmt.Errorf("cannot restart daemon: %w", err)
-				}
-				return "pv restarted", nil
-			}); err != nil {
-				return err
-			}
-
-			fmt.Fprintln(os.Stderr)
-			return nil
+			return daemonRestartCmd.RunE(daemonRestartCmd, nil)
 		}
 
 		// Foreground mode — reload config via admin API.
