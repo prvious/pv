@@ -106,6 +106,14 @@ var linkCmd = &cobra.Command{
 		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(phpVersion))
 		fmt.Fprintln(os.Stderr)
 
+		// Detect and bind services.
+		detectAndBindServices(absPath, name, reg)
+
+		// Save again in case services were bound.
+		if err := reg.Save(); err != nil {
+			return fmt.Errorf("cannot save registry: %w", err)
+		}
+
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
 				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)))

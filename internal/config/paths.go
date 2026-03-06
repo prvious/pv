@@ -135,6 +135,23 @@ func CACertPath() string {
 	return filepath.Join(PvDir(), "caddy", "pki", "authorities", "local", "root.crt")
 }
 
+func ServicesDir() string {
+	return filepath.Join(PvDir(), "services")
+}
+
+func ServiceDataDir(service, version string) string {
+	return filepath.Join(ServicesDir(), service, version, "data")
+}
+
+func ColimaPath() string {
+	return filepath.Join(BinDir(), "colima")
+}
+
+func ColimaSocketPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".colima", "pv", "docker.sock")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),
@@ -145,6 +162,7 @@ func EnsureDirs() error {
 		PhpDir(),
 		ComposerDir(),
 		ComposerCacheDir(),
+		ServicesDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
@@ -165,7 +166,18 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 4: Configure environment.
+		// Step 4: Install Colima (container runtime for services).
+		if err := ui.StepProgress("Installing Colima...", func(progress func(written, total int64)) (string, error) {
+			if err := colima.Install(client, progress); err != nil {
+				return "", fmt.Errorf("cannot install Colima: %w", err)
+			}
+			return "Colima installed", nil
+		}); err != nil {
+			// Colima install failure is non-fatal — services are optional.
+			fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Muted.Render("!"), ui.Muted.Render(fmt.Sprintf("Colima install skipped: %v", err)))
+		}
+
+		// Step 5: Configure environment.
 		if err := ui.Step("Configuring environment...", func() (string, error) {
 			// Generate Caddyfile.
 			if err := caddy.GenerateCaddyfile(); err != nil {

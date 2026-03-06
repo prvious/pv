@@ -9,7 +9,16 @@ import (
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 )
+
+// --- Template for service console reverse proxy (*.pv.{tld}) ---
+
+const serviceConsoleTmpl = `{{.Subdomain}}.pv.{{.TLD}} {
+    tls internal
+    reverse_proxy 127.0.0.1:{{.Port}}
+}
+`
 
 // --- Templates for the main process (direct serving) ---
 
@@ -163,6 +172,12 @@ type versionCaddyData struct {
 	LogPath string
 }
 
+type serviceConsoleData struct {
+	Subdomain string
+	TLD       string
+	Port      int
+}
+
 // GenerateSiteConfig generates caddy config files for a project.
 // If globalPHP is empty, all PHP projects are served directly (single-version mode).
 // If the project uses the globalPHP version (or is static/unknown), it generates
@@ -290,6 +305,14 @@ func GenerateAllConfigs(projects []registry.Project, globalPHP string) error {
 		}
 	}
 
+	// Generate service console reverse proxy configs (*.pv.{tld}).
+	reg, err := registry.Load()
+	if err == nil && len(reg.Services) > 0 {
+		if err := GenerateServiceSiteConfigs(reg); err != nil {
+			return err
+		}
+	}
+
 	// Generate main Caddyfile.
 	if err := GenerateCaddyfile(); err != nil {
 		return err
@@ -320,6 +343,56 @@ func ActiveVersions(projects []registry.Project, globalPHP string) map[string]bo
 		}
 	}
 	return active
+}
+
+// GenerateServiceSiteConfigs generates Caddy reverse_proxy configs for service
+// web consoles under *.pv.{tld} (e.g. s3.pv.test -> S3 console on :9001).
+func GenerateServiceSiteConfigs(reg *registry.Registry) error {
+	settings, err := config.LoadSettings()
+	if err != nil {
+		return err
+	}
+
+	tmpl, err := template.New("serviceConsole").Parse(serviceConsoleTmpl)
+	if err != nil {
+		return err
+	}
+
+	for key := range reg.Services {
+		// Parse service name from key.
+		svcName := key
+		if idx := len(key) - 1; idx > 0 {
+			for i := 0; i < len(key); i++ {
+				if key[i] == ':' {
+					svcName = key[:i]
+					break
+				}
+			}
+		}
+
+		svc, err := services.Lookup(svcName)
+		if err != nil {
+			continue
+		}
+
+		for _, route := range svc.WebRoutes() {
+			var buf bytes.Buffer
+			if err := tmpl.Execute(&buf, serviceConsoleData{
+				Subdomain: route.Subdomain,
+				TLD:       settings.TLD,
+				Port:      route.Port,
+			}); err != nil {
+				return err
+			}
+
+			outPath := filepath.Join(config.SitesDir(), "_svc-"+route.Subdomain+".caddy")
+			if err := os.WriteFile(outPath, buf.Bytes(), 0644); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // GenerateAllSiteConfigs generates site configs for all projects (single-version mode).

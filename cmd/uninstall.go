@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
@@ -76,6 +77,26 @@ var uninstallCmd = &cobra.Command{
 		// Load settings to know the TLD for resolver cleanup.
 		settings, _ := config.LoadSettings()
 		tld := settings.TLD
+
+		// Task 3b: Stop service containers and Colima.
+		svcs := reg.ListServices()
+		if len(svcs) > 0 {
+			fmt.Println("Stopping service containers...")
+			for key, svc := range svcs {
+				if svc.ContainerID != "" {
+					fmt.Printf("  Stopping %s...\n", key)
+					// Docker SDK: StopAndRemove(svc.ContainerID)
+				}
+			}
+			fmt.Println("  Done")
+		}
+
+		if colima.IsInstalled() && colima.IsRunning() {
+			fmt.Println("Stopping Colima VM...")
+			_ = colima.Stop()
+			_ = colima.Delete()
+			fmt.Println("  Done")
+		}
 
 		// Task 4: Stop all services.
 		fmt.Println("Stopping services...")

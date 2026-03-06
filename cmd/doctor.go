@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
@@ -50,6 +51,9 @@ var doctorCmd = &cobra.Command{
 		allChecks = append(allChecks, runNetworkChecks(settings))
 		allChecks = append(allChecks, runServerChecks(globalPHP, reg))
 		allChecks = append(allChecks, runProjectChecks(settings, reg, globalPHP))
+		if svcChecks := runServiceChecks(reg); len(svcChecks.Checks) > 0 {
+			allChecks = append(allChecks, svcChecks)
+		}
 
 		fmt.Println("pv doctor")
 		fmt.Println()
@@ -535,6 +539,70 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 	}
 
 	return sectionResult{Name: "Projects", Checks: checks}
+}
+
+// --- Service Checks ---
+
+func runServiceChecks(reg *registry.Registry) sectionResult {
+	var checks []check
+
+	svcs := reg.ListServices()
+	if len(svcs) == 0 {
+		return sectionResult{Name: "Services", Checks: checks}
+	}
+
+	// Check Colima.
+	if colima.IsInstalled() {
+		if colima.IsRunning() {
+			checks = append(checks, check{Name: "Colima VM running", Status: true})
+		} else {
+			checks = append(checks, check{
+				Name:    "Colima VM",
+				Status:  false,
+				Message: "Colima VM is not running",
+				Fix:     "pv service start",
+			})
+		}
+	} else {
+		checks = append(checks, check{
+			Name:    "Colima",
+			Status:  false,
+			Message: "Colima not installed",
+			Fix:     "pv install",
+		})
+	}
+
+	// Check Docker socket.
+	socketPath := config.ColimaSocketPath()
+	if fileExists(socketPath) {
+		checks = append(checks, check{Name: "Docker Engine reachable", Status: true})
+	} else {
+		checks = append(checks, check{
+			Name:    "Docker Engine",
+			Status:  false,
+			Message: "Docker socket not found at " + socketPath,
+			Fix:     "pv service start",
+		})
+	}
+
+	// Check each registered service.
+	for key, svc := range svcs {
+		if svc.ContainerID != "" {
+			checks = append(checks, check{
+				Name:   fmt.Sprintf("%s running on :%d", key, svc.Port),
+				Status: true,
+			})
+		} else {
+			checks = append(checks, check{
+				Name:    key,
+				Status:  false,
+				Message: "not running",
+				Fix:     fmt.Sprintf("pv service start %s", key),
+			})
+		}
+	}
+
+	return sectionResult{Name: "Services", Checks: checks}
 }
 
 // --- Helpers ---

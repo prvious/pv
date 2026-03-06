@@ -456,6 +456,90 @@ func TestGenerateCaddyfile(t *testing.T) {
 	}
 }
 
+func TestGenerateServiceSiteConfigs(t *testing.T) {
+	scaffold(t)
+
+	reg := &registry.Registry{
+		Projects: []registry.Project{},
+		Services: map[string]*registry.ServiceInstance{
+			"s3": {
+				Image:       "rustfs/rustfs:latest",
+				Port:        9000,
+				ConsolePort: 9001,
+			},
+			"redis": {
+				Image: "redis:latest",
+				Port:  6379,
+			},
+		},
+	}
+
+	if err := GenerateServiceSiteConfigs(reg); err != nil {
+		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
+	}
+
+	// S3 has subdomain "s3", so _svc-s3.caddy should exist.
+	svcPath := filepath.Join(config.SitesDir(), "_svc-s3.caddy")
+	data, err := os.ReadFile(svcPath)
+	if err != nil {
+		t.Fatalf("expected _svc-s3.caddy to exist: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "s3.pv.test {") {
+		t.Errorf("expected 's3.pv.test {' in output, got:\n%s", content)
+	}
+	if !strings.Contains(content, "reverse_proxy 127.0.0.1:9001") {
+		t.Errorf("expected 'reverse_proxy 127.0.0.1:9001', got:\n%s", content)
+	}
+	if !strings.Contains(content, "tls internal") {
+		t.Errorf("expected 'tls internal', got:\n%s", content)
+	}
+
+	// S3 API route: _svc-s3-api.caddy should also exist.
+	apiPath := filepath.Join(config.SitesDir(), "_svc-s3-api.caddy")
+	apiData, err := os.ReadFile(apiPath)
+	if err != nil {
+		t.Fatalf("expected _svc-s3-api.caddy to exist: %v", err)
+	}
+	apiContent := string(apiData)
+	if !strings.Contains(apiContent, "s3-api.pv.test {") {
+		t.Errorf("expected 's3-api.pv.test {' in output, got:\n%s", apiContent)
+	}
+	if !strings.Contains(apiContent, "reverse_proxy 127.0.0.1:9000") {
+		t.Errorf("expected 'reverse_proxy 127.0.0.1:9000', got:\n%s", apiContent)
+	}
+
+	// Redis has no web routes, so only _svc-s3 and _svc-s3-api should exist.
+	expected := map[string]bool{"_svc-s3.caddy": true, "_svc-s3-api.caddy": true}
+	entries, _ := os.ReadDir(config.SitesDir())
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "_svc-") && !expected[e.Name()] {
+			t.Errorf("unexpected service config file: %s", e.Name())
+		}
+	}
+}
+
+func TestGenerateServiceSiteConfigs_Empty(t *testing.T) {
+	scaffold(t)
+
+	reg := &registry.Registry{
+		Projects: []registry.Project{},
+		Services: map[string]*registry.ServiceInstance{},
+	}
+
+	if err := GenerateServiceSiteConfigs(reg); err != nil {
+		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
+	}
+
+	// No _svc- files should exist.
+	entries, _ := os.ReadDir(config.SitesDir())
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "_svc-") {
+			t.Errorf("unexpected service config file: %s", e.Name())
+		}
+	}
+}
+
 func TestGenerateAllSiteConfigs(t *testing.T) {
 	scaffold(t)
 
