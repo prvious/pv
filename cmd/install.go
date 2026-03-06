@@ -28,7 +28,8 @@ var (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Set up pv for the first time",
+	Short: "Non-interactive setup — installs PHP, Composer, Mago, and Colima",
+	Long:  "Installs the core pv stack non-interactively. For an interactive setup wizard, use: pv setup",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 

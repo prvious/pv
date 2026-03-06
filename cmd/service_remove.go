@@ -13,7 +13,7 @@ import (
 )
 
 var serviceRemoveCmd = &cobra.Command{
-	Use:   "remove <service>",
+	Use:   "service:remove <service>",
 	Short: "Stop and remove a service container (data preserved)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,7 +63,7 @@ var serviceRemoveCmd = &cobra.Command{
 
 		fmt.Fprintln(os.Stderr)
 		ui.Subtle(fmt.Sprintf("Data preserved at %s", dataDir))
-		ui.Subtle(fmt.Sprintf("Run 'pv service add %s %s' to start it again.", svcName, version))
+		ui.Subtle(fmt.Sprintf("Run 'pv service:add %s %s' to start it again.", svcName, version))
 		fmt.Fprintln(os.Stderr)
 
 		return nil
@@ -71,5 +71,5 @@ var serviceRemoveCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceRemoveCmd)
+	rootCmd.AddCommand(serviceRemoveCmd)
 }

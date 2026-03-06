@@ -19,8 +19,8 @@ assert_contains "$OUTPUT" "e2e-php83" "e2e-php83 not in list"
 echo "$OUTPUT" | grep "e2e-octane" | grep -q "laravel-octane" || { echo "FAIL: octane type wrong"; exit 1; }
 echo "$OUTPUT" | grep "e2e-php83" | grep -q "8.3" || { echo "FAIL: php83 version wrong"; exit 1; }
 
-echo "==> pv php list (project associations)"
-PHP_OUTPUT=$(pv php list 2>&1)
+echo "==> pv php:list (project associations)"
+PHP_OUTPUT=$(pv php:list 2>&1)
 echo "$PHP_OUTPUT"
 echo "$PHP_OUTPUT" | grep "8.3" | grep -q "e2e-php83" || { echo "FAIL: php83 not associated with 8.3"; exit 1; }
 echo "$PHP_OUTPUT" | grep "8.4" | grep -q "(default)" || { echo "FAIL: 8.4 not marked default"; exit 1; }

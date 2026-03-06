@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
@@ -12,22 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var useCmd = &cobra.Command{
-	Use:   "use <php:version>",
-	Short: "Switch the global PHP version (e.g., pv use php:8.4)",
+var phpUseCmd = &cobra.Command{
+	Use:   "php:use <version>",
+	Short: "Switch the global PHP version (e.g., pv php:use 8.4)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		arg := args[0]
-		if !strings.HasPrefix(arg, "php:") {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Invalid format %s", ui.Bold.Render(arg)))
-			ui.FailDetail("Use php:<version> (e.g., pv use php:8.4)")
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
-		}
-
-		version := strings.TrimPrefix(arg, "php:")
+		version := args[0]
 		if version == "" {
 			return fmt.Errorf("version cannot be empty")
 		}
@@ -35,7 +24,7 @@ var useCmd = &cobra.Command{
 		if !phpenv.IsInstalled(version) {
 			fmt.Fprintln(os.Stderr)
 			ui.Fail(fmt.Sprintf("PHP %s is not installed", ui.Bold.Render(version)))
-			ui.FailDetail(fmt.Sprintf("Run: pv php install %s", version))
+			ui.FailDetail(fmt.Sprintf("Run: pv php:install %s", version))
 			fmt.Fprintln(os.Stderr)
 			cmd.SilenceUsage = true
 			return ui.ErrAlreadyPrinted
@@ -81,5 +70,5 @@ var useCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(useCmd)
+	rootCmd.AddCommand(phpUseCmd)
 }

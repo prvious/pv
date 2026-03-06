@@ -15,7 +15,7 @@ import (
 )
 
 var serviceAddCmd = &cobra.Command{
-	Use:   "add <service> [version]",
+	Use:   "service:add <service> [version]",
 	Short: "Add and start a service",
 	Long:  "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
 	Args:  cobra.RangeArgs(1, 2),
@@ -150,5 +150,5 @@ var serviceAddCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceAddCmd)
+	rootCmd.AddCommand(serviceAddCmd)
 }

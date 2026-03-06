@@ -128,7 +128,7 @@ func runBinaryChecks(globalPHP string, versions []string) sectionResult {
 				Name:    fmt.Sprintf("PHP %s", v),
 				Status:  false,
 				Message: fmt.Sprintf("missing: %s", strings.Join(missing, ", ")),
-				Fix:     fmt.Sprintf("pv php install %s", v),
+				Fix:     fmt.Sprintf("pv php:install %s", v),
 			})
 		}
 	}
@@ -138,7 +138,7 @@ func runBinaryChecks(globalPHP string, versions []string) sectionResult {
 			Name:    "PHP versions",
 			Status:  false,
 			Message: "no PHP versions installed",
-			Fix:     "pv php install 8.4",
+			Fix:     "pv php:install 8.4",
 		})
 	}
 
@@ -164,7 +164,7 @@ func runBinaryChecks(globalPHP string, versions []string) sectionResult {
 			Name:    "Mago",
 			Status:  false,
 			Message: "mago not found",
-			Fix:     "pv install",
+			Fix:     "pv mago:install",
 		})
 	}
 
@@ -241,7 +241,7 @@ func runEnvironmentChecks() sectionResult {
 				Name:    "FrankenPHP symlink",
 				Status:  false,
 				Message: fmt.Sprintf("broken symlink → %s", target),
-				Fix:     "pv use php:<version>",
+				Fix:     "pv php:use <version>",
 			})
 		}
 	} else if isExecutable(fpLink) {
@@ -467,7 +467,7 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 				Name:    fmt.Sprintf("Global PHP %s", globalPHP),
 				Status:  false,
 				Message: "configured global PHP version is not installed",
-				Fix:     fmt.Sprintf("pv php install %s", globalPHP),
+				Fix:     fmt.Sprintf("pv php:install %s", globalPHP),
 			})
 		}
 	} else {
@@ -475,7 +475,7 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 			Name:    "Global PHP version",
 			Status:  false,
 			Message: "no global PHP version configured",
-			Fix:     "pv php install 8.4",
+			Fix:     "pv php:install 8.4",
 		})
 	}
 
@@ -508,7 +508,7 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 				Name:    fmt.Sprintf("%s → %s (PHP %s)", domain, p.Path, phpV),
 				Status:  false,
 				Message: fmt.Sprintf("PHP %s is not installed", phpV),
-				Fix:     fmt.Sprintf("pv php install %s", phpV),
+				Fix:     fmt.Sprintf("pv php:install %s", phpV),
 			})
 			continue
 		}
@@ -560,7 +560,7 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 				Name:    "Colima VM",
 				Status:  false,
 				Message: "Colima VM is not running",
-				Fix:     "pv service start",
+				Fix:     "pv service:start",
 			})
 		}
 	} else {
@@ -581,7 +581,7 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 			Name:    "Docker Engine",
 			Status:  false,
 			Message: "Docker socket not found at " + socketPath,
-			Fix:     "pv service start",
+			Fix:     "pv service:start",
 		})
 	}
 
@@ -597,7 +597,7 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 				Name:    key,
 				Status:  false,
 				Message: "not running",
-				Fix:     fmt.Sprintf("pv service start %s", key),
+				Fix:     fmt.Sprintf("pv service:start %s", key),
 			})
 		}
 	}

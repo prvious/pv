@@ -10,7 +10,7 @@ import (
 )
 
 var serviceLogsCmd = &cobra.Command{
-	Use:   "logs <service>",
+	Use:   "service:logs <service>",
 	Short: "Tail container logs for a service",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,7 +33,7 @@ var serviceLogsCmd = &cobra.Command{
 		if instance.ContainerID == "" {
 			fmt.Fprintln(os.Stderr)
 			ui.Fail(fmt.Sprintf("Service %s is not running", ui.Bold.Render(key)))
-			ui.FailDetail(fmt.Sprintf("Start it first: pv service start %s", key))
+			ui.FailDetail(fmt.Sprintf("Start it first: pv service:start %s", key))
 			fmt.Fprintln(os.Stderr)
 			cmd.SilenceUsage = true
 			return ui.ErrAlreadyPrinted
@@ -48,5 +48,5 @@ var serviceLogsCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceLogsCmd)
+	rootCmd.AddCommand(serviceLogsCmd)
 }

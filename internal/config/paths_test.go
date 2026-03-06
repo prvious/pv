@@ -302,6 +302,7 @@ func TestEnsureDirs(t *testing.T) {
 		PhpDir(),
 		ComposerDir(),
 		ComposerCacheDir(),
+		InternalBinDir(),
 	}
 	for _, dir := range dirs {
 		info, err := os.Stat(dir)
@@ -312,6 +313,36 @@ func TestEnsureDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("%q is not a directory", dir)
 		}
+	}
+}
+
+func TestInternalBinDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := InternalBinDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "bin")) {
+		t.Errorf("InternalBinDir() = %q, want suffix .pv/internal/bin", got)
+	}
+}
+
+func TestColimaPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ColimaPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "bin", "colima")) {
+		t.Errorf("ColimaPath() = %q, want suffix .pv/internal/bin/colima", got)
+	}
+}
+
+func TestColimaSocketPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ColimaSocketPath()
+	if !strings.HasSuffix(got, filepath.Join(".colima", "pv", "docker.sock")) {
+		t.Errorf("ColimaSocketPath() = %q, want suffix .colima/pv/docker.sock", got)
 	}
 }
 
