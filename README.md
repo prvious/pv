@@ -146,9 +146,9 @@ pv uninstall         # Complete removal with guided cleanup
 ├── bin/                        # User PATH — shims and symlinks only
 │   ├── php                     # Shim (version resolution)
 │   ├── composer                # Shim (wraps PHAR with PHP)
-│   ├── frankenphp              # Symlink → ../php/{ver}/frankenphp
-│   ├── mago                    # Symlink → ../internal/bin/mago
-│   └── colima                  # Symlink → ../internal/bin/colima (opt-in)
+│   ├── frankenphp              # Symlink → ~/.pv/php/{ver}/frankenphp
+│   ├── mago                    # Symlink → ~/.pv/internal/bin/mago
+│   └── colima                  # Symlink → ~/.pv/internal/bin/colima (opt-in)
 ├── internal/bin/               # Private storage — real binaries
 │   ├── colima
 │   ├── mago

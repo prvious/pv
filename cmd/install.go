@@ -204,7 +204,7 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 5: DNS resolver (sudo).
+		// Step 6: DNS resolver (sudo).
 		if err := ui.Step("Setting up DNS resolver...", func() (string, error) {
 			if err := setup.RunSudoResolver(installTLD); err != nil {
 				return "", fmt.Errorf("DNS resolver setup failed: %w", err)
@@ -214,7 +214,7 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 6: Trust CA certificate (sudo).
+		// Step 7: Trust CA certificate (sudo).
 		if err := ui.Step("Trusting HTTPS certificate...", func() (string, error) {
 			if err := setup.RunSudoTrustWithServer(); err != nil {
 				return "", fmt.Errorf("CA trust failed: %w", err)
@@ -224,7 +224,7 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 7: Self-test.
+		// Step 8: Self-test.
 		if err := ui.Step("Running self-test...", func() (string, error) {
 			results := setup.RunSelfTest(installTLD)
 			var failures []string
@@ -241,7 +241,7 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		// Step 8: Shell PATH.
+		// Step 9: Shell PATH.
 		if err := ui.Step("Configuring shell...", func() (string, error) {
 			shell := setup.DetectShell()
 			configFile := setup.ShellConfigFile(shell)
