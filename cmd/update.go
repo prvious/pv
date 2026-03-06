@@ -2,103 +2,60 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
+	"net/http"
+	"os"
+	"syscall"
 	"time"
 
-	"net/http"
-
-	"github.com/prvious/pv/internal/binaries"
+	"github.com/prvious/pv/internal/colima"
+	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-var updateVerbose bool
+var (
+	updateVerbose    bool
+	noSelfUpdate     bool
+)
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Download and update all managed binaries",
+	Short: "Update pv and all managed tools to their latest versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
-
-		binaries.Verbose = updateVerbose
 
 		ui.Header(version)
 
 		client := &http.Client{}
 
-		// Step 1: Check for updates.
-		vs, err := binaries.LoadVersions()
-		if err != nil {
-			return fmt.Errorf("cannot load version state: %w", err)
-		}
-
-		type updateInfo struct {
-			binary  binaries.Binary
-			latest  string
-			current string
-			needed  bool
-		}
-
-		var updates []updateInfo
-		var anyNeeded bool
-
-		if err := ui.Step("Checking for updates...", func() (string, error) {
-			for _, b := range binaries.Tools() {
-				latest, err := binaries.FetchLatestVersion(client, b)
-				if err != nil {
-					return "", fmt.Errorf("cannot check %s version: %w", b.DisplayName, err)
-				}
-				needed := binaries.NeedsUpdate(vs, b, latest)
-				if needed {
-					anyNeeded = true
-				}
-				updates = append(updates, updateInfo{
-					binary:  b,
-					latest:  latest,
-					current: vs.Get(b.Name),
-					needed:  needed,
-				})
+		// Step 1: Self-update pv binary (unless --no-self-update).
+		if !noSelfUpdate {
+			reexeced, err := selfUpdate(client)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s pv self-update failed: %v\n", ui.Red.Render("!"), err)
 			}
-			if anyNeeded {
-				return "Updates available", nil
+			if reexeced {
+				return nil // unreachable — syscall.Exec replaces the process
 			}
-			return "Already up to date", nil
-		}); err != nil {
-			return err
-		}
-
-		if !anyNeeded {
-			fmt.Fprintln(cmd.OutOrStderr())
-			return nil
 		}
 
 		// Step 2: Update tools.
-		if err := ui.Step("Updating tools...", func() (string, error) {
-			var results []string
-			for _, u := range updates {
-				if !u.needed {
-					results = append(results, fmt.Sprintf("%s up to date", u.binary.DisplayName))
-					continue
-				}
+		if err := phpUpdateCmd.RunE(phpUpdateCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s PHP update failed: %v\n", ui.Red.Render("!"), err)
+		}
 
-				if err := binaries.InstallBinary(client, u.binary, u.latest); err != nil {
-					return "", fmt.Errorf("cannot install %s: %w", u.binary.DisplayName, err)
-				}
+		if err := magoUpdateCmd.RunE(magoUpdateCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Mago update failed: %v\n", ui.Red.Render("!"), err)
+		}
 
-				vs.Set(u.binary.Name, u.latest)
-				if err := vs.Save(); err != nil {
-					return "", fmt.Errorf("cannot save version state: %w", err)
-				}
+		if err := composerUpdateCmd.RunE(composerUpdateCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Composer update failed: %v\n", ui.Red.Render("!"), err)
+		}
 
-				if u.current != "" {
-					results = append(results, fmt.Sprintf("%s %s → %s", u.binary.DisplayName, u.current, u.latest))
-				} else {
-					results = append(results, fmt.Sprintf("%s %s", u.binary.DisplayName, u.latest))
-				}
+		if colima.IsInstalled() {
+			if err := colimaUpdateCmd.RunE(colimaUpdateCmd, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "  %s Colima update failed: %v\n", ui.Red.Render("!"), err)
 			}
-			return strings.Join(results, ", "), nil
-		}); err != nil {
-			return err
 		}
 
 		ui.Footer(start, "")
@@ -107,7 +64,42 @@ var updateCmd = &cobra.Command{
 	},
 }
 
+// selfUpdate checks for a new pv version, downloads it, and re-execs.
+// Returns true if the process was re-execed (caller should return immediately).
+func selfUpdate(client *http.Client) (bool, error) {
+	latest, needed, err := selfupdate.NeedsUpdate(client, version)
+	if err != nil {
+		return false, err
+	}
+
+	if !needed {
+		ui.Success("pv already up to date")
+		return false, nil
+	}
+
+	var newBinary string
+	if err := ui.StepProgress("Updating pv...", func(progress func(written, total int64)) (string, error) {
+		path, err := selfupdate.Update(client, latest, progress)
+		if err != nil {
+			return "", err
+		}
+		newBinary = path
+		return fmt.Sprintf("pv %s -> %s", version, latest), nil
+	}); err != nil {
+		return false, err
+	}
+
+	// Re-exec the new binary with --no-self-update to continue with tool updates.
+	newArgs := []string{"pv", "update", "--no-self-update"}
+	if updateVerbose {
+		newArgs = append(newArgs, "--verbose")
+	}
+
+	return true, syscall.Exec(newBinary, newArgs, os.Environ())
+}
+
 func init() {
 	updateCmd.Flags().BoolVarP(&updateVerbose, "verbose", "v", false, "Show detailed output")
+	updateCmd.Flags().BoolVar(&noSelfUpdate, "no-self-update", false, "Skip updating the pv binary itself")
 	rootCmd.AddCommand(updateCmd)
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/setup"
+	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -148,9 +150,15 @@ var installCmd = &cobra.Command{
 				toolVersions = append(toolVersions, fmt.Sprintf("%s %s", b.DisplayName, displayVersion))
 			}
 
-			// Write shims.
-			if err := phpenv.WriteShims(); err != nil {
-				return "", fmt.Errorf("cannot write shims: %w", err)
+			// Migrate old composer.phar location.
+			oldComposer := filepath.Join(config.DataDir(), "composer.phar")
+			if _, err := os.Stat(oldComposer); err == nil {
+				os.Remove(oldComposer)
+			}
+
+			// Expose tools (shims + symlinks).
+			if err := tools.ExposeAll(); err != nil {
+				return "", fmt.Errorf("cannot expose tools: %w", err)
 			}
 
 			// Migrate existing Composer config if present.

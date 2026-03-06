@@ -78,7 +78,11 @@ func ComposerBinDir() string {
 }
 
 func ComposerPharPath() string {
-	return filepath.Join(DataDir(), "composer.phar")
+	return filepath.Join(InternalBinDir(), "composer.phar")
+}
+
+func MagoPath() string {
+	return filepath.Join(InternalBinDir(), "mago")
 }
 
 func PhpDir() string {

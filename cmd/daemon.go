@@ -9,14 +9,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var daemonCmd = &cobra.Command{
-	Use:   "daemon",
-	Short: "Manage the pv background daemon",
-}
-
-var daemonInstallCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Install pv as a login daemon (starts on boot)",
+var daemonEnableCmd = &cobra.Command{
+	Use:   "daemon:enable",
+	Short: "Enable pv as a login daemon (starts on boot)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr)
 
@@ -43,9 +38,9 @@ var daemonInstallCmd = &cobra.Command{
 	},
 }
 
-var daemonUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Uninstall the pv login daemon",
+var daemonDisableCmd = &cobra.Command{
+	Use:   "daemon:disable",
+	Short: "Disable the pv login daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr)
 
@@ -72,7 +67,6 @@ var daemonUninstallCmd = &cobra.Command{
 }
 
 func init() {
-	daemonCmd.AddCommand(daemonInstallCmd)
-	daemonCmd.AddCommand(daemonUninstallCmd)
-	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(daemonEnableCmd)
+	rootCmd.AddCommand(daemonDisableCmd)
 }

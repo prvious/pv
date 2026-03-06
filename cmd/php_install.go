@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"regexp"
 
 	"github.com/prvious/pv/internal/phpenv"
+	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -37,13 +37,8 @@ var phpInstallCmd = &cobra.Command{
 
 		fmt.Fprintln(os.Stderr)
 
-		client := &http.Client{}
-		if err := ui.StepProgress("Installing PHP "+version+"...", func(progress func(written, total int64)) (string, error) {
-			if err := phpenv.InstallProgress(client, version, progress); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("PHP %s installed", version), nil
-		}); err != nil {
+		// Download.
+		if err := phpDownloadCmd.RunE(phpDownloadCmd, []string{version}); err != nil {
 			return err
 		}
 
@@ -53,6 +48,14 @@ var phpInstallCmd = &cobra.Command{
 				return err
 			}
 			ui.Success(fmt.Sprintf("PHP %s set as global default", version))
+		}
+
+		// Expose PHP and FrankenPHP to PATH.
+		for _, name := range []string{"php", "frankenphp"} {
+			t := tools.Get(name)
+			if t != nil && t.AutoExpose {
+				_ = tools.Expose(t)
+			}
 		}
 
 		fmt.Fprintln(os.Stderr)

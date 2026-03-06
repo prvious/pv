@@ -2,11 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 
-	"github.com/prvious/pv/internal/colima"
-	"github.com/prvious/pv/internal/ui"
+	"github.com/prvious/pv/internal/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -16,15 +14,17 @@ var colimaInstallCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr)
 
-		client := &http.Client{}
-
-		if err := ui.StepProgress("Installing Colima...", func(progress func(written, total int64)) (string, error) {
-			if err := colima.Install(client, progress); err != nil {
-				return "", fmt.Errorf("cannot install Colima: %w", err)
-			}
-			return "Colima installed", nil
-		}); err != nil {
+		// Download.
+		if err := colimaDownloadCmd.RunE(colimaDownloadCmd, nil); err != nil {
 			return err
+		}
+
+		// Expose (no-op for colima since AutoExpose=false).
+		t := tools.Get("colima")
+		if t != nil && t.AutoExpose {
+			if err := tools.Expose(t); err != nil {
+				return fmt.Errorf("cannot expose Colima: %w", err)
+			}
 		}
 
 		fmt.Fprintln(os.Stderr)

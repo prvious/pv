@@ -280,8 +280,18 @@ func TestComposerPharPath(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	got := ComposerPharPath()
-	if !strings.HasSuffix(got, filepath.Join(".pv", "data", "composer.phar")) {
-		t.Errorf("ComposerPharPath() = %q, want suffix .pv/data/composer.phar", got)
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "bin", "composer.phar")) {
+		t.Errorf("ComposerPharPath() = %q, want suffix .pv/internal/bin/composer.phar", got)
+	}
+}
+
+func TestMagoPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := MagoPath()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "bin", "mago")) {
+		t.Errorf("MagoPath() = %q, want suffix .pv/internal/bin/mago", got)
 	}
 }
 

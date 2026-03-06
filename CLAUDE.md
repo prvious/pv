@@ -33,12 +33,15 @@ internal/
     settings.go               # TLD + GlobalPHP settings
   registry/                   # project registry (JSON in ~/.pv/data/registry.json)
     registry.go               # Project{Name,Path,Type,PHP}, Registry with CRUD + GroupByPHP
+  tools/                      # tool abstraction layer
+    tool.go                   # Tool struct, registry, Expose/Unexpose/IsExposed/ExposeAll
+    shims.go                  # PHP + Composer shim scripts
   phpenv/                     # PHP version management
     phpenv.go                 # InstalledVersions, IsInstalled, SetGlobal, Remove
     install.go                # Download FrankenPHP from prvious/pv releases + PHP CLI from static-php.dev
     resolve.go                # ResolveVersion: .pv-php → composer.json → global default
     available.go              # AvailableVersions from GitHub releases
-    shim.go                   # WriteShims: creates ~/.pv/bin/php shim script
+    shim.go                   # WriteShims (delegates to tools.ExposeAll)
   caddy/                      # Caddyfile generation (multi-version aware)
     caddy.go                  # GenerateSiteConfig(project, globalPHP), GenerateAllConfigs, GenerateVersionCaddyfile
   server/                     # process management
@@ -54,7 +57,15 @@ internal/
 
 ```
 ~/.pv/
-├── bin/           # symlinks to active global version + Mago, Composer
+├── bin/                        # User PATH — shims and symlinks ONLY
+│   ├── php                     # Shim (version resolution)
+│   ├── composer                # Shim (wraps PHAR with PHP)
+│   ├── frankenphp → ../php/{ver}/frankenphp  # Symlink
+│   └── mago → ../internal/bin/mago           # Symlink
+├── internal/bin/               # pv's private toolbox — never on PATH
+│   ├── colima                  # Container runtime
+│   ├── mago                    # Real binary
+│   └── composer.phar           # Real PHAR
 ├── config/        # Caddyfiles + settings.json
 │   ├── Caddyfile              # main process
 │   ├── php-8.3.Caddyfile      # secondary process (if needed)
@@ -79,6 +90,21 @@ internal/
 
 - **Unit tests** (`go test ./...`): Run locally. Use `t.Setenv("HOME", t.TempDir())` for filesystem isolation. Fake binaries (bash scripts) can stand in for real PHP when testing shims.
 - **E2E tests** (`.github/workflows/e2e.yml` + `scripts/e2e/`): Run on GitHub Actions (macOS runner) to simulate real end-user flows. These tests use real PHP, real Composer, real FrankenPHP — things we can't easily run locally. **When your feature involves real binary execution, network calls, DNS, HTTPS, or anything that needs a full `pv install` environment, add an e2e script in `scripts/e2e/` and wire it into the workflow.** Each script sources `scripts/e2e/helpers.sh` for `assert_contains`, `assert_fails`, `curl_site`, etc. The workflow phases run sequentially: install → verify → fixtures → link → start → curl → shim → composer → errors → stop → lifecycle → update → verify-final.
+
+## Tool command pattern (:download / :path / :install)
+
+Every managed tool follows a strict three-command pattern:
+
+- **`:download`** — Fetches the binary to private storage (`internal/bin/` or `php/{ver}/`). Contains the actual download logic.
+- **`:path`** — Exposes the binary to the user's PATH (`~/.pv/bin/`) via shim or symlink. Supports `--remove` to unexpose.
+- **`:install`** — Orchestrator only. Calls `:download` RunE, then `tools.Expose()`. **Never duplicates download logic.**
+
+Rules:
+1. `:install` must always delegate to `:download` — never inline download logic.
+2. Download logic lives in `internal/binaries/` or `internal/phpenv/`, not in `cmd/`.
+3. Exposure logic lives in `internal/tools/` — shims and symlinks are managed by `tools.Expose()` / `tools.Unexpose()`.
+4. The `internal/tools/` package defines each tool's `ExposureType` (None, Symlink, Shim) and `AutoExpose` flag.
+5. `tools.ExposeAll()` is the single entry point for batch-exposing all auto-exposed tools (called by `pv install` and `pv setup`).
 
 ## Key patterns
 

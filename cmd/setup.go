@@ -12,6 +12,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -224,9 +225,9 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Write shims.
-		if err := phpenv.WriteShims(); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Shims failed: %v\n", ui.Red.Render("!"), err)
+		// Expose tools (shims + symlinks).
+		if err := tools.ExposeAll(); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Tool exposure failed: %v\n", ui.Red.Render("!"), err)
 		}
 
 		// Print summary.
