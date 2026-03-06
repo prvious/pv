@@ -14,8 +14,8 @@ import (
 var validPHPVersion = regexp.MustCompile(`^\d+\.\d+$`)
 
 var phpInstallCmd = &cobra.Command{
-	Use:   "install <version>",
-	Short: "Install a PHP version (e.g., pv php install 8.4)",
+	Use:   "php:install <version>",
+	Short: "Install a PHP version (e.g., pv php:install 8.4)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version := args[0]
@@ -61,5 +61,5 @@ var phpInstallCmd = &cobra.Command{
 }
 
 func init() {
-	phpCmd.AddCommand(phpInstallCmd)
+	rootCmd.AddCommand(phpInstallCmd)
 }

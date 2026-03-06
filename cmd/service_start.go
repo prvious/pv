@@ -11,7 +11,7 @@ import (
 )
 
 var serviceStartCmd = &cobra.Command{
-	Use:   "start [service]",
+	Use:   "service:start [service]",
 	Short: "Start a service or all services",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -50,7 +50,7 @@ var serviceStartCmd = &cobra.Command{
 			if reg.FindService(key) == nil {
 				fmt.Fprintln(os.Stderr)
 				ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-				ui.FailDetail("Run 'pv service list' to see available services")
+				ui.FailDetail("Run 'pv service:list' to see available services")
 				fmt.Fprintln(os.Stderr)
 				cmd.SilenceUsage = true
 				return ui.ErrAlreadyPrinted
@@ -70,5 +70,5 @@ var serviceStartCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceStartCmd)
+	rootCmd.AddCommand(serviceStartCmd)
 }

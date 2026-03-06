@@ -12,9 +12,8 @@ import (
 )
 
 var phpListCmd = &cobra.Command{
-	Use:     "list",
-	Aliases: []string{"ls"},
-	Short:   "List installed PHP versions",
+	Use:   "php:list",
+	Short: "List installed PHP versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		versions, err := phpenv.InstalledVersions()
 		if err != nil {
@@ -22,7 +21,7 @@ var phpListCmd = &cobra.Command{
 		}
 		if len(versions) == 0 {
 			fmt.Fprintln(os.Stderr)
-			ui.Subtle("No PHP versions installed. Run: pv php install <version>")
+			ui.Subtle("No PHP versions installed. Run: pv php:install <version>")
 			fmt.Fprintln(os.Stderr)
 			return nil
 		}
@@ -73,5 +72,5 @@ var phpListCmd = &cobra.Command{
 }
 
 func init() {
-	phpCmd.AddCommand(phpListCmd)
+	rootCmd.AddCommand(phpListCmd)
 }

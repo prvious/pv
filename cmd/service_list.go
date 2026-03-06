@@ -11,9 +11,8 @@ import (
 )
 
 var serviceListCmd = &cobra.Command{
-	Use:     "list",
-	Aliases: []string{"ls"},
-	Short:   "List all services",
+	Use:   "service:list",
+	Short: "List all services",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {
@@ -23,7 +22,7 @@ var serviceListCmd = &cobra.Command{
 		svcs := reg.ListServices()
 		if len(svcs) == 0 {
 			fmt.Fprintln(os.Stderr)
-			ui.Subtle("No services configured. Run 'pv service add mysql' to get started.")
+			ui.Subtle("No services configured. Run 'pv service:add mysql' to get started.")
 			fmt.Fprintln(os.Stderr)
 			return nil
 		}
@@ -65,5 +64,5 @@ var serviceListCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceListCmd)
+	rootCmd.AddCommand(serviceListCmd)
 }

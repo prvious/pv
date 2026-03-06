@@ -10,8 +10,8 @@ echo "==> Verify 8.3 binaries"
 ls -la ~/.pv/php/8.3/frankenphp
 ls -la ~/.pv/php/8.3/php
 
-echo "==> pv php list"
-OUTPUT=$(pv php list 2>&1)
+echo "==> pv php:list"
+OUTPUT=$(pv php:list 2>&1)
 echo "$OUTPUT"
 assert_contains "$OUTPUT" "(default)" "8.4 not marked as default"
 assert_contains "$OUTPUT" "8.3" "8.3 not listed"

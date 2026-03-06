@@ -12,7 +12,7 @@ import (
 )
 
 var phpRemoveCmd = &cobra.Command{
-	Use:   "remove <version>",
+	Use:   "php:remove <version>",
 	Short: "Remove an installed PHP version",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,5 +63,5 @@ var phpRemoveCmd = &cobra.Command{
 }
 
 func init() {
-	phpCmd.AddCommand(phpRemoveCmd)
+	rootCmd.AddCommand(phpRemoveCmd)
 }

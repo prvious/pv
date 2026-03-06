@@ -33,7 +33,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 			bindProjectService(reg, projectName, "mysql", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "DB_CONNECTION=mysql detected but no MySQL service running.\n    Run: pv service add mysql")
+			suggestions = append(suggestions, "DB_CONNECTION=mysql detected but no MySQL service running.\n    Run: pv service:add mysql")
 		}
 	}
 
@@ -45,7 +45,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 			bindProjectService(reg, projectName, "postgres", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "DB_CONNECTION=pgsql detected but no PostgreSQL service running.\n    Run: pv service add postgres")
+			suggestions = append(suggestions, "DB_CONNECTION=pgsql detected but no PostgreSQL service running.\n    Run: pv service:add postgres")
 		}
 	}
 
@@ -57,7 +57,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 			bindProjectService(reg, projectName, "redis", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "REDIS_HOST detected but no Redis service running.\n    Run: pv service add redis")
+			suggestions = append(suggestions, "REDIS_HOST detected but no Redis service running.\n    Run: pv service:add redis")
 		}
 	}
 
@@ -69,7 +69,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 			bindProjectService(reg, projectName, "mail", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "MAIL_HOST (localhost) detected but no Mail service running.\n    Run: pv service add mail")
+			suggestions = append(suggestions, "MAIL_HOST (localhost) detected but no Mail service running.\n    Run: pv service:add mail")
 		}
 	}
 
@@ -81,7 +81,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 			bindProjectService(reg, projectName, "s3", svcKey)
 			needsEnvUpdate = true
 		} else {
-			suggestions = append(suggestions, "AWS_ENDPOINT (localhost) detected but no S3 service running.\n    Run: pv service add s3")
+			suggestions = append(suggestions, "AWS_ENDPOINT (localhost) detected but no S3 service running.\n    Run: pv service:add s3")
 		}
 	}
 

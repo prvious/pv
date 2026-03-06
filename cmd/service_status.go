@@ -13,7 +13,7 @@ import (
 )
 
 var serviceStatusCmd = &cobra.Command{
-	Use:   "status <service>",
+	Use:   "service:status <service>",
 	Short: "Show detailed status for a service",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -74,5 +74,5 @@ var serviceStatusCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceStatusCmd)
+	rootCmd.AddCommand(serviceStatusCmd)
 }

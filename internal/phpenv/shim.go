@@ -57,13 +57,13 @@ resolve_version() {
 
 VERSION=$(resolve_version)
 if [ -z "$VERSION" ]; then
-    echo "pv: no PHP version configured. Run: pv php install <version>" >&2
+    echo "pv: no PHP version configured. Run: pv php:install <version>" >&2
     exit 1
 fi
 
 BINARY="$PV_PHP_DIR/$VERSION/php"
 if [ ! -x "$BINARY" ]; then
-    echo "pv: PHP $VERSION is not installed. Run: pv php install $VERSION" >&2
+    echo "pv: PHP $VERSION is not installed. Run: pv php:install $VERSION" >&2
     exit 1
 fi
 
@@ -117,13 +117,13 @@ resolve_version() {
 
 VERSION=$(resolve_version)
 if [ -z "$VERSION" ]; then
-    echo "pv: no PHP version configured. Run: pv php install <version>" >&2
+    echo "pv: no PHP version configured. Run: pv php:install <version>" >&2
     exit 1
 fi
 
 PHP_BINARY="$PV_PHP_DIR/$VERSION/php"
 if [ ! -x "$PHP_BINARY" ]; then
-    echo "pv: PHP $VERSION is not installed. Run: pv php install $VERSION" >&2
+    echo "pv: PHP $VERSION is not installed. Run: pv php:install $VERSION" >&2
     exit 1
 fi
 

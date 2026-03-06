@@ -13,7 +13,7 @@ import (
 )
 
 var serviceDestroyCmd = &cobra.Command{
-	Use:   "destroy <service>",
+	Use:   "service:destroy <service>",
 	Short: "Stop, remove container, and delete all data for a service",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -85,5 +85,5 @@ var serviceDestroyCmd = &cobra.Command{
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceDestroyCmd)
+	rootCmd.AddCommand(serviceDestroyCmd)
 }
