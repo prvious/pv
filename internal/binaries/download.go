@@ -13,8 +13,17 @@ import (
 	"strings"
 )
 
+// ProgressFunc is called during download with bytes written so far and total size.
+// total may be -1 if Content-Length is not available.
+type ProgressFunc func(written, total int64)
+
 // Download fetches a URL to destPath atomically via temp file + rename.
 func Download(client *http.Client, url, destPath string) error {
+	return DownloadProgress(client, url, destPath, nil)
+}
+
+// DownloadProgress fetches a URL to destPath with optional progress reporting.
+func DownloadProgress(client *http.Client, url, destPath string, progress ProgressFunc) error {
 	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
@@ -32,7 +41,13 @@ func Download(client *http.Client, url, destPath string) error {
 	}
 	tmpPath := tmp.Name()
 
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
+	var reader io.Reader = resp.Body
+	if progress != nil {
+		total := resp.ContentLength
+		reader = &progressReader{reader: resp.Body, total: total, fn: progress}
+	}
+
+	if _, err := io.Copy(tmp, reader); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("download write failed: %w", err)
@@ -47,6 +62,22 @@ func Download(client *http.Client, url, destPath string) error {
 		return fmt.Errorf("cannot rename temp file: %w", err)
 	}
 	return nil
+}
+
+type progressReader struct {
+	reader  io.Reader
+	total   int64
+	written int64
+	fn      ProgressFunc
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.written += int64(n)
+	if r.fn != nil {
+		r.fn(r.written, r.total)
+	}
+	return n, err
 }
 
 // VerifyChecksum checks that the SHA256 of filePath matches expectedHex.

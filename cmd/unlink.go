@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -32,9 +34,22 @@ var unlinkCmd = &cobra.Command{
 			absPath, _ := filepath.Abs(cwd)
 			p := reg.FindByPath(absPath)
 			if p == nil {
-				return fmt.Errorf("current directory is not a linked project")
+				fmt.Fprintln(os.Stderr)
+				ui.Fail("Current directory is not a linked project")
+				fmt.Fprintln(os.Stderr)
+				cmd.SilenceUsage = true
+				return ui.ErrAlreadyPrinted
 			}
 			name = p.Name
+		}
+
+		// Check project exists before removing.
+		if reg.Find(name) == nil {
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("Project %s is not linked", ui.Bold.Render(name)))
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
 		}
 
 		if err := reg.Remove(name); err != nil {
@@ -52,14 +67,26 @@ var unlinkCmd = &cobra.Command{
 			return fmt.Errorf("cannot generate Caddyfile: %w", err)
 		}
 
-		fmt.Printf("Unlinked %s\n", name)
+		settings, _ := config.LoadSettings()
+		tld := "test"
+		if settings != nil {
+			tld = settings.TLD
+		}
+		domain := "https://" + name + "." + tld
+
+		fmt.Fprintln(os.Stderr)
+		ui.Success(fmt.Sprintf("Unlinked %s", ui.Purple.Bold(true).Render(domain)))
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not reconfigure server: %v\n", err)
+				fmt.Fprintf(os.Stderr, "  %s %s\n",
+					ui.Red.Render("!"),
+					ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)),
+				)
 			}
 		}
 
+		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

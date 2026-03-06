@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +18,12 @@ var phpRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version := args[0]
 		if !regexp.MustCompile(`^\d+\.\d+$`).MatchString(version) {
-			return fmt.Errorf("invalid version format %q: use major.minor (e.g., 8.4)", version)
+			fmt.Fprintln(os.Stderr)
+			ui.Fail(fmt.Sprintf("Invalid version format %s", ui.Bold.Render(version)))
+			ui.FailDetail("Use major.minor (e.g., 8.4)")
+			fmt.Fprintln(os.Stderr)
+			cmd.SilenceUsage = true
+			return ui.ErrAlreadyPrinted
 		}
 
 		// Check if any linked projects depend on this version.
@@ -29,16 +36,28 @@ var phpRemoveCmd = &cobra.Command{
 					v = globalV
 				}
 				if v == version {
-					return fmt.Errorf("cannot remove PHP %s: project %q depends on it", version, p.Name)
+					fmt.Fprintln(os.Stderr)
+					ui.Fail(fmt.Sprintf("Cannot remove PHP %s", ui.Bold.Render(version)))
+					ui.FailDetail(fmt.Sprintf("Project %s depends on it", ui.Bold.Render(p.Name)))
+					fmt.Fprintln(os.Stderr)
+					cmd.SilenceUsage = true
+					return ui.ErrAlreadyPrinted
 				}
 			}
 		}
 
-		if err := phpenv.Remove(version); err != nil {
+		fmt.Fprintln(os.Stderr)
+
+		if err := ui.Step("Removing PHP "+version+"...", func() (string, error) {
+			if err := phpenv.Remove(version); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("PHP %s removed", version), nil
+		}); err != nil {
 			return err
 		}
 
-		fmt.Printf("PHP %s removed\n", version)
+		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

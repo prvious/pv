@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
@@ -9,6 +10,7 @@ import (
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +22,8 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load settings: %w", err)
 		}
+
+		ui.Header(version)
 
 		// Determine running state and mode.
 		var running bool
@@ -37,48 +41,64 @@ var statusCmd = &cobra.Command{
 		}
 
 		if running {
-			fmt.Printf("Status:  running (PID %d, %s mode)\n", pid, mode)
+			fmt.Fprintf(os.Stderr, "  %s %s  %s\n",
+				ui.Green.Render("●"),
+				ui.Green.Bold(true).Render("Running"),
+				ui.Muted.Render(fmt.Sprintf("PID %d, %s", pid, mode)),
+			)
 		} else {
-			fmt.Println("Status:  stopped")
+			fmt.Fprintf(os.Stderr, "  %s %s\n",
+				ui.Red.Render("●"),
+				ui.Muted.Render("Stopped"),
+			)
 		}
 
-		fmt.Printf("TLD:     .%s\n", settings.TLD)
-		fmt.Printf("DNS:     127.0.0.1:%d\n", config.DNSPort)
-		fmt.Println("HTTPS:   port 443")
-		fmt.Println("HTTP:    port 80")
+		fmt.Fprintln(os.Stderr)
+
+		// Network info.
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("TLD"), ui.Bold.Render("."+settings.TLD))
+		fmt.Fprintf(os.Stderr, "  %s  %s  %s  %s\n",
+			ui.Purple.Render("DNS"),
+			fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
+			ui.Purple.Render("HTTPS"),
+			":443",
+		)
 
 		// PHP version info.
 		globalPHP := settings.GlobalPHP
-		if globalPHP != "" {
-			fmt.Printf("PHP:     %s (global)\n", globalPHP)
-		}
-
 		versions, _ := phpenv.InstalledVersions()
 		if len(versions) > 0 {
 			var labels []string
 			for _, v := range versions {
 				if v == globalPHP {
-					labels = append(labels, v+"*")
+					labels = append(labels, ui.Green.Bold(true).Render(v)+" "+ui.Muted.Render("(default)"))
 				} else {
-					labels = append(labels, v)
+					labels = append(labels, ui.Purple.Render(v))
 				}
 			}
-			fmt.Printf("PHP installed: %s\n", strings.Join(labels, ", "))
+			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("PHP"), strings.Join(labels, ui.Muted.Render(" · ")))
+		} else if globalPHP != "" {
+			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("PHP"), globalPHP)
 		}
 
+		// Sites.
 		reg, err := registry.Load()
 		if err != nil {
-			fmt.Printf("Sites:   (cannot load registry: %v)\n", err)
+			fmt.Fprintf(os.Stderr, "\n  %s\n\n", ui.Muted.Render(fmt.Sprintf("Cannot load registry: %v", err)))
 			return nil
 		}
 
 		projects := reg.List()
-		fmt.Printf("Sites:   %d linked\n", len(projects))
 
-		if len(projects) > 0 && running {
-			fmt.Println()
-			fmt.Println("Projects:")
-			for _, p := range projects {
+		if len(projects) == 0 {
+			fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Muted.Render("No sites linked. Run pv link in a project to get started."))
+		} else {
+			fmt.Fprintf(os.Stderr, "\n  %s  %s\n\n",
+				ui.Purple.Render("Sites"),
+				ui.Muted.Render(fmt.Sprintf("%d linked", len(projects))),
+			)
+			rows := make([][]string, len(projects))
+			for i, p := range projects {
 				phpV := p.PHP
 				if phpV == "" {
 					phpV = globalPHP
@@ -90,14 +110,14 @@ var statusCmd = &cobra.Command{
 				if typeLabel == "" {
 					typeLabel = "unknown"
 				}
-				portInfo := ""
-				if phpV != globalPHP && phpV != "" && phpV != "-" {
-					port := config.PortForVersion(phpV)
-					portInfo = fmt.Sprintf(" (port %d)", port)
-				}
-				fmt.Printf("  %-20s %-16s PHP %s%s\n", p.Name+"."+settings.TLD, typeLabel, phpV, portInfo)
+
+				domain := "https://" + p.Name + "." + settings.TLD
+				rows[i] = []string{domain, typeLabel, phpV}
 			}
+			ui.Table([]string{"Site", "Type", "PHP"}, rows)
 		}
+
+		fmt.Fprintln(os.Stderr)
 
 		return nil
 	},

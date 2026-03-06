@@ -18,9 +18,9 @@ echo "OK: remove global PHP -> error"
 assert_fails pv php remove 8.3
 echo "OK: remove PHP with dependent project -> error"
 
-# 5. Install already-installed PHP
-assert_fails pv php install 8.4
-echo "OK: install already-installed PHP -> error"
+# 5. Install already-installed PHP (no-op, should succeed)
+pv php install 8.4
+echo "OK: install already-installed PHP -> no-op success"
 
 # 6. Use non-installed PHP version
 assert_fails pv use php:9.9
@@ -34,4 +34,4 @@ echo "OK: install invalid format -> error"
 assert_fails pv unlink nonexistent-project
 echo "OK: unlink non-existent project -> error"
 
-echo "All 8 error cases passed"
+echo "All error cases passed"
