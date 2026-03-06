@@ -95,8 +95,11 @@ func Update(client *http.Client, version string, progress func(written, total in
 	return execPath, nil
 }
 
+// githubAPIURL is the base URL for GitHub API calls. Overridable in tests.
+var githubAPIURL = "https://api.github.com/repos/prvious/pv/releases/"
+
 func fetchLatestVersion(client *http.Client) (string, error) {
-	url := "https://api.github.com/repos/prvious/pv/releases/latest"
+	url := githubAPIURL + "latest"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
@@ -115,7 +118,7 @@ func fetchLatestVersion(client *http.Client) (string, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot read GitHub API response: %w", err)
 	}
 
 	var release struct {
@@ -129,14 +132,7 @@ func fetchLatestVersion(client *http.Client) (string, error) {
 }
 
 func platformString() string {
-	arch := runtime.GOARCH
-	switch arch {
-	case "amd64":
-		arch = "amd64"
-	case "arm64":
-		arch = "arm64"
-	}
-	return fmt.Sprintf("%s-%s", runtime.GOOS, arch)
+	return fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
 }
 
 func downloadURL(version string) string {
