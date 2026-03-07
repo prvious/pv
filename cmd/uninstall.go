@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -79,16 +80,24 @@ var uninstallCmd = &cobra.Command{
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
 		if err := colimaUninstallCmd.RunE(colimaUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Colima uninstall failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
+			}
 		}
 		if err := phpUninstallCmd.RunE(phpUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s PHP uninstall failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
+			}
 		}
 		if err := magoUninstallCmd.RunE(magoUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Mago uninstall failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
+			}
 		}
 		if err := composerUninstallCmd.RunE(composerUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer uninstall failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
+			}
 		}
 
 		// Stop services.
@@ -122,7 +131,7 @@ var uninstallCmd = &cobra.Command{
 
 			return "Services stopped", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove launchd plist.
@@ -132,7 +141,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "Launchd service removed", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove system configuration (sudo).
@@ -142,7 +151,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "", fmt.Errorf("could not remove /etc/resolver/%s — run: sudo rm -f /etc/resolver/%s", tld, tld)
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Untrust CA certificate.
@@ -171,7 +180,7 @@ var uninstallCmd = &cobra.Command{
 					return "", fmt.Errorf("CA removal timed out — run: sudo security remove-trusted-cert -d %s", caCertPath)
 				}
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+				// Error already displayed by ui.Step
 			}
 		}
 
@@ -186,7 +195,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "~/.pv removed", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove the pv binary itself.
@@ -206,7 +215,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return fmt.Sprintf("Removed %s", pvBin), nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Report scattered .pv-php files.

@@ -49,10 +49,7 @@ pv php:use 8.3`,
 		if oldV != version && daemon.IsLoaded() {
 			cfg := daemon.DefaultPlistConfig()
 			if err := daemon.SyncIfNeeded(cfg); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n",
-					ui.Red.Render("!"),
-					ui.Muted.Render(fmt.Sprintf("Cannot sync daemon plist: %v", err)),
-				)
+				ui.Fail(fmt.Sprintf("Cannot sync daemon plist: %v", err))
 			} else {
 				ui.Success("Daemon restarted with new PHP version")
 			}

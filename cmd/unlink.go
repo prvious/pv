@@ -76,10 +76,7 @@ pv unlink`,
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n",
-					ui.Red.Render("!"),
-					ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)),
-				)
+				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 			}
 		}
 

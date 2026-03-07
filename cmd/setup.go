@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -162,7 +163,9 @@ var setupCmd = &cobra.Command{
 				}
 				return fmt.Sprintf("PHP %s installed", v), nil
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), fmt.Sprintf("PHP %s failed: %v", v, err))
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("PHP %s failed: %v", v, err))
+				}
 			}
 		}
 
@@ -176,7 +179,9 @@ var setupCmd = &cobra.Command{
 
 		// Install Composer (non-negotiable).
 		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer failed: %v", err))
+			}
 		}
 
 		// Install optional tools (Colima is lazy-installed via service:add).
@@ -187,13 +192,15 @@ var setupCmd = &cobra.Command{
 
 		if toolSet["mago"] {
 			if err := magoDownloadCmd.RunE(magoDownloadCmd, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Mago failed: %v\n", ui.Red.Render("!"), err)
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Mago failed: %v", err))
+				}
 			}
 		}
 
 		// Expose all installed tools (shims + symlinks).
 		if err := tools.ExposeAll(); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Tool exposure failed: %v\n", ui.Red.Render("!"), err)
+			ui.Fail(fmt.Sprintf("Tool exposure failed: %v", err))
 		}
 
 		// Save version manifest.
@@ -203,7 +210,7 @@ var setupCmd = &cobra.Command{
 				vs.Set("php", selectedPHP[len(selectedPHP)-1])
 			}
 			if saveErr := vs.Save(); saveErr != nil {
-				fmt.Fprintf(os.Stderr, "  %s Cannot save version manifest: %v\n", ui.Red.Render("!"), saveErr)
+				ui.Fail(fmt.Sprintf("Cannot save version manifest: %v", saveErr))
 			}
 		}
 
@@ -222,7 +229,9 @@ var setupCmd = &cobra.Command{
 				}
 				svcArgs := []string{name, svc.DefaultVersion()}
 				if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
-					fmt.Fprintf(os.Stderr, "  %s Service %s failed: %v\n", ui.Red.Render("!"), name, err)
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
+					}
 				}
 			}
 		}

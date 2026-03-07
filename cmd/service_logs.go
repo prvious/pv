@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ var serviceLogsCmd = &cobra.Command{
 
 		// Docker SDK: ContainerLogs with Follow=true
 		// This would stream logs to stdout.
-		fmt.Fprintf(os.Stderr, "Tailing logs for %s (container: %s)...\n", key, instance.ContainerID)
+		ui.Subtle(fmt.Sprintf("Tailing logs for %s (container: %s)...", key, instance.ContainerID))
 
 		return nil
 	},

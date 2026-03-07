@@ -55,31 +55,31 @@ var doctorCmd = &cobra.Command{
 			allChecks = append(allChecks, svcChecks)
 		}
 
-		fmt.Println("pv doctor")
-		fmt.Println()
+		fmt.Fprintln(os.Stderr, "pv doctor")
+		fmt.Fprintln(os.Stderr)
 
 		passed, failed := 0, 0
 		for _, section := range allChecks {
-			fmt.Println(section.Name)
+			fmt.Fprintln(os.Stderr, section.Name)
 			for _, c := range section.Checks {
 				if c.Status {
-					fmt.Printf("  ✓ %s\n", c.Name)
+					fmt.Fprintf(os.Stderr, "  ✓ %s\n", c.Name)
 					passed++
 				} else {
-					fmt.Printf("  ✗ %s\n", c.Name)
+					fmt.Fprintf(os.Stderr, "  ✗ %s\n", c.Name)
 					if c.Message != "" {
-						fmt.Printf("    %s\n", c.Message)
+						fmt.Fprintf(os.Stderr, "    %s\n", c.Message)
 					}
 					if c.Fix != "" {
-						fmt.Printf("    → Run: %s\n", c.Fix)
+						fmt.Fprintf(os.Stderr, "    → Run: %s\n", c.Fix)
 					}
 					failed++
 				}
 			}
-			fmt.Println()
+			fmt.Fprintln(os.Stderr)
 		}
 
-		fmt.Printf("%d passed, %d issues found\n", passed, failed)
+		fmt.Fprintf(os.Stderr, "%d passed, %d issues found\n", passed, failed)
 
 		if failed > 0 {
 			return fmt.Errorf("%d issues found", failed)

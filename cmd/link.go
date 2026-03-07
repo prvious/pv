@@ -117,7 +117,7 @@ pv link --name=myapp ~/Code/myapp`,
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)))
+				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 			}
 			if phpVersion != "" && phpVersion != globalPHP {
 				ui.Subtle("Restart the server to serve this project: pv stop && pv start")
