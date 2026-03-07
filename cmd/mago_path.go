@@ -11,7 +11,8 @@ import (
 var magoPathRemove bool
 
 var magoPathCmd = &cobra.Command{
-	Use:   "mago:path",
+	Use:     "mago:path",
+	GroupID: "mago",
 	Short: "Expose or remove Mago from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t := tools.MustGet("mago")

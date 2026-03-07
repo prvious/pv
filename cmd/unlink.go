@@ -14,7 +14,8 @@ import (
 )
 
 var unlinkCmd = &cobra.Command{
-	Use:   "unlink [name]",
+	Use:     "unlink [name]",
+	GroupID: "core",
 	Short: "Unlink a project",
 	Example: `# Unlink by name
 pv unlink myapp

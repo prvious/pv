@@ -8,7 +8,8 @@ import (
 )
 
 var magoInstallCmd = &cobra.Command{
-	Use:   "mago:install",
+	Use:     "mago:install",
+	GroupID: "mago",
 	Short: "Install or update Mago",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Download.

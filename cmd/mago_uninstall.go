@@ -11,7 +11,8 @@ import (
 )
 
 var magoUninstallCmd = &cobra.Command{
-	Use:   "mago:uninstall",
+	Use:     "mago:uninstall",
+	GroupID: "mago",
 	Short: "Remove Mago binary and PATH entry",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Removing Mago...", func() (string, error) {

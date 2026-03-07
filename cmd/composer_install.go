@@ -8,7 +8,8 @@ import (
 )
 
 var composerInstallCmd = &cobra.Command{
-	Use:   "composer:install",
+	Use:     "composer:install",
+	GroupID: "composer",
 	Short: "Install or update Composer",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Download.

@@ -23,6 +23,19 @@ var rootCmd = &cobra.Command{
 	Short: "Local dev server manager powered by FrankenPHP",
 }
 
+func init() {
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "core", Title: "Core"},
+		&cobra.Group{ID: "server", Title: "Server"},
+		&cobra.Group{ID: "php", Title: "PHP"},
+		&cobra.Group{ID: "composer", Title: "Composer"},
+		&cobra.Group{ID: "mago", Title: "Mago"},
+		&cobra.Group{ID: "colima", Title: "Colima"},
+		&cobra.Group{ID: "service", Title: "Services"},
+		&cobra.Group{ID: "daemon", Title: "Daemon"},
+	)
+}
+
 func Execute() {
 	if err := fang.Execute(context.Background(), rootCmd,
 		fang.WithVersion(version),

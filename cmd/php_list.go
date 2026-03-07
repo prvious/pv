@@ -12,7 +12,8 @@ import (
 )
 
 var phpListCmd = &cobra.Command{
-	Use:   "php:list",
+	Use:     "php:list",
+	GroupID: "php",
 	Short: "List installed PHP versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		versions, err := phpenv.InstalledVersions()

@@ -10,7 +10,8 @@ import (
 )
 
 var serviceStopCmd = &cobra.Command{
-	Use:   "service:stop [service]",
+	Use:     "service:stop [service]",
+	GroupID: "service",
 	Short: "Stop a service or all services",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

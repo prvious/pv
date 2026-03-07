@@ -10,7 +10,8 @@ import (
 )
 
 var colimaDownloadCmd = &cobra.Command{
-	Use:   "colima:download",
+	Use:     "colima:download",
+	GroupID: "colima",
 	Short: "Download Colima to internal storage",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client := &http.Client{}

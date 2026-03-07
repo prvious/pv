@@ -12,7 +12,8 @@ import (
 )
 
 var phpUseCmd = &cobra.Command{
-	Use:   "php:use <version>",
+	Use:     "php:use <version>",
+	GroupID: "php",
 	Short: "Switch the global PHP version (e.g., pv php:use 8.4)",
 	Example: `pv php:use 8.4
 pv php:use 8.3`,

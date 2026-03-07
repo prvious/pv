@@ -11,7 +11,8 @@ import (
 )
 
 var serviceStartCmd = &cobra.Command{
-	Use:   "service:start [service]",
+	Use:     "service:start [service]",
+	GroupID: "service",
 	Short: "Start a service or all services",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

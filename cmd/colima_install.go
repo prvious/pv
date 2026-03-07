@@ -8,7 +8,8 @@ import (
 )
 
 var colimaInstallCmd = &cobra.Command{
-	Use:   "colima:install",
+	Use:     "colima:install",
+	GroupID: "colima",
 	Short: "Install or update the Colima container runtime",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Download.

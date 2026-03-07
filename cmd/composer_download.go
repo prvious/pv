@@ -11,7 +11,8 @@ import (
 )
 
 var composerDownloadCmd = &cobra.Command{
-	Use:   "composer:download",
+	Use:     "composer:download",
+	GroupID: "composer",
 	Short: "Download Composer to internal storage",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client := &http.Client{}

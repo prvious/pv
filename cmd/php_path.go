@@ -11,7 +11,8 @@ import (
 var phpPathRemove bool
 
 var phpPathCmd = &cobra.Command{
-	Use:   "php:path",
+	Use:     "php:path",
+	GroupID: "php",
 	Short: "Expose or remove PHP and FrankenPHP from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		php := tools.MustGet("php")

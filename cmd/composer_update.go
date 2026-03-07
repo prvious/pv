@@ -8,7 +8,8 @@ import (
 )
 
 var composerUpdateCmd = &cobra.Command{
-	Use:   "composer:update",
+	Use:     "composer:update",
+	GroupID: "composer",
 	Short: "Update Composer to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Delegate download to :download (Composer always re-downloads).

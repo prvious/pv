@@ -15,7 +15,8 @@ import (
 )
 
 var statusCmd = &cobra.Command{
-	Use:   "status",
+	Use:     "status",
+	GroupID: "core",
 	Short: "Show pv server status",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		settings, err := config.LoadSettings()

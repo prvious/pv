@@ -11,7 +11,8 @@ import (
 )
 
 var magoDownloadCmd = &cobra.Command{
-	Use:   "mago:download",
+	Use:     "mago:download",
+	GroupID: "mago",
 	Short: "Download Mago to internal storage",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client := &http.Client{}

@@ -12,7 +12,8 @@ import (
 )
 
 var colimaUninstallCmd = &cobra.Command{
-	Use:   "colima:uninstall",
+	Use:     "colima:uninstall",
+	GroupID: "colima",
 	Short: "Stop Colima VM and remove the binary",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !colima.IsInstalled() {

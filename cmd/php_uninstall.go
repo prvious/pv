@@ -11,7 +11,8 @@ import (
 )
 
 var phpUninstallCmd = &cobra.Command{
-	Use:   "php:uninstall",
+	Use:     "php:uninstall",
+	GroupID: "php",
 	Short: "Remove all PHP versions and PATH entries",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Removing PHP...", func() (string, error) {

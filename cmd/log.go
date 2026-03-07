@@ -21,7 +21,8 @@ var (
 )
 
 var logCmd = &cobra.Command{
-	Use:   "log [site]",
+	Use:     "log [site]",
+	GroupID: "core",
 	Short: "Tail the FrankenPHP log",
 	Example: `# Tail all logs
 pv log

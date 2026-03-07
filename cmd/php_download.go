@@ -10,7 +10,8 @@ import (
 )
 
 var phpDownloadCmd = &cobra.Command{
-	Use:   "php:download <version>",
+	Use:     "php:download <version>",
+	GroupID: "php",
 	Short: "Download PHP + FrankenPHP to internal storage",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

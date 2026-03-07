@@ -21,7 +21,8 @@ var (
 )
 
 var updateCmd = &cobra.Command{
-	Use:   "update",
+	Use:     "update",
+	GroupID: "core",
 	Short: "Update pv and all managed tools to their latest versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()

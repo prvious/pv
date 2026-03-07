@@ -13,7 +13,8 @@ import (
 )
 
 var serviceEnvCmd = &cobra.Command{
-	Use:   "service:env [service]",
+	Use:     "service:env [service]",
+	GroupID: "service",
 	Short: "Print environment variables for a service",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

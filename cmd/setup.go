@@ -18,7 +18,8 @@ import (
 )
 
 var setupCmd = &cobra.Command{
-	Use:   "setup",
+	Use:     "setup",
+	GroupID: "core",
 	Short: "Interactive setup wizard — choose PHP versions, tools, and services",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()

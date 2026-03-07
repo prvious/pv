@@ -1,17 +1,16 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
+	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
@@ -22,48 +21,55 @@ import (
 )
 
 var uninstallCmd = &cobra.Command{
-	Use:   "uninstall",
+	Use:     "uninstall",
+	GroupID: "core",
 	Short: "Completely remove pv and all its data",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Confirmation prompt.
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "This will remove:")
-		fmt.Fprintln(os.Stderr, "  - The pv binary")
-		fmt.Fprintln(os.Stderr, "  - All PHP versions and FrankenPHP binaries")
-		fmt.Fprintln(os.Stderr, "  - All Composer global packages and cache")
-		fmt.Fprintln(os.Stderr, "  - All project links (your project files are NOT deleted)")
-		fmt.Fprintln(os.Stderr, "  - DNS resolver configuration")
-		fmt.Fprintln(os.Stderr, "  - Trusted CA certificate")
-		fmt.Fprintln(os.Stderr, "  - Launchd service")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Your projects themselves will not be touched.")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprint(os.Stderr, "Type \"uninstall\" to confirm: ")
+		ui.Subtle("This will remove:")
+		ui.Subtle("- The pv binary")
+		ui.Subtle("- All PHP versions and FrankenPHP binaries")
+		ui.Subtle("- All Composer global packages and cache")
+		ui.Subtle("- All project links (your project files are NOT deleted)")
+		ui.Subtle("- DNS resolver configuration")
+		ui.Subtle("- Trusted CA certificate")
+		ui.Subtle("- Launchd service")
+		ui.Subtle("")
+		ui.Subtle("Your projects themselves will not be touched.")
 
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		if strings.TrimSpace(scanner.Text()) != "uninstall" {
-			fmt.Fprintln(os.Stderr, "Aborted.")
+		var confirmation string
+		if err := huh.NewInput().
+			Title("Type \"uninstall\" to confirm").
+			Value(&confirmation).
+			Run(); err != nil {
+			return err
+		}
+		if confirmation != "uninstall" {
+			ui.Subtle("Aborted.")
 			return nil
 		}
-		fmt.Fprintln(os.Stderr)
 
 		// Auth backup offer.
 		authPath := filepath.Join(config.ComposerDir(), "auth.json")
 		if hasAuthTokens(authPath) {
-			fmt.Fprint(os.Stderr, "Back up Composer auth tokens to ~/pv-auth-backup.json? [Y/n] ")
-			scanner.Scan()
-			answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-			if answer == "" || answer == "y" || answer == "yes" {
+			backupAuth := true
+			if err := huh.NewConfirm().
+				Title("Back up Composer auth tokens to ~/pv-auth-backup.json?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&backupAuth).
+				Run(); err != nil {
+				return err
+			}
+			if backupAuth {
 				home, _ := os.UserHomeDir()
 				backupPath := filepath.Join(home, "pv-auth-backup.json")
 				if err := copyFile(authPath, backupPath); err != nil {
-					fmt.Fprintf(os.Stderr, "  Warning: could not back up auth tokens: %v\n", err)
+					ui.Fail(fmt.Sprintf("Could not back up auth tokens: %v", err))
 				} else {
 					ui.Success(fmt.Sprintf("Backed up to %s", backupPath))
 				}
 			}
-			fmt.Fprintln(os.Stderr)
 		}
 
 		// Read registry before deletion (for .pv-php file scan later).
@@ -219,7 +225,6 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		// Report scattered .pv-php files.
-		fmt.Fprintln(os.Stderr)
 		var found []string
 		for _, p := range projectPaths {
 			pvPhpPath := filepath.Join(p, ".pv-php")
@@ -228,12 +233,11 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 		if len(found) > 0 {
-			fmt.Fprintln(os.Stderr, "Found .pv-php files in your projects:")
+			ui.Subtle("Found .pv-php files in your projects:")
 			for _, f := range found {
-				fmt.Fprintf(os.Stderr, "  %s\n", f)
+				ui.Subtle(fmt.Sprintf("  %s", f))
 			}
-			fmt.Fprintln(os.Stderr, "You can safely delete these.")
-			fmt.Fprintln(os.Stderr)
+			ui.Subtle("You can safely delete these.")
 		}
 
 		// Print manual steps.
@@ -241,13 +245,12 @@ var uninstallCmd = &cobra.Command{
 		configFile := setup.ShellConfigFile(shell)
 		exportLine := setup.PathExportLine(shell)
 
-		fmt.Fprintln(os.Stderr, "Done! Just remove the pv lines from your shell config:")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  # Remove from %s:\n", configFile)
-		fmt.Fprintf(os.Stderr, "  %s\n", exportLine)
-		fmt.Fprintln(os.Stderr, "  eval \"$(pv env)\"   # if present")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "pv has been completely uninstalled. Your projects were not modified.")
+		ui.Subtle("Remove the pv lines from your shell config:")
+		ui.Subtle(fmt.Sprintf("  # Remove from %s:", configFile))
+		ui.Subtle(fmt.Sprintf("  %s", exportLine))
+		ui.Subtle("  eval \"$(pv env)\"   # if present")
+
+		ui.Success("pv has been completely uninstalled. Your projects were not modified.")
 
 		return nil
 	},

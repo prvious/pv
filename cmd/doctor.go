@@ -16,6 +16,7 @@ import (
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -27,8 +28,10 @@ type check struct {
 }
 
 var doctorCmd = &cobra.Command{
-	Use:   "doctor",
-	Short: "Diagnose pv installation health",
+	Use:     "doctor",
+	GroupID: "core",
+	Short:   "Diagnose pv installation health",
+	Example: "  pv doctor",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		settings, err := config.LoadSettings()
 		if err != nil {
@@ -55,35 +58,34 @@ var doctorCmd = &cobra.Command{
 			allChecks = append(allChecks, svcChecks)
 		}
 
-		fmt.Fprintln(os.Stderr, "pv doctor")
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Bold.Render("pv doctor"))
 
 		passed, failed := 0, 0
 		for _, section := range allChecks {
-			fmt.Fprintln(os.Stderr, section.Name)
+			fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Bold.Render(section.Name))
 			for _, c := range section.Checks {
 				if c.Status {
-					fmt.Fprintf(os.Stderr, "  ✓ %s\n", c.Name)
+					ui.Success(c.Name)
 					passed++
 				} else {
-					fmt.Fprintf(os.Stderr, "  ✗ %s\n", c.Name)
+					ui.Fail(c.Name)
 					if c.Message != "" {
-						fmt.Fprintf(os.Stderr, "    %s\n", c.Message)
+						ui.FailDetail(c.Message)
 					}
 					if c.Fix != "" {
-						fmt.Fprintf(os.Stderr, "    → Run: %s\n", c.Fix)
+						ui.FailDetail("→ Run: " + c.Fix)
 					}
 					failed++
 				}
 			}
-			fmt.Fprintln(os.Stderr)
 		}
 
-		fmt.Fprintf(os.Stderr, "%d passed, %d issues found\n", passed, failed)
-
+		fmt.Fprintln(os.Stderr)
 		if failed > 0 {
-			return fmt.Errorf("%d issues found", failed)
+			ui.Fail(fmt.Sprintf("%d passed, %d issues found", passed, failed))
+			return ui.ErrAlreadyPrinted
 		}
+		ui.Success(fmt.Sprintf("%d passed, no issues found", passed))
 		return nil
 	},
 }

@@ -11,7 +11,8 @@ import (
 var colimaPathRemove bool
 
 var colimaPathCmd = &cobra.Command{
-	Use:   "colima:path",
+	Use:     "colima:path",
+	GroupID: "colima",
 	Short: "Expose or remove Colima from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t := tools.MustGet("colima")

@@ -11,7 +11,8 @@ import (
 )
 
 var composerUninstallCmd = &cobra.Command{
-	Use:   "composer:uninstall",
+	Use:     "composer:uninstall",
+	GroupID: "composer",
 	Short: "Remove Composer PHAR, PATH entry, and global packages",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Removing Composer...", func() (string, error) {

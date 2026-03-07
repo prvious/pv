@@ -16,7 +16,8 @@ import (
 )
 
 var serviceAddCmd = &cobra.Command{
-	Use:   "service:add <service> [version]",
+	Use:     "service:add <service> [version]",
+	GroupID: "service",
 	Short: "Add and start a service",
 	Long:  "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
 	Example: `# Add MySQL with default version

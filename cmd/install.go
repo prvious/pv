@@ -76,7 +76,8 @@ func parseWith(raw string) (withSpec, error) {
 }
 
 var installCmd = &cobra.Command{
-	Use:   "install",
+	Use:     "install",
+	GroupID: "core",
 	Short: "Non-interactive setup — installs PHP, Composer, and configures the environment",
 	Long: `Installs the core pv stack non-interactively. For an interactive setup wizard, use: pv setup
 

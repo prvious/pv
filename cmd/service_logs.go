@@ -9,7 +9,8 @@ import (
 )
 
 var serviceLogsCmd = &cobra.Command{
-	Use:   "service:logs <service>",
+	Use:     "service:logs <service>",
+	GroupID: "service",
 	Short: "Tail container logs for a service",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

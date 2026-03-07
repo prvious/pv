@@ -9,7 +9,8 @@ import (
 )
 
 var daemonEnableCmd = &cobra.Command{
-	Use:   "daemon:enable",
+	Use:     "daemon:enable",
+	GroupID: "daemon",
 	Short: "Enable pv as a login daemon (starts on boot)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Installing pv daemon...", func() (string, error) {
@@ -31,7 +32,8 @@ var daemonEnableCmd = &cobra.Command{
 }
 
 var daemonDisableCmd = &cobra.Command{
-	Use:   "daemon:disable",
+	Use:     "daemon:disable",
+	GroupID: "daemon",
 	Short: "Disable the pv login daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return ui.Step("Uninstalling pv daemon...", func() (string, error) {
@@ -52,7 +54,8 @@ var daemonDisableCmd = &cobra.Command{
 }
 
 var daemonRestartCmd = &cobra.Command{
-	Use:   "daemon:restart",
+	Use:     "daemon:restart",
+	GroupID: "daemon",
 	Short: "Restart the pv daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !daemon.IsLoaded() {

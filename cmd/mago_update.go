@@ -11,7 +11,8 @@ import (
 )
 
 var magoUpdateCmd = &cobra.Command{
-	Use:   "mago:update",
+	Use:     "mago:update",
+	GroupID: "mago",
 	Short: "Update Mago to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client := &http.Client{}

@@ -17,7 +17,8 @@ var (
 )
 
 var startCmd = &cobra.Command{
-	Use:   "start",
+	Use:     "start",
+	GroupID: "server",
 	Short: "Start the pv server (DNS + FrankenPHP)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if startBackground {

@@ -11,7 +11,8 @@ import (
 )
 
 var phpRemoveCmd = &cobra.Command{
-	Use:   "php:remove <version>",
+	Use:     "php:remove <version>",
+	GroupID: "php",
 	Short: "Remove an installed PHP version",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
