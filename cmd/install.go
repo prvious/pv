@@ -129,7 +129,11 @@ Examples:
 			if err := config.EnsureDirs(); err != nil {
 				return "", fmt.Errorf("cannot create directories: %w", err)
 			}
-			settings := &config.Settings{TLD: installTLD}
+			settings, _ := config.LoadSettings()
+			if settings == nil {
+				settings = &config.Settings{}
+			}
+			settings.TLD = installTLD
 			if err := settings.Save(); err != nil {
 				return "", fmt.Errorf("cannot save settings: %w", err)
 			}

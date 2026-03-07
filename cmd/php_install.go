@@ -47,6 +47,12 @@ var phpInstallCmd = &cobra.Command{
 		}
 
 		if phpenv.IsInstalled(version) {
+			// Ensure global default is set even if already installed.
+			if _, err := phpenv.GlobalVersion(); err != nil {
+				if err := phpenv.SetGlobal(version); err != nil {
+					return err
+				}
+			}
 			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("PHP %s is already installed", version))
 			fmt.Fprintln(os.Stderr)
