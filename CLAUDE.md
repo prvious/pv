@@ -97,12 +97,13 @@ The CLI uses a layered Charm stack:
 
 ### Hard don'ts
 
-1. Prefer `ui.*` helpers or `return error` over raw `fmt.Print*` for status/error output in `cmd/`. Legacy uses remain — don't add new ones.
-2. Never import lipgloss v1 (`github.com/charmbracelet/lipgloss`). Always use `charm.land/lipgloss/v2`.
-3. Never set `SilenceUsage` or `SilenceErrors` on commands — fang owns this.
-4. Never add `--version` flags — fang provides this.
-5. Put usage examples in `Example:` field, not `Long:` — fang syntax-highlights `Example`.
-6. Don't add `fmt.Fprintln(os.Stderr)` for blank-line spacing around errors — fang handles spacing.
+1. **Errors**: always `return fmt.Errorf(...)` — fang displays them. Never `fmt.Print` an error manually.
+2. **Status output**: use `ui.*` helpers (`ui.Success`, `ui.Fail`, `ui.Subtle`, `ui.Step`, etc.) — never raw `fmt.Print*` for new code. Legacy uses remain in older commands.
+3. Never import lipgloss v1 (`github.com/charmbracelet/lipgloss`). Always use `charm.land/lipgloss/v2`.
+4. Never set `SilenceUsage` or `SilenceErrors` on commands — fang owns this.
+5. Never add `--version` flags — fang provides this.
+6. Put usage examples in `Example:` field, not `Long:` — fang syntax-highlights `Example`.
+7. Don't add `fmt.Fprintln(os.Stderr)` for blank-line spacing around errors — fang handles spacing.
 
 ## Import cycle: phpenv ↔ tools
 
