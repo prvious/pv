@@ -79,7 +79,7 @@ The CLI uses a layered Charm stack:
 
 - **Long operations**: `ui.Step(label, fn)` — spinner, then `✓ result` or `✗ error`.
 - **Downloads**: `ui.StepProgress(label, fn)` — progress bar with percentage.
-- **Multi-step commands**: `ui.Header(version)` at start, `ui.Footer(start, msg)` at end.
+- **Multi-step commands**: `ui.Header(version)` at start, `ui.Footer(start, docsURL)` at end.
 - **Lists/tables**: `ui.Table(headers, rows)` or `ui.Tree(items)`.
 - **One-liners**: `ui.Success(text)`, `ui.Fail(text)`, `ui.Subtle(text)`.
 - All output goes to `os.Stderr` (stdout is reserved for machine-readable output like `pv env`).
@@ -97,7 +97,7 @@ The CLI uses a layered Charm stack:
 
 ### Hard don'ts
 
-1. Never use raw `fmt.Print*` for status/error output in `cmd/`. Use `ui.*` helpers or return an error.
+1. Prefer `ui.*` helpers or `return error` over raw `fmt.Print*` for status/error output in `cmd/`. Legacy uses remain — don't add new ones.
 2. Never import lipgloss v1 (`github.com/charmbracelet/lipgloss`). Always use `charm.land/lipgloss/v2`.
 3. Never set `SilenceUsage` or `SilenceErrors` on commands — fang owns this.
 4. Never add `--version` flags — fang provides this.

@@ -29,7 +29,6 @@ var serviceDestroyCmd = &cobra.Command{
 			return fmt.Errorf("service %q not found", key)
 		}
 
-
 		// Determine service name and version from key.
 		svcName := key
 		version := "latest"

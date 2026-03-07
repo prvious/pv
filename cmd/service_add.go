@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -80,7 +81,9 @@ pv service:add postgres 16`,
 				_ = engine // Pull would happen via engine.PullImage()
 				return fmt.Sprintf("Pulled %s", opts.Image), nil
 			}); err != nil {
-				ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
+				}
 			} else {
 				// Create and start container.
 				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
@@ -89,7 +92,9 @@ pv service:add postgres 16`,
 					port := svc.Port(version)
 					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
 				}); err != nil {
-					ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
+					}
 				} else {
 					containerReady = true
 				}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -33,7 +34,7 @@ var updateCmd = &cobra.Command{
 		if !noSelfUpdate {
 			reexeced, err := selfUpdate(client)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %s pv self-update failed: %v\n", ui.Red.Render("!"), err)
+				ui.Fail(fmt.Sprintf("pv self-update failed: %v", err))
 			}
 			if reexeced {
 				return nil // reached only if syscall.Exec failed (error already printed)
@@ -44,23 +45,31 @@ var updateCmd = &cobra.Command{
 		var failures []string
 
 		if err := phpUpdateCmd.RunE(phpUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s PHP update failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("PHP update failed: %v", err))
+			}
 			failures = append(failures, "PHP")
 		}
 
 		if err := magoUpdateCmd.RunE(magoUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Mago update failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Mago update failed: %v", err))
+			}
 			failures = append(failures, "Mago")
 		}
 
 		if err := composerUpdateCmd.RunE(composerUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer update failed: %v\n", ui.Red.Render("!"), err)
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer update failed: %v", err))
+			}
 			failures = append(failures, "Composer")
 		}
 
 		if colima.IsInstalled() {
 			if err := colimaUpdateCmd.RunE(colimaUpdateCmd, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Colima update failed: %v\n", ui.Red.Render("!"), err)
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Colima update failed: %v", err))
+				}
 				failures = append(failures, "Colima")
 			}
 		}

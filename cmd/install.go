@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -176,7 +177,9 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 				svcArgs = append(svcArgs, svc.version)
 			}
 			if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
+			}
 			}
 		}
 
