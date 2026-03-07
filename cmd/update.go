@@ -9,25 +9,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prvious/pv/internal/colima"
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
-	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	updateVerbose    bool
-	noSelfUpdate     bool
+	updateVerbose bool
+	noSelfUpdate  bool
 )
 
 var updateCmd = &cobra.Command{
 	Use:     "update",
 	GroupID: "core",
-	Short: "Update pv and all managed tools to their latest versions",
+	Short:   "Update pv and all managed tools to their latest versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 

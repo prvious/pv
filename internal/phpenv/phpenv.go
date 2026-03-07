@@ -87,7 +87,7 @@ func GlobalVersion() (string, error) {
 		return "", err
 	}
 	if settings.GlobalPHP == "" {
-		return "", fmt.Errorf("no global PHP version set (run: pv php:install <version>)")
+		return "", fmt.Errorf("no global PHP version set (run: pv php:install [version])")
 	}
 	return settings.GlobalPHP, nil
 }

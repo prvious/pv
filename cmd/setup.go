@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/service"
-	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
@@ -23,7 +23,7 @@ import (
 var setupCmd = &cobra.Command{
 	Use:     "setup",
 	GroupID: "core",
-	Short: "Interactive setup wizard — choose PHP versions, tools, and services",
+	Short:   "Interactive setup wizard — choose PHP versions, tools, and services",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 		client := &http.Client{}

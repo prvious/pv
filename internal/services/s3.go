@@ -20,7 +20,7 @@ func (s *S3) ContainerName(version string) string {
 	return "pv-s3-" + version
 }
 
-func (s *S3) Port(_ string) int       { return 9000 }
+func (s *S3) Port(_ string) int        { return 9000 }
 func (s *S3) ConsolePort(_ string) int { return 9001 }
 
 func (s *S3) WebRoutes() []WebRoute {

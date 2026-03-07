@@ -37,8 +37,8 @@ func Tree(items []TreeItem) {
 }
 
 var (
-	purple   = lipgloss.ANSIColor(141)
-	gray     = lipgloss.ANSIColor(245)
+	purple    = lipgloss.ANSIColor(141)
+	gray      = lipgloss.ANSIColor(245)
 	lightGray = lipgloss.ANSIColor(241)
 
 	headerStyle  = lipgloss.NewStyle().Foreground(purple).Bold(true)

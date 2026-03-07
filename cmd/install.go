@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
@@ -82,7 +82,7 @@ func parseWith(raw string) (withSpec, error) {
 var installCmd = &cobra.Command{
 	Use:     "install",
 	GroupID: "core",
-	Short: "Non-interactive setup — installs PHP, Composer, and configures the environment",
+	Short:   "Non-interactive setup — installs PHP, Composer, and configures the environment",
 	Long: `Installs the core pv stack non-interactively. For an interactive setup wizard, use: pv setup
 
 Non-negotiable tools (always installed): PHP, Composer
@@ -183,8 +183,8 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			}
 			if err := service.RunAdd(svcArgs); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
-			}
+					ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
+				}
 			}
 		}
 

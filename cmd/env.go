@@ -11,8 +11,8 @@ import (
 var envCmd = &cobra.Command{
 	Use:     "env",
 	GroupID: "core",
-	Short: "Print shell configuration for pv",
-	Long: "Print shell commands to configure PATH for pv.",
+	Short:   "Print shell configuration for pv",
+	Long:    "Print shell commands to configure PATH for pv.",
 	Example: `# Add to your .zshrc or .bashrc
 eval "$(pv env)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {

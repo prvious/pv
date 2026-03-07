@@ -13,7 +13,7 @@ import (
 var restartCmd = &cobra.Command{
 	Use:     "restart",
 	GroupID: "server",
-	Short: "Restart or reload the pv server",
+	Short:   "Restart or reload the pv server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Daemon mode — delegate to daemon:restart.
 		if daemon.IsLoaded() {

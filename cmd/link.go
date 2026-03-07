@@ -20,7 +20,7 @@ var linkName string
 var linkCmd = &cobra.Command{
 	Use:     "link [path]",
 	GroupID: "core",
-	Short: "Link a project directory",
+	Short:   "Link a project directory",
 	Example: `# Link the current directory
 pv link
 

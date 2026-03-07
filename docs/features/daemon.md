@@ -141,7 +141,7 @@ Pull PID and uptime from launchctl. Pull project info from registry. If not runn
 
 The plist needs to be regenerated when certain things change:
 
-- `pv use php:<version>` → main binary path changes
+- `pv use php:[version]` → main binary path changes
 - pv binary itself gets updated
 - Environment variables change
 
@@ -154,13 +154,13 @@ Add to `internal/daemon/` — runs on any OS, no launchd needed.
 **`internal/daemon/plist_test.go`**:
 
 - **Plist XML correctness** — render template with a `PlistConfig`, assert the XML contains:
-  - Correct `Label` (`dev.prvious.pv`)
-  - `ProgramArguments` array with the binary path + `start` + `--foreground`
-  - `KeepAlive` set to `true`
-  - `RunAtLoad` set to `false` (default) and `true` (when auto-start enabled)
-  - `StandardOutPath` / `StandardErrorPath` pointing to `~/.pv/logs/`
-  - `EnvironmentVariables` containing `PATH` and `XDG_DATA_HOME`
-  - `WorkingDirectory` set to `~/.pv`
+    - Correct `Label` (`dev.prvious.pv`)
+    - `ProgramArguments` array with the binary path + `start` + `--foreground`
+    - `KeepAlive` set to `true`
+    - `RunAtLoad` set to `false` (default) and `true` (when auto-start enabled)
+    - `StandardOutPath` / `StandardErrorPath` pointing to `~/.pv/logs/`
+    - `EnvironmentVariables` containing `PATH` and `XDG_DATA_HOME`
+    - `WorkingDirectory` set to `~/.pv`
 - **Dynamic paths** — assert rendered paths use the actual `HOME` dir, not hardcoded values
 - **Env vars** — pass custom env vars in `PlistConfig.EnvVars`, assert they appear in output
 
@@ -337,26 +337,26 @@ Update the CI cleanup step:
 - name: Cleanup
   if: always()
   run: |
-    launchctl unload ~/Library/LaunchAgents/dev.prvious.pv.plist 2>/dev/null || true
-    rm -f ~/Library/LaunchAgents/dev.prvious.pv.plist
-    sudo -E pv stop 2>/dev/null || true
+      launchctl unload ~/Library/LaunchAgents/dev.prvious.pv.plist 2>/dev/null || true
+      rm -f ~/Library/LaunchAgents/dev.prvious.pv.plist
+      sudo -E pv stop 2>/dev/null || true
 ```
 
 ---
 
 ### Test Coverage Summary
 
-| What | Where | Script / File |
-|---|---|---|
-| Plist XML correctness | Go unit test | `internal/daemon/plist_test.go` |
-| Plist sync/diff detection | Go unit test | `internal/daemon/sync_test.go` |
-| Daemon start + stop (launchd lifecycle) | E2E bash | `scripts/e2e/daemon-start-stop.sh` |
-| Crash recovery (KeepAlive) | E2E bash | `scripts/e2e/daemon-crash-recovery.sh` |
-| Full stack (link → daemon → curl) | E2E bash | `scripts/e2e/daemon-full-stack.sh` |
-| DNS + HTTP serving | E2E bash | Covered by existing `start-curl.sh` |
-| Restart behavior | E2E bash | Covered by existing `restart.sh` |
-| Log output | E2E bash | Covered by existing `log.sh` |
-| Auto-start on login (RunAtLoad) | Manual only | Not testable in CI |
+| What                                    | Where        | Script / File                          |
+| --------------------------------------- | ------------ | -------------------------------------- |
+| Plist XML correctness                   | Go unit test | `internal/daemon/plist_test.go`        |
+| Plist sync/diff detection               | Go unit test | `internal/daemon/sync_test.go`         |
+| Daemon start + stop (launchd lifecycle) | E2E bash     | `scripts/e2e/daemon-start-stop.sh`     |
+| Crash recovery (KeepAlive)              | E2E bash     | `scripts/e2e/daemon-crash-recovery.sh` |
+| Full stack (link → daemon → curl)       | E2E bash     | `scripts/e2e/daemon-full-stack.sh`     |
+| DNS + HTTP serving                      | E2E bash     | Covered by existing `start-curl.sh`    |
+| Restart behavior                        | E2E bash     | Covered by existing `restart.sh`       |
+| Log output                              | E2E bash     | Covered by existing `log.sh`           |
+| Auto-start on login (RunAtLoad)         | Manual only  | Not testable in CI                     |
 
 ---
 

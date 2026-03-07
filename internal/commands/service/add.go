@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	colimacmds "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
+	colimacmds "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
@@ -19,8 +19,8 @@ import (
 var addCmd = &cobra.Command{
 	Use:     "service:add <service> [version]",
 	GroupID: "service",
-	Short: "Add and start a service",
-	Long:  "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
+	Short:   "Add and start a service",
+	Long:    "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
 	Example: `# Add MySQL with default version
 pv service:add mysql
 

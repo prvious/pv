@@ -24,7 +24,7 @@ func scaffold(t *testing.T, files map[string]string) string {
 
 func TestDetect_LaravelOctane(t *testing.T) {
 	dir := scaffold(t, map[string]string{
-		"composer.json": `{"require":{"laravel/framework":"^11.0","laravel/octane":"^2.0"}}`,
+		"composer.json":                `{"require":{"laravel/framework":"^11.0","laravel/octane":"^2.0"}}`,
 		"public/frankenphp-worker.php": "<?php // worker",
 	})
 	if got := Detect(dir); got != "laravel-octane" {

@@ -14,8 +14,8 @@ import (
 var statusCmd = &cobra.Command{
 	Use:     "service:status <service>",
 	GroupID: "service",
-	Short: "Show detailed status for a service",
-	Args:  cobra.ExactArgs(1),
+	Short:   "Show detailed status for a service",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
 

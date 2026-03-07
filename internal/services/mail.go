@@ -20,7 +20,7 @@ func (m *Mail) ContainerName(version string) string {
 	return "pv-mail-" + version
 }
 
-func (m *Mail) Port(_ string) int       { return 1025 }
+func (m *Mail) Port(_ string) int        { return 1025 }
 func (m *Mail) ConsolePort(_ string) int { return 8025 }
 
 func (m *Mail) WebRoutes() []WebRoute {

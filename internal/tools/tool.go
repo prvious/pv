@@ -20,9 +20,9 @@ const (
 
 // Tool describes a managed binary.
 type Tool struct {
-	Name        string       // set automatically from registry key
+	Name        string // set automatically from registry key
 	DisplayName string
-	AutoExpose  bool         // :install auto-calls :path
+	AutoExpose  bool // :install auto-calls :path
 	Exposure    ExposureType
 	// InternalPath returns where the real binary lives.
 	InternalPath func() string

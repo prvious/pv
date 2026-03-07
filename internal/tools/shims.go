@@ -57,7 +57,7 @@ resolve_version() {
 
 VERSION=$(resolve_version)
 if [ -z "$VERSION" ]; then
-    echo "pv: no PHP version configured. Run: pv php:install <version>" >&2
+    echo "pv: no PHP version configured. Run: pv php:install [version]" >&2
     exit 1
 fi
 
@@ -83,4 +83,3 @@ func writePhpShim() error {
 	}
 	return nil
 }
-

@@ -13,7 +13,7 @@ var pathRemove bool
 var pathCmd = &cobra.Command{
 	Use:     "composer:path",
 	GroupID: "composer",
-	Short: "Expose or remove Composer from PATH",
+	Short:   "Expose or remove Composer from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t := tools.MustGet("composer")
 

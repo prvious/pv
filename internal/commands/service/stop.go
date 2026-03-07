@@ -12,8 +12,8 @@ import (
 var stopCmd = &cobra.Command{
 	Use:     "service:stop [service]",
 	GroupID: "service",
-	Short: "Stop a service or all services",
-	Args:  cobra.MaximumNArgs(1),
+	Short:   "Stop a service or all services",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {

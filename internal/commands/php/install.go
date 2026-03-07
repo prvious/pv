@@ -16,7 +16,7 @@ var validPHPVersion = regexp.MustCompile(`^\d+\.\d+$`)
 var installCmd = &cobra.Command{
 	Use:     "php:install [version]",
 	GroupID: "php",
-	Short: "Install a PHP version (e.g., pv php:install 8.4). Installs latest if omitted.",
+	Short:   "Install a PHP version (e.g., pv php:install 8.4). Installs latest if omitted.",
 	Example: `# Install the latest PHP version
 pv php:install
 

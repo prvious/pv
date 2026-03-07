@@ -13,7 +13,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "php:update",
 	GroupID: "php",
-	Short: "Re-download all installed PHP versions with the latest builds",
+	Short:   "Re-download all installed PHP versions with the latest builds",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client := &http.Client{}
 

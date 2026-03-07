@@ -13,8 +13,8 @@ import (
 var startCmd = &cobra.Command{
 	Use:     "service:start [service]",
 	GroupID: "service",
-	Short: "Start a service or all services",
-	Args:  cobra.MaximumNArgs(1),
+	Short:   "Start a service or all services",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {

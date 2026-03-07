@@ -13,7 +13,7 @@ import (
 var listCmd = &cobra.Command{
 	Use:     "service:list",
 	GroupID: "service",
-	Short: "List all services",
+	Short:   "List all services",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {

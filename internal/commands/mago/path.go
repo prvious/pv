@@ -13,7 +13,7 @@ var pathRemove bool
 var pathCmd = &cobra.Command{
 	Use:     "mago:path",
 	GroupID: "mago",
-	Short: "Expose or remove Mago from PATH",
+	Short:   "Expose or remove Mago from PATH",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t := tools.MustGet("mago")
 

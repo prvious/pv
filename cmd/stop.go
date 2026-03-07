@@ -15,7 +15,7 @@ import (
 var stopCmd = &cobra.Command{
 	Use:     "stop",
 	GroupID: "server",
-	Short: "Stop the pv server",
+	Short:   "Stop the pv server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Check daemon mode first.
 		if daemon.IsLoaded() {

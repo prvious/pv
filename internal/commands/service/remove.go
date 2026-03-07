@@ -14,8 +14,8 @@ import (
 var removeCmd = &cobra.Command{
 	Use:     "service:remove <service>",
 	GroupID: "service",
-	Short: "Stop and remove a service container (data preserved)",
-	Args:  cobra.ExactArgs(1),
+	Short:   "Stop and remove a service container (data preserved)",
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
 
