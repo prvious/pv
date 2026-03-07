@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 
@@ -14,11 +15,28 @@ import (
 var validPHPVersion = regexp.MustCompile(`^\d+\.\d+$`)
 
 var phpInstallCmd = &cobra.Command{
-	Use:   "php:install <version>",
-	Short: "Install a PHP version (e.g., pv php:install 8.4)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "php:install [version]",
+	Short: "Install a PHP version (e.g., pv php:install 8.4). Installs latest if omitted.",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := args[0]
+		version := ""
+		if len(args) > 0 {
+			version = args[0]
+		}
+
+		// Auto-resolve latest if no version specified.
+		if version == "" {
+			client := &http.Client{}
+			available, err := phpenv.AvailableVersions(client)
+			if err != nil {
+				return fmt.Errorf("cannot detect available PHP versions: %w", err)
+			}
+			if len(available) == 0 {
+				return fmt.Errorf("no PHP versions found in releases")
+			}
+			version = available[len(available)-1]
+		}
+
 		if !validPHPVersion.MatchString(version) {
 			fmt.Fprintln(os.Stderr)
 			ui.Fail(fmt.Sprintf("Invalid version format %s", ui.Bold.Render(version)))

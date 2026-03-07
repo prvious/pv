@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/prvious/pv/internal/binaries"
-	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
@@ -21,6 +20,7 @@ var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Interactive setup wizard — choose PHP versions, tools, and services",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
 		client := &http.Client{}
 
 		// Load current state to pre-select installed items.
@@ -54,23 +54,20 @@ var setupCmd = &cobra.Command{
 			selectedPHP = []string{available[len(available)-1]}
 		}
 
-		// Tool options.
+		// Tool options (mago is opt-in, composer is non-negotiable but shown).
 		type toolChoice struct {
 			Name    string
 			Label   string
 			Checked bool
 		}
 		toolDefs := []toolChoice{
-			{"composer", "Composer", true},
-			{"mago", "Mago", isExecutable(config.BinDir() + "/mago")},
-			{"colima", "Colima (container runtime for services)", colima.IsInstalled()},
+			{"mago", "Mago (PHP linter & formatter)", isExecutable(config.BinDir() + "/mago")},
 		}
 
 		var toolOptions []huh.Option[string]
 		var selectedTools []string
 		for _, t := range toolDefs {
-			label := t.Label
-			toolOptions = append(toolOptions, huh.NewOption(label, t.Name))
+			toolOptions = append(toolOptions, huh.NewOption(t.Label, t.Name))
 			if t.Checked {
 				selectedTools = append(selectedTools, t.Name)
 			}
@@ -103,8 +100,8 @@ var setupCmd = &cobra.Command{
 					Value(&selectedPHP),
 
 				huh.NewMultiSelect[string]().
-					Title("Tools").
-					Description("Select which tools to install").
+					Title("Optional Tools").
+					Description("Composer is always installed. Select additional tools:").
 					Options(toolOptions...).
 					Value(&selectedTools),
 
@@ -122,10 +119,23 @@ var setupCmd = &cobra.Command{
 		)
 
 		if err := form.Run(); err != nil {
+			cmd.SilenceUsage = true
 			return err
 		}
 
 		fmt.Fprintln(os.Stderr)
+
+		ui.Header(version)
+
+		// Validate TLD.
+		if err := config.ValidateTLD(tld); err != nil {
+			return err
+		}
+
+		// Acquire sudo upfront.
+		if err := acquireSudo(); err != nil {
+			return err
+		}
 
 		// Ensure directories exist.
 		if err := config.EnsureDirs(); err != nil {
@@ -133,9 +143,6 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Save TLD.
-		if err := config.ValidateTLD(tld); err != nil {
-			return err
-		}
 		s := &config.Settings{TLD: tld}
 		if settings != nil {
 			s.GlobalPHP = settings.GlobalPHP
@@ -168,84 +175,60 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Install tools.
+		// Install Composer (non-negotiable).
+		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Composer failed: %v\n", ui.Red.Render("!"), err)
+		}
+
+		// Install optional tools (Colima is lazy-installed via service:add).
 		toolSet := make(map[string]bool)
 		for _, t := range selectedTools {
 			toolSet[t] = true
 		}
 
-		if toolSet["composer"] {
-			if err := ui.StepProgress("Installing Composer...", func(progress func(written, total int64)) (string, error) {
-				vs, _ := binaries.LoadVersions()
-				latest, err := binaries.FetchLatestVersion(client, binaries.Composer)
-				if err != nil {
-					return "", err
-				}
-				if err := binaries.InstallBinaryProgress(client, binaries.Composer, latest, progress); err != nil {
-					return "", err
-				}
-				if vs != nil {
-					vs.Set("composer", latest)
-					_ = vs.Save()
-				}
-				return "Composer installed", nil
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Composer failed: %v\n", ui.Red.Render("!"), err)
-			}
-		}
-
 		if toolSet["mago"] {
-			if err := ui.StepProgress("Installing Mago...", func(progress func(written, total int64)) (string, error) {
-				vs, _ := binaries.LoadVersions()
-				latest, err := binaries.FetchLatestVersion(client, binaries.Mago)
-				if err != nil {
-					return "", err
-				}
-				if err := binaries.InstallBinaryProgress(client, binaries.Mago, latest, progress); err != nil {
-					return "", err
-				}
-				if vs != nil {
-					vs.Set("mago", latest)
-					_ = vs.Save()
-				}
-				return fmt.Sprintf("Mago %s installed", latest), nil
-			}); err != nil {
+			if err := magoDownloadCmd.RunE(magoDownloadCmd, nil); err != nil {
 				fmt.Fprintf(os.Stderr, "  %s Mago failed: %v\n", ui.Red.Render("!"), err)
 			}
 		}
 
-		if toolSet["colima"] {
-			if err := ui.StepProgress("Installing Colima...", func(progress func(written, total int64)) (string, error) {
-				if err := colima.Install(client, progress); err != nil {
-					return "", err
-				}
-				return "Colima installed", nil
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Colima failed: %v\n", ui.Red.Render("!"), err)
-			}
-		}
-
-		// Expose tools (shims + symlinks).
+		// Expose all installed tools (shims + symlinks).
 		if err := tools.ExposeAll(); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s Tool exposure failed: %v\n", ui.Red.Render("!"), err)
 		}
 
-		// Print summary.
-		fmt.Fprintln(os.Stderr)
-		if len(selectedPHP) > 0 {
-			ui.Success(fmt.Sprintf("PHP: %s", strings.Join(selectedPHP, ", ")))
-		}
-		if len(selectedTools) > 0 {
-			ui.Success(fmt.Sprintf("Tools: %s", strings.Join(selectedTools, ", ")))
-		}
-		if len(selectedServices) > 0 {
-			fmt.Fprintln(os.Stderr)
-			ui.Subtle("To start your selected services, run:")
-			for _, name := range selectedServices {
-				fmt.Fprintf(os.Stderr, "  pv service:add %s\n", name)
+		// Save version manifest.
+		vs, err := binaries.LoadVersions()
+		if err == nil {
+			if len(selectedPHP) > 0 {
+				vs.Set("php", selectedPHP[len(selectedPHP)-1])
+			}
+			if saveErr := vs.Save(); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "  %s Cannot save version manifest: %v\n", ui.Red.Render("!"), saveErr)
 			}
 		}
-		fmt.Fprintln(os.Stderr)
+
+		// Finalize: Caddyfile, DNS, CA trust, shell PATH.
+		if err := bootstrapFinalize(tld); err != nil {
+			return err
+		}
+
+		// Spin up selected services.
+		if len(selectedServices) > 0 {
+			fmt.Fprintln(os.Stderr)
+			for _, name := range selectedServices {
+				svc, _ := services.Lookup(name)
+				if svc == nil {
+					continue
+				}
+				svcArgs := []string{name, svc.DefaultVersion()}
+				if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
+					fmt.Fprintf(os.Stderr, "  %s Service %s failed: %v\n", ui.Red.Render("!"), name, err)
+				}
+			}
+		}
+
+		ui.Footer(start, "https://pv.prvious.dev/docs")
 
 		return nil
 	},

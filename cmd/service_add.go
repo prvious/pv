@@ -50,42 +50,42 @@ var serviceAddCmd = &cobra.Command{
 		opts := svc.CreateOpts(version)
 		var containerID string
 
-		// Attempt container operations if Colima is available.
-		// Failures are non-fatal — the service is still registered.
+		// Ensure Colima is installed (lazy install on first service:add).
 		containerReady := false
-		if colima.IsInstalled() {
-			if err := colima.EnsureRunning(); err != nil {
-				ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
-				ui.Subtle("Service registered — container will start when runtime is available.")
+		if !colima.IsInstalled() {
+			if err := colimaInstallCmd.RunE(colimaInstallCmd, nil); err != nil {
+				return fmt.Errorf("cannot install Colima (required for services): %w", err)
+			}
+		}
+
+		if err := colima.EnsureRunning(); err != nil {
+			ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
+			ui.Subtle("Service registered — container will start when runtime is available.")
+		} else {
+			// Pull image.
+			if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
+				engine, err := container.NewEngine(config.ColimaSocketPath())
+				if err != nil {
+					return "", fmt.Errorf("cannot connect to Docker: %w", err)
+				}
+				defer engine.Close()
+				_ = engine // Pull would happen via engine.PullImage()
+				return fmt.Sprintf("Pulled %s", opts.Image), nil
+			}); err != nil {
+				ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
 			} else {
-				// Pull image.
-				if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
-					engine, err := container.NewEngine(config.ColimaSocketPath())
-					if err != nil {
-						return "", fmt.Errorf("cannot connect to Docker: %w", err)
-					}
-					defer engine.Close()
-					_ = engine // Pull would happen via engine.PullImage()
-					return fmt.Sprintf("Pulled %s", opts.Image), nil
+				// Create and start container.
+				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
+					// Container creation and health check would happen here via Docker SDK.
+					containerID = "" // Would be set by engine.CreateAndStart()
+					port := svc.Port(version)
+					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
 				}); err != nil {
-					ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
+					ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
 				} else {
-					// Create and start container.
-					if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
-						// Container creation and health check would happen here via Docker SDK.
-						containerID = "" // Would be set by engine.CreateAndStart()
-						port := svc.Port(version)
-						return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
-					}); err != nil {
-						ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
-					} else {
-						containerReady = true
-					}
+					containerReady = true
 				}
 			}
-		} else {
-			ui.Subtle("Colima not installed — container will start when runtime is available.")
-			ui.Subtle("Run 'pv install' to set up the container runtime.")
 		}
 
 		// Create data directory.
