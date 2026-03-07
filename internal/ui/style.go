@@ -48,9 +48,3 @@ func Subtle(text string) {
 func FailDetail(text string) {
 	fmt.Fprintf(os.Stderr, "    %s\n", Muted.Render(text))
 }
-
-// Fatal prints an error and exits.
-func Fatal(err error) {
-	Fail(err.Error())
-	os.Exit(1)
-}
