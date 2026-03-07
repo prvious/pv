@@ -30,11 +30,7 @@ var startCmd = &cobra.Command{
 
 func startFG() error {
 	if server.IsRunning() {
-		fmt.Fprintln(os.Stderr)
-		ui.Fail("pv is already running")
-		ui.FailDetail("PID file exists and process is alive")
-		fmt.Fprintln(os.Stderr)
-		return ui.ErrAlreadyPrinted
+		return fmt.Errorf("pv is already running (PID file exists and process is alive)")
 	}
 
 	settings, err := config.LoadSettings()

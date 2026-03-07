@@ -106,11 +106,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 		}
 
 		if setup.IsAlreadyInstalled() && !forceInstall {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail("pv is already installed")
-			ui.FailDetail("Run with --force to reinstall")
-			fmt.Fprintln(os.Stderr)
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("pv is already installed, run with --force to reinstall")
 		}
 
 		ui.Header(version)
@@ -126,7 +122,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			}
 			return fmt.Sprintf("macOS %s", setup.PlatformLabel()), nil
 		}); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 2: Create directory structure and save settings.
@@ -144,7 +140,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			}
 			return "Directories created", nil
 		}); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 3: Install PHP (non-negotiable).
@@ -153,24 +149,24 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			phpArgs = []string{spec.phpVersion}
 		}
 		if err := phpInstallCmd.RunE(phpInstallCmd, phpArgs); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 4: Install Composer (non-negotiable).
 		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 5: Install Mago (opt-in via --with).
 		if spec.mago {
 			if err := magoInstallCmd.RunE(magoInstallCmd, nil); err != nil {
-				return ui.ErrAlreadyPrinted
+				return err
 			}
 		}
 
 		// Step 6: Finalize (Caddyfile, DNS, CA trust, shell PATH).
 		if err := bootstrapFinalize(installTLD); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 7: Install services from --with.
@@ -180,7 +176,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 				svcArgs = append(svcArgs, svc.version)
 			}
 			if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Service %s failed: %v\n", ui.Red.Render("!"), svc.name, err)
+				ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
 			}
 		}
 
@@ -201,7 +197,6 @@ func shortPath(path string) string {
 
 func init() {
 	installCmd.Flags().BoolVarP(&forceInstall, "force", "f", false, "Reinstall even if already installed")
-	installCmd.SilenceUsage = true
 	installCmd.Flags().StringVar(&installTLD, "tld", "test", "Top-level domain for local sites (e.g., test, pv-test)")
 	installCmd.Flags().StringVar(&installWith, "with", "", `Optional tools and services (e.g., "php:8.2,mago,service[redis:7]")`)
 	rootCmd.AddCommand(installCmd)

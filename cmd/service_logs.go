@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -23,20 +22,11 @@ var serviceLogsCmd = &cobra.Command{
 
 		instance := reg.FindService(key)
 		if instance == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("service %q not found", key)
 		}
 
 		if instance.ContainerID == "" {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Service %s is not running", ui.Bold.Render(key)))
-			ui.FailDetail(fmt.Sprintf("Start it first: pv service:start %s", key))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("service %q is not running, start it first: pv service:start %s", key, key)
 		}
 
 		// Docker SDK: ContainerLogs with Follow=true

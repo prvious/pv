@@ -26,14 +26,9 @@ var serviceRemoveCmd = &cobra.Command{
 
 		svc := reg.FindService(key)
 		if svc == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("service %q not found", key)
 		}
 
-		fmt.Fprintln(os.Stderr)
 
 		if err := ui.Step(fmt.Sprintf("Removing %s...", key), func() (string, error) {
 			// Docker SDK: stop + remove container.

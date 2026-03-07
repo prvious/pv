@@ -71,9 +71,7 @@ var daemonRestartCmd = &cobra.Command{
 	Short: "Restart the pv daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !daemon.IsLoaded() {
-			ui.Subtle("Daemon is not running")
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("daemon is not running")
 		}
 
 		return ui.Step("Restarting pv daemon...", func() (string, error) {

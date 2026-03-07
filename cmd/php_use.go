@@ -24,12 +24,7 @@ pv php:use 8.3`,
 		}
 
 		if !phpenv.IsInstalled(version) {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("PHP %s is not installed", ui.Bold.Render(version)))
-			ui.FailDetail(fmt.Sprintf("Run: pv php:install %s", version))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("PHP %s is not installed, run: pv php:install %s", version, version)
 		}
 
 		oldV, _ := phpenv.GlobalVersion()

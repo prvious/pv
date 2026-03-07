@@ -26,11 +26,7 @@ var serviceStatusCmd = &cobra.Command{
 
 		instance := reg.FindService(key)
 		if instance == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("service %q not found", key)
 		}
 
 		// Parse service name and version from key.

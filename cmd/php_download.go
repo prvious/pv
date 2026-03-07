@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/ui"
@@ -17,12 +16,7 @@ var phpDownloadCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version := args[0]
 		if !validPHPVersion.MatchString(version) {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Invalid version format %s", ui.Bold.Render(version)))
-			ui.FailDetail("Use major.minor (e.g., 8.4)")
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("invalid version format %q, use major.minor (e.g., 8.4)", version)
 		}
 
 		client := &http.Client{}

@@ -40,12 +40,7 @@ var serviceStopCmd = &cobra.Command{
 		} else {
 			key := args[0]
 			if reg.FindService(key) == nil {
-				fmt.Fprintln(os.Stderr)
-				ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-				ui.FailDetail("Run 'pv service:list' to see available services")
-				fmt.Fprintln(os.Stderr)
-				cmd.SilenceUsage = true
-				return ui.ErrAlreadyPrinted
+				return fmt.Errorf("service %q not found, run 'pv service:list' to see available services", key)
 			}
 
 			if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {

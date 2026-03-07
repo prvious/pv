@@ -39,22 +39,14 @@ pv unlink`,
 			absPath, _ := filepath.Abs(cwd)
 			p := reg.FindByPath(absPath)
 			if p == nil {
-				fmt.Fprintln(os.Stderr)
-				ui.Fail("Current directory is not a linked project")
-				fmt.Fprintln(os.Stderr)
-				cmd.SilenceUsage = true
-				return ui.ErrAlreadyPrinted
+				return fmt.Errorf("current directory is not a linked project")
 			}
 			name = p.Name
 		}
 
 		// Check project exists before removing.
 		if reg.Find(name) == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Project %s is not linked", ui.Bold.Render(name)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("project %q is not linked", name)
 		}
 
 		if err := reg.Remove(name); err != nil {

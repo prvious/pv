@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +27,7 @@ func Execute() {
 	if err := fang.Execute(context.Background(), rootCmd,
 		fang.WithVersion(version),
 		fang.WithColorSchemeFunc(pvColorScheme),
+		fang.WithErrorHandler(pvErrorHandler),
 	); err != nil {
 		os.Exit(1)
 	}
@@ -33,4 +37,11 @@ func pvColorScheme(c lipgloss.LightDarkFunc) fang.ColorScheme {
 	cs := fang.DefaultColorScheme(c)
 	cs.Title = charmtone.Charple
 	return cs
+}
+
+func pvErrorHandler(w io.Writer, styles fang.Styles, err error) {
+	if errors.Is(err, ui.ErrAlreadyPrinted) {
+		return
+	}
+	fang.DefaultErrorHandler(w, styles, err)
 }

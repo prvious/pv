@@ -75,14 +75,7 @@ pv link --name=myapp ~/Code/myapp`,
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
 
 		if existing := reg.Find(name); existing != nil {
-			domain := "https://" + name + "." + settings.TLD
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("%s is already linked", ui.Purple.Bold(true).Render(domain)))
-			ui.FailDetail(fmt.Sprintf("Path: %s", existing.Path))
-			ui.FailDetail("To re-link, run: pv unlink " + name + " && pv link " + path)
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("%s is already linked at %s\nTo re-link, run: pv unlink %s && pv link %s", name, existing.Path, name, path)
 		}
 		if err := reg.Add(project); err != nil {
 			return err

@@ -26,14 +26,9 @@ var serviceDestroyCmd = &cobra.Command{
 
 		svc := reg.FindService(key)
 		if svc == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Service %s not found", ui.Bold.Render(key)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("service %q not found", key)
 		}
 
-		fmt.Fprintln(os.Stderr)
 
 		// Determine service name and version from key.
 		svcName := key

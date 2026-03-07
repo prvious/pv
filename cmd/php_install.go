@@ -43,12 +43,7 @@ pv php:install 8.3`,
 		}
 
 		if !validPHPVersion.MatchString(version) {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Invalid version format %s", ui.Bold.Render(version)))
-			ui.FailDetail("Use major.minor (e.g., 8.4)")
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("invalid version format %q, use major.minor (e.g., 8.4)", version)
 		}
 
 		if phpenv.IsInstalled(version) {
@@ -58,13 +53,10 @@ pv php:install 8.3`,
 					return err
 				}
 			}
-			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("PHP %s is already installed", version))
-			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 
-		fmt.Fprintln(os.Stderr)
 
 		// Download.
 		if err := phpDownloadCmd.RunE(phpDownloadCmd, []string{version}); err != nil {

@@ -119,7 +119,6 @@ var setupCmd = &cobra.Command{
 		)
 
 		if err := form.Run(); err != nil {
-			cmd.SilenceUsage = true
 			return err
 		}
 
