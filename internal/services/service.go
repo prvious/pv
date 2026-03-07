@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/prvious/pv/internal/container"
 )
@@ -46,6 +47,11 @@ func Lookup(name string) (Service, error) {
 
 func Available() []string {
 	return []string{"mail", "mysql", "postgres", "redis", "s3"}
+}
+
+// SanitizeProjectName converts a directory name to a database-safe name.
+func SanitizeProjectName(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
 }
 
 // ServiceKey returns the registry key for a service instance.

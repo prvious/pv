@@ -58,11 +58,11 @@ var doctorCmd = &cobra.Command{
 			allChecks = append(allChecks, svcChecks)
 		}
 
-		fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Bold.Render("pv doctor"))
+		ui.SectionHeader("pv doctor")
 
 		passed, failed := 0, 0
 		for _, section := range allChecks {
-			fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Bold.Render(section.Name))
+			ui.SectionHeader(section.Name)
 			for _, c := range section.Checks {
 				if c.Status {
 					ui.Success(c.Name)
@@ -80,7 +80,6 @@ var doctorCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		if failed > 0 {
 			ui.Fail(fmt.Sprintf("%d passed, %d issues found", passed, failed))
 			return ui.ErrAlreadyPrinted
@@ -245,7 +244,7 @@ func runEnvironmentChecks() sectionResult {
 				Name:    "FrankenPHP symlink",
 				Status:  false,
 				Message: fmt.Sprintf("broken symlink → %s", target),
-				Fix:     "pv php:use <version>",
+				Fix:     "pv php:use [version]",
 			})
 		}
 	} else if isExecutable(fpLink) {

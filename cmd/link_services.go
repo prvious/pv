@@ -20,7 +20,7 @@ func detectAndBindServices(projectPath, projectName string, reg *registry.Regist
 		return
 	}
 
-	dbName := sanitizeProjectName(projectName)
+	dbName := services.SanitizeProjectName(projectName)
 	var detected []string
 	var suggestions []string
 	var needsEnvUpdate bool
@@ -166,8 +166,4 @@ func containsStr(slice []string, s string) bool {
 		}
 	}
 	return false
-}
-
-func sanitizeProjectName(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
 }

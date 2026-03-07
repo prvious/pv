@@ -29,7 +29,7 @@ var forceUninstall bool
 var uninstallCmd = &cobra.Command{
 	Use:     "uninstall",
 	GroupID: "core",
-	Short: "Completely remove pv and all its data",
+	Short:   "Completely remove pv and all its data",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Confirmation prompt.
 		ui.Subtle("This will remove:")
@@ -90,7 +90,10 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		settings, _ := config.LoadSettings()
-		tld := settings.TLD
+		tld := "test"
+		if settings != nil {
+			tld = settings.TLD
+		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
 		if err := colimacmd.RunUninstall(); err != nil {
@@ -160,10 +163,11 @@ var uninstallCmd = &cobra.Command{
 
 		// Remove system configuration (sudo).
 		if err := ui.Step("Removing DNS resolver...", func() (string, error) {
-			if runSudo(fmt.Sprintf("rm -f /etc/resolver/%s", tld)) {
+			resolverFile := filepath.Join("/etc/resolver", tld)
+			if runSudo("rm", "-f", resolverFile) {
 				return "DNS resolver removed", nil
 			}
-			return "", fmt.Errorf("could not remove /etc/resolver/%s — run: sudo rm -f /etc/resolver/%s", tld, tld)
+			return "", fmt.Errorf("could not remove %s — run: sudo rm -f %s", resolverFile, resolverFile)
 		}); err != nil {
 			// Error already displayed by ui.Step
 		}
@@ -202,7 +206,7 @@ var uninstallCmd = &cobra.Command{
 		if err := ui.Step("Removing ~/.pv...", func() (string, error) {
 			pvDir := config.PvDir()
 			if err := os.RemoveAll(pvDir); err != nil {
-				if runSudo(fmt.Sprintf("rm -rf '%s'", pvDir)) {
+				if runSudo("rm", "-rf", pvDir) {
 					return "~/.pv removed", nil
 				}
 				return "", fmt.Errorf("could not fully remove %s", pvDir)
@@ -222,7 +226,7 @@ var uninstallCmd = &cobra.Command{
 				pvBin = resolved
 			}
 			if err := os.Remove(pvBin); err != nil {
-				if runSudo(fmt.Sprintf("rm -f '%s'", pvBin)) {
+				if runSudo("rm", "-f", pvBin) {
 					return fmt.Sprintf("Removed %s", pvBin), nil
 				}
 				return "", fmt.Errorf("could not remove %s — delete it manually", pvBin)
@@ -283,12 +287,13 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return os.WriteFile(dst, data, 0600)
 }
 
 // runSudo runs a command via sudo -n (non-interactive). Returns true on success.
-func runSudo(script string) bool {
-	cmd := exec.Command("sudo", "-n", "sh", "-c", script)
+func runSudo(args ...string) bool {
+	cmdArgs := append([]string{"-n"}, args...)
+	cmd := exec.Command("sudo", cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run() == nil

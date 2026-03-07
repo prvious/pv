@@ -19,7 +19,7 @@ var (
 
 // ErrAlreadyPrinted is returned when the error has already been displayed
 // to the user via styled output. Callers should exit without printing again.
-var ErrAlreadyPrinted = errors.New("")
+var ErrAlreadyPrinted = errors.New("error already printed")
 
 // Header prints the pv version banner.
 func Header(version string) {
@@ -47,4 +47,9 @@ func Subtle(text string) {
 // FailDetail prints indented detail under a failure.
 func FailDetail(text string) {
 	fmt.Fprintf(os.Stderr, "    %s\n", Muted.Render(text))
+}
+
+// SectionHeader prints a bold section header with surrounding spacing.
+func SectionHeader(text string) {
+	fmt.Fprintf(os.Stderr, "\n  %s\n", Bold.Render(text))
 }

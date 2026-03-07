@@ -15,8 +15,8 @@ import (
 var envCmd = &cobra.Command{
 	Use:     "service:env [service]",
 	GroupID: "service",
-	Short: "Print environment variables for a service",
-	Args:  cobra.MaximumNArgs(1),
+	Short:   "Print environment variables for a service",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {
@@ -25,7 +25,7 @@ var envCmd = &cobra.Command{
 
 		// Determine project name from current directory.
 		cwd, _ := os.Getwd()
-		projectName := sanitizeProjectName(filepath.Base(cwd))
+		projectName := services.SanitizeProjectName(filepath.Base(cwd))
 
 		if len(args) == 0 {
 			// Print env for all services.
@@ -45,6 +45,7 @@ var envCmd = &cobra.Command{
 				}
 				svc, err := services.Lookup(svcName)
 				if err != nil {
+					ui.Subtle(fmt.Sprintf("Skipping unknown service %q", svcName))
 					continue
 				}
 				envVars := svc.EnvVars(projectName, instance.Port)
@@ -82,9 +83,4 @@ func printEnvVars(key string, envVars map[string]string) {
 		fmt.Fprintf(os.Stderr, "  %s=%s\n", k, v)
 	}
 	fmt.Fprintln(os.Stderr)
-}
-
-// sanitizeProjectName converts a directory name to a database-safe name.
-func sanitizeProjectName(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
 }

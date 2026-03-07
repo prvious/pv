@@ -20,9 +20,10 @@ Build version is set via `go build -ldflags "-X github.com/prvious/pv/cmd.versio
 ## Command conventions
 
 - **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `service:add`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
-- **All commands register on `rootCmd`** — cobra requires a flat `cmd/` directory. No subdirectories.
+- **Subpackage layout**: tool/service/daemon commands live in `internal/commands/<group>/` (e.g., `internal/commands/mago/install.go`). Each group has a `register.go` with a `Register(parent *cobra.Command)` function that wires all commands onto rootCmd. Bridge files in `cmd/` (e.g., `cmd/mago.go`) call `Register(rootCmd)` in `init()`.
+- **Core/orchestrator commands** (`install`, `update`, `uninstall`, `link`, `start`, `stop`, etc.) remain in `cmd/` as flat files.
+- **Cross-package calls**: `register.go` exports `Run*()` helpers (e.g., `php.RunInstall(args)`) for orchestrators to call sub-tool RunE functions.
 - **Always use `RunE`** (not `Run`) so errors propagate.
-- **Command files are named `<tool>_<action>.go`** (e.g., `mago_install.go`, `service_add.go`).
 
 ## Tool command rules
 
@@ -32,9 +33,9 @@ Every managed tool (php, mago, composer, colima) follows a strict five-command p
 |---------|-------------|-------------------|
 | `:download` | Fetches binary to private storage | `internal/binaries/` or `internal/phpenv/` |
 | `:path` | Exposes/unexposes from PATH (supports `--remove`) | `internal/tools/` |
-| `:install` | Orchestrates `:download` then `tools.Expose()` | `cmd/` — delegates only |
-| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `cmd/` + `internal/` |
-| `:uninstall` | Unexposes + removes binary files | `cmd/` + `internal/tools/` |
+| `:install` | Orchestrates `:download` then `tools.Expose()` | `internal/commands/<group>/` — delegates only |
+| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `internal/commands/<group>/` + `internal/` |
+| `:uninstall` | Unexposes + removes binary files | `internal/commands/<group>/` + `internal/tools/` |
 
 **Hard rules:**
 1. `:install` MUST delegate to `:download` RunE — never inline download logic in `cmd/`.
@@ -129,4 +130,4 @@ The CLI uses a layered Charm stack:
 
 - Each backing service (mysql, postgres, redis, mail, s3) implements `services.Service` interface.
 - Services run as Docker containers via Colima. Container operations go through `container.Engine`.
-- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `cmd/service_*.go`.
+- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `internal/commands/service/`.
