@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
-pv install --php 8.4
+pv install --with="php:8.4"
 echo "--- install output above ---"
 
 pv php:install 8.3
