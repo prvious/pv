@@ -16,13 +16,20 @@ test -f ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not foun
 
 # ── 2. Verify COMPOSER_HOME isolation ──────────────────────────────────
 echo "==> Verify COMPOSER_HOME points to ~/.pv/composer"
-COMPOSER_HOME_OUTPUT=$(composer config --global home 2>/dev/null)
+echo "  Debug: composer shim at $(which composer)"
+echo "  Debug: shim contents:"
+head -5 ~/.pv/bin/composer || true
+echo "  Debug: PHP binary:"
+ls -la ~/.pv/php/8.4/php || true
+echo "  Debug: composer.phar:"
+ls -la ~/.pv/internal/bin/composer.phar || true
+COMPOSER_HOME_OUTPUT=$(composer config --global home 2>&1)
 echo "  COMPOSER_HOME = $COMPOSER_HOME_OUTPUT"
 assert_contains "$COMPOSER_HOME_OUTPUT" ".pv/composer" "COMPOSER_HOME not isolated under ~/.pv/composer"
 
 # ── 3. Verify COMPOSER_CACHE_DIR isolation ─────────────────────────────
 echo "==> Verify COMPOSER_CACHE_DIR points to ~/.pv/composer/cache"
-COMPOSER_CACHE_OUTPUT=$(composer config --global cache-dir 2>/dev/null)
+COMPOSER_CACHE_OUTPUT=$(composer config --global cache-dir 2>&1)
 echo "  COMPOSER_CACHE_DIR = $COMPOSER_CACHE_OUTPUT"
 assert_contains "$COMPOSER_CACHE_OUTPUT" ".pv/composer/cache" "COMPOSER_CACHE_DIR not isolated under ~/.pv/composer/cache"
 
