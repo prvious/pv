@@ -13,11 +13,10 @@ import (
 )
 
 var stopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the pv server",
+	Use:     "stop",
+	GroupID: "server",
+	Short:   "Stop the pv server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(os.Stderr)
-
 		// Check daemon mode first.
 		if daemon.IsLoaded() {
 			if err := ui.Step("Stopping pv daemon...", func() (string, error) {
@@ -37,8 +36,6 @@ var stopCmd = &cobra.Command{
 			}); err != nil {
 				return err
 			}
-
-			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 
@@ -46,7 +43,6 @@ var stopCmd = &cobra.Command{
 		pid, err := server.ReadPID()
 		if err != nil {
 			ui.Subtle("pv is not running")
-			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 
@@ -73,7 +69,6 @@ var stopCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

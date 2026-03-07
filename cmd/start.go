@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/prvious/pv/internal/config"
@@ -18,8 +17,9 @@ var (
 )
 
 var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the pv server (DNS + FrankenPHP)",
+	Use:     "start",
+	GroupID: "server",
+	Short:   "Start the pv server (DNS + FrankenPHP)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if startBackground {
 			return startDaemon()
@@ -30,11 +30,7 @@ var startCmd = &cobra.Command{
 
 func startFG() error {
 	if server.IsRunning() {
-		fmt.Fprintln(os.Stderr)
-		ui.Fail("pv is already running")
-		ui.FailDetail("PID file exists and process is alive")
-		fmt.Fprintln(os.Stderr)
-		return ui.ErrAlreadyPrinted
+		return fmt.Errorf("pv is already running (PID file exists and process is alive)")
 	}
 
 	settings, err := config.LoadSettings()
@@ -50,9 +46,7 @@ func startDaemon() error {
 	if daemon.IsLoaded() {
 		pid, err := daemon.GetPID()
 		if err == nil && pid > 0 {
-			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("pv is already running %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
-			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 	}
@@ -60,13 +54,9 @@ func startDaemon() error {
 	// Also check foreground PID file.
 	if server.IsRunning() {
 		pid, _ := server.ReadPID()
-		fmt.Fprintln(os.Stderr)
 		ui.Success(fmt.Sprintf("pv is already running in foreground %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
-		fmt.Fprintln(os.Stderr)
 		return nil
 	}
-
-	fmt.Fprintln(os.Stderr)
 
 	if err := ui.Step("Starting pv daemon...", func() (string, error) {
 		// Generate and write plist.
@@ -100,7 +90,6 @@ func startDaemon() error {
 	}
 
 	ui.Subtle("Run pv log to view logs")
-	fmt.Fprintln(os.Stderr)
 
 	return nil
 }

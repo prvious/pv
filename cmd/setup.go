@@ -1,13 +1,17 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/binaries"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
@@ -17,8 +21,9 @@ import (
 )
 
 var setupCmd = &cobra.Command{
-	Use:   "setup",
-	Short: "Interactive setup wizard — choose PHP versions, tools, and services",
+	Use:     "setup",
+	GroupID: "core",
+	Short:   "Interactive setup wizard — choose PHP versions, tools, and services",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 		client := &http.Client{}
@@ -119,7 +124,6 @@ var setupCmd = &cobra.Command{
 		)
 
 		if err := form.Run(); err != nil {
-			cmd.SilenceUsage = true
 			return err
 		}
 
@@ -163,7 +167,9 @@ var setupCmd = &cobra.Command{
 				}
 				return fmt.Sprintf("PHP %s installed", v), nil
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), fmt.Sprintf("PHP %s failed: %v", v, err))
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("PHP %s failed: %v", v, err))
+				}
 			}
 		}
 
@@ -176,8 +182,10 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Install Composer (non-negotiable).
-		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer failed: %v\n", ui.Red.Render("!"), err)
+		if err := composer.RunInstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer failed: %v", err))
+			}
 		}
 
 		// Install optional tools (Colima is lazy-installed via service:add).
@@ -187,14 +195,16 @@ var setupCmd = &cobra.Command{
 		}
 
 		if toolSet["mago"] {
-			if err := magoDownloadCmd.RunE(magoDownloadCmd, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Mago failed: %v\n", ui.Red.Render("!"), err)
+			if err := mago.RunDownload(); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Mago failed: %v", err))
+				}
 			}
 		}
 
 		// Expose all installed tools (shims + symlinks).
 		if err := tools.ExposeAll(); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Tool exposure failed: %v\n", ui.Red.Render("!"), err)
+			ui.Fail(fmt.Sprintf("Tool exposure failed: %v", err))
 		}
 
 		// Save version manifest.
@@ -204,7 +214,7 @@ var setupCmd = &cobra.Command{
 				vs.Set("php", selectedPHP[len(selectedPHP)-1])
 			}
 			if saveErr := vs.Save(); saveErr != nil {
-				fmt.Fprintf(os.Stderr, "  %s Cannot save version manifest: %v\n", ui.Red.Render("!"), saveErr)
+				ui.Fail(fmt.Sprintf("Cannot save version manifest: %v", saveErr))
 			}
 		}
 
@@ -222,8 +232,10 @@ var setupCmd = &cobra.Command{
 					continue
 				}
 				svcArgs := []string{name, svc.DefaultVersion()}
-				if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
-					fmt.Fprintf(os.Stderr, "  %s Service %s failed: %v\n", ui.Red.Render("!"), name, err)
+				if err := service.RunAdd(svcArgs); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
+					}
 				}
 			}
 		}

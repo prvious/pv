@@ -191,9 +191,9 @@ type MySQLService struct {
 }
 ```
 
-- Image: `mysql:<version>`
+- Image: `mysql:[version]`
 - Environment: `MYSQL_ALLOW_EMPTY_PASSWORD=yes`
-- Volume: `~/.pv/services/mysql/<version>/data:/var/lib/mysql`
+- Volume: `~/.pv/services/mysql/[version]/data:/var/lib/mysql`
 - Port: `<port>:3306`
 - Health check: `mysqladmin ping -h 127.0.0.1`
 - Database creation: `CREATE DATABASE IF NOT EXISTS <name>`
@@ -208,9 +208,9 @@ type PostgresService struct {
 }
 ```
 
-- Image: `postgres:<version>`
+- Image: `postgres:[version]`
 - Environment: `POSTGRES_HOST_AUTH_METHOD=trust`
-- Volume: `~/.pv/services/postgres/<version>/data:/var/lib/postgresql/data`
+- Volume: `~/.pv/services/postgres/[version]/data:/var/lib/postgresql/data`
 - Port: `<port>:5432`
 - Health check: `pg_isready`
 - Database creation: `CREATE DATABASE <name>`
@@ -225,8 +225,8 @@ type RedisService struct {
 }
 ```
 
-- Image: `redis:<version>`
-- Volume: `~/.pv/services/redis/<version>/data:/data`
+- Image: `redis:[version]`
+- Volume: `~/.pv/services/redis/[version]/data:/data`
 - Port: `6379:6379`
 - Health check: `redis-cli ping`
 - No credentials, no per-project databases needed
@@ -262,7 +262,7 @@ Flow:
 3. Check if this exact service+version already exists in registry → if so, print "already added" and exit
 4. Ensure Colima is running (start if not)
 5. Pull the Docker image (with spinner/progress)
-6. Create data directory at `~/.pv/services/<service>/<version>/data/`
+6. Create data directory at `~/.pv/services/<service>/[version]/data/`
 7. Create and start the container with appropriate config from Task 3
 8. Wait for health check to pass
 9. Update registry with container ID, port, status

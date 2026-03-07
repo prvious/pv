@@ -14,9 +14,15 @@ import (
 )
 
 var unlinkCmd = &cobra.Command{
-	Use:   "unlink [name]",
-	Short: "Unlink a project",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "unlink [name]",
+	GroupID: "core",
+	Short:   "Unlink a project",
+	Example: `# Unlink by name
+pv unlink myapp
+
+# Unlink the current directory
+pv unlink`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {
@@ -34,22 +40,14 @@ var unlinkCmd = &cobra.Command{
 			absPath, _ := filepath.Abs(cwd)
 			p := reg.FindByPath(absPath)
 			if p == nil {
-				fmt.Fprintln(os.Stderr)
-				ui.Fail("Current directory is not a linked project")
-				fmt.Fprintln(os.Stderr)
-				cmd.SilenceUsage = true
-				return ui.ErrAlreadyPrinted
+				return fmt.Errorf("current directory is not a linked project")
 			}
 			name = p.Name
 		}
 
 		// Check project exists before removing.
 		if reg.Find(name) == nil {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("Project %s is not linked", ui.Bold.Render(name)))
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("project %q is not linked", name)
 		}
 
 		if err := reg.Remove(name); err != nil {
@@ -79,14 +77,10 @@ var unlinkCmd = &cobra.Command{
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n",
-					ui.Red.Render("!"),
-					ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)),
-				)
+				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

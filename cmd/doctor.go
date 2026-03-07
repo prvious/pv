@@ -16,6 +16,7 @@ import (
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -27,8 +28,10 @@ type check struct {
 }
 
 var doctorCmd = &cobra.Command{
-	Use:   "doctor",
-	Short: "Diagnose pv installation health",
+	Use:     "doctor",
+	GroupID: "core",
+	Short:   "Diagnose pv installation health",
+	Example: "  pv doctor",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		settings, err := config.LoadSettings()
 		if err != nil {
@@ -55,35 +58,33 @@ var doctorCmd = &cobra.Command{
 			allChecks = append(allChecks, svcChecks)
 		}
 
-		fmt.Println("pv doctor")
-		fmt.Println()
+		ui.SectionHeader("pv doctor")
 
 		passed, failed := 0, 0
 		for _, section := range allChecks {
-			fmt.Println(section.Name)
+			ui.SectionHeader(section.Name)
 			for _, c := range section.Checks {
 				if c.Status {
-					fmt.Printf("  ✓ %s\n", c.Name)
+					ui.Success(c.Name)
 					passed++
 				} else {
-					fmt.Printf("  ✗ %s\n", c.Name)
+					ui.Fail(c.Name)
 					if c.Message != "" {
-						fmt.Printf("    %s\n", c.Message)
+						ui.FailDetail(c.Message)
 					}
 					if c.Fix != "" {
-						fmt.Printf("    → Run: %s\n", c.Fix)
+						ui.FailDetail("→ Run: " + c.Fix)
 					}
 					failed++
 				}
 			}
-			fmt.Println()
 		}
-
-		fmt.Printf("%d passed, %d issues found\n", passed, failed)
 
 		if failed > 0 {
-			return fmt.Errorf("%d issues found", failed)
+			ui.Fail(fmt.Sprintf("%d passed, %d issues found", passed, failed))
+			return ui.ErrAlreadyPrinted
 		}
+		ui.Success(fmt.Sprintf("%d passed, no issues found", passed))
 		return nil
 	},
 }
@@ -243,7 +244,7 @@ func runEnvironmentChecks() sectionResult {
 				Name:    "FrankenPHP symlink",
 				Status:  false,
 				Message: fmt.Sprintf("broken symlink → %s", target),
-				Fix:     "pv php:use <version>",
+				Fix:     "pv php:use [version]",
 			})
 		}
 	} else if isExecutable(fpLink) {

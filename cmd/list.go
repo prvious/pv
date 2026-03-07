@@ -12,6 +12,7 @@ import (
 
 var listCmd = &cobra.Command{
 	Use:     "list",
+	GroupID: "core",
 	Aliases: []string{"ls"},
 	Short:   "List linked projects",
 	RunE: func(cmd *cobra.Command, args []string) error {

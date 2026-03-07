@@ -10,9 +10,9 @@ const progressBarWidth = 40
 
 // ProgressWriter wraps an io.Writer and displays a progress bar.
 type ProgressWriter struct {
-	total   int64
-	written int64
-	label   string
+	total    int64
+	written  int64
+	label    string
 	lastDraw time.Time
 }
 
@@ -68,4 +68,3 @@ func (pw *ProgressWriter) draw() {
 func (pw *ProgressWriter) Finish() {
 	fmt.Fprintf(os.Stderr, "\r\033[2K\033[?25h")
 }
-

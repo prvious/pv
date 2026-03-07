@@ -1,11 +1,16 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/php"
+	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
@@ -75,19 +80,25 @@ func parseWith(raw string) (withSpec, error) {
 }
 
 var installCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Non-interactive setup — installs PHP, Composer, and configures the environment",
+	Use:     "install",
+	GroupID: "core",
+	Short:   "Non-interactive setup — installs PHP, Composer, and configures the environment",
 	Long: `Installs the core pv stack non-interactively. For an interactive setup wizard, use: pv setup
 
 Non-negotiable tools (always installed): PHP, Composer
 Optional tools: Mago (via --with)
-Colima is installed automatically when you add your first service.
+Colima is installed automatically when you add your first service.`,
+	Example: `# Install with defaults
+pv install
 
-Examples:
-  pv install
-  pv install --tld=test
-  pv install --with="php:8.2,mago"
-  pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
+# Specify a custom TLD
+pv install --tld=test
+
+# Choose a specific PHP version and optional tools
+pv install --with="php:8.2,mago"
+
+# Include backing services
+pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 
@@ -101,11 +112,7 @@ Examples:
 		}
 
 		if setup.IsAlreadyInstalled() && !forceInstall {
-			fmt.Fprintln(os.Stderr)
-			ui.Fail("pv is already installed")
-			ui.FailDetail("Run with --force to reinstall")
-			fmt.Fprintln(os.Stderr)
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("pv is already installed, run with --force to reinstall")
 		}
 
 		ui.Header(version)
@@ -121,7 +128,7 @@ Examples:
 			}
 			return fmt.Sprintf("macOS %s", setup.PlatformLabel()), nil
 		}); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 2: Create directory structure and save settings.
@@ -139,7 +146,7 @@ Examples:
 			}
 			return "Directories created", nil
 		}); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 3: Install PHP (non-negotiable).
@@ -147,25 +154,25 @@ Examples:
 		if spec.phpVersion != "" {
 			phpArgs = []string{spec.phpVersion}
 		}
-		if err := phpInstallCmd.RunE(phpInstallCmd, phpArgs); err != nil {
-			return ui.ErrAlreadyPrinted
+		if err := php.RunInstall(phpArgs); err != nil {
+			return err
 		}
 
 		// Step 4: Install Composer (non-negotiable).
-		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
-			return ui.ErrAlreadyPrinted
+		if err := composer.RunInstall(); err != nil {
+			return err
 		}
 
 		// Step 5: Install Mago (opt-in via --with).
 		if spec.mago {
-			if err := magoInstallCmd.RunE(magoInstallCmd, nil); err != nil {
-				return ui.ErrAlreadyPrinted
+			if err := mago.RunInstall(); err != nil {
+				return err
 			}
 		}
 
 		// Step 6: Finalize (Caddyfile, DNS, CA trust, shell PATH).
 		if err := bootstrapFinalize(installTLD); err != nil {
-			return ui.ErrAlreadyPrinted
+			return err
 		}
 
 		// Step 7: Install services from --with.
@@ -174,8 +181,10 @@ Examples:
 			if svc.version != "" {
 				svcArgs = append(svcArgs, svc.version)
 			}
-			if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Service %s failed: %v\n", ui.Red.Render("!"), svc.name, err)
+			if err := service.RunAdd(svcArgs); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
+				}
 			}
 		}
 
@@ -196,7 +205,6 @@ func shortPath(path string) string {
 
 func init() {
 	installCmd.Flags().BoolVarP(&forceInstall, "force", "f", false, "Reinstall even if already installed")
-	installCmd.SilenceUsage = true
 	installCmd.Flags().StringVar(&installTLD, "tld", "test", "Top-level domain for local sites (e.g., test, pv-test)")
 	installCmd.Flags().StringVar(&installWith, "with", "", `Optional tools and services (e.g., "php:8.2,mago,service[redis:7]")`)
 	rootCmd.AddCommand(installCmd)

@@ -87,7 +87,7 @@ func Step(label string, fn func() (string, error)) error {
 	if err != nil {
 		Fail(label)
 		FailDetail(err.Error())
-		return err
+		return ErrAlreadyPrinted
 	}
 
 	Success(result)
@@ -102,7 +102,7 @@ func StepVerbose(label string, fn func() (string, error)) error {
 	if err != nil {
 		Fail(label)
 		FailDetail(err.Error())
-		return err
+		return ErrAlreadyPrinted
 	}
 
 	Success(result)
@@ -138,7 +138,7 @@ func StepProgress(label string, fn func(progress func(written, total int64)) (st
 	if err != nil {
 		Fail(label)
 		FailDetail(err.Error())
-		return err
+		return ErrAlreadyPrinted
 	}
 
 	Success(result)

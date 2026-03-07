@@ -20,9 +20,10 @@ Build version is set via `go build -ldflags "-X github.com/prvious/pv/cmd.versio
 ## Command conventions
 
 - **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `service:add`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
-- **All commands register on `rootCmd`** — cobra requires a flat `cmd/` directory. No subdirectories.
+- **Subpackage layout**: tool/service/daemon commands live in `internal/commands/<group>/` (e.g., `internal/commands/mago/install.go`). Each group has a `register.go` with a `Register(parent *cobra.Command)` function that wires all commands onto rootCmd. Bridge files in `cmd/` (e.g., `cmd/mago.go`) call `Register(rootCmd)` in `init()`.
+- **Core/orchestrator commands** (`install`, `update`, `uninstall`, `link`, `start`, `stop`, etc.) remain in `cmd/` as flat files.
+- **Cross-package calls**: `register.go` exports `Run*()` helpers (e.g., `php.RunInstall(args)`) for orchestrators to call sub-tool RunE functions.
 - **Always use `RunE`** (not `Run`) so errors propagate.
-- **Command files are named `<tool>_<action>.go`** (e.g., `mago_install.go`, `service_add.go`).
 
 ## Tool command rules
 
@@ -32,9 +33,9 @@ Every managed tool (php, mago, composer, colima) follows a strict five-command p
 |---------|-------------|-------------------|
 | `:download` | Fetches binary to private storage | `internal/binaries/` or `internal/phpenv/` |
 | `:path` | Exposes/unexposes from PATH (supports `--remove`) | `internal/tools/` |
-| `:install` | Orchestrates `:download` then `tools.Expose()` | `cmd/` — delegates only |
-| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `cmd/` + `internal/` |
-| `:uninstall` | Unexposes + removes binary files | `cmd/` + `internal/tools/` |
+| `:install` | Orchestrates `:download` then `tools.Expose()` | `internal/commands/<group>/` — delegates only |
+| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `internal/commands/<group>/` + `internal/` |
+| `:uninstall` | Unexposes + removes binary files | `internal/commands/<group>/` + `internal/tools/` |
 
 **Hard rules:**
 1. `:install` MUST delegate to `:download` RunE — never inline download logic in `cmd/`.
@@ -59,14 +60,51 @@ Every managed tool (php, mago, composer, colima) follows a strict five-command p
 
 ## UI rules
 
-All user-facing operations MUST use `internal/ui/` helpers. Never use raw `fmt.Print` for status output.
+### Stack overview
 
-- **Long operations**: wrap in `ui.Step(label, fn)` — shows spinner, then `✓ result` or `✗ error`.
-- **Downloads**: use `ui.StepProgress(label, fn)` — shows progress bar with percentage.
-- **Multi-step commands**: use `ui.Header(version)` at start, `ui.Footer(start, msg)` at end.
-- **Lists/tables**: use `ui.Table(headers, rows)` or `ui.Tree(items)`.
+The CLI uses a layered Charm stack:
+- **fang** (`charm.land/fang/v2`) — wraps Cobra. Handles help pages, usage text, error display (with `ERROR` badge), version flag, and command spacing. Configured in `cmd/root.go` via `fang.Execute()`.
+- **huh** (`charm.land/huh/v2`) — interactive forms (multi-select, text input, confirm). Used for `setup` wizard and any future interactive prompts.
+- **lipgloss** (`charm.land/lipgloss/v2`) — low-level styling. Used inside `internal/ui/` helpers. Never import v1 (`github.com/charmbracelet/lipgloss`).
+- **`internal/ui/`** — spinners, progress bars, status output (✓/✗), tables, trees. All user-facing status output goes through these helpers.
+
+### What fang handles (do NOT reimplement)
+
+- **Help/usage text** — fang styles it. Never set `Long` to replicate usage info. Put usage examples in the `Example` field (fang syntax-highlights them).
+- **Error display** — fang shows errors with a styled `ERROR` badge. Never manually print errors and `os.Exit(1)`. Return `error` from `RunE` and let fang handle it.
+- **`SilenceUsage` / `SilenceErrors`** — fang sets these globally. Never set them on individual commands.
+- **Spacing/padding** — fang manages whitespace around help and error output. Don't add `fmt.Fprintln(os.Stderr)` for visual spacing around errors.
+- **Version flag** — provided via `fang.WithVersion()`. Don't add a manual `--version` flag.
+
+### What `internal/ui/` handles (always use these)
+
+- **Long operations**: `ui.Step(label, fn)` — spinner, then `✓ result` or `✗ error`.
+- **Downloads**: `ui.StepProgress(label, fn)` — progress bar with percentage.
+- **Multi-step commands**: `ui.Header(version)` at start, `ui.Footer(start, docsURL)` at end.
+- **Lists/tables**: `ui.Table(headers, rows)` or `ui.Tree(items)`.
 - **One-liners**: `ui.Success(text)`, `ui.Fail(text)`, `ui.Subtle(text)`.
 - All output goes to `os.Stderr` (stdout is reserved for machine-readable output like `pv env`).
+
+### Error handling pattern
+
+- **Simple errors**: return `fmt.Errorf(...)` — fang displays it with styled `ERROR` badge.
+- **After `ui.Step` / `ui.StepProgress`**: these already print `✗` on failure and return `ui.ErrAlreadyPrinted`. The custom fang error handler in `cmd/root.go` skips re-display for this sentinel.
+- **Never use the sandwich pattern**: don't do `fmt.Fprintln` + `ui.Fail()` + `cmd.SilenceUsage = true` + `return ErrAlreadyPrinted`. Just return the error.
+
+### Interactive forms
+
+- Use **huh** (`charm.land/huh/v2`) for any interactive user input (multi-select, text fields, confirmations).
+- Never use raw `fmt.Scan` / `bufio.Scanner` for interactive input.
+
+### Hard don'ts
+
+1. **Errors**: always `return fmt.Errorf(...)` — fang displays them. Never `fmt.Print` an error manually.
+2. **Status output**: use `ui.*` helpers (`ui.Success`, `ui.Fail`, `ui.Subtle`, `ui.Step`, etc.) — never raw `fmt.Print*` for new code. Legacy uses remain in older commands.
+3. Never import lipgloss v1 (`github.com/charmbracelet/lipgloss`). Always use `charm.land/lipgloss/v2`.
+4. Never set `SilenceUsage` or `SilenceErrors` on commands — fang owns this.
+5. Never add `--version` flags — fang provides this.
+6. Put usage examples in `Example:` field, not `Long:` — fang syntax-highlights `Example`.
+7. Don't add `fmt.Fprintln(os.Stderr)` for blank-line spacing around errors — fang handles spacing.
 
 ## Import cycle: phpenv ↔ tools
 
@@ -92,4 +130,4 @@ All user-facing operations MUST use `internal/ui/` helpers. Never use raw `fmt.P
 
 - Each backing service (mysql, postgres, redis, mail, s3) implements `services.Service` interface.
 - Services run as Docker containers via Colima. Container operations go through `container.Engine`.
-- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `cmd/service_*.go`.
+- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `internal/commands/service/`.

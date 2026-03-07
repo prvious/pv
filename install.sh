@@ -20,9 +20,9 @@ Usage: install.sh [options]
 
 Options:
     -h, --help              Display this help message
-    -v, --version <version> Install a specific pv version (e.g., 0.1.0)
+    -v, --version [version] Install a specific pv version (e.g., 0.1.0)
     --install-dir <path>    Where to install the pv binary (default: ~/.local/bin)
-    --php <version>         PHP version to install (e.g., 8.4). Auto-detects if omitted.
+    --php [version]         PHP version to install (e.g., 8.4). Auto-detects if omitted.
     --tld <tld>             Top-level domain for local sites (default: test)
     --no-modify-path        Don't modify shell config files (.zshrc, .bashrc, etc.)
 

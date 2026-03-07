@@ -2,14 +2,14 @@ package container
 
 // CreateOpts defines parameters for creating a Docker container.
 type CreateOpts struct {
-	Name         string
-	Image        string
-	Env          []string
-	Ports        map[int]int // host:container
-	Volumes      map[string]string // host:container
-	Labels       map[string]string
-	Cmd          []string
-	HealthCmd    []string
+	Name           string
+	Image          string
+	Env            []string
+	Ports          map[int]int       // host:container
+	Volumes        map[string]string // host:container
+	Labels         map[string]string
+	Cmd            []string
+	HealthCmd      []string
 	HealthInterval string
 	HealthTimeout  string
 	HealthRetries  int

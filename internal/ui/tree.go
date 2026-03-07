@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 )
 
 // TreeItem represents one node in the tree with a title and detail line.
@@ -37,8 +37,8 @@ func Tree(items []TreeItem) {
 }
 
 var (
-	purple   = lipgloss.ANSIColor(141)
-	gray     = lipgloss.ANSIColor(245)
+	purple    = lipgloss.ANSIColor(141)
+	gray      = lipgloss.ANSIColor(245)
 	lightGray = lipgloss.ANSIColor(241)
 
 	headerStyle  = lipgloss.NewStyle().Foreground(purple).Bold(true)

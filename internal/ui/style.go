@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Colors matching install.sh: PURPLE=#b39ddb (ANSI 141), GREEN, RED, MUTED (dim).
@@ -19,7 +19,7 @@ var (
 
 // ErrAlreadyPrinted is returned when the error has already been displayed
 // to the user via styled output. Callers should exit without printing again.
-var ErrAlreadyPrinted = errors.New("")
+var ErrAlreadyPrinted = errors.New("error already printed")
 
 // Header prints the pv version banner.
 func Header(version string) {
@@ -49,8 +49,7 @@ func FailDetail(text string) {
 	fmt.Fprintf(os.Stderr, "    %s\n", Muted.Render(text))
 }
 
-// Fatal prints an error and exits.
-func Fatal(err error) {
-	Fail(err.Error())
-	os.Exit(1)
+// SectionHeader prints a bold section header with surrounding spacing.
+func SectionHeader(text string) {
+	fmt.Fprintf(os.Stderr, "\n  %s\n", Bold.Render(text))
 }

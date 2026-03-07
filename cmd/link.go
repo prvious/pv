@@ -18,9 +18,18 @@ import (
 var linkName string
 
 var linkCmd = &cobra.Command{
-	Use:   "link [path]",
-	Short: "Link a project directory",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "link [path]",
+	GroupID: "core",
+	Short:   "Link a project directory",
+	Example: `# Link the current directory
+pv link
+
+# Link a specific path
+pv link ~/Code/myapp
+
+# Link with a custom name
+pv link --name=myapp ~/Code/myapp`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) > 0 {
@@ -67,14 +76,7 @@ var linkCmd = &cobra.Command{
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
 
 		if existing := reg.Find(name); existing != nil {
-			domain := "https://" + name + "." + settings.TLD
-			fmt.Fprintln(os.Stderr)
-			ui.Fail(fmt.Sprintf("%s is already linked", ui.Purple.Bold(true).Render(domain)))
-			ui.FailDetail(fmt.Sprintf("Path: %s", existing.Path))
-			ui.FailDetail("To re-link, run: pv unlink " + name + " && pv link " + path)
-			fmt.Fprintln(os.Stderr)
-			cmd.SilenceUsage = true
-			return ui.ErrAlreadyPrinted
+			return fmt.Errorf("%s is already linked at %s\nTo re-link, run: pv unlink %s && pv link %s", name, existing.Path, name, path)
 		}
 		if err := reg.Add(project); err != nil {
 			return err
@@ -116,7 +118,7 @@ var linkCmd = &cobra.Command{
 
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Red.Render("!"), ui.Muted.Render(fmt.Sprintf("Could not reconfigure server: %v", err)))
+				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 			}
 			if phpVersion != "" && phpVersion != globalPHP {
 				ui.Subtle("Restart the server to serve this project: pv stop && pv start")

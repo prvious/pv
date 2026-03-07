@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,19 +10,24 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/colima"
+	colimacmd "github.com/prvious/pv/internal/commands/colima"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	updateVerbose    bool
-	noSelfUpdate     bool
+	updateVerbose bool
+	noSelfUpdate  bool
 )
 
 var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update pv and all managed tools to their latest versions",
+	Use:     "update",
+	GroupID: "core",
+	Short:   "Update pv and all managed tools to their latest versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 
@@ -33,7 +39,9 @@ var updateCmd = &cobra.Command{
 		if !noSelfUpdate {
 			reexeced, err := selfUpdate(client)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %s pv self-update failed: %v\n", ui.Red.Render("!"), err)
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("pv self-update failed: %v", err))
+				}
 			}
 			if reexeced {
 				return nil // reached only if syscall.Exec failed (error already printed)
@@ -43,24 +51,32 @@ var updateCmd = &cobra.Command{
 		// Step 2: Update tools.
 		var failures []string
 
-		if err := phpUpdateCmd.RunE(phpUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s PHP update failed: %v\n", ui.Red.Render("!"), err)
+		if err := php.RunUpdate(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("PHP update failed: %v", err))
+			}
 			failures = append(failures, "PHP")
 		}
 
-		if err := magoUpdateCmd.RunE(magoUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Mago update failed: %v\n", ui.Red.Render("!"), err)
+		if err := mago.RunUpdate(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Mago update failed: %v", err))
+			}
 			failures = append(failures, "Mago")
 		}
 
-		if err := composerUpdateCmd.RunE(composerUpdateCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer update failed: %v\n", ui.Red.Render("!"), err)
+		if err := composer.RunUpdate(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer update failed: %v", err))
+			}
 			failures = append(failures, "Composer")
 		}
 
 		if colima.IsInstalled() {
-			if err := colimaUpdateCmd.RunE(colimaUpdateCmd, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s Colima update failed: %v\n", ui.Red.Render("!"), err)
+			if err := colimacmd.RunUpdate(); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Colima update failed: %v", err))
+				}
 				failures = append(failures, "Colima")
 			}
 		}

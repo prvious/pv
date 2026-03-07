@@ -1,16 +1,20 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
+	"charm.land/huh/v2"
+	colimacmd "github.com/prvious/pv/internal/commands/colima"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
@@ -20,49 +24,60 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var forceUninstall bool
+
 var uninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Completely remove pv and all its data",
+	Use:     "uninstall",
+	GroupID: "core",
+	Short:   "Completely remove pv and all its data",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Confirmation prompt.
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "This will remove:")
-		fmt.Fprintln(os.Stderr, "  - The pv binary")
-		fmt.Fprintln(os.Stderr, "  - All PHP versions and FrankenPHP binaries")
-		fmt.Fprintln(os.Stderr, "  - All Composer global packages and cache")
-		fmt.Fprintln(os.Stderr, "  - All project links (your project files are NOT deleted)")
-		fmt.Fprintln(os.Stderr, "  - DNS resolver configuration")
-		fmt.Fprintln(os.Stderr, "  - Trusted CA certificate")
-		fmt.Fprintln(os.Stderr, "  - Launchd service")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "Your projects themselves will not be touched.")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprint(os.Stderr, "Type \"uninstall\" to confirm: ")
+		ui.Subtle("This will remove:")
+		ui.Subtle("- The pv binary")
+		ui.Subtle("- All PHP versions and FrankenPHP binaries")
+		ui.Subtle("- All Composer global packages and cache")
+		ui.Subtle("- All project links (your project files are NOT deleted)")
+		ui.Subtle("- DNS resolver configuration")
+		ui.Subtle("- Trusted CA certificate")
+		ui.Subtle("- Launchd service")
+		ui.Subtle("")
+		ui.Subtle("Your projects themselves will not be touched.")
 
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		if strings.TrimSpace(scanner.Text()) != "uninstall" {
-			fmt.Fprintln(os.Stderr, "Aborted.")
-			return nil
+		if !forceUninstall {
+			var confirmation string
+			if err := huh.NewInput().
+				Title("Type \"uninstall\" to confirm").
+				Value(&confirmation).
+				Run(); err != nil {
+				return err
+			}
+			if confirmation != "uninstall" {
+				ui.Subtle("Aborted.")
+				return nil
+			}
 		}
-		fmt.Fprintln(os.Stderr)
 
 		// Auth backup offer.
 		authPath := filepath.Join(config.ComposerDir(), "auth.json")
-		if hasAuthTokens(authPath) {
-			fmt.Fprint(os.Stderr, "Back up Composer auth tokens to ~/pv-auth-backup.json? [Y/n] ")
-			scanner.Scan()
-			answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-			if answer == "" || answer == "y" || answer == "yes" {
+		if !forceUninstall && hasAuthTokens(authPath) {
+			backupAuth := true
+			if err := huh.NewConfirm().
+				Title("Back up Composer auth tokens to ~/pv-auth-backup.json?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&backupAuth).
+				Run(); err != nil {
+				return err
+			}
+			if backupAuth {
 				home, _ := os.UserHomeDir()
 				backupPath := filepath.Join(home, "pv-auth-backup.json")
 				if err := copyFile(authPath, backupPath); err != nil {
-					fmt.Fprintf(os.Stderr, "  Warning: could not back up auth tokens: %v\n", err)
+					ui.Fail(fmt.Sprintf("Could not back up auth tokens: %v", err))
 				} else {
 					ui.Success(fmt.Sprintf("Backed up to %s", backupPath))
 				}
 			}
-			fmt.Fprintln(os.Stderr)
 		}
 
 		// Read registry before deletion (for .pv-php file scan later).
@@ -75,20 +90,31 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		settings, _ := config.LoadSettings()
-		tld := settings.TLD
+		tld := "test"
+		if settings != nil {
+			tld = settings.TLD
+		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
-		if err := colimaUninstallCmd.RunE(colimaUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Colima uninstall failed: %v\n", ui.Red.Render("!"), err)
+		if err := colimacmd.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
+			}
 		}
-		if err := phpUninstallCmd.RunE(phpUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s PHP uninstall failed: %v\n", ui.Red.Render("!"), err)
+		if err := php.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
+			}
 		}
-		if err := magoUninstallCmd.RunE(magoUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Mago uninstall failed: %v\n", ui.Red.Render("!"), err)
+		if err := mago.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
+			}
 		}
-		if err := composerUninstallCmd.RunE(composerUninstallCmd, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s Composer uninstall failed: %v\n", ui.Red.Render("!"), err)
+		if err := composer.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
+			}
 		}
 
 		// Stop services.
@@ -122,7 +148,7 @@ var uninstallCmd = &cobra.Command{
 
 			return "Services stopped", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove launchd plist.
@@ -132,17 +158,18 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "Launchd service removed", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove system configuration (sudo).
 		if err := ui.Step("Removing DNS resolver...", func() (string, error) {
-			if runSudo(fmt.Sprintf("rm -f /etc/resolver/%s", tld)) {
+			resolverFile := filepath.Join("/etc/resolver", tld)
+			if runSudo("rm", "-f", resolverFile) {
 				return "DNS resolver removed", nil
 			}
-			return "", fmt.Errorf("could not remove /etc/resolver/%s — run: sudo rm -f /etc/resolver/%s", tld, tld)
+			return "", fmt.Errorf("could not remove %s — run: sudo rm -f %s", resolverFile, resolverFile)
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Untrust CA certificate.
@@ -171,7 +198,7 @@ var uninstallCmd = &cobra.Command{
 					return "", fmt.Errorf("CA removal timed out — run: sudo security remove-trusted-cert -d %s", caCertPath)
 				}
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+				// Error already displayed by ui.Step
 			}
 		}
 
@@ -179,14 +206,14 @@ var uninstallCmd = &cobra.Command{
 		if err := ui.Step("Removing ~/.pv...", func() (string, error) {
 			pvDir := config.PvDir()
 			if err := os.RemoveAll(pvDir); err != nil {
-				if runSudo(fmt.Sprintf("rm -rf '%s'", pvDir)) {
+				if runSudo("rm", "-rf", pvDir) {
 					return "~/.pv removed", nil
 				}
 				return "", fmt.Errorf("could not fully remove %s", pvDir)
 			}
 			return "~/.pv removed", nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Remove the pv binary itself.
@@ -199,18 +226,17 @@ var uninstallCmd = &cobra.Command{
 				pvBin = resolved
 			}
 			if err := os.Remove(pvBin); err != nil {
-				if runSudo(fmt.Sprintf("rm -f '%s'", pvBin)) {
+				if runSudo("rm", "-f", pvBin) {
 					return fmt.Sprintf("Removed %s", pvBin), nil
 				}
 				return "", fmt.Errorf("could not remove %s — delete it manually", pvBin)
 			}
 			return fmt.Sprintf("Removed %s", pvBin), nil
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+			// Error already displayed by ui.Step
 		}
 
 		// Report scattered .pv-php files.
-		fmt.Fprintln(os.Stderr)
 		var found []string
 		for _, p := range projectPaths {
 			pvPhpPath := filepath.Join(p, ".pv-php")
@@ -219,12 +245,11 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 		if len(found) > 0 {
-			fmt.Fprintln(os.Stderr, "Found .pv-php files in your projects:")
+			ui.Subtle("Found .pv-php files in your projects:")
 			for _, f := range found {
-				fmt.Fprintf(os.Stderr, "  %s\n", f)
+				ui.Subtle(fmt.Sprintf("  %s", f))
 			}
-			fmt.Fprintln(os.Stderr, "You can safely delete these.")
-			fmt.Fprintln(os.Stderr)
+			ui.Subtle("You can safely delete these.")
 		}
 
 		// Print manual steps.
@@ -232,13 +257,12 @@ var uninstallCmd = &cobra.Command{
 		configFile := setup.ShellConfigFile(shell)
 		exportLine := setup.PathExportLine(shell)
 
-		fmt.Fprintln(os.Stderr, "Done! Just remove the pv lines from your shell config:")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "  # Remove from %s:\n", configFile)
-		fmt.Fprintf(os.Stderr, "  %s\n", exportLine)
-		fmt.Fprintln(os.Stderr, "  eval \"$(pv env)\"   # if present")
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "pv has been completely uninstalled. Your projects were not modified.")
+		ui.Subtle("Remove the pv lines from your shell config:")
+		ui.Subtle(fmt.Sprintf("  # Remove from %s:", configFile))
+		ui.Subtle(fmt.Sprintf("  %s", exportLine))
+		ui.Subtle("  eval \"$(pv env)\"   # if present")
+
+		ui.Success("pv has been completely uninstalled. Your projects were not modified.")
 
 		return nil
 	},
@@ -263,17 +287,19 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return os.WriteFile(dst, data, 0600)
 }
 
 // runSudo runs a command via sudo -n (non-interactive). Returns true on success.
-func runSudo(script string) bool {
-	cmd := exec.Command("sudo", "-n", "sh", "-c", script)
+func runSudo(args ...string) bool {
+	cmdArgs := append([]string{"-n"}, args...)
+	cmd := exec.Command("sudo", cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run() == nil
 }
 
 func init() {
+	uninstallCmd.Flags().BoolVarP(&forceUninstall, "force", "f", false, "Skip confirmation prompt")
 	rootCmd.AddCommand(uninstallCmd)
 }

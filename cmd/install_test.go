@@ -15,7 +15,7 @@ func newInstallCmd() *cobra.Command {
 
 	root := &cobra.Command{Use: "pv", SilenceErrors: true, SilenceUsage: true}
 	install := &cobra.Command{
-		Use:  "install",
+		Use: "install",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			forceInstall = force
 			installTLD = tld

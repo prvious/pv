@@ -28,12 +28,19 @@ curl_site() {
   exit 1
 }
 
+# strip_ansi removes ANSI escape codes from text.
+# lipgloss v2 always emits ANSI codes even when output is piped/captured.
+strip_ansi() {
+  local esc=$'\x1b'
+  sed "s/${esc}\[[0-9;]*m//g"
+}
+
 # assert_contains TEXT PATTERN MSG — grep TEXT for PATTERN or fail with MSG.
 assert_contains() {
   local text="$1"
   local pattern="$2"
   local msg="$3"
-  echo "$text" | grep -q "$pattern" || { echo "FAIL: $msg"; exit 1; }
+  echo "$text" | strip_ansi | grep -q "$pattern" || { echo "FAIL: $msg"; exit 1; }
 }
 
 # assert_fails CMD... — run CMD, expect non-zero exit.
