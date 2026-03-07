@@ -2,36 +2,32 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/prvious/pv/internal/tools"
 	"github.com/spf13/cobra"
 )
 
-var composerInstallCmd = &cobra.Command{
-	Use:   "composer:install",
-	Short: "Install or update Composer",
+var composerUpdateCmd = &cobra.Command{
+	Use:   "composer:update",
+	Short: "Update Composer to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(os.Stderr)
-
-		// Download.
+		// Delegate download to :download (Composer always re-downloads).
 		if err := composerDownloadCmd.RunE(composerDownloadCmd, nil); err != nil {
 			return err
 		}
 
-		// Expose to PATH.
+		// Re-expose if already on PATH.
 		t := tools.MustGet("composer")
-		if t.AutoExpose {
+		if tools.IsExposed(t) {
 			if err := tools.Expose(t); err != nil {
 				return fmt.Errorf("cannot expose Composer: %w", err)
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(composerInstallCmd)
+	rootCmd.AddCommand(composerUpdateCmd)
 }

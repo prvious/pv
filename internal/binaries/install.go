@@ -78,9 +78,10 @@ func installFrankenPHP(client *http.Client, url string, b Binary, version string
 	return MakeExecutable(destPath)
 }
 
-func installMago(client *http.Client, url string, b Binary, binDir string, progress ProgressFunc) error {
-	archivePath := filepath.Join(binDir, "mago.tar.gz")
-	destPath := filepath.Join(binDir, "mago")
+func installMago(client *http.Client, url string, b Binary, _ string, progress ProgressFunc) error {
+	internalBin := config.InternalBinDir()
+	archivePath := filepath.Join(internalBin, "mago.tar.gz")
+	destPath := filepath.Join(internalBin, "mago")
 
 	logf("  Downloading %s...\n", b.DisplayName)
 	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
@@ -138,5 +139,5 @@ func installComposer(client *http.Client, url string, b Binary, version string, 
 		}
 	}
 
-	return nil
+	return os.Chmod(destPath, 0755)
 }

@@ -51,6 +51,16 @@ func TestEnv_Zsh(t *testing.T) {
 	if !strings.Contains(out, "$PATH") {
 		t.Errorf("expected $PATH in output, got:\n%s", out)
 	}
+	composerHome := filepath.Join(home, ".pv", "composer")
+	if !strings.Contains(out, "export COMPOSER_HOME=") {
+		t.Errorf("expected COMPOSER_HOME export, got:\n%s", out)
+	}
+	if !strings.Contains(out, composerHome) {
+		t.Errorf("expected %q in output, got:\n%s", composerHome, out)
+	}
+	if !strings.Contains(out, "export COMPOSER_CACHE_DIR=") {
+		t.Errorf("expected COMPOSER_CACHE_DIR export, got:\n%s", out)
+	}
 }
 
 func TestEnv_Bash(t *testing.T) {
@@ -96,6 +106,12 @@ func TestEnv_Fish(t *testing.T) {
 	binDir := filepath.Join(home, ".pv", "bin")
 	if !strings.Contains(out, binDir) {
 		t.Errorf("expected %q in output, got:\n%s", binDir, out)
+	}
+	if !strings.Contains(out, "set -gx COMPOSER_HOME") {
+		t.Errorf("expected COMPOSER_HOME in fish output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "set -gx COMPOSER_CACHE_DIR") {
+		t.Errorf("expected COMPOSER_CACHE_DIR in fish output, got:\n%s", out)
 	}
 }
 

@@ -10,6 +10,10 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
+// ExposeFunc is set by the tools package at init time to break the import cycle.
+// It exposes the frankenphp tool (symlink) after a global PHP version change.
+var ExposeFunc func(name string) error
+
 // InstalledVersions returns all PHP versions that have been installed.
 // It scans ~/.pv/php/ for directories containing a frankenphp binary.
 func InstalledVersions() ([]string, error) {
@@ -107,15 +111,18 @@ func Remove(version string) error {
 }
 
 // updateSymlinks repoints ~/.pv/bin/frankenphp to the given version.
-// PHP CLI is handled by the shim script from WriteShims(), not a symlink.
+// If ExposeFunc is set (by the tools package), it delegates there.
+// Otherwise falls back to direct symlink creation.
 func updateSymlinks(version string) error {
+	if ExposeFunc != nil {
+		return ExposeFunc("frankenphp")
+	}
 	binDir := config.BinDir()
 	linkPath := filepath.Join(binDir, "frankenphp")
 	target := FrankenPHPPath(version)
-	// Remove existing file/symlink.
 	os.Remove(linkPath)
 	if err := os.Symlink(target, linkPath); err != nil {
-		return fmt.Errorf("cannot create symlink %s → %s: %w", linkPath, target, err)
+		return fmt.Errorf("cannot create symlink %s -> %s: %w", linkPath, target, err)
 	}
 	return nil
 }

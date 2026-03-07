@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -24,48 +24,48 @@ var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Completely remove pv and all its data",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Task 1: Confirmation prompt.
-		fmt.Println()
-		fmt.Println("This will remove:")
-		fmt.Println("  • The pv binary")
-		fmt.Println("  • All PHP versions and FrankenPHP binaries")
-		fmt.Println("  • All Composer global packages and cache")
-		fmt.Println("  • All project links (your project files are NOT deleted)")
-		fmt.Println("  • DNS resolver configuration")
-		fmt.Println("  • Trusted CA certificate")
-		fmt.Println("  • Launchd service")
-		fmt.Println()
-		fmt.Println("Your projects themselves will not be touched.")
-		fmt.Println()
-		fmt.Print("Type \"uninstall\" to confirm: ")
+		// Confirmation prompt.
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "This will remove:")
+		fmt.Fprintln(os.Stderr, "  - The pv binary")
+		fmt.Fprintln(os.Stderr, "  - All PHP versions and FrankenPHP binaries")
+		fmt.Fprintln(os.Stderr, "  - All Composer global packages and cache")
+		fmt.Fprintln(os.Stderr, "  - All project links (your project files are NOT deleted)")
+		fmt.Fprintln(os.Stderr, "  - DNS resolver configuration")
+		fmt.Fprintln(os.Stderr, "  - Trusted CA certificate")
+		fmt.Fprintln(os.Stderr, "  - Launchd service")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Your projects themselves will not be touched.")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprint(os.Stderr, "Type \"uninstall\" to confirm: ")
 
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		if strings.TrimSpace(scanner.Text()) != "uninstall" {
-			fmt.Println("Aborted.")
+			fmt.Fprintln(os.Stderr, "Aborted.")
 			return nil
 		}
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 
-		// Task 2: Auth backup offer.
+		// Auth backup offer.
 		authPath := filepath.Join(config.ComposerDir(), "auth.json")
 		if hasAuthTokens(authPath) {
-			fmt.Print("Back up Composer auth tokens to ~/pv-auth-backup.json? [Y/n] ")
+			fmt.Fprint(os.Stderr, "Back up Composer auth tokens to ~/pv-auth-backup.json? [Y/n] ")
 			scanner.Scan()
 			answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 			if answer == "" || answer == "y" || answer == "yes" {
 				home, _ := os.UserHomeDir()
 				backupPath := filepath.Join(home, "pv-auth-backup.json")
 				if err := copyFile(authPath, backupPath); err != nil {
-					fmt.Printf("  Warning: could not back up auth tokens: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  Warning: could not back up auth tokens: %v\n", err)
 				} else {
-					fmt.Printf("  Backed up to %s\n", backupPath)
+					ui.Success(fmt.Sprintf("Backed up to %s", backupPath))
 				}
 			}
-			fmt.Println()
+			fmt.Fprintln(os.Stderr)
 		}
 
-		// Task 3: Read registry before deletion.
+		// Read registry before deletion (for .pv-php file scan later).
 		var projectPaths []string
 		reg, err := registry.Load()
 		if err == nil {
@@ -74,151 +74,143 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Load settings to know the TLD for resolver cleanup.
 		settings, _ := config.LoadSettings()
 		tld := settings.TLD
 
-		// Task 3b: Stop service containers and Colima.
-		svcs := reg.ListServices()
-		if len(svcs) > 0 {
-			fmt.Println("Stopping service containers...")
-			for key, svc := range svcs {
-				if svc.ContainerID != "" {
-					fmt.Printf("  Stopping %s...\n", key)
-					// Docker SDK: StopAndRemove(svc.ContainerID)
+		// Uninstall tools (each cleans up its own binary + PATH entry).
+		if err := colimaUninstallCmd.RunE(colimaUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Colima uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := phpUninstallCmd.RunE(phpUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s PHP uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := magoUninstallCmd.RunE(magoUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Mago uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+		if err := composerUninstallCmd.RunE(composerUninstallCmd, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s Composer uninstall failed: %v\n", ui.Red.Render("!"), err)
+		}
+
+		// Stop services.
+		if err := ui.Step("Stopping services...", func() (string, error) {
+			if daemon.IsLoaded() {
+				if err := daemon.Unload(); err != nil {
+					return "", fmt.Errorf("could not unload daemon: %w", err)
 				}
-			}
-			fmt.Println("  Done")
-		}
-
-		if colima.IsInstalled() && colima.IsRunning() {
-			fmt.Println("Stopping Colima VM...")
-			_ = colima.Stop()
-			_ = colima.Delete()
-			fmt.Println("  Done")
-		}
-
-		// Task 4: Stop all services.
-		fmt.Println("Stopping services...")
-		if daemon.IsLoaded() {
-			if err := daemon.Unload(); err != nil {
-				fmt.Printf("  Warning: could not unload daemon: %v\n", err)
-			}
-			// Wait for clean shutdown.
-			for i := 0; i < 25; i++ {
-				time.Sleep(200 * time.Millisecond)
-				if !daemon.IsLoaded() {
-					break
-				}
-			}
-		}
-
-		// Also check foreground mode PID.
-		if pid, err := server.ReadPID(); err == nil {
-			if proc, err := os.FindProcess(pid); err == nil {
-				_ = proc.Signal(syscall.SIGTERM)
-				// Wait for exit.
 				for i := 0; i < 25; i++ {
 					time.Sleep(200 * time.Millisecond)
-					if proc.Signal(syscall.Signal(0)) != nil {
+					if !daemon.IsLoaded() {
 						break
 					}
 				}
-				// Force kill if still alive.
-				if proc.Signal(syscall.Signal(0)) == nil {
-					_ = proc.Signal(syscall.SIGKILL)
+			}
+
+			if pid, err := server.ReadPID(); err == nil {
+				if proc, err := os.FindProcess(pid); err == nil {
+					_ = proc.Signal(syscall.SIGTERM)
+					for i := 0; i < 25; i++ {
+						time.Sleep(200 * time.Millisecond)
+						if proc.Signal(syscall.Signal(0)) != nil {
+							break
+						}
+					}
+					if proc.Signal(syscall.Signal(0)) == nil {
+						_ = proc.Signal(syscall.SIGKILL)
+					}
 				}
 			}
-		}
-		fmt.Println("  Done")
 
-		// Task 5: Remove launchd plist.
-		fmt.Println("Removing launchd service...")
-		if err := daemon.Uninstall(); err != nil {
-			fmt.Printf("  Warning: %v\n", err)
-		} else {
-			fmt.Println("  Done")
+			return "Services stopped", nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
 		}
 
-		// Task 6: Remove system configuration (sudo).
-		fmt.Println("Removing system configuration...")
-		fmt.Println("  This requires administrator privileges.")
-
-		// Remove DNS resolver file.
-		resolverRemoved := runSudo(fmt.Sprintf("rm -f /etc/resolver/%s", tld))
-		if resolverRemoved {
-			fmt.Println("  Removed DNS resolver")
-		} else {
-			fmt.Printf("  Warning: could not remove /etc/resolver/%s. Clean up manually:\n", tld)
-			fmt.Printf("    sudo rm -f /etc/resolver/%s\n", tld)
+		// Remove launchd plist.
+		if err := ui.Step("Removing launchd service...", func() (string, error) {
+			if err := daemon.Uninstall(); err != nil {
+				return "", err
+			}
+			return "Launchd service removed", nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
 		}
 
-		// Untrust CA certificate (may trigger keychain dialog, so use a timeout).
+		// Remove system configuration (sudo).
+		if err := ui.Step("Removing DNS resolver...", func() (string, error) {
+			if runSudo(fmt.Sprintf("rm -f /etc/resolver/%s", tld)) {
+				return "DNS resolver removed", nil
+			}
+			return "", fmt.Errorf("could not remove /etc/resolver/%s — run: sudo rm -f /etc/resolver/%s", tld, tld)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
+		}
+
+		// Untrust CA certificate.
 		caCertPath := config.CACertPath()
 		if _, err := os.Stat(caCertPath); err == nil {
-			certCmd := exec.Command("sudo", "-n", "security", "remove-trusted-cert", "-d", caCertPath)
-			certCmd.Stdout = os.Stdout
-			certCmd.Stderr = os.Stderr
+			if err := ui.Step("Removing CA certificate...", func() (string, error) {
+				certCmd := exec.Command("sudo", "-n", "security", "remove-trusted-cert", "-d", caCertPath)
+				certCmd.Stdout = os.Stdout
+				certCmd.Stderr = os.Stderr
 
-			if err := certCmd.Start(); err == nil {
+				if err := certCmd.Start(); err != nil {
+					return "", fmt.Errorf("could not untrust CA — run: sudo security remove-trusted-cert -d %s", caCertPath)
+				}
+
 				done := make(chan error, 1)
 				go func() { done <- certCmd.Wait() }()
 				select {
 				case err := <-done:
-					if err == nil {
-						fmt.Println("  Removed CA certificate")
-					} else {
-						fmt.Println("  Warning: could not untrust CA certificate. Clean up manually:")
-						fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
+					if err != nil {
+						return "", fmt.Errorf("could not untrust CA — run: sudo security remove-trusted-cert -d %s", caCertPath)
 					}
+					return "CA certificate removed", nil
 				case <-time.After(10 * time.Second):
 					certCmd.Process.Kill()
 					<-done
-					fmt.Println("  Warning: CA certificate removal timed out. Clean up manually:")
-					fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
+					return "", fmt.Errorf("CA removal timed out — run: sudo security remove-trusted-cert -d %s", caCertPath)
 				}
-			} else {
-				fmt.Println("  Warning: could not untrust CA certificate. Clean up manually:")
-				fmt.Printf("    sudo security remove-trusted-cert -d %s\n", caCertPath)
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
 			}
 		}
 
-		// Task 7: Remove ~/.pv directory.
-		fmt.Println("Removing ~/.pv...")
-		pvDir := config.PvDir()
-		if err := os.RemoveAll(pvDir); err != nil {
-			// Some files may be owned by root (e.g. from sudo -E pv start).
-			// Fall back to sudo rm -rf.
-			if runSudo(fmt.Sprintf("rm -rf '%s'", pvDir)) {
-				fmt.Println("  Done")
-			} else {
-				fmt.Printf("  Warning: could not fully remove %s: %v\n", pvDir, err)
+		// Remove ~/.pv directory.
+		if err := ui.Step("Removing ~/.pv...", func() (string, error) {
+			pvDir := config.PvDir()
+			if err := os.RemoveAll(pvDir); err != nil {
+				if runSudo(fmt.Sprintf("rm -rf '%s'", pvDir)) {
+					return "~/.pv removed", nil
+				}
+				return "", fmt.Errorf("could not fully remove %s", pvDir)
 			}
-		} else {
-			fmt.Println("  Done")
+			return "~/.pv removed", nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
 		}
 
 		// Remove the pv binary itself.
-		fmt.Println("Removing pv binary...")
-		if pvBin, err := os.Executable(); err == nil {
-			// Resolve symlinks to get the real path.
+		if err := ui.Step("Removing pv binary...", func() (string, error) {
+			pvBin, err := os.Executable()
+			if err != nil {
+				return "", err
+			}
 			if resolved, err := filepath.EvalSymlinks(pvBin); err == nil {
 				pvBin = resolved
 			}
 			if err := os.Remove(pvBin); err != nil {
-				// May need sudo if installed in /usr/local/bin.
 				if runSudo(fmt.Sprintf("rm -f '%s'", pvBin)) {
-					fmt.Printf("  Removed %s\n", pvBin)
-				} else {
-					fmt.Printf("  Warning: could not remove %s. Delete it manually.\n", pvBin)
+					return fmt.Sprintf("Removed %s", pvBin), nil
 				}
-			} else {
-				fmt.Printf("  Removed %s\n", pvBin)
+				return "", fmt.Errorf("could not remove %s — delete it manually", pvBin)
 			}
+			return fmt.Sprintf("Removed %s", pvBin), nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red.Render("!"), err)
 		}
 
-		// Task 8: Report scattered .pv-php files.
-		fmt.Println()
+		// Report scattered .pv-php files.
+		fmt.Fprintln(os.Stderr)
 		var found []string
 		for _, p := range projectPaths {
 			pvPhpPath := filepath.Join(p, ".pv-php")
@@ -227,26 +219,26 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 		if len(found) > 0 {
-			fmt.Println("Found .pv-php files in your projects:")
+			fmt.Fprintln(os.Stderr, "Found .pv-php files in your projects:")
 			for _, f := range found {
-				fmt.Printf("  %s\n", f)
+				fmt.Fprintf(os.Stderr, "  %s\n", f)
 			}
-			fmt.Println("You can safely delete these.")
-			fmt.Println()
+			fmt.Fprintln(os.Stderr, "You can safely delete these.")
+			fmt.Fprintln(os.Stderr)
 		}
 
-		// Task 9: Print manual steps.
+		// Print manual steps.
 		shell := setup.DetectShell()
 		configFile := setup.ShellConfigFile(shell)
 		exportLine := setup.PathExportLine(shell)
 
-		fmt.Println("Done! Just remove the pv lines from your shell config:")
-		fmt.Println()
-		fmt.Printf("  # Remove from %s:\n", configFile)
-		fmt.Printf("  %s\n", exportLine)
-		fmt.Println("  eval \"$(pv env)\"   # if present")
-		fmt.Println()
-		fmt.Println("pv has been completely uninstalled. Your projects were not modified.")
+		fmt.Fprintln(os.Stderr, "Done! Just remove the pv lines from your shell config:")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "  # Remove from %s:\n", configFile)
+		fmt.Fprintf(os.Stderr, "  %s\n", exportLine)
+		fmt.Fprintln(os.Stderr, "  eval \"$(pv env)\"   # if present")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "pv has been completely uninstalled. Your projects were not modified.")
 
 		return nil
 	},

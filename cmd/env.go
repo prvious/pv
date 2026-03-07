@@ -28,12 +28,18 @@ Or run it directly to configure your current session.`,
 		localBinDir := filepath.Join(home, ".local", "bin")
 		binDir := filepath.Join(home, ".pv", "bin")
 		composerBinDir := filepath.Join(home, ".pv", "composer", "vendor", "bin")
+		composerHome := filepath.Join(home, ".pv", "composer")
+		composerCacheDir := filepath.Join(home, ".pv", "composer", "cache")
 
 		switch shell {
 		case "fish":
 			fmt.Fprintf(cmd.OutOrStdout(), "fish_add_path -g %q %q %q;\n", localBinDir, binDir, composerBinDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "set -gx COMPOSER_HOME %q;\n", composerHome)
+			fmt.Fprintf(cmd.OutOrStdout(), "set -gx COMPOSER_CACHE_DIR %q;\n", composerCacheDir)
 		default:
 			fmt.Fprintf(cmd.OutOrStdout(), "export PATH=%q:%q:%q:\"$PATH\";\n", localBinDir, binDir, composerBinDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "export COMPOSER_HOME=%q;\n", composerHome)
+			fmt.Fprintf(cmd.OutOrStdout(), "export COMPOSER_CACHE_DIR=%q;\n", composerCacheDir)
 		}
 
 		return nil

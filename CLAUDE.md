@@ -1,90 +1,95 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Instructions for working in this codebase. See `README.md` for architecture overview.
 
 ## What is pv
 
-`pv` is a local development server manager powered by FrankenPHP (Caddy + embedded PHP). It replaces Docker for local dev by managing FrankenPHP instances that serve projects under `.test` domains with HTTPS. Supports multiple PHP versions simultaneously. Written in Go using cobra for CLI commands. See `plan.md` for the full vision.
+`pv` is a local dev server manager powered by FrankenPHP. Go + cobra CLI. Manages PHP versions, serves projects under `.test` domains with HTTPS, runs containerized backing services via Colima/Docker.
 
-## Commands
+## Build & test
 
 ```bash
-go build -o pv .              # build the binary
-go test ./...                  # run all tests
-go test ./internal/registry/   # run tests for one package
-go test ./cmd/ -run TestLink   # run tests matching a pattern
-go test ./... -v               # verbose output
+go build -o pv .              # build
+go test ./...                  # all tests
+go test ./internal/registry/   # one package
+go test ./cmd/ -run TestLink   # pattern match
 ```
 
-## Architecture
+Build version is set via `go build -ldflags "-X github.com/prvious/pv/cmd.version=1.0.0"` — defaults to `"dev"`.
 
-```
-main.go                       # entry point — calls cmd.Execute()
-cmd/                          # cobra commands
-  root.go                     # rootCmd, Execute()
-  link.go, unlink.go, list.go # project management
-  start.go, stop.go, restart.go, status.go, log.go  # server lifecycle
-  install.go, update.go       # first-time setup and updates
-  php.go, php_install.go, php_list.go, php_remove.go  # PHP version management
-  use.go                      # switch global PHP version
-internal/
-  config/                     # path helpers for ~/.pv/ directory structure
-    paths.go                  # PvDir, PhpDir, PhpVersionDir, PortForVersion, etc.
-    settings.go               # TLD + GlobalPHP settings
-  registry/                   # project registry (JSON in ~/.pv/data/registry.json)
-    registry.go               # Project{Name,Path,Type,PHP}, Registry with CRUD + GroupByPHP
-  phpenv/                     # PHP version management
-    phpenv.go                 # InstalledVersions, IsInstalled, SetGlobal, Remove
-    install.go                # Download FrankenPHP from prvious/pv releases + PHP CLI from static-php.dev
-    resolve.go                # ResolveVersion: .pv-php → composer.json → global default
-    available.go              # AvailableVersions from GitHub releases
-    shim.go                   # WriteShims: creates ~/.pv/bin/php shim script
-  caddy/                      # Caddyfile generation (multi-version aware)
-    caddy.go                  # GenerateSiteConfig(project, globalPHP), GenerateAllConfigs, GenerateVersionCaddyfile
-  server/                     # process management
-    process.go                # Start supervisor (DNS + main FP + secondary FPs), ReconfigureServer
-    frankenphp.go             # StartFrankenPHP, StartVersionFrankenPHP, Reload
-    dns.go                    # Embedded DNS server on port 10053
-  binaries/                   # binary download (Mago, Composer)
-  detection/                  # project type detection (laravel, php, static)
-  setup/                      # install prerequisites, resolver, selftest
-```
+## Command conventions
 
-## Directory layout (~/.pv/)
+- **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `service:add`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
+- **All commands register on `rootCmd`** — cobra requires a flat `cmd/` directory. No subdirectories.
+- **Always use `RunE`** (not `Run`) so errors propagate.
+- **Command files are named `<tool>_<action>.go`** (e.g., `mago_install.go`, `service_add.go`).
 
-```
-~/.pv/
-├── bin/           # symlinks to active global version + Mago, Composer
-├── config/        # Caddyfiles + settings.json
-│   ├── Caddyfile              # main process
-│   ├── php-8.3.Caddyfile      # secondary process (if needed)
-│   ├── sites/                 # per-project configs for main process
-│   └── sites-8.3/            # per-project configs for secondary process
-├── data/          # registry.json, versions.json, pv.pid
-├── logs/          # caddy.log, caddy-8.3.log
-└── php/           # per-version binaries
-    ├── 8.3/frankenphp + php
-    ├── 8.4/frankenphp + php
-    └── 8.5/frankenphp + php
-```
+## Tool command rules
 
-## Multi-version architecture
+Every managed tool (php, mago, composer, colima) follows a strict five-command pattern. When adding a new tool, create all five:
 
-- **Main FrankenPHP** (global version): serves on :443/:80, handles projects using the global PHP version directly via `php_server`, and proxies non-global projects via `reverse_proxy`.
-- **Secondary FrankenPHP** (per non-global version): serves on high port (8830 for 8.3, 8840 for 8.4, etc.), HTTP only, `admin off`. The main process proxies to these.
-- **Port scheme**: `8000 + major*100 + minor*10` (e.g., PHP 8.3 → 8830).
-- FrankenPHP binaries come from `prvious/pv` GitHub releases (format: `frankenphp-{platform}-php{version}`).
+| Command | What it does | Where logic lives |
+|---------|-------------|-------------------|
+| `:download` | Fetches binary to private storage | `internal/binaries/` or `internal/phpenv/` |
+| `:path` | Exposes/unexposes from PATH (supports `--remove`) | `internal/tools/` |
+| `:install` | Orchestrates `:download` then `tools.Expose()` | `cmd/` — delegates only |
+| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `cmd/` + `internal/` |
+| `:uninstall` | Unexposes + removes binary files | `cmd/` + `internal/tools/` |
 
-## Testing strategy
+**Hard rules:**
+1. `:install` MUST delegate to `:download` RunE — never inline download logic in `cmd/`.
+2. Download logic lives in `internal/binaries/` or `internal/phpenv/`, never in `cmd/`.
+3. Exposure logic lives in `internal/tools/` — use `tools.Expose()` / `tools.Unexpose()`.
+4. `:update` uses `tools.IsExposed()` (not `AutoExpose`) to decide re-exposure — handles manually-exposed tools correctly.
+5. New tools must be registered in `internal/tools/tool.go`'s `All` map with correct `ExposureType` and `AutoExpose`.
 
-- **Unit tests** (`go test ./...`): Run locally. Use `t.Setenv("HOME", t.TempDir())` for filesystem isolation. Fake binaries (bash scripts) can stand in for real PHP when testing shims.
-- **E2E tests** (`.github/workflows/e2e.yml` + `scripts/e2e/`): Run on GitHub Actions (macOS runner) to simulate real end-user flows. These tests use real PHP, real Composer, real FrankenPHP — things we can't easily run locally. **When your feature involves real binary execution, network calls, DNS, HTTPS, or anything that needs a full `pv install` environment, add an e2e script in `scripts/e2e/` and wire it into the workflow.** Each script sources `scripts/e2e/helpers.sh` for `assert_contains`, `assert_fails`, `curl_site`, etc. The workflow phases run sequentially: install → verify → fixtures → link → start → curl → shim → composer → errors → stop → lifecycle → update → verify-final.
+## Orchestrator commands
 
-## Key patterns
+`install`, `update`, and `uninstall` are thin orchestrators. They call per-tool `:install`/`:update`/`:uninstall` RunE functions. They MUST NOT contain download, exposure, or cleanup logic — that belongs in the per-tool commands.
 
-- **Test isolation**: Tests use `t.Setenv("HOME", t.TempDir())` so filesystem ops go to a temp dir.
-- **Cmd tests**: Build fresh cobra command trees per test to avoid state leaking.
-- **Registry is in-memory + explicit save**: `Load()` → mutate → `Save()`.
-- **Commands use `RunE`** (not `Run`) so errors propagate.
-- **Version resolution**: `.pv-php` file → `composer.json` require.php → global default.
-- **Caddy site config**: `GenerateSiteConfig(project, globalPHP)` — empty globalPHP = single-version mode.
+- `pv update` self-updates the pv binary first (via `syscall.Exec` re-exec with `--no-self-update`), then delegates to each tool's `:update`.
+- `pv restart` delegates to `daemon:restart` in daemon mode, otherwise reloads config via admin API.
+
+## Binary storage rules
+
+- `~/.pv/bin/` — user PATH. **Only** shims and symlinks go here. Never place real binaries.
+- `~/.pv/internal/bin/` — private storage. Real binaries (mago, composer.phar, colima) live here.
+- `~/.pv/php/{ver}/` — versioned PHP binaries (php, frankenphp) live here.
+- Use `config.InternalBinDir()` for private storage paths, `config.BinDir()` for PATH entries.
+
+## UI rules
+
+All user-facing operations MUST use `internal/ui/` helpers. Never use raw `fmt.Print` for status output.
+
+- **Long operations**: wrap in `ui.Step(label, fn)` — shows spinner, then `✓ result` or `✗ error`.
+- **Downloads**: use `ui.StepProgress(label, fn)` — shows progress bar with percentage.
+- **Multi-step commands**: use `ui.Header(version)` at start, `ui.Footer(start, msg)` at end.
+- **Lists/tables**: use `ui.Table(headers, rows)` or `ui.Tree(items)`.
+- **One-liners**: `ui.Success(text)`, `ui.Fail(text)`, `ui.Subtle(text)`.
+- All output goes to `os.Stderr` (stdout is reserved for machine-readable output like `pv env`).
+
+## Import cycle: phpenv ↔ tools
+
+`phpenv` and `tools` cannot import each other. This is resolved via callback:
+- `phpenv.ExposeFunc` is a `func(name string) error` variable
+- `phpenv/shim.go` init() wires it to `tools.Expose()`
+- When adding new cross-package dependencies, use the same callback pattern — don't create import cycles.
+
+## Testing conventions
+
+- **Filesystem isolation**: always use `t.Setenv("HOME", t.TempDir())` — never touch the real home dir.
+- **Cmd tests**: build fresh cobra command trees per test to avoid state leaking.
+- **Registry**: in-memory + explicit save. `Load()` → mutate → `Save()`.
+- **E2E tests**: live in `scripts/e2e/`, run on GitHub Actions (macOS). Source `scripts/e2e/helpers.sh`. Use these for anything needing real binaries, network, DNS, or HTTPS. Add new phases to `.github/workflows/e2e.yml`.
+
+## Multi-version PHP
+
+- Main FrankenPHP serves on :443/:80, proxies non-global versions via `reverse_proxy`.
+- Secondary FrankenPHP per version on high port: `8000 + major*100 + minor*10` (8.3 → 8830).
+- Version resolution order: `.pv-php` file → `composer.json` require.php → global default.
+
+## Services
+
+- Each backing service (mysql, postgres, redis, mail, s3) implements `services.Service` interface.
+- Services run as Docker containers via Colima. Container operations go through `container.Engine`.
+- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `cmd/service_*.go`.

@@ -2,7 +2,10 @@
 set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
-# Run doctor with sudo -E so it sees the same HOME and PID file as the server
+# Set up PATH and env vars so doctor can verify them.
+eval "$(pv env)"
+
+# Run doctor with sudo -E so it sees the same HOME, PID file, and env vars
 # (the server was started with sudo -E pv start &).
 echo "==> Run pv doctor (server running)"
 OUTPUT=$(sudo -E pv doctor 2>&1 || true)
@@ -15,6 +18,7 @@ assert_contains "$OUTPUT" "Composer" "Composer not detected"
 # Environment checks.
 assert_contains "$OUTPUT" "PATH" "PATH check missing"
 assert_contains "$OUTPUT" "PHP shim" "PHP shim check missing"
+assert_contains "$OUTPUT" "Composer symlink" "Composer symlink check missing"
 
 # Composer isolation checks.
 assert_contains "$OUTPUT" "Composer home directory" "Composer home directory check missing"
