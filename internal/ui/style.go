@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Colors matching install.sh: PURPLE=#b39ddb (ANSI 141), GREEN, RED, MUTED (dim).

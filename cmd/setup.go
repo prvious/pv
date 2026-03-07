@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"

@@ -1,11 +1,12 @@
 package cmd
 
 import (
-	"errors"
-	"fmt"
+	"context"
 	"os"
 
-	"github.com/prvious/pv/internal/ui"
+	"charm.land/fang/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/spf13/cobra"
 )
 
@@ -15,19 +16,21 @@ import (
 var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:          "pv",
-	Short:        "Local dev server manager powered by FrankenPHP",
-	Version:      version,
-	SilenceErrors: true,
+	Use:   "pv",
+	Short: "Local dev server manager powered by FrankenPHP",
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		// If the error was already printed with styled output, just exit.
-		if errors.Is(err, ui.ErrAlreadyPrinted) {
-			os.Exit(1)
-		}
-		fmt.Fprintln(os.Stderr, err)
+	if err := fang.Execute(context.Background(), rootCmd,
+		fang.WithVersion(version),
+		fang.WithColorSchemeFunc(pvColorScheme),
+	); err != nil {
 		os.Exit(1)
 	}
+}
+
+func pvColorScheme(c lipgloss.LightDarkFunc) fang.ColorScheme {
+	cs := fang.DefaultColorScheme(c)
+	cs.Title = charmtone.Charple
+	return cs
 }
