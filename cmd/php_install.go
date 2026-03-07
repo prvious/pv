@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 
 	"github.com/prvious/pv/internal/phpenv"
@@ -57,7 +56,6 @@ pv php:install 8.3`,
 			return nil
 		}
 
-
 		// Download.
 		if err := phpDownloadCmd.RunE(phpDownloadCmd, []string{version}); err != nil {
 			return err
@@ -81,7 +79,6 @@ pv php:install 8.3`,
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

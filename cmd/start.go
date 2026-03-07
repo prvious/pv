@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/prvious/pv/internal/config"
@@ -46,9 +45,7 @@ func startDaemon() error {
 	if daemon.IsLoaded() {
 		pid, err := daemon.GetPID()
 		if err == nil && pid > 0 {
-			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("pv is already running %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
-			fmt.Fprintln(os.Stderr)
 			return nil
 		}
 	}
@@ -56,13 +53,9 @@ func startDaemon() error {
 	// Also check foreground PID file.
 	if server.IsRunning() {
 		pid, _ := server.ReadPID()
-		fmt.Fprintln(os.Stderr)
 		ui.Success(fmt.Sprintf("pv is already running in foreground %s", ui.Muted.Render(fmt.Sprintf("(PID %d)", pid))))
-		fmt.Fprintln(os.Stderr)
 		return nil
 	}
-
-	fmt.Fprintln(os.Stderr)
 
 	if err := ui.Step("Starting pv daemon...", func() (string, error) {
 		// Generate and write plist.
@@ -96,7 +89,6 @@ func startDaemon() error {
 	}
 
 	ui.Subtle("Run pv log to view logs")
-	fmt.Fprintln(os.Stderr)
 
 	return nil
 }

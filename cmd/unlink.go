@@ -83,7 +83,6 @@ pv unlink`,
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

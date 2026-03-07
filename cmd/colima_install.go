@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/prvious/pv/internal/tools"
 	"github.com/spf13/cobra"
@@ -12,8 +11,6 @@ var colimaInstallCmd = &cobra.Command{
 	Use:   "colima:install",
 	Short: "Install or update the Colima container runtime",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(os.Stderr)
-
 		// Download.
 		if err := colimaDownloadCmd.RunE(colimaDownloadCmd, nil); err != nil {
 			return err
@@ -27,7 +24,6 @@ var colimaInstallCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }

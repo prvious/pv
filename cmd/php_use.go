@@ -61,7 +61,6 @@ pv php:use 8.3`,
 			ui.Subtle("Run: pv restart")
 		}
 
-		fmt.Fprintln(os.Stderr)
 		return nil
 	},
 }
