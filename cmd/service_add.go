@@ -18,7 +18,15 @@ var serviceAddCmd = &cobra.Command{
 	Use:   "service:add <service> [version]",
 	Short: "Add and start a service",
 	Long:  "Add a backing service (mail, mysql, postgres, redis, s3). Optionally specify a version.",
-	Args:  cobra.RangeArgs(1, 2),
+	Example: `# Add MySQL with default version
+pv service:add mysql
+
+# Add a specific Redis version
+pv service:add redis 7
+
+# Add PostgreSQL
+pv service:add postgres 16`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		svcName := args[0]
 		svc, err := services.Lookup(svcName)

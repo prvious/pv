@@ -23,7 +23,15 @@ var (
 var logCmd = &cobra.Command{
 	Use:   "log [site]",
 	Short: "Tail the FrankenPHP log",
-	Args:  cobra.MaximumNArgs(1),
+	Example: `# Tail all logs
+pv log
+
+# Follow logs in real time
+pv log -f
+
+# Show last 50 lines for a specific site
+pv log myapp -n 50`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logPath := config.CaddyLogPath()
 		if logError {

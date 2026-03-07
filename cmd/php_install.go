@@ -17,7 +17,12 @@ var validPHPVersion = regexp.MustCompile(`^\d+\.\d+$`)
 var phpInstallCmd = &cobra.Command{
 	Use:   "php:install [version]",
 	Short: "Install a PHP version (e.g., pv php:install 8.4). Installs latest if omitted.",
-	Args:  cobra.MaximumNArgs(1),
+	Example: `# Install the latest PHP version
+pv php:install
+
+# Install a specific version
+pv php:install 8.3`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		version := ""
 		if len(args) > 0 {

@@ -20,7 +20,15 @@ var linkName string
 var linkCmd = &cobra.Command{
 	Use:   "link [path]",
 	Short: "Link a project directory",
-	Args:  cobra.MaximumNArgs(1),
+	Example: `# Link the current directory
+pv link
+
+# Link a specific path
+pv link ~/Code/myapp
+
+# Link with a custom name
+pv link --name=myapp ~/Code/myapp`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) > 0 {

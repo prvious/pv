@@ -81,13 +81,18 @@ var installCmd = &cobra.Command{
 
 Non-negotiable tools (always installed): PHP, Composer
 Optional tools: Mago (via --with)
-Colima is installed automatically when you add your first service.
+Colima is installed automatically when you add your first service.`,
+	Example: `# Install with defaults
+pv install
 
-Examples:
-  pv install
-  pv install --tld=test
-  pv install --with="php:8.2,mago"
-  pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
+# Specify a custom TLD
+pv install --tld=test
+
+# Choose a specific PHP version and optional tools
+pv install --with="php:8.2,mago"
+
+# Include backing services
+pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 

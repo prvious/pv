@@ -16,7 +16,12 @@ import (
 var unlinkCmd = &cobra.Command{
 	Use:   "unlink [name]",
 	Short: "Unlink a project",
-	Args:  cobra.MaximumNArgs(1),
+	Example: `# Unlink by name
+pv unlink myapp
+
+# Unlink the current directory
+pv unlink`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg, err := registry.Load()
 		if err != nil {

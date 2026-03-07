@@ -11,13 +11,12 @@ import (
 var envCmd = &cobra.Command{
 	Use:   "env",
 	Short: "Print shell configuration for pv",
-	Long: `Print shell commands to configure PATH for pv.
+	Long: "Print shell commands to configure PATH for pv.",
+	Example: `# Add to your .zshrc or .bashrc
+eval "$(pv env)"
 
-Add this to your shell config (.zshrc, .bashrc, config.fish):
-
-  eval "$(pv env)"
-
-Or run it directly to configure your current session.`,
+# Configure the current session directly
+eval "$(pv env)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		shell := detectShell()
 		home, err := os.UserHomeDir()
