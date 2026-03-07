@@ -70,15 +70,22 @@ func bootstrapFinalize(tld string) error {
 		return err
 	}
 
-	// Shell PATH.
+	// Shell configuration (PATH + env vars via `pv env`).
 	if err := ui.Step("Configuring shell...", func() (string, error) {
 		shell := setup.DetectShell()
 		configFile := setup.ShellConfigFile(shell)
-		line := setup.PathExportLine(shell)
+
+		var evalLine string
+		switch shell {
+		case "fish":
+			evalLine = "pv env | source"
+		default:
+			evalLine = `eval "$(pv env)"`
+		}
 
 		data, err := os.ReadFile(configFile)
-		if err == nil && strings.Contains(string(data), line) {
-			return "PATH already configured", nil
+		if err == nil && strings.Contains(string(data), "pv env") {
+			return "Shell already configured", nil
 		}
 
 		f, err := os.OpenFile(configFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -86,7 +93,7 @@ func bootstrapFinalize(tld string) error {
 			return "", fmt.Errorf("cannot open %s: %w", configFile, err)
 		}
 		defer f.Close()
-		if _, err := fmt.Fprintf(f, "\n# pv\n%s\n", line); err != nil {
+		if _, err := fmt.Fprintf(f, "\n# pv\n%s\n", evalLine); err != nil {
 			return "", fmt.Errorf("cannot write to %s: %w", configFile, err)
 		}
 

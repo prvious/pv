@@ -139,5 +139,5 @@ func installComposer(client *http.Client, url string, b Binary, version string, 
 		}
 	}
 
-	return nil
+	return os.Chmod(destPath, 0755)
 }

@@ -62,11 +62,10 @@ var registry = map[string]*Tool{
 	"composer": {
 		DisplayName: "Composer",
 		AutoExpose:  true,
-		Exposure:    ExposureShim,
+		Exposure:    ExposureSymlink,
 		InternalPath: func() string {
 			return config.ComposerPharPath()
 		},
-		WriteShim: writeComposerShim,
 	},
 	"mago": {
 		DisplayName: "Mago",

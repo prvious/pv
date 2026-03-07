@@ -5,32 +5,34 @@ source "$(dirname "$0")/helpers.sh"
 # Set up PATH via pv env so we can use bare `composer` and `php` commands
 eval "$(pv env)"
 
-# ── 1. Verify composer shim exists and is executable ───────────────────
-echo "==> Verify composer shim exists"
+# ── 1. Verify composer symlink exists and points to composer.phar ──────
+echo "==> Verify composer symlink exists"
 ls -la ~/.pv/bin/composer
-test -x ~/.pv/bin/composer || { echo "FAIL: composer shim not executable"; exit 1; }
+test -L ~/.pv/bin/composer || { echo "FAIL: composer is not a symlink"; exit 1; }
 
-echo "==> Verify composer.phar exists"
+echo "==> Verify composer.phar exists and is executable"
 ls -la ~/.pv/internal/bin/composer.phar
 test -f ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
+test -x ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not executable"; exit 1; }
 
-# ── 2. Verify COMPOSER_HOME isolation ──────────────────────────────────
-echo "==> Verify COMPOSER_HOME points to ~/.pv/composer"
-echo "  Debug: composer shim at $(which composer)"
-echo "  Debug: shim contents:"
-head -5 ~/.pv/bin/composer || true
-echo "  Debug: PHP binary:"
-ls -la ~/.pv/php/8.4/php || true
-echo "  Debug: composer.phar:"
-ls -la ~/.pv/internal/bin/composer.phar || true
+# ── 2. Verify COMPOSER_HOME isolation via pv env ──────────────────────
+echo "==> Verify COMPOSER_HOME is set by pv env"
+echo "  COMPOSER_HOME = $COMPOSER_HOME"
+assert_contains "$COMPOSER_HOME" ".pv/composer" "COMPOSER_HOME not isolated under ~/.pv/composer"
+
+echo "==> Verify composer config --global home"
 COMPOSER_HOME_OUTPUT=$(composer config --global home 2>&1)
-echo "  COMPOSER_HOME = $COMPOSER_HOME_OUTPUT"
+echo "  composer config home = $COMPOSER_HOME_OUTPUT"
 assert_contains "$COMPOSER_HOME_OUTPUT" ".pv/composer" "COMPOSER_HOME not isolated under ~/.pv/composer"
 
-# ── 3. Verify COMPOSER_CACHE_DIR isolation ─────────────────────────────
-echo "==> Verify COMPOSER_CACHE_DIR points to ~/.pv/composer/cache"
+# ── 3. Verify COMPOSER_CACHE_DIR isolation via pv env ─────────────────
+echo "==> Verify COMPOSER_CACHE_DIR is set by pv env"
+echo "  COMPOSER_CACHE_DIR = $COMPOSER_CACHE_DIR"
+assert_contains "$COMPOSER_CACHE_DIR" ".pv/composer/cache" "COMPOSER_CACHE_DIR not isolated under ~/.pv/composer/cache"
+
+echo "==> Verify composer config --global cache-dir"
 COMPOSER_CACHE_OUTPUT=$(composer config --global cache-dir 2>&1)
-echo "  COMPOSER_CACHE_DIR = $COMPOSER_CACHE_OUTPUT"
+echo "  composer config cache-dir = $COMPOSER_CACHE_OUTPUT"
 assert_contains "$COMPOSER_CACHE_OUTPUT" ".pv/composer/cache" "COMPOSER_CACHE_DIR not isolated under ~/.pv/composer/cache"
 
 # ── 4. Verify nothing touches ~/.composer ──────────────────────────────
@@ -85,21 +87,11 @@ if [ -d ~/.pv/composer/vendor/laravel/installer ]; then
 fi
 echo "  OK: laravel/installer removed"
 
-# ── 10. Composer version resolves per-project PHP ─────────────────────
-echo "==> Verify composer uses correct PHP per project"
-
-# In 8.3 project dir, composer should use PHP 8.3.
-if [ -d /tmp/e2e-php83 ]; then
-  PHP_VER=$(cd /tmp/e2e-php83 && composer --version 2>&1 | head -1)
-  echo "  e2e-php83 dir: $PHP_VER"
-  # Composer itself runs — that's proof the PHP resolution worked.
-  assert_contains "$PHP_VER" "Composer" "composer did not run in e2e-php83 project"
-fi
-
-# In global context, should use PHP 8.4.
-PHP_VER=$(cd /tmp && composer --version 2>&1 | head -1)
-echo "  /tmp (global): $PHP_VER"
-assert_contains "$PHP_VER" "Composer" "composer did not run in global context"
+# ── 10. Verify composer runs correctly ─────────────────────────────────
+echo "==> Verify composer --version works"
+PHP_VER=$(composer --version 2>&1 | head -1)
+echo "  $PHP_VER"
+assert_contains "$PHP_VER" "Composer" "composer did not produce expected version output"
 
 echo ""
 echo "OK: Composer containment verified"

@@ -157,9 +157,9 @@ func TestExposeAll(t *testing.T) {
 		t.Error("php shim not created by ExposeAll")
 	}
 
-	// Composer shim should exist.
-	if _, err := os.Stat(filepath.Join(config.BinDir(), "composer")); err != nil {
-		t.Error("composer shim not created by ExposeAll")
+	// Composer symlink should exist.
+	if _, err := os.Lstat(filepath.Join(config.BinDir(), "composer")); err != nil {
+		t.Error("composer symlink not created by ExposeAll")
 	}
 
 	// Mago symlink should exist.
