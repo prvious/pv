@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	colimacmd "github.com/prvious/pv/internal/commands/colima"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
@@ -85,22 +89,22 @@ var uninstallCmd = &cobra.Command{
 		tld := settings.TLD
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
-		if err := colimaUninstallCmd.RunE(colimaUninstallCmd, nil); err != nil {
+		if err := colimacmd.RunUninstall(); err != nil {
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
 			}
 		}
-		if err := phpUninstallCmd.RunE(phpUninstallCmd, nil); err != nil {
+		if err := php.RunUninstall(); err != nil {
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
 			}
 		}
-		if err := magoUninstallCmd.RunE(magoUninstallCmd, nil); err != nil {
+		if err := mago.RunUninstall(); err != nil {
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
 			}
 		}
-		if err := composerUninstallCmd.RunE(composerUninstallCmd, nil); err != nil {
+		if err := composer.RunUninstall(); err != nil {
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
 			}

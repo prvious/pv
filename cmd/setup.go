@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
@@ -179,7 +182,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Install Composer (non-negotiable).
-		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
+		if err := composer.RunInstall(); err != nil {
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Composer failed: %v", err))
 			}
@@ -192,7 +195,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		if toolSet["mago"] {
-			if err := magoDownloadCmd.RunE(magoDownloadCmd, nil); err != nil {
+			if err := mago.RunDownload(); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Mago failed: %v", err))
 				}
@@ -229,7 +232,7 @@ var setupCmd = &cobra.Command{
 					continue
 				}
 				svcArgs := []string{name, svc.DefaultVersion()}
-				if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
+				if err := service.RunAdd(svcArgs); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
 					}

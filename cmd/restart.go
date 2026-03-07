@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
@@ -16,7 +17,7 @@ var restartCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Daemon mode — delegate to daemon:restart.
 		if daemon.IsLoaded() {
-			return daemonRestartCmd.RunE(daemonRestartCmd, nil)
+			return daemoncmds.RunRestart()
 		}
 
 		// Foreground mode — reload config via admin API.

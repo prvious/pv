@@ -167,3 +167,7 @@ func containsStr(slice []string, s string) bool {
 	}
 	return false
 }
+
+func sanitizeProjectName(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
+}

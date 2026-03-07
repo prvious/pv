@@ -1,0 +1,30 @@
+package colima
+
+import (
+	"fmt"
+
+	"github.com/prvious/pv/internal/tools"
+	"github.com/spf13/cobra"
+)
+
+var installCmd = &cobra.Command{
+	Use:     "colima:install",
+	GroupID: "colima",
+	Short:   "Install or update the Colima container runtime",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Download.
+		if err := downloadCmd.RunE(downloadCmd, nil); err != nil {
+			return err
+		}
+
+		// Expose (no-op for colima since AutoExpose=false).
+		t := tools.MustGet("colima")
+		if t.AutoExpose {
+			if err := tools.Expose(t); err != nil {
+				return fmt.Errorf("cannot expose Colima: %w", err)
+			}
+		}
+
+		return nil
+	},
+}

@@ -7,6 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prvious/pv/internal/commands/mago"
+	"github.com/prvious/pv/internal/commands/composer"
+	"github.com/prvious/pv/internal/commands/php"
+	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
@@ -150,18 +154,18 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 		if spec.phpVersion != "" {
 			phpArgs = []string{spec.phpVersion}
 		}
-		if err := phpInstallCmd.RunE(phpInstallCmd, phpArgs); err != nil {
+		if err := php.RunInstall(phpArgs); err != nil {
 			return err
 		}
 
 		// Step 4: Install Composer (non-negotiable).
-		if err := composerInstallCmd.RunE(composerInstallCmd, nil); err != nil {
+		if err := composer.RunInstall(); err != nil {
 			return err
 		}
 
 		// Step 5: Install Mago (opt-in via --with).
 		if spec.mago {
-			if err := magoInstallCmd.RunE(magoInstallCmd, nil); err != nil {
+			if err := mago.RunInstall(); err != nil {
 				return err
 			}
 		}
@@ -177,7 +181,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			if svc.version != "" {
 				svcArgs = append(svcArgs, svc.version)
 			}
-			if err := serviceAddCmd.RunE(serviceAddCmd, svcArgs); err != nil {
+			if err := service.RunAdd(svcArgs); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
 			}
