@@ -21,7 +21,8 @@ Currently supports PHP projects (Laravel, generic PHP, static sites).
 
 ```bash
 # Install pv and set up the environment
-pv install
+pv install                # non-interactive
+pv setup                  # interactive wizard
 
 # Install a PHP version
 pv php:install 8.4
@@ -105,7 +106,7 @@ pv service:add redis 7
 # Manage services
 pv service:start mysql
 pv service:stop mysql
-pv service:status
+pv service:status mysql
 pv service:list
 
 # Inject credentials into your project's .env
@@ -174,8 +175,15 @@ Version resolution: `.pv-php` file → `composer.json` `require.php` → global 
 
 ```
 main.go              # Entry point
-cmd/                 # CLI commands (flat, colon-namespaced)
+cmd/                 # Core/orchestrator commands + thin registration shims
 internal/
+  commands/          # Grouped tool/service/daemon commands
+    php/             # php:install, php:use, php:list, etc.
+    mago/            # mago:install, mago:update, etc.
+    composer/        # composer:install, composer:update, etc.
+    colima/          # colima:install, colima:update, etc.
+    service/         # service:add, service:remove, etc.
+    daemon/          # daemon:enable, daemon:disable, etc.
   tools/             # Tool abstraction (exposure, shims, symlinks)
   config/            # Path helpers, settings
   registry/          # Project registry
