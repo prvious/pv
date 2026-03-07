@@ -13,9 +13,9 @@ echo "OK: ~/.pv exists"
 PV_BIN=$(which pv)
 echo "pv binary at: $PV_BIN"
 
-# Run uninstall by piping "uninstall" and "n" (decline auth backup).
+# Run uninstall non-interactively with --force.
 # Don't wrap in sudo — pv handles sudo internally via sudo -n.
-printf 'uninstall\nn\n' | pv uninstall
+pv uninstall --force
 
 # Verify ~/.pv is gone.
 echo "==> Post-uninstall checks"

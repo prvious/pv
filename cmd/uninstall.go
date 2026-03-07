@@ -24,6 +24,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var forceUninstall bool
+
 var uninstallCmd = &cobra.Command{
 	Use:     "uninstall",
 	GroupID: "core",
@@ -41,21 +43,23 @@ var uninstallCmd = &cobra.Command{
 		ui.Subtle("")
 		ui.Subtle("Your projects themselves will not be touched.")
 
-		var confirmation string
-		if err := huh.NewInput().
-			Title("Type \"uninstall\" to confirm").
-			Value(&confirmation).
-			Run(); err != nil {
-			return err
-		}
-		if confirmation != "uninstall" {
-			ui.Subtle("Aborted.")
-			return nil
+		if !forceUninstall {
+			var confirmation string
+			if err := huh.NewInput().
+				Title("Type \"uninstall\" to confirm").
+				Value(&confirmation).
+				Run(); err != nil {
+				return err
+			}
+			if confirmation != "uninstall" {
+				ui.Subtle("Aborted.")
+				return nil
+			}
 		}
 
 		// Auth backup offer.
 		authPath := filepath.Join(config.ComposerDir(), "auth.json")
-		if hasAuthTokens(authPath) {
+		if !forceUninstall && hasAuthTokens(authPath) {
 			backupAuth := true
 			if err := huh.NewConfirm().
 				Title("Back up Composer auth tokens to ~/pv-auth-backup.json?").
@@ -291,5 +295,6 @@ func runSudo(script string) bool {
 }
 
 func init() {
+	uninstallCmd.Flags().BoolVarP(&forceUninstall, "force", "f", false, "Skip confirmation prompt")
 	rootCmd.AddCommand(uninstallCmd)
 }
