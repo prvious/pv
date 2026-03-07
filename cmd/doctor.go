@@ -218,15 +218,17 @@ func runEnvironmentChecks() sectionResult {
 		})
 	}
 
-	// Composer shim exists.
-	composerShim := filepath.Join(binDir, "composer")
-	if isExecutable(composerShim) {
-		checks = append(checks, check{Name: "Composer shim", Status: true})
+	// Composer symlink exists.
+	composerLink := filepath.Join(binDir, "composer")
+	if _, err := os.Readlink(composerLink); err == nil {
+		checks = append(checks, check{Name: "Composer symlink", Status: true})
+	} else if isExecutable(composerLink) {
+		checks = append(checks, check{Name: "Composer binary", Status: true})
 	} else {
 		checks = append(checks, check{
-			Name:    "Composer shim",
+			Name:    "Composer symlink",
 			Status:  false,
-			Message: "~/.pv/bin/composer not found or not executable",
+			Message: "~/.pv/bin/composer not found",
 			Fix:     "pv install",
 		})
 	}
@@ -276,38 +278,46 @@ func runComposerIsolationChecks() sectionResult {
 		})
 	}
 
-	// Run composer shim to verify COMPOSER_HOME.
-	composerShim := filepath.Join(config.BinDir(), "composer")
-	if isExecutable(composerShim) {
-		out, err := exec.Command(composerShim, "config", "--global", "home").CombinedOutput()
-		if err == nil {
-			home := strings.TrimSpace(string(out))
-			expected := config.ComposerDir()
-			if home == expected {
-				checks = append(checks, check{Name: "COMPOSER_HOME isolated", Status: true})
-			} else {
-				checks = append(checks, check{
-					Name:    "COMPOSER_HOME isolated",
-					Status:  false,
-					Message: fmt.Sprintf("COMPOSER_HOME is %q, expected %q", home, expected),
-				})
-			}
-		}
+	// Verify COMPOSER_HOME and COMPOSER_CACHE_DIR env vars are set correctly.
+	// Isolation is handled by `pv env` which exports these variables.
+	composerHomeEnv := os.Getenv("COMPOSER_HOME")
+	expectedHome := config.ComposerDir()
+	if composerHomeEnv == expectedHome {
+		checks = append(checks, check{Name: "COMPOSER_HOME isolated", Status: true})
+	} else if composerHomeEnv != "" {
+		checks = append(checks, check{
+			Name:    "COMPOSER_HOME isolated",
+			Status:  false,
+			Message: fmt.Sprintf("COMPOSER_HOME is %q, expected %q", composerHomeEnv, expectedHome),
+			Fix:     `Add to your shell config: eval "$(pv env)"`,
+		})
+	} else {
+		checks = append(checks, check{
+			Name:    "COMPOSER_HOME isolated",
+			Status:  false,
+			Message: "COMPOSER_HOME not set",
+			Fix:     `Add to your shell config: eval "$(pv env)"`,
+		})
+	}
 
-		out, err = exec.Command(composerShim, "config", "--global", "cache-dir").CombinedOutput()
-		if err == nil {
-			cacheDir := strings.TrimSpace(string(out))
-			expected := config.ComposerCacheDir()
-			if cacheDir == expected {
-				checks = append(checks, check{Name: "Composer cache isolated", Status: true})
-			} else {
-				checks = append(checks, check{
-					Name:    "Composer cache isolated",
-					Status:  false,
-					Message: fmt.Sprintf("cache-dir is %q, expected %q", cacheDir, expected),
-				})
-			}
-		}
+	composerCacheEnv := os.Getenv("COMPOSER_CACHE_DIR")
+	expectedCache := config.ComposerCacheDir()
+	if composerCacheEnv == expectedCache {
+		checks = append(checks, check{Name: "Composer cache isolated", Status: true})
+	} else if composerCacheEnv != "" {
+		checks = append(checks, check{
+			Name:    "Composer cache isolated",
+			Status:  false,
+			Message: fmt.Sprintf("COMPOSER_CACHE_DIR is %q, expected %q", composerCacheEnv, expectedCache),
+			Fix:     `Add to your shell config: eval "$(pv env)"`,
+		})
+	} else {
+		checks = append(checks, check{
+			Name:    "Composer cache isolated",
+			Status:  false,
+			Message: "COMPOSER_CACHE_DIR not set",
+			Fix:     `Add to your shell config: eval "$(pv env)"`,
+		})
 	}
 
 	// Warn if ~/.composer/ also exists (potential confusion).
