@@ -2,6 +2,9 @@
 set -euo pipefail
 source "$(dirname "$0")/helpers.sh"
 
+# Set up PATH so php shim and composer symlink are available.
+eval "$(pv env)"
+
 echo "==> Verify 8.4 binaries"
 ls -la ~/.pv/php/8.4/frankenphp
 ls -la ~/.pv/php/8.4/php
@@ -29,8 +32,8 @@ grep -q '"global_php": "8.4"' ~/.pv/config/settings.json || { echo "FAIL: settin
 echo "==> Verify resolver"
 cat /etc/resolver/test
 
-echo "==> Verify composer shim and phar"
-test -x ~/.pv/bin/composer || { echo "FAIL: composer shim not executable"; exit 1; }
+echo "==> Verify composer symlink and phar"
+test -L ~/.pv/bin/composer || { echo "FAIL: composer is not a symlink"; exit 1; }
 test -f ~/.pv/internal/bin/composer.phar || { echo "FAIL: composer.phar not found"; exit 1; }
 
 echo "==> Verify composer directories"
