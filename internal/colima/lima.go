@@ -72,7 +72,10 @@ func RemoveLima() error {
 }
 
 func latestLimaVersion(client *http.Client) (string, error) {
+	// Use a separate client to disable redirects, but inherit the caller's transport/timeout.
 	noRedirect := &http.Client{
+		Transport: client.Transport,
+		Timeout:   client.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -83,9 +86,13 @@ func latestLimaVersion(client *http.Client) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return "", fmt.Errorf("cannot resolve Lima version: unexpected HTTP %d from GitHub releases", resp.StatusCode)
+	}
+
 	loc := resp.Header.Get("Location")
 	if loc == "" {
-		return "", fmt.Errorf("no redirect from Lima releases")
+		return "", fmt.Errorf("cannot resolve Lima version: HTTP %d but no Location header", resp.StatusCode)
 	}
 	parts := strings.Split(loc, "/")
 	tag := parts[len(parts)-1]
@@ -146,8 +153,12 @@ func extractTarGz(r io.Reader, dest string) error {
 				return copyErr
 			}
 		case tar.TypeSymlink:
-			os.Remove(target)
-			_ = os.Symlink(header.Linkname, target)
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("cannot remove existing file before symlink %s: %w", target, err)
+			}
+			if err := os.Symlink(header.Linkname, target); err != nil {
+				return fmt.Errorf("cannot create symlink %s -> %s: %w", target, header.Linkname, err)
+			}
 		}
 	}
 	return nil

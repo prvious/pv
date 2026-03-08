@@ -16,7 +16,11 @@ import (
 // This checks the exact directory only (used by link/server where the project path is known).
 func ResolveVersion(projectPath string) (string, error) {
 	// 1. Check for pv.yml file (explicit override).
-	if v, err := readPvYml(projectPath); err == nil && v != "" {
+	v, err := readPvYml(projectPath)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("invalid pv.yml in %s: %w", projectPath, err)
+	}
+	if v != "" {
 		return v, nil
 	}
 
@@ -29,12 +33,17 @@ func ResolveVersion(projectPath string) (string, error) {
 	return GlobalVersion()
 }
 
-// ResolveVersionWalkUp walks up from startDir looking for pv.yml or composer.json,
-// then falls back to the global default. Used by php:current where the project
-// root is unknown and must be discovered.
+// ResolveVersionWalkUp first walks up from startDir looking for the nearest pv.yml;
+// if none is found, it walks up again looking for the nearest composer.json with a
+// PHP constraint; finally it falls back to the global default.
+// Used by php:current where the project root is unknown and must be discovered.
 func ResolveVersionWalkUp(startDir string) (string, error) {
 	// 1. Walk up looking for pv.yml.
-	if cfg, err := config.FindAndLoadProjectConfig(startDir); err == nil && cfg != nil && cfg.PHP != "" {
+	cfg, err := config.FindAndLoadProjectConfig(startDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid pv.yml: %w", err)
+	}
+	if cfg != nil && cfg.PHP != "" {
 		return cfg.PHP, nil
 	}
 
@@ -48,14 +57,13 @@ func ResolveVersionWalkUp(startDir string) (string, error) {
 }
 
 // readPvYml reads the pv.yml file in the project directory and returns the PHP version.
+// Returns ("", nil) if the file is missing or has no php field (both are non-error fallthroughs).
+// Returns a non-nil error only for actual problems (permission denied, invalid YAML).
 func readPvYml(projectPath string) (string, error) {
 	path := filepath.Join(projectPath, config.ProjectConfigFilename)
 	cfg, err := config.LoadProjectConfig(path)
 	if err != nil {
 		return "", err
-	}
-	if cfg.PHP == "" {
-		return "", fmt.Errorf("no php field in pv.yml")
 	}
 	return cfg.PHP, nil
 }

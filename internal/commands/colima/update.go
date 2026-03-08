@@ -12,7 +12,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "colima:update",
 	GroupID: "colima",
-	Short:   "Update Colima to the latest version",
+	Short:   "Update Colima and Lima to the latest versions",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !internalcolima.IsInstalled() {
 			ui.Success("Colima not installed (run: pv colima:install)")

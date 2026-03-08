@@ -29,7 +29,10 @@ var setupCmd = &cobra.Command{
 		client := &http.Client{}
 
 		// Load current state to pre-select installed items.
-		installedVersions, _ := phpenv.InstalledVersions()
+		installedVersions, err := phpenv.InstalledVersions()
+		if err != nil {
+			ui.Subtle(fmt.Sprintf("Warning: could not detect installed PHP versions: %v", err))
+		}
 		installedSet := make(map[string]bool)
 		for _, v := range installedVersions {
 			installedSet[v] = true
@@ -70,7 +73,10 @@ var setupCmd = &cobra.Command{
 		}
 
 		// TLD.
-		settings, _ := config.LoadSettings()
+		settings, err := config.LoadSettings()
+		if err != nil {
+			ui.Subtle(fmt.Sprintf("Warning: could not load settings: %v", err))
+		}
 		tld := "test"
 		if settings != nil && settings.TLD != "" {
 			tld = settings.TLD
@@ -85,7 +91,10 @@ var setupCmd = &cobra.Command{
 			return fmt.Errorf("setup wizard failed: %w", err)
 		}
 
-		final := result.(setupModel)
+		final, ok := result.(setupModel)
+		if !ok {
+			return fmt.Errorf("setup wizard returned unexpected state")
+		}
 		if !final.confirmed {
 			return nil
 		}

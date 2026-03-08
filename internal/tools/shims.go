@@ -15,7 +15,7 @@ set -euo pipefail
 PV_PHP_DIR="%s"
 PV_BIN="%s"
 
-VERSION=$("$PV_BIN" php:current 2>/dev/null)
+VERSION=$("$PV_BIN" php:current)
 if [ -z "$VERSION" ]; then
     echo "pv: no PHP version configured. Run: pv php:install [version]" >&2
     exit 1
