@@ -124,7 +124,7 @@ The CLI uses a layered Charm stack:
 
 - Main FrankenPHP serves on :443/:80, proxies non-global versions via `reverse_proxy`.
 - Secondary FrankenPHP per version on high port: `8000 + major*100 + minor*10` (8.3 → 8830).
-- Version resolution order: `.pv-php` file → `composer.json` require.php → global default.
+- Version resolution order: `pv.yml` `php` field → `composer.json` require.php → global default.
 
 ## Services
 

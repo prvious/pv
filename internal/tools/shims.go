@@ -9,53 +9,13 @@ import (
 )
 
 const phpShimScript = `#!/bin/bash
-# pv PHP version shim — auto-resolves PHP version per project.
+# pv PHP version shim — delegates version resolution to pv binary.
 set -euo pipefail
 
 PV_PHP_DIR="%s"
-PV_SETTINGS="%s"
+PV_BIN="%s"
 
-# Read global default version from settings.
-global_php() {
-    if [ -f "$PV_SETTINGS" ]; then
-        # Simple JSON parse for global_php field.
-        grep -o '"global_php"[[:space:]]*:[[:space:]]*"[^"]*"' "$PV_SETTINGS" | \
-            grep -o '"[^"]*"$' | tr -d '"' || true
-    fi
-}
-
-# Walk up directories looking for .pv-php or composer.json.
-resolve_version() {
-    local dir="$PWD"
-    while [ "$dir" != "/" ]; do
-        # Check .pv-php file.
-        if [ -f "$dir/.pv-php" ]; then
-            cat "$dir/.pv-php" | tr -d '[:space:]'
-            return
-        fi
-        # Check composer.json for PHP constraint (extract major.minor).
-        if [ -f "$dir/composer.json" ]; then
-            local constraint
-            constraint=$(grep -o '"php"[[:space:]]*:[[:space:]]*"[^"]*"' "$dir/composer.json" | \
-                grep -o '"[^"]*"$' | tr -d '"' || true)
-            if [ -n "$constraint" ]; then
-                # Extract the first major.minor version from the constraint.
-                local ver
-                ver=$(echo "$constraint" | grep -o '[0-9]\+\.[0-9]\+' | head -1)
-                if [ -n "$ver" ] && [ -d "$PV_PHP_DIR/$ver" ]; then
-                    echo "$ver"
-                    return
-                fi
-            fi
-        fi
-        dir=$(dirname "$dir")
-    done
-
-    # Fall back to global default.
-    global_php
-}
-
-VERSION=$(resolve_version)
+VERSION=$("$PV_BIN" php:current 2>/dev/null)
 if [ -z "$VERSION" ]; then
     echo "pv: no PHP version configured. Run: pv php:install [version]" >&2
     exit 1
@@ -70,14 +30,41 @@ fi
 exec "$BINARY" "$@"
 `
 
+const colimaShimScript = `#!/bin/sh
+# pv Colima shim — ensures Lima (limactl) is on PATH.
+export PATH="%s:$PATH"
+exec "%s" "$@"
+`
+
+// writeColimaShim writes the Colima wrapper shim to ~/.pv/bin/colima.
+func writeColimaShim() error {
+	limaBinDir := config.LimaBinDir()
+	colimaPath := config.ColimaPath()
+	binDir := config.BinDir()
+
+	shimPath := filepath.Join(binDir, "colima")
+	content := fmt.Sprintf(colimaShimScript, limaBinDir, colimaPath)
+	if err := os.WriteFile(shimPath, []byte(content), 0755); err != nil {
+		return fmt.Errorf("cannot write colima shim: %w", err)
+	}
+	return nil
+}
+
 // writePhpShim writes the PHP version-resolving shim to ~/.pv/bin/php.
 func writePhpShim() error {
 	phpDir := config.PhpDir()
-	settingsPath := config.SettingsPath()
 	binDir := config.BinDir()
 
+	pvBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot find pv binary: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(pvBin); err == nil {
+		pvBin = resolved
+	}
+
 	shimPath := filepath.Join(binDir, "php")
-	content := fmt.Sprintf(phpShimScript, phpDir, settingsPath)
+	content := fmt.Sprintf(phpShimScript, phpDir, pvBin)
 	if err := os.WriteFile(shimPath, []byte(content), 0755); err != nil {
 		return fmt.Errorf("cannot write php shim: %w", err)
 	}

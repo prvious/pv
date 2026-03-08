@@ -7,13 +7,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/prvious/pv/internal/config"
 )
 
 // ResolveVersion determines the PHP version for a project directory.
-// Priority: .pv-php file → composer.json require.php → global default.
+// Priority: pv.yml php field → composer.json require.php → global default.
+// This checks the exact directory only (used by link/server where the project path is known).
 func ResolveVersion(projectPath string) (string, error) {
-	// 1. Check for .pv-php file (explicit override).
-	if v, err := readPvPhpFile(projectPath); err == nil && v != "" {
+	// 1. Check for pv.yml file (explicit override).
+	if v, err := readPvYml(projectPath); err == nil && v != "" {
 		return v, nil
 	}
 
@@ -26,18 +29,50 @@ func ResolveVersion(projectPath string) (string, error) {
 	return GlobalVersion()
 }
 
-// readPvPhpFile reads the .pv-php file in the project directory.
-// The file should contain a single line with a version like "8.4".
-func readPvPhpFile(projectPath string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(projectPath, ".pv-php"))
+// ResolveVersionWalkUp walks up from startDir looking for pv.yml or composer.json,
+// then falls back to the global default. Used by php:current where the project
+// root is unknown and must be discovered.
+func ResolveVersionWalkUp(startDir string) (string, error) {
+	// 1. Walk up looking for pv.yml.
+	if cfg, err := config.FindAndLoadProjectConfig(startDir); err == nil && cfg != nil && cfg.PHP != "" {
+		return cfg.PHP, nil
+	}
+
+	// 2. Walk up looking for composer.json.
+	if v, err := walkUpComposer(startDir); err == nil && v != "" {
+		return v, nil
+	}
+
+	// 3. Fall back to global default.
+	return GlobalVersion()
+}
+
+// readPvYml reads the pv.yml file in the project directory and returns the PHP version.
+func readPvYml(projectPath string) (string, error) {
+	path := filepath.Join(projectPath, config.ProjectConfigFilename)
+	cfg, err := config.LoadProjectConfig(path)
 	if err != nil {
 		return "", err
 	}
-	v := strings.TrimSpace(string(data))
-	if v == "" {
-		return "", fmt.Errorf("empty .pv-php file")
+	if cfg.PHP == "" {
+		return "", fmt.Errorf("no php field in pv.yml")
 	}
-	return v, nil
+	return cfg.PHP, nil
+}
+
+// walkUpComposer walks up from startDir looking for a composer.json with a PHP constraint.
+func walkUpComposer(startDir string) (string, error) {
+	dir := startDir
+	for {
+		if v, err := resolveFromComposer(dir); err == nil && v != "" {
+			return v, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no composer.json found")
+		}
+		dir = parent
+	}
 }
 
 // resolveFromComposer reads composer.json and matches the require.php constraint

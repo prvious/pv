@@ -144,7 +144,7 @@ func TestUninstall_RegistryReadBeforeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create projects and .pv-php files.
+	// Create projects and pv.yml files.
 	projectPaths := []string{
 		filepath.Join(home, "projects", "app-one"),
 		filepath.Join(home, "projects", "app-two"),
@@ -156,8 +156,8 @@ func TestUninstall_RegistryReadBeforeDelete(t *testing.T) {
 		}
 		projects = append(projects, registry.Project{Name: filepath.Base(p), Path: p, Type: "php"})
 	}
-	// Write .pv-php in first project only.
-	if err := os.WriteFile(filepath.Join(projectPaths[0], ".pv-php"), []byte("8.3"), 0644); err != nil {
+	// Write pv.yml in first project only.
+	if err := os.WriteFile(filepath.Join(projectPaths[0], "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,7 +166,7 @@ func TestUninstall_RegistryReadBeforeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read registry (simulating Task 3).
+	// Read registry (simulating uninstall pre-deletion scan).
 	loaded, err := registry.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -176,21 +176,21 @@ func TestUninstall_RegistryReadBeforeDelete(t *testing.T) {
 		paths = append(paths, p.Path)
 	}
 
-	// Delete ~/.pv (simulating Task 7).
+	// Delete ~/.pv.
 	if err := os.RemoveAll(config.PvDir()); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify we can still find .pv-php files from saved paths (Task 8).
+	// Verify we can still find pv.yml files from saved paths.
 	var found []string
 	for _, p := range paths {
-		pvPhpPath := filepath.Join(p, ".pv-php")
-		if _, err := os.Stat(pvPhpPath); err == nil {
-			found = append(found, pvPhpPath)
+		pvYmlPath := filepath.Join(p, "pv.yml")
+		if _, err := os.Stat(pvYmlPath); err == nil {
+			found = append(found, pvYmlPath)
 		}
 	}
 	if len(found) != 1 {
-		t.Errorf("expected 1 .pv-php file, found %d", len(found))
+		t.Errorf("expected 1 pv.yml file, found %d", len(found))
 	}
 }
 

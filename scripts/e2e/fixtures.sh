@@ -46,10 +46,10 @@ cat > /tmp/e2e-octane/public/index.php << 'PHPEOF'
 <?php echo "octane works";
 PHPEOF
 
-# 5. PHP 8.3 site (multi-version via .pv-php override)
+# 5. PHP 8.3 site (multi-version via pv.yml override)
 mkdir -p /tmp/e2e-php83/public
 echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-php83/composer.json
-echo '8.3' > /tmp/e2e-php83/.pv-php
+echo 'php: "8.3"' > /tmp/e2e-php83/pv.yml
 cat > /tmp/e2e-php83/public/index.php << 'PHPEOF'
 <?php
 ignore_user_abort(true);

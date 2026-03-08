@@ -35,6 +35,10 @@ var uninstallCmd = &cobra.Command{
 				return "", err
 			}
 
+			if err := internalcolima.RemoveLima(); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("cannot remove Lima: %w", err)
+			}
+
 			if err := tools.Unexpose(tools.MustGet("colima")); err != nil {
 				return "", fmt.Errorf("cannot unexpose colima: %w", err)
 			}

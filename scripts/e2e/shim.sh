@@ -5,7 +5,7 @@ source "$(dirname "$0")/helpers.sh"
 # Set up PATH via pv env so we can use bare `php` command
 eval "$(pv env)"
 
-echo "==> Shim in e2e-php83 dir (.pv-php -> 8.3)"
+echo "==> Shim in e2e-php83 dir (pv.yml -> 8.3)"
 OUT=$(cd /tmp/e2e-php83 && php --version)
 echo "$OUT"
 echo "$OUT" | grep -qi "8\.3" || { echo "FAIL: shim did not resolve to 8.3"; exit 1; }

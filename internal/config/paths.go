@@ -155,6 +155,14 @@ func ColimaPath() string {
 	return filepath.Join(InternalBinDir(), "colima")
 }
 
+func LimaDir() string {
+	return filepath.Join(PvDir(), "internal", "lima")
+}
+
+func LimaBinDir() string {
+	return filepath.Join(LimaDir(), "bin")
+}
+
 func ColimaSocketPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".colima", "pv", "docker.sock")

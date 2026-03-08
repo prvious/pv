@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"charm.land/huh/v2"
+	tea "charm.land/bubbletea/v2"
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
@@ -42,49 +42,30 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Build PHP version options.
-		var phpOptions []huh.Option[string]
+		var phpOpts []selectOption
 		for _, v := range available {
 			label := "PHP " + v
+			sel := installedSet[v]
 			if installedSet[v] {
 				label += " (installed)"
 			}
-			phpOptions = append(phpOptions, huh.NewOption(label, v))
-		}
-
-		// Pre-select: installed versions, or latest if none installed.
-		var selectedPHP []string
-		if len(installedVersions) > 0 {
-			selectedPHP = append(selectedPHP, installedVersions...)
-		} else if len(available) > 0 {
-			selectedPHP = []string{available[len(available)-1]}
-		}
-
-		// Tool options (mago is opt-in, composer is non-negotiable but shown).
-		type toolChoice struct {
-			Name    string
-			Label   string
-			Checked bool
-		}
-		toolDefs := []toolChoice{
-			{"mago", "Mago (PHP linter & formatter)", isExecutable(config.BinDir() + "/mago")},
-		}
-
-		var toolOptions []huh.Option[string]
-		var selectedTools []string
-		for _, t := range toolDefs {
-			toolOptions = append(toolOptions, huh.NewOption(t.Label, t.Name))
-			if t.Checked {
-				selectedTools = append(selectedTools, t.Name)
+			if len(installedVersions) == 0 && v == available[len(available)-1] {
+				sel = true
 			}
+			phpOpts = append(phpOpts, selectOption{label: label, value: v, selected: sel})
+		}
+
+		// Tool options.
+		toolOpts := []selectOption{
+			{label: "Mago (PHP linter & formatter)", value: "mago", selected: isExecutable(config.BinDir() + "/mago")},
 		}
 
 		// Service options.
-		var svcOptions []huh.Option[string]
-		var selectedServices []string
+		var svcOpts []selectOption
 		for _, name := range services.Available() {
 			svc, _ := services.Lookup(name)
 			if svc != nil {
-				svcOptions = append(svcOptions, huh.NewOption(svc.DisplayName(), name))
+				svcOpts = append(svcOpts, selectOption{label: svc.DisplayName(), value: name})
 			}
 		}
 
@@ -95,37 +76,24 @@ var setupCmd = &cobra.Command{
 			tld = settings.TLD
 		}
 
-		// Run the form.
-		form := huh.NewForm(
-			huh.NewGroup(
-				huh.NewMultiSelect[string]().
-					Title("PHP Versions").
-					Description("Select which PHP versions to install").
-					Options(phpOptions...).
-					Value(&selectedPHP),
-
-				huh.NewMultiSelect[string]().
-					Title("Optional Tools").
-					Description("Composer is always installed. Select additional tools:").
-					Options(toolOptions...).
-					Value(&selectedTools),
-
-				huh.NewMultiSelect[string]().
-					Title("Services").
-					Description("Select backing services to set up").
-					Options(svcOptions...).
-					Value(&selectedServices),
-
-				huh.NewInput().
-					Title("TLD").
-					Description("Top-level domain for local sites").
-					Value(&tld),
-			),
-		)
-
-		if err := form.Run(); err != nil {
-			return err
+		// Run the tabbed setup wizard.
+		result, err := tea.NewProgram(
+			newSetupModel(phpOpts, toolOpts, svcOpts, tld),
+			tea.WithOutput(os.Stderr),
+		).Run()
+		if err != nil {
+			return fmt.Errorf("setup wizard failed: %w", err)
 		}
+
+		final := result.(setupModel)
+		if !final.confirmed {
+			return nil
+		}
+
+		selectedPHP := final.selectedPHPValues()
+		selectedTools := final.selectedToolValues()
+		selectedServices := final.selectedServiceValues()
+		tld = final.tld
 
 		fmt.Fprintln(os.Stderr)
 
