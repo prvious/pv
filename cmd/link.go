@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/phpenv"
@@ -91,6 +92,15 @@ pv link --name=myapp ~/Code/myapp`,
 		}
 		if err := caddy.GenerateCaddyfile(); err != nil {
 			return fmt.Errorf("cannot generate Caddyfile: %w", err)
+		}
+
+		// Generate TLS certificate for Vite dev server auto-detection.
+		hostname := name + "." + settings.TLD
+		if err := certs.EnsureValetConfig(settings.TLD); err != nil {
+			ui.Subtle(fmt.Sprintf("Vite TLS config: %v", err))
+		}
+		if err := certs.GenerateSiteTLS(hostname); err != nil {
+			ui.Subtle(fmt.Sprintf("Vite TLS: %v", err))
 		}
 
 		typeLabel := projectType

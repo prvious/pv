@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	"github.com/prvious/pv/internal/certs"
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
@@ -200,6 +201,11 @@ var uninstallCmd = &cobra.Command{
 			}); err != nil {
 				// Error already displayed by ui.Step
 			}
+		}
+
+		// Remove Valet-compatible config (Vite TLS certs).
+		if err := certs.RemoveAll(); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not remove ~/.config/valet: %v", err))
 		}
 
 		// Remove ~/.pv directory.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
@@ -70,6 +71,10 @@ pv unlink`,
 		if settings != nil {
 			tld = settings.TLD
 		}
+
+		// Remove TLS certificate for Vite dev server.
+		certs.RemoveSiteTLS(name + "." + tld)
+
 		domain := "https://" + name + "." + tld
 
 		fmt.Fprintln(os.Stderr)
