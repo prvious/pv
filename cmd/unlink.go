@@ -46,14 +46,18 @@ pv unlink`,
 			name = p.Name
 		}
 
-		// Check project exists before removing.
-		if reg.Find(name) == nil {
+		// Check project exists before removing and capture path for unwatching.
+		project := reg.Find(name)
+		if project == nil {
 			return fmt.Errorf("project %q is not linked", name)
 		}
+		projectPath := project.Path
 
 		if err := reg.Remove(name); err != nil {
 			return err
 		}
+
+		server.UnwatchProject(projectPath)
 
 		if err := reg.Save(); err != nil {
 			return fmt.Errorf("cannot save registry: %w", err)

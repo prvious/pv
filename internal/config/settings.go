@@ -8,19 +8,97 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AutoMode controls whether an automation step runs automatically.
+type AutoMode string
+
+const (
+	AutoOn  AutoMode = "true"
+	AutoOff AutoMode = "false"
+	AutoAsk AutoMode = "ask"
+)
+
 type Defaults struct {
 	PHP string `yaml:"php,omitempty"`
 	TLD string `yaml:"tld"`
 }
 
+// Automation controls which link-time steps run automatically.
+type Automation struct {
+	ComposerInstall AutoMode `yaml:"composer_install,omitempty"`
+	CopyEnv         AutoMode `yaml:"copy_env,omitempty"`
+	GenerateKey     AutoMode `yaml:"generate_key,omitempty"`
+	SetAppURL       AutoMode `yaml:"set_app_url,omitempty"`
+	InstallOctane   AutoMode `yaml:"install_octane,omitempty"`
+	CreateDatabase  AutoMode `yaml:"create_database,omitempty"`
+	RunMigrations   AutoMode `yaml:"run_migrations,omitempty"`
+	ServiceEnvUpdate AutoMode `yaml:"update_env_on_service,omitempty"`
+	ServiceFallback AutoMode `yaml:"service_fallback,omitempty"`
+}
+
 type Settings struct {
-	Defaults Defaults `yaml:"defaults"`
+	Defaults   Defaults   `yaml:"defaults"`
+	Automation Automation `yaml:"automation,omitempty"`
 }
 
 var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// DefaultAutomation returns the default automation settings.
+func DefaultAutomation() Automation {
+	return Automation{
+		ComposerInstall:  AutoOn,
+		CopyEnv:          AutoOn,
+		GenerateKey:      AutoOn,
+		SetAppURL:        AutoOn,
+		InstallOctane:    AutoAsk,
+		CreateDatabase:   AutoOn,
+		RunMigrations:    AutoAsk,
+		ServiceEnvUpdate: AutoOn,
+		ServiceFallback:  AutoOn,
+	}
+}
+
+func validAutoMode(m AutoMode) bool {
+	return m == AutoOn || m == AutoOff || m == AutoAsk
+}
+
+// applyAutomationDefaults fills empty Automation fields with defaults
+// and replaces invalid values with the default.
+func applyAutomationDefaults(a *Automation) {
+	d := DefaultAutomation()
+	if !validAutoMode(a.ComposerInstall) {
+		a.ComposerInstall = d.ComposerInstall
+	}
+	if !validAutoMode(a.CopyEnv) {
+		a.CopyEnv = d.CopyEnv
+	}
+	if !validAutoMode(a.GenerateKey) {
+		a.GenerateKey = d.GenerateKey
+	}
+	if !validAutoMode(a.SetAppURL) {
+		a.SetAppURL = d.SetAppURL
+	}
+	if !validAutoMode(a.InstallOctane) {
+		a.InstallOctane = d.InstallOctane
+	}
+	if !validAutoMode(a.CreateDatabase) {
+		a.CreateDatabase = d.CreateDatabase
+	}
+	if !validAutoMode(a.RunMigrations) {
+		a.RunMigrations = d.RunMigrations
+	}
+	if !validAutoMode(a.ServiceEnvUpdate) {
+		a.ServiceEnvUpdate = d.ServiceEnvUpdate
+	}
+	if !validAutoMode(a.ServiceFallback) {
+		a.ServiceFallback = d.ServiceFallback
+	}
+}
+
 func DefaultSettings() *Settings {
-	return &Settings{Defaults: Defaults{TLD: "test"}}
+	return &Settings{
+		Defaults:   Defaults{TLD: "test"},
+		Automation: DefaultAutomation(),
+	}
 }
 
 func LoadSettings() (*Settings, error) {
@@ -39,6 +117,7 @@ func LoadSettings() (*Settings, error) {
 	if s.Defaults.TLD == "" {
 		s.Defaults.TLD = "test"
 	}
+	applyAutomationDefaults(&s.Automation)
 	return &s, nil
 }
 

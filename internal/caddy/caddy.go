@@ -33,6 +33,7 @@ const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
             file frankenphp-worker.php
             num 1
             watch {{.Path}}/**/*.php
+            watch {{.Path}}/vendor/autoload.php
         }
     }
 }
@@ -87,6 +88,7 @@ const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}} {
             file frankenphp-worker.php
             num 1
             watch {{.Path}}/**/*.php
+            watch {{.Path}}/vendor/autoload.php
         }
     }
 }

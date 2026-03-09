@@ -6,6 +6,7 @@ import (
 
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -45,6 +46,13 @@ var startCmd = &cobra.Command{
 				}); err != nil {
 					return err
 				}
+				svcName := extractServiceName(key)
+				svc, lookupErr := services.Lookup(svcName)
+				if lookupErr != nil {
+					ui.Subtle(fmt.Sprintf("Could not look up %s for env update: %v", svcName, lookupErr))
+				} else {
+					updateLinkedProjectsEnv(reg, svcName, svc, extractVersion(key))
+				}
 			}
 		} else {
 			key := args[0]
@@ -57,6 +65,13 @@ var startCmd = &cobra.Command{
 				return fmt.Sprintf("%s started", key), nil
 			}); err != nil {
 				return err
+			}
+			svcName := extractServiceName(key)
+			svc, lookupErr := services.Lookup(svcName)
+			if lookupErr != nil {
+				ui.Subtle(fmt.Sprintf("Could not look up %s for env update: %v", svcName, lookupErr))
+			} else {
+				updateLinkedProjectsEnv(reg, svcName, svc, extractVersion(key))
 			}
 		}
 

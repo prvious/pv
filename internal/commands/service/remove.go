@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
@@ -36,6 +35,11 @@ var removeCmd = &cobra.Command{
 			return err
 		}
 
+		// Apply fallbacks and unbind before removing from registry.
+		svcName := extractServiceName(key)
+		applyFallbacksToLinkedProjects(reg, svcName)
+		reg.UnbindService(svcName)
+
 		if err := reg.RemoveService(key); err != nil {
 			return err
 		}
@@ -44,15 +48,12 @@ var removeCmd = &cobra.Command{
 		}
 
 		// Regenerate Caddy configs for service consoles.
-		_ = caddy.GenerateServiceSiteConfigs(reg)
+		if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not regenerate service site configs: %v", err))
+		}
 
 		// Determine data path for the message.
-		svcName := key
-		version := "latest"
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-			version = key[idx+1:]
-		}
+		version := extractVersion(key)
 		dataDir := config.ServiceDataDir(svcName, version)
 
 		ui.Subtle(fmt.Sprintf("Data preserved at %s", dataDir))

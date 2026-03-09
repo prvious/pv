@@ -1,0 +1,25 @@
+package laravel
+
+import (
+	"path/filepath"
+
+	"github.com/prvious/pv/internal/services"
+)
+
+// ResolveDatabaseName reads DB_DATABASE from .env.example.
+// Returns sanitized project name if .env.example is missing, has no DB_DATABASE,
+// or DB_DATABASE is the generic "laravel" default.
+func ResolveDatabaseName(projectPath, projectName string) string {
+	envExample := filepath.Join(projectPath, ".env.example")
+	env, err := services.ReadDotEnv(envExample)
+	if err != nil {
+		return services.SanitizeProjectName(projectName)
+	}
+
+	dbName, ok := env["DB_DATABASE"]
+	if !ok || dbName == "" || dbName == "laravel" {
+		return services.SanitizeProjectName(projectName)
+	}
+
+	return dbName
+}

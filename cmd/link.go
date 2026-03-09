@@ -5,13 +5,16 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
+	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -87,6 +90,54 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
+		// Automation context — declared here so both pre and post steps can access it.
+		var autoCtx *automation.Context
+
+		// Pre-Caddyfile automation steps for Laravel projects.
+		if projectType == "laravel" || projectType == "laravel-octane" {
+			autoCtx = &automation.Context{
+				ProjectPath: absPath,
+				ProjectName: name,
+				ProjectType: projectType,
+				PHPVersion:  phpVersion,
+				TLD:         settings.Defaults.TLD,
+				Registry:    reg,
+				Settings:    settings,
+				Env:         make(map[string]string),
+			}
+
+			// Load existing .env if present.
+			if envVars, err := services.ReadDotEnv(filepath.Join(absPath, ".env")); err == nil {
+				autoCtx.Env = envVars
+			}
+
+			preSteps := []automation.Step{
+				&laravel.CopyEnvStep{},
+				&laravel.ComposerInstallStep{},
+				&laravel.GenerateKeyStep{},
+				&laravel.InstallOctaneStep{},
+			}
+			if err := automation.RunPipeline(preSteps, autoCtx); err != nil {
+				return err
+			}
+
+			// Re-detect if Octane was installed.
+			if laravel.HasOctaneWorker(absPath) && projectType != "laravel-octane" {
+				projectType = "laravel-octane"
+				for i := range reg.Projects {
+					if reg.Projects[i].Name == name {
+						reg.Projects[i].Type = "laravel-octane"
+						break
+					}
+				}
+				project.Type = "laravel-octane"
+				autoCtx.ProjectType = "laravel-octane"
+				if err := reg.Save(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not persist Octane re-detection: %v", err))
+				}
+			}
+		}
+
 		if err := caddy.GenerateSiteConfig(project, globalPHP); err != nil {
 			return fmt.Errorf("cannot generate site config: %w", err)
 		}
@@ -125,6 +176,19 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
+		// Post-binding automation steps for Laravel projects.
+		if autoCtx != nil {
+			postSteps := []automation.Step{
+				&laravel.DetectServicesStep{},
+				&laravel.SetAppURLStep{},
+				&laravel.CreateDatabaseStep{},
+				&laravel.RunMigrationsStep{},
+			}
+			if err := automation.RunPipeline(postSteps, autoCtx); err != nil {
+				return err
+			}
+		}
+
 		if server.IsRunning() {
 			if err := server.ReconfigureServer(); err != nil {
 				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
@@ -133,6 +197,8 @@ pv link --name=myapp ~/Code/myapp`,
 				ui.Subtle("Restart the server to serve this project: pv stop && pv start")
 			}
 		}
+
+		server.WatchProject(name, absPath)
 
 		return nil
 	},

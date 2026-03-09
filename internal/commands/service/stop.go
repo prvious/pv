@@ -38,6 +38,10 @@ var stopCmd = &cobra.Command{
 					return err
 				}
 			}
+			// Apply fallbacks for each stopped service.
+			for key := range reg.ListServices() {
+				applyFallbacksToLinkedProjects(reg, extractServiceName(key))
+			}
 		} else {
 			key := args[0]
 			if reg.FindService(key) == nil {
@@ -50,6 +54,8 @@ var stopCmd = &cobra.Command{
 			}); err != nil {
 				return err
 			}
+			// Apply fallbacks for the stopped service.
+			applyFallbacksToLinkedProjects(reg, extractServiceName(args[0]))
 		}
 
 		fmt.Fprintln(os.Stderr)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/spf13/cobra"
 )
 
@@ -299,5 +300,177 @@ func TestLink_CreatesCaddyfile(t *testing.T) {
 	}
 	if !strings.Contains(content, "import sites/*") {
 		t.Error("expected 'import sites/*' in Caddyfile")
+	}
+}
+
+// scaffoldLaravelProject creates a minimal Laravel project directory for testing.
+// It creates composer.json, .env.example, and a vendor/ dir (to prevent
+// ComposerInstallStep from trying to run the real composer binary).
+func scaffoldLaravelProject(t *testing.T, name string) string {
+	t.Helper()
+	projDir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	composerJSON := `{"require":{"laravel/framework":"^11.0"}}`
+	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	envExample := "APP_NAME=Laravel\nAPP_KEY=\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n"
+	if err := os.WriteFile(filepath.Join(projDir, ".env.example"), []byte(envExample), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create vendor/ so ComposerInstallStep is skipped (no real composer in tests).
+	if err := os.MkdirAll(filepath.Join(projDir, "vendor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return projDir
+}
+
+func TestLink_AutomationCopiesEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeDefaultSettings(t)
+
+	projDir := scaffoldLaravelProject(t, "envtest")
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "envtest"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	// .env should have been created by CopyEnvStep.
+	envPath := filepath.Join(projDir, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		t.Fatal(".env was not created by automation pipeline")
+	}
+
+	env, err := services.ReadDotEnv(envPath)
+	if err != nil {
+		t.Fatalf("failed to read .env: %v", err)
+	}
+	if env["APP_NAME"] != "Laravel" {
+		t.Errorf("APP_NAME = %q, want %q", env["APP_NAME"], "Laravel")
+	}
+}
+
+func TestLink_AutomationSetsAppURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeDefaultSettings(t)
+
+	projDir := scaffoldLaravelProject(t, "urltest")
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "urltest"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	env, err := services.ReadDotEnv(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("failed to read .env: %v", err)
+	}
+	want := "https://urltest.test"
+	if env["APP_URL"] != want {
+		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
+	}
+}
+
+func TestLink_AutomationSkippedForNonLaravel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeDefaultSettings(t)
+
+	projDir := filepath.Join(t.TempDir(), "plainphp")
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a .env.example but no laravel/framework in composer.json.
+	if err := os.WriteFile(filepath.Join(projDir, ".env.example"), []byte("APP_KEY=\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "index.php"), []byte("<?php echo 'hi';"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "plainphp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	// .env should NOT have been created — automation only runs for Laravel.
+	if _, err := os.Stat(filepath.Join(projDir, ".env")); !os.IsNotExist(err) {
+		t.Error(".env should not exist for non-Laravel project")
+	}
+}
+
+func TestLink_AutomationRedetectsOctane(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeDefaultSettings(t)
+
+	projDir := scaffoldLaravelProject(t, "octanetest")
+
+	// Simulate Octane: add octane to composer.json and pre-create the worker file
+	// (since artisan octane:install can't run in tests).
+	composerJSON := `{"require":{"laravel/framework":"^11.0","laravel/octane":"^2.0"}}`
+	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projDir, "public"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "public", "frankenphp-worker.php"), []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "octanetest"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	p := reg.Find("octanetest")
+	if p == nil {
+		t.Fatal("project not found")
+	}
+	if p.Type != "laravel-octane" {
+		t.Errorf("Type = %q, want %q", p.Type, "laravel-octane")
+	}
+}
+
+func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	writeDefaultSettings(t)
+
+	projDir := scaffoldLaravelProject(t, "existingenv")
+
+	// Pre-create .env so CopyEnvStep is skipped but the file is loaded into context.
+	envContent := "APP_NAME=Existing\nAPP_KEY=base64:existingkey\nAPP_URL=http://localhost\n"
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "existingenv"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	// SetAppURLStep should have updated APP_URL even with pre-existing .env.
+	env, err := services.ReadDotEnv(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("failed to read .env: %v", err)
+	}
+	want := "https://existingenv.test"
+	if env["APP_URL"] != want {
+		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
+	}
+	// APP_KEY should remain unchanged (GenerateKeyStep skipped because key is set).
+	if env["APP_KEY"] != "base64:existingkey" {
+		t.Errorf("APP_KEY = %q, want %q", env["APP_KEY"], "base64:existingkey")
 	}
 }

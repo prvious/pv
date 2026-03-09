@@ -72,6 +72,40 @@ func TestGenerateSiteConfig_LaravelOctane(t *testing.T) {
 	}
 }
 
+func TestOctaneTemplate_WatchesAutoload(t *testing.T) {
+	scaffold(t)
+
+	projDir := t.TempDir()
+	p := registry.Project{Name: "octane-autoload", Path: projDir, Type: "laravel-octane"}
+
+	if err := GenerateSiteConfig(p, ""); err != nil {
+		t.Fatalf("GenerateSiteConfig() error = %v", err)
+	}
+
+	content := readSiteConfig(t, "octane-autoload")
+
+	if !strings.Contains(content, "vendor/autoload.php") {
+		t.Errorf("expected 'vendor/autoload.php' watch directive in Octane config, got:\n%s", content)
+	}
+}
+
+func TestOctaneTemplate_WatchesAutoload_VersionSpecific(t *testing.T) {
+	scaffold(t)
+
+	projDir := t.TempDir()
+	p := registry.Project{Name: "octane-ver", Path: projDir, Type: "laravel-octane", PHP: "8.3"}
+
+	if err := GenerateSiteConfig(p, "8.4"); err != nil {
+		t.Fatalf("GenerateSiteConfig() error = %v", err)
+	}
+
+	content := readVersionSiteConfig(t, "8.3", "octane-ver")
+
+	if !strings.Contains(content, "vendor/autoload.php") {
+		t.Errorf("expected 'vendor/autoload.php' watch directive in version Octane config, got:\n%s", content)
+	}
+}
+
 func TestGenerateSiteConfig_Laravel(t *testing.T) {
 	scaffold(t)
 
