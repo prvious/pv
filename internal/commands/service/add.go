@@ -123,6 +123,9 @@ pv service:add postgres 16`,
 			return fmt.Errorf("cannot save registry: %w", err)
 		}
 
+		// Update .env for linked Laravel projects.
+		updateLinkedProjectsEnv(reg, svcName, svc, version)
+
 		// Regenerate Caddy configs for service consoles (*.pv.{tld}).
 		if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))

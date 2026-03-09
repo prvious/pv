@@ -1,9 +1,12 @@
 package laravel
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 )
 
 func TestSmartEnvVars_Redis(t *testing.T) {
@@ -134,5 +137,135 @@ func TestFallbackMapping_Unknown(t *testing.T) {
 	rules := FallbackMapping("postgres")
 	if rules != nil {
 		t.Errorf("expected nil for unknown service, got %v", rules)
+	}
+}
+
+func TestApplyFallbacks_ReplacesMatchingValues(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("CACHE_STORE=redis\nSESSION_DRIVER=redis\nQUEUE_CONNECTION=redis\n"), 0644)
+
+	if err := ApplyFallbacks(envPath, "redis"); err != nil {
+		t.Fatalf("ApplyFallbacks: %v", err)
+	}
+
+	env, err := services.ReadDotEnv(envPath)
+	if err != nil {
+		t.Fatalf("ReadDotEnv: %v", err)
+	}
+	if env["CACHE_STORE"] != "file" {
+		t.Errorf("CACHE_STORE = %q, want file", env["CACHE_STORE"])
+	}
+	if env["SESSION_DRIVER"] != "file" {
+		t.Errorf("SESSION_DRIVER = %q, want file", env["SESSION_DRIVER"])
+	}
+	if env["QUEUE_CONNECTION"] != "sync" {
+		t.Errorf("QUEUE_CONNECTION = %q, want sync", env["QUEUE_CONNECTION"])
+	}
+}
+
+func TestApplyFallbacks_SkipsNonMatchingValues(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("CACHE_STORE=array\nSESSION_DRIVER=database\nQUEUE_CONNECTION=sqs\n"), 0644)
+
+	if err := ApplyFallbacks(envPath, "redis"); err != nil {
+		t.Fatalf("ApplyFallbacks: %v", err)
+	}
+
+	env, err := services.ReadDotEnv(envPath)
+	if err != nil {
+		t.Fatalf("ReadDotEnv: %v", err)
+	}
+	if env["CACHE_STORE"] != "array" {
+		t.Errorf("CACHE_STORE = %q, want array", env["CACHE_STORE"])
+	}
+	if env["SESSION_DRIVER"] != "database" {
+		t.Errorf("SESSION_DRIVER = %q, want database", env["SESSION_DRIVER"])
+	}
+	if env["QUEUE_CONNECTION"] != "sqs" {
+		t.Errorf("QUEUE_CONNECTION = %q, want sqs", env["QUEUE_CONNECTION"])
+	}
+}
+
+func TestApplyFallbacks_S3(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("FILESYSTEM_DISK=s3\n"), 0644)
+
+	if err := ApplyFallbacks(envPath, "s3"); err != nil {
+		t.Fatalf("ApplyFallbacks: %v", err)
+	}
+
+	env, _ := services.ReadDotEnv(envPath)
+	if env["FILESYSTEM_DISK"] != "local" {
+		t.Errorf("FILESYSTEM_DISK = %q, want local", env["FILESYSTEM_DISK"])
+	}
+}
+
+func TestApplyFallbacks_Mail(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("MAIL_MAILER=smtp\n"), 0644)
+
+	if err := ApplyFallbacks(envPath, "mail"); err != nil {
+		t.Fatalf("ApplyFallbacks: %v", err)
+	}
+
+	env, _ := services.ReadDotEnv(envPath)
+	if env["MAIL_MAILER"] != "log" {
+		t.Errorf("MAIL_MAILER = %q, want log", env["MAIL_MAILER"])
+	}
+}
+
+func TestApplyFallbacks_NoRulesForService(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("DB_CONNECTION=mysql\n"), 0644)
+
+	if err := ApplyFallbacks(envPath, "mysql"); err != nil {
+		t.Fatalf("ApplyFallbacks: %v", err)
+	}
+
+	env, _ := services.ReadDotEnv(envPath)
+	if env["DB_CONNECTION"] != "mysql" {
+		t.Errorf("DB_CONNECTION = %q, want mysql (unchanged)", env["DB_CONNECTION"])
+	}
+}
+
+func TestUpdateProjectEnvForService(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	os.WriteFile(envPath, []byte("APP_NAME=test\nDB_HOST=localhost\n"), 0644)
+
+	svc, _ := services.Lookup("redis")
+	bound := &registry.ProjectServices{Redis: true}
+
+	if err := UpdateProjectEnvForService(dir, "my-app", "redis", svc, 6379, bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForService: %v", err)
+	}
+
+	env, _ := services.ReadDotEnv(envPath)
+	// Connection vars from Redis.EnvVars
+	if env["REDIS_HOST"] != "127.0.0.1" {
+		t.Errorf("REDIS_HOST = %q, want 127.0.0.1", env["REDIS_HOST"])
+	}
+	// Smart vars from SmartEnvVars
+	if env["CACHE_STORE"] != "redis" {
+		t.Errorf("CACHE_STORE = %q, want redis", env["CACHE_STORE"])
+	}
+	if env["SESSION_DRIVER"] != "redis" {
+		t.Errorf("SESSION_DRIVER = %q, want redis", env["SESSION_DRIVER"])
+	}
+}
+
+func TestUpdateProjectEnvForService_NoEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	svc, _ := services.Lookup("redis")
+	bound := &registry.ProjectServices{Redis: true}
+
+	// Should not error when .env doesn't exist
+	if err := UpdateProjectEnvForService(dir, "my-app", "redis", svc, 6379, bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForService should not error for missing .env: %v", err)
 	}
 }

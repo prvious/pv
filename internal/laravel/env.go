@@ -1,6 +1,12 @@
 package laravel
 
-import "github.com/prvious/pv/internal/registry"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
+)
 
 // SmartEnvVars returns Laravel-specific behavioral env vars based on bound services.
 // Separate from services.EnvVars() which returns connection details.
@@ -48,4 +54,43 @@ func FallbackMapping(serviceName string) map[string]FallbackRule {
 	default:
 		return nil
 	}
+}
+
+// ApplyFallbacks reads a project's .env, replaces values that match what pv
+// would have set for the given service with safe defaults, and writes back.
+func ApplyFallbacks(envPath, serviceName string) error {
+	rules := FallbackMapping(serviceName)
+	if len(rules) == 0 {
+		return nil
+	}
+	env, err := services.ReadDotEnv(envPath)
+	if err != nil {
+		return err
+	}
+	replacements := make(map[string]string)
+	for key, rule := range rules {
+		if currentVal, ok := env[key]; ok && currentVal == rule.IfValue {
+			replacements[key] = rule.ReplaceWith
+		}
+	}
+	if len(replacements) == 0 {
+		return nil
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, replacements)
+}
+
+// UpdateProjectEnvForService merges connection vars + smart Laravel vars into .env.
+func UpdateProjectEnvForService(projectPath, projectName, serviceName string, svc services.Service, port int, bound *registry.ProjectServices) error {
+	envPath := filepath.Join(projectPath, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil
+	}
+	allVars := svc.EnvVars(projectName, port)
+	smartVars := SmartEnvVars(bound)
+	for k, v := range smartVars {
+		allVars[k] = v
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, allVars)
 }
