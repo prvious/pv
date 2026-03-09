@@ -201,6 +201,8 @@ pv link --name=myapp ~/Code/myapp`,
 			}
 		}
 
+		server.WatchProject(name, absPath)
+
 		return nil
 	},
 }

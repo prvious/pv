@@ -10,8 +10,13 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/watcher"
 )
+
+// activeWatcher holds the file watcher for pv.yml changes in linked projects.
+var activeWatcher *watcher.Watcher
 
 // Start is the supervisor entry point. It writes a PID file, starts the DNS
 // server, the main FrankenPHP, and any needed secondary FrankenPHP instances,
@@ -79,6 +84,25 @@ func Start(tld string) error {
 			fp.Stop()
 		}
 	}()
+
+	// Start file watcher for pv.yml changes in linked projects.
+	projectWatcher, watcherErr := watcher.New()
+	if watcherErr != nil {
+		fmt.Printf("Warning: cannot start file watcher: %v\n", watcherErr)
+	} else {
+		for _, project := range reg.List() {
+			if err := projectWatcher.Watch(project.Name, project.Path); err != nil {
+				fmt.Printf("Warning: cannot watch %s: %v\n", project.Name, err)
+			}
+		}
+		activeWatcher = projectWatcher
+		defer func() {
+			activeWatcher = nil
+			projectWatcher.Close()
+		}()
+
+		go handleWatcherEvents(projectWatcher, globalPHP)
+	}
 
 	// Wait for signals or child exit.
 	sigCh := make(chan os.Signal, 1)
@@ -180,4 +204,64 @@ func writePID() error {
 
 func removePID() {
 	os.Remove(config.PidFilePath())
+}
+
+// handleWatcherEvents processes pv.yml change events, re-resolves PHP versions,
+// updates the registry, and reconfigures the server when needed.
+func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
+	for event := range w.Events() {
+		reg, err := registry.Load()
+		if err != nil {
+			fmt.Printf("Watcher: cannot load registry: %v\n", err)
+			continue
+		}
+		project := reg.Find(event.ProjectName)
+		if project == nil {
+			continue
+		}
+
+		var newPHP string
+		switch event.Type {
+		case watcher.ConfigChanged, watcher.ConfigDeleted:
+			// Re-resolve PHP version (checks pv.yml -> composer.json -> global).
+			if v, err := phpenv.ResolveVersion(event.ProjectPath); err == nil && v != "" {
+				newPHP = v
+			} else {
+				newPHP = globalPHP
+			}
+		}
+
+		if newPHP != "" && newPHP != project.PHP {
+			fmt.Printf("Watcher: %s PHP version changed %s -> %s\n", event.ProjectName, project.PHP, newPHP)
+			for i := range reg.Projects {
+				if reg.Projects[i].Name == event.ProjectName {
+					reg.Projects[i].PHP = newPHP
+					break
+				}
+			}
+			if err := reg.Save(); err != nil {
+				fmt.Printf("Watcher: cannot save registry: %v\n", err)
+				continue
+			}
+			if err := ReconfigureServer(); err != nil {
+				fmt.Printf("Watcher: cannot reconfigure server: %v\n", err)
+			}
+		}
+	}
+}
+
+// WatchProject adds a project directory to the active file watcher.
+// Safe to call when no watcher is running (e.g. server not started).
+func WatchProject(name, path string) {
+	if activeWatcher != nil {
+		_ = activeWatcher.Watch(name, path)
+	}
+}
+
+// UnwatchProject removes a project directory from the active file watcher.
+// Safe to call when no watcher is running.
+func UnwatchProject(path string) {
+	if activeWatcher != nil {
+		_ = activeWatcher.Unwatch(path)
+	}
 }
