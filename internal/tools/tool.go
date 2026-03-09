@@ -34,10 +34,10 @@ type Tool struct {
 // globalPHPVersion returns the global PHP version from settings.
 func globalPHPVersion() string {
 	s, err := config.LoadSettings()
-	if err != nil || s.GlobalPHP == "" {
+	if err != nil || s.Defaults.PHP == "" {
 		return ""
 	}
-	return s.GlobalPHP
+	return s.Defaults.PHP
 }
 
 // registry of all managed tools, keyed by name.

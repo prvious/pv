@@ -76,7 +76,7 @@ func TestDoctor_WithValidProject(t *testing.T) {
 
 	// Set global PHP and save settings.
 	settings := config.DefaultSettings()
-	settings.GlobalPHP = "8.4"
+	settings.Defaults.PHP = "8.4"
 	if err := settings.Save(); err != nil {
 		t.Fatal(err)
 	}

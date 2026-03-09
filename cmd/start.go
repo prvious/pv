@@ -38,7 +38,7 @@ func startFG() error {
 		return fmt.Errorf("cannot load settings: %w", err)
 	}
 
-	return server.Start(settings.TLD)
+	return server.Start(settings.Defaults.TLD)
 }
 
 func startDaemon() error {

@@ -57,7 +57,7 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintln(os.Stderr)
 
 		// Network info.
-		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("TLD"), ui.Bold.Render("."+settings.TLD))
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("TLD"), ui.Bold.Render("."+settings.Defaults.TLD))
 		fmt.Fprintf(os.Stderr, "  %s  %s  %s  %s\n",
 			ui.Purple.Render("DNS"),
 			fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
@@ -66,7 +66,7 @@ var statusCmd = &cobra.Command{
 		)
 
 		// PHP version info.
-		globalPHP := settings.GlobalPHP
+		globalPHP := settings.Defaults.PHP
 		versions, _ := phpenv.InstalledVersions()
 		if len(versions) > 0 {
 			var labels []string
@@ -112,7 +112,7 @@ var statusCmd = &cobra.Command{
 					typeLabel = "unknown"
 				}
 
-				domain := "https://" + p.Name + "." + settings.TLD
+				domain := "https://" + p.Name + "." + settings.Defaults.TLD
 				rows[i] = []string{domain, typeLabel, phpV}
 			}
 			ui.Table([]string{"Site", "Type", "PHP"}, rows)

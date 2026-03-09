@@ -67,7 +67,7 @@ pv link --name=myapp ~/Code/myapp`,
 		if err != nil {
 			return fmt.Errorf("cannot load settings: %w", err)
 		}
-		globalPHP := settings.GlobalPHP
+		globalPHP := settings.Defaults.PHP
 
 		phpVersion := globalPHP
 		if v, err := phpenv.ResolveVersion(absPath); err == nil && v != "" {
@@ -95,8 +95,8 @@ pv link --name=myapp ~/Code/myapp`,
 		}
 
 		// Generate TLS certificate for Vite dev server auto-detection.
-		hostname := name + "." + settings.TLD
-		if err := certs.EnsureValetConfig(settings.TLD); err != nil {
+		hostname := name + "." + settings.Defaults.TLD
+		if err := certs.EnsureValetConfig(settings.Defaults.TLD); err != nil {
 			ui.Subtle(fmt.Sprintf("Skipped Vite TLS setup: %v", err))
 		} else if err := certs.GenerateSiteTLS(hostname); err != nil {
 			ui.Subtle(fmt.Sprintf("Vite TLS cert not generated (HTTPS HMR may need manual config): %v", err))
@@ -107,7 +107,7 @@ pv link --name=myapp ~/Code/myapp`,
 			typeLabel = "unknown"
 		}
 
-		domain := "https://" + name + "." + settings.TLD
+		domain := "https://" + name + "." + settings.Defaults.TLD
 
 		fmt.Fprintln(os.Stderr)
 		ui.Success(fmt.Sprintf("Linked %s", ui.Purple.Bold(true).Render(domain)))

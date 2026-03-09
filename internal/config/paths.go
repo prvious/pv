@@ -114,8 +114,9 @@ func VersionsPath() string {
 }
 
 func SettingsPath() string {
-	return filepath.Join(ConfigDir(), "settings.json")
+	return filepath.Join(PvDir(), "pv.yml")
 }
+
 
 func CaddyfilePath() string {
 	return filepath.Join(ConfigDir(), "Caddyfile")

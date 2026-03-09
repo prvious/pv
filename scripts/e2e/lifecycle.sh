@@ -8,7 +8,7 @@ eval "$(pv env)"
 # Switch global to 8.3
 pv php:use 8.3
 echo "==> Verify settings after switching to 8.3"
-grep -q '"global_php": "8.3"' ~/.pv/config/settings.json || { echo "FAIL: settings not updated"; exit 1; }
+grep -q 'php: "8.3"' ~/.pv/pv.yml || { echo "FAIL: settings not updated"; exit 1; }
 readlink ~/.pv/bin/frankenphp | grep -q "8.3" || { echo "FAIL: symlink not pointing to 8.3"; exit 1; }
 OUT=$(cd /tmp && php --version)
 echo "$OUT"
@@ -17,7 +17,7 @@ echo "OK: pv php:use 8.3 works"
 
 # Switch back to 8.4
 pv php:use 8.4
-grep -q '"global_php": "8.4"' ~/.pv/config/settings.json || { echo "FAIL: settings not updated back"; exit 1; }
+grep -q 'php: "8.4"' ~/.pv/pv.yml || { echo "FAIL: settings not updated back"; exit 1; }
 echo "OK: pv php:use 8.4 works"
 
 # Unlink e2e-php83 to free PHP 8.3

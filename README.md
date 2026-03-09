@@ -154,9 +154,9 @@ pv uninstall         # Complete removal with guided cleanup
 │   ├── colima
 │   ├── mago
 │   └── composer.phar
+├── pv.yml                      # Global settings (TLD, default PHP)
 ├── config/                     # Server configuration
 │   ├── Caddyfile
-│   ├── settings.json
 │   ├── sites/                  # Per-project Caddyfile includes
 │   └── sites-{ver}/           # Per-version site configs
 ├── data/                       # Registry, PID file

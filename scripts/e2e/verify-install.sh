@@ -25,9 +25,9 @@ readlink ~/.pv/bin/frankenphp | grep -q "8.4" || { echo "FAIL: symlink not point
 echo "==> Verify php shim works"
 ~/.pv/bin/php --version
 
-echo "==> Verify settings.json"
-cat ~/.pv/config/settings.json
-grep -q '"global_php": "8.4"' ~/.pv/config/settings.json || { echo "FAIL: settings.json wrong"; exit 1; }
+echo "==> Verify pv.yml"
+cat ~/.pv/pv.yml
+grep -q 'php: "8.4"' ~/.pv/pv.yml || { echo "FAIL: pv.yml wrong"; exit 1; }
 
 echo "==> Verify resolver"
 cat /etc/resolver/test

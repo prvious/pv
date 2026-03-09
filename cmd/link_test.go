@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,12 +13,9 @@ import (
 
 func writeDefaultSettings(t *testing.T) {
 	t.Helper()
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatalf("EnsureDirs() error = %v", err)
-	}
-	data, _ := json.Marshal(config.DefaultSettings())
-	if err := os.WriteFile(config.SettingsPath(), data, 0644); err != nil {
-		t.Fatalf("write settings error = %v", err)
+	s := config.DefaultSettings()
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save settings error = %v", err)
 	}
 }
 

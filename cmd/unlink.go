@@ -69,7 +69,7 @@ pv unlink`,
 		settings, _ := config.LoadSettings()
 		tld := "test"
 		if settings != nil {
-			tld = settings.TLD
+			tld = settings.Defaults.TLD
 		}
 
 		// Remove TLS certificate for Vite dev server.

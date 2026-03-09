@@ -1,21 +1,26 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+
+	"gopkg.in/yaml.v3"
 )
 
+type Defaults struct {
+	PHP string `yaml:"php,omitempty"`
+	TLD string `yaml:"tld"`
+}
+
 type Settings struct {
-	TLD       string `json:"tld"`
-	GlobalPHP string `json:"global_php,omitempty"`
+	Defaults Defaults `yaml:"defaults"`
 }
 
 var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func DefaultSettings() *Settings {
-	return &Settings{TLD: "test"}
+	return &Settings{Defaults: Defaults{TLD: "test"}}
 }
 
 func LoadSettings() (*Settings, error) {
@@ -28,20 +33,26 @@ func LoadSettings() (*Settings, error) {
 		return nil, err
 	}
 	var s Settings
-	if err := json.Unmarshal(data, &s); err != nil {
+	if err := yaml.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
-	if s.TLD == "" {
-		s.TLD = "test"
+	if s.Defaults.TLD == "" {
+		s.Defaults.TLD = "test"
 	}
 	return &s, nil
 }
 
 func (s *Settings) Save() error {
+	if s.Defaults.TLD == "" {
+		s.Defaults.TLD = "test"
+	}
+	if err := ValidateTLD(s.Defaults.TLD); err != nil {
+		return err
+	}
 	if err := EnsureDirs(); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := yaml.Marshal(s)
 	if err != nil {
 		return err
 	}

@@ -79,8 +79,8 @@ var setupCmd = &cobra.Command{
 			ui.Subtle(fmt.Sprintf("Warning: could not load settings: %v", err))
 		}
 		tld := "test"
-		if settings != nil && settings.TLD != "" {
-			tld = settings.TLD
+		if settings != nil && settings.Defaults.TLD != "" {
+			tld = settings.Defaults.TLD
 		}
 
 		// Run the tabbed setup wizard.
@@ -125,9 +125,9 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Save TLD.
-		s := &config.Settings{TLD: tld}
+		s := &config.Settings{Defaults: config.Defaults{TLD: tld}}
 		if settings != nil {
-			s.GlobalPHP = settings.GlobalPHP
+			s.Defaults.PHP = settings.Defaults.PHP
 		}
 		if err := s.Save(); err != nil {
 			return fmt.Errorf("cannot save settings: %w", err)
