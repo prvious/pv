@@ -45,15 +45,15 @@ var automationItems = []struct {
 	get   func(*config.Automation) config.AutoMode
 	set   func(*config.Automation, config.AutoMode)
 }{
-	{"Composer install", func(a *config.Automation) config.AutoMode { return a.ComposerInstall }, func(a *config.Automation, m config.AutoMode) { a.ComposerInstall = m }},
-	{"Copy .env", func(a *config.Automation) config.AutoMode { return a.CopyEnv }, func(a *config.Automation, m config.AutoMode) { a.CopyEnv = m }},
-	{"Generate app key", func(a *config.Automation) config.AutoMode { return a.GenerateKey }, func(a *config.Automation, m config.AutoMode) { a.GenerateKey = m }},
-	{"Set APP_URL", func(a *config.Automation) config.AutoMode { return a.SetAppURL }, func(a *config.Automation, m config.AutoMode) { a.SetAppURL = m }},
-	{"Install Octane", func(a *config.Automation) config.AutoMode { return a.InstallOctane }, func(a *config.Automation, m config.AutoMode) { a.InstallOctane = m }},
-	{"Create database", func(a *config.Automation) config.AutoMode { return a.CreateDatabase }, func(a *config.Automation, m config.AutoMode) { a.CreateDatabase = m }},
-	{"Run migrations", func(a *config.Automation) config.AutoMode { return a.RunMigrations }, func(a *config.Automation, m config.AutoMode) { a.RunMigrations = m }},
-	{"Service env update", func(a *config.Automation) config.AutoMode { return a.ServiceEnvUpdate }, func(a *config.Automation, m config.AutoMode) { a.ServiceEnvUpdate = m }},
-	{"Service fallback", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
+	{"Run composer install", func(a *config.Automation) config.AutoMode { return a.ComposerInstall }, func(a *config.Automation, m config.AutoMode) { a.ComposerInstall = m }},
+	{"Copy .env.example to .env", func(a *config.Automation) config.AutoMode { return a.CopyEnv }, func(a *config.Automation, m config.AutoMode) { a.CopyEnv = m }},
+	{"Generate APP_KEY", func(a *config.Automation) config.AutoMode { return a.GenerateKey }, func(a *config.Automation, m config.AutoMode) { a.GenerateKey = m }},
+	{"Set APP_URL to project domain", func(a *config.Automation) config.AutoMode { return a.SetAppURL }, func(a *config.Automation, m config.AutoMode) { a.SetAppURL = m }},
+	{"Install Laravel Octane", func(a *config.Automation) config.AutoMode { return a.InstallOctane }, func(a *config.Automation, m config.AutoMode) { a.InstallOctane = m }},
+	{"Create project database", func(a *config.Automation) config.AutoMode { return a.CreateDatabase }, func(a *config.Automation, m config.AutoMode) { a.CreateDatabase = m }},
+	{"Run database migrations", func(a *config.Automation) config.AutoMode { return a.RunMigrations }, func(a *config.Automation, m config.AutoMode) { a.RunMigrations = m }},
+	{"Update .env when services change", func(a *config.Automation) config.AutoMode { return a.ServiceEnvUpdate }, func(a *config.Automation, m config.AutoMode) { a.ServiceEnvUpdate = m }},
+	{"Reset .env on service stop", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
 }
 
 func cycleAutoMode(m config.AutoMode) config.AutoMode {
