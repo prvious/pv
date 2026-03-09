@@ -72,7 +72,7 @@ func SetGlobal(version string) error {
 	if err != nil {
 		return err
 	}
-	settings.GlobalPHP = version
+	settings.Defaults.PHP = version
 	if err := settings.Save(); err != nil {
 		return err
 	}
@@ -86,10 +86,10 @@ func GlobalVersion() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if settings.GlobalPHP == "" {
+	if settings.Defaults.PHP == "" {
 		return "", fmt.Errorf("no global PHP version set (run: pv php:install [version])")
 	}
-	return settings.GlobalPHP, nil
+	return settings.Defaults.PHP, nil
 }
 
 // Remove deletes an installed PHP version.
@@ -103,7 +103,7 @@ func Remove(version string) error {
 	if err != nil {
 		return err
 	}
-	if settings.GlobalPHP == version {
+	if settings.Defaults.PHP == version {
 		return fmt.Errorf("cannot remove PHP %s: it is the global default (switch with: pv php:use<other-version>)", version)
 	}
 

@@ -44,7 +44,7 @@ var doctorCmd = &cobra.Command{
 		}
 
 		versions, _ := phpenv.InstalledVersions()
-		globalPHP := settings.GlobalPHP
+		globalPHP := settings.Defaults.PHP
 
 		var allChecks []sectionResult
 
@@ -343,7 +343,7 @@ func runNetworkChecks(settings *config.Settings) sectionResult {
 	var checks []check
 
 	// DNS resolver file.
-	if err := setup.CheckResolverFile(settings.TLD); err == nil {
+	if err := setup.CheckResolverFile(settings.Defaults.TLD); err == nil {
 		checks = append(checks, check{Name: "DNS resolver configured", Status: true})
 	} else {
 		checks = append(checks, check{
@@ -356,7 +356,7 @@ func runNetworkChecks(settings *config.Settings) sectionResult {
 
 	// DNS responding (only if server appears to be running).
 	if server.IsRunning() || daemon.IsLoaded() {
-		if checkDNSResponding(settings.TLD) {
+		if checkDNSResponding(settings.Defaults.TLD) {
 			checks = append(checks, check{Name: "DNS responding", Status: true})
 		} else {
 			checks = append(checks, check{
@@ -500,7 +500,7 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 			phpV = "none"
 		}
 
-		domain := p.Name + "." + settings.TLD
+		domain := p.Name + "." + settings.Defaults.TLD
 
 		// Check project path exists.
 		if !dirExists(p.Path) {

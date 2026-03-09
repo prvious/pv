@@ -138,9 +138,9 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			}
 			settings, _ := config.LoadSettings()
 			if settings == nil {
-				settings = &config.Settings{}
+				settings = config.DefaultSettings()
 			}
-			settings.TLD = installTLD
+			settings.Defaults.TLD = installTLD
 			if err := settings.Save(); err != nil {
 				return "", fmt.Errorf("cannot save settings: %w", err)
 			}

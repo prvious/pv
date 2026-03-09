@@ -31,7 +31,7 @@ func Start(tld string) error {
 	if err != nil {
 		return fmt.Errorf("cannot load settings: %w", err)
 	}
-	globalPHP := settings.GlobalPHP
+	globalPHP := settings.Defaults.PHP
 
 	reg, err := registry.Load()
 	if err != nil {
@@ -143,7 +143,7 @@ func ReconfigureServer() error {
 	}
 
 	// Regenerate all site configs and Caddyfiles.
-	if err := caddy.GenerateAllConfigs(reg.List(), settings.GlobalPHP); err != nil {
+	if err := caddy.GenerateAllConfigs(reg.List(), settings.Defaults.PHP); err != nil {
 		return err
 	}
 

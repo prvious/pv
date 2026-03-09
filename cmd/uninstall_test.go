@@ -203,7 +203,7 @@ func TestUninstall_SettingsLoadFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSettings error = %v", err)
 	}
-	if settings.TLD != "test" {
-		t.Errorf("TLD = %q, want %q", settings.TLD, "test")
+	if settings.Defaults.TLD != "test" {
+		t.Errorf("TLD = %q, want %q", settings.Defaults.TLD, "test")
 	}
 }

@@ -93,7 +93,7 @@ var uninstallCmd = &cobra.Command{
 		settings, _ := config.LoadSettings()
 		tld := "test"
 		if settings != nil {
-			tld = settings.TLD
+			tld = settings.Defaults.TLD
 		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).

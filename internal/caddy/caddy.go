@@ -375,7 +375,7 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 			var buf bytes.Buffer
 			if err := tmpl.Execute(&buf, serviceConsoleData{
 				Subdomain: route.Subdomain,
-				TLD:       settings.TLD,
+				TLD:       settings.Defaults.TLD,
 				Port:      route.Port,
 			}); err != nil {
 				return err
@@ -415,7 +415,7 @@ func writeConfig(dir string, p registry.Project, settings *config.Settings, root
 		Name:     p.Name,
 		Path:     p.Path,
 		RootPath: rootPath,
-		TLD:      settings.TLD,
+		TLD:      settings.Defaults.TLD,
 		Port:     port,
 	}); err != nil {
 		return err

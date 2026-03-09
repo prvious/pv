@@ -152,7 +152,7 @@ pv service:add postgres 16`,
 			settings, _ := config.LoadSettings()
 			if settings != nil {
 				for _, route := range routes {
-					fmt.Fprintf(os.Stderr, "    %s  https://%s.pv.%s\n", ui.Muted.Render(route.Subdomain), route.Subdomain, settings.TLD)
+					fmt.Fprintf(os.Stderr, "    %s  https://%s.pv.%s\n", ui.Muted.Render(route.Subdomain), route.Subdomain, settings.Defaults.TLD)
 				}
 			}
 		} else if consolePt := svc.ConsolePort(version); consolePt > 0 {

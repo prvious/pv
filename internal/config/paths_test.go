@@ -92,8 +92,8 @@ func TestSettingsPath(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	got := SettingsPath()
-	if !strings.HasSuffix(got, filepath.Join(".pv", "config", "settings.json")) {
-		t.Errorf("SettingsPath() = %q, want suffix .pv/config/settings.json", got)
+	if !strings.HasSuffix(got, filepath.Join(".pv", "pv.yml")) {
+		t.Errorf("SettingsPath() = %q, want suffix .pv/pv.yml", got)
 	}
 }
 

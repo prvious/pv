@@ -24,7 +24,7 @@ var listCmd = &cobra.Command{
 		settings, _ := config.LoadSettings()
 		tld := "test"
 		if settings != nil {
-			tld = settings.TLD
+			tld = settings.Defaults.TLD
 		}
 
 		projects := reg.List()
