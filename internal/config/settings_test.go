@@ -297,6 +297,31 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(SettingsPath(), []byte("automation:\n    composer_install: banana\n    copy_env: \"false\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() error = %v", err)
+	}
+	// "banana" is invalid → should be reset to default ("true").
+	if loaded.Automation.ComposerInstall != AutoOn {
+		t.Errorf("ComposerInstall = %q, want %q (invalid value should reset to default)", loaded.Automation.ComposerInstall, AutoOn)
+	}
+	// "false" is valid → should be preserved.
+	if loaded.Automation.CopyEnv != AutoOff {
+		t.Errorf("CopyEnv = %q, want %q", loaded.Automation.CopyEnv, AutoOff)
+	}
+}
+
 func TestValidateTLD(t *testing.T) {
 	tests := []struct {
 		tld     string

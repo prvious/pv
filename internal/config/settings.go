@@ -57,34 +57,39 @@ func DefaultAutomation() Automation {
 	}
 }
 
-// applyAutomationDefaults fills empty Automation fields with defaults.
+func validAutoMode(m AutoMode) bool {
+	return m == AutoOn || m == AutoOff || m == AutoAsk
+}
+
+// applyAutomationDefaults fills empty Automation fields with defaults
+// and replaces invalid values with the default.
 func applyAutomationDefaults(a *Automation) {
 	d := DefaultAutomation()
-	if a.ComposerInstall == "" {
+	if !validAutoMode(a.ComposerInstall) {
 		a.ComposerInstall = d.ComposerInstall
 	}
-	if a.CopyEnv == "" {
+	if !validAutoMode(a.CopyEnv) {
 		a.CopyEnv = d.CopyEnv
 	}
-	if a.GenerateKey == "" {
+	if !validAutoMode(a.GenerateKey) {
 		a.GenerateKey = d.GenerateKey
 	}
-	if a.SetAppURL == "" {
+	if !validAutoMode(a.SetAppURL) {
 		a.SetAppURL = d.SetAppURL
 	}
-	if a.InstallOctane == "" {
+	if !validAutoMode(a.InstallOctane) {
 		a.InstallOctane = d.InstallOctane
 	}
-	if a.CreateDatabase == "" {
+	if !validAutoMode(a.CreateDatabase) {
 		a.CreateDatabase = d.CreateDatabase
 	}
-	if a.RunMigrations == "" {
+	if !validAutoMode(a.RunMigrations) {
 		a.RunMigrations = d.RunMigrations
 	}
-	if a.ServiceEnvUpdate == "" {
+	if !validAutoMode(a.ServiceEnvUpdate) {
 		a.ServiceEnvUpdate = d.ServiceEnvUpdate
 	}
-	if a.ServiceFallback == "" {
+	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback
 	}
 }
