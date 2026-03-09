@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -29,7 +28,7 @@ func LoadSettings() (*Settings, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return migrateOrDefault()
+			return DefaultSettings(), nil
 		}
 		return nil, err
 	}
@@ -43,41 +42,13 @@ func LoadSettings() (*Settings, error) {
 	return &s, nil
 }
 
-// migrateOrDefault migrates from the old settings.json if it exists,
-// otherwise returns default settings.
-func migrateOrDefault() (*Settings, error) {
-	old := oldSettingsPath()
-	data, err := os.ReadFile(old)
-	if err != nil {
-		return DefaultSettings(), nil
-	}
-
-	var legacy struct {
-		TLD       string `json:"tld"`
-		GlobalPHP string `json:"global_php,omitempty"`
-	}
-	if err := json.Unmarshal(data, &legacy); err != nil {
-		return DefaultSettings(), nil
-	}
-
-	s := &Settings{
-		Defaults: Defaults{
-			PHP: legacy.GlobalPHP,
-			TLD: legacy.TLD,
-		},
-	}
+func (s *Settings) Save() error {
 	if s.Defaults.TLD == "" {
 		s.Defaults.TLD = "test"
 	}
-
-	if err := s.Save(); err != nil {
-		return s, nil
+	if err := ValidateTLD(s.Defaults.TLD); err != nil {
+		return err
 	}
-	os.Remove(old)
-	return s, nil
-}
-
-func (s *Settings) Save() error {
 	if err := EnsureDirs(); err != nil {
 		return err
 	}
