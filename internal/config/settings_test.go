@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +120,69 @@ func TestSettings_SaveDefaultsEmptyTLD(t *testing.T) {
 	}
 	if loaded.Defaults.TLD != "test" {
 		t.Errorf("TLD = %q, want %q", loaded.Defaults.TLD, "test")
+	}
+}
+
+func TestSettings_SaveWritesExpectedYAML(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := &Settings{Defaults: Defaults{TLD: "test", PHP: "8.4"}}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	data, err := os.ReadFile(SettingsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "tld: test") {
+		t.Errorf("expected 'tld: test' in YAML, got:\n%s", content)
+	}
+	if !strings.Contains(content, `php: "8.4"`) {
+		t.Errorf("expected 'php: \"8.4\"' in YAML, got:\n%s", content)
+	}
+}
+
+func TestLoadSettings_EmptyFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(SettingsPath(), []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() error = %v", err)
+	}
+	if loaded.Defaults.TLD != "test" {
+		t.Errorf("TLD = %q, want %q", loaded.Defaults.TLD, "test")
+	}
+	if loaded.Defaults.PHP != "" {
+		t.Errorf("PHP = %q, want empty", loaded.Defaults.PHP)
+	}
+}
+
+func TestSettings_SaveWithPHPOnlyDefaultsTLD(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := &Settings{Defaults: Defaults{PHP: "8.3"}}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() error = %v", err)
+	}
+	if loaded.Defaults.TLD != "test" {
+		t.Errorf("TLD = %q, want %q", loaded.Defaults.TLD, "test")
+	}
+	if loaded.Defaults.PHP != "8.3" {
+		t.Errorf("PHP = %q, want %q", loaded.Defaults.PHP, "8.3")
 	}
 }
 

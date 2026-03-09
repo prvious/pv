@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/ui"
 )
 
 // ExposureType determines how a tool is made available on the user's PATH.
@@ -34,7 +35,8 @@ type Tool struct {
 // globalPHPVersion returns the global PHP version from settings.
 func globalPHPVersion() string {
 	s, err := config.LoadSettings()
-	if err != nil || s.Defaults.PHP == "" {
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("warning: could not load settings: %v", err))
 		return ""
 	}
 	return s.Defaults.PHP
