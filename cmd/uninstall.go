@@ -203,9 +203,18 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Remove Valet-compatible config (Vite TLS certs).
-		if err := certs.RemoveAll(); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not remove ~/.config/valet: %v", err))
+		// Remove Vite TLS certs for linked projects only.
+		if reg != nil {
+			var hostnames []string
+			for _, p := range reg.List() {
+				hostnames = append(hostnames, p.Name+"."+tld)
+			}
+			if err := certs.RemoveLinkedCerts(hostnames); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not remove some Vite TLS certs: %v", err))
+			}
+		}
+		if err := certs.RemoveConfig(); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not remove Valet config: %v", err))
 		}
 
 		// Remove ~/.pv directory.

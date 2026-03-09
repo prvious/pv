@@ -2,6 +2,7 @@ package certs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,37 +10,55 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-// valetConfig mirrors the config.json structure the laravel-vite-plugin reads.
-type valetConfig struct {
-	TLD string `json:"tld"`
-}
-
 // ValetConfigDir returns ~/.config/valet (where laravel-vite-plugin looks for
 // Valet on macOS). pv populates this so Vite auto-detects TLS certificates.
-func ValetConfigDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "valet")
+func ValetConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "valet"), nil
 }
 
 // ValetCertsDir returns ~/.config/valet/Certificates.
-func ValetCertsDir() string {
-	return filepath.Join(ValetConfigDir(), "Certificates")
+func ValetCertsDir() (string, error) {
+	dir, err := ValetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "Certificates"), nil
 }
 
-// EnsureValetConfig writes ~/.config/valet/config.json with the current TLD.
-// Creates the directory tree if needed.
+// EnsureValetConfig writes the TLD to ~/.config/valet/config.json for
+// laravel-vite-plugin's TLS certificate discovery. Merges with any existing
+// config.json to avoid destroying real Valet settings.
 func EnsureValetConfig(tld string) error {
-	dir := ValetConfigDir()
+	dir, err := ValetConfigDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "Certificates"), 0755); err != nil {
 		return fmt.Errorf("cannot create valet config dir: %w", err)
 	}
 
-	cfg := valetConfig{TLD: tld}
+	configPath := filepath.Join(dir, "config.json")
+
+	// Read existing config to preserve other fields (e.g., real Valet settings).
+	cfg := make(map[string]any)
+	if data, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(data, &cfg) // ignore parse errors, overwrite corrupt file
+	}
+
+	cfg["tld"] = tld
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot marshal valet config: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), data, 0644)
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("cannot write valet config: %w", err)
+	}
+	return nil
 }
 
 // GenerateSiteTLS generates a TLS cert/key pair for hostname and places them
@@ -47,7 +66,7 @@ func EnsureValetConfig(tld string) error {
 // Uses Caddy's local CA to sign the certificate.
 func GenerateSiteTLS(hostname string) error {
 	caCertPath := config.CACertPath()
-	caKeyPath := caKeyPath()
+	caKeyPath := config.CAKeyPath()
 
 	if _, err := os.Stat(caCertPath); err != nil {
 		return fmt.Errorf("Caddy CA not found at %s (run pv start first to generate it)", caCertPath)
@@ -56,7 +75,10 @@ func GenerateSiteTLS(hostname string) error {
 		return fmt.Errorf("Caddy CA key not found at %s", caKeyPath)
 	}
 
-	certsDir := ValetCertsDir()
+	certsDir, err := ValetCertsDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(certsDir, 0755); err != nil {
 		return fmt.Errorf("cannot create certificates dir: %w", err)
 	}
@@ -68,18 +90,50 @@ func GenerateSiteTLS(hostname string) error {
 }
 
 // RemoveSiteTLS removes the TLS cert/key pair for hostname from the Valet
-// Certificates directory.
-func RemoveSiteTLS(hostname string) {
-	certsDir := ValetCertsDir()
-	os.Remove(filepath.Join(certsDir, hostname+".crt"))
-	os.Remove(filepath.Join(certsDir, hostname+".key"))
+// Certificates directory. Returns nil if the files do not exist.
+func RemoveSiteTLS(hostname string) error {
+	certsDir, err := ValetCertsDir()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, ext := range []string{".crt", ".key"} {
+		if err := os.Remove(filepath.Join(certsDir, hostname+ext)); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
-// RemoveAll removes the entire ~/.config/valet directory created by pv.
-func RemoveAll() error {
-	return os.RemoveAll(ValetConfigDir())
+// RemoveLinkedCerts removes TLS cert/key pairs for the given hostnames only.
+// Does not touch any other files in ~/.config/valet.
+func RemoveLinkedCerts(hostnames []string) error {
+	certsDir, err := ValetCertsDir()
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, h := range hostnames {
+		for _, ext := range []string{".crt", ".key"} {
+			if err := os.Remove(filepath.Join(certsDir, h+ext)); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
-func caKeyPath() string {
-	return filepath.Join(config.PvDir(), "caddy", "pki", "authorities", "local", "root.key")
+// RemoveConfig removes the config.json file from ~/.config/valet.
+// Does not remove the directory itself or any other files.
+func RemoveConfig() error {
+	dir, err := ValetConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(dir, "config.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

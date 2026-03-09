@@ -97,10 +97,9 @@ pv link --name=myapp ~/Code/myapp`,
 		// Generate TLS certificate for Vite dev server auto-detection.
 		hostname := name + "." + settings.TLD
 		if err := certs.EnsureValetConfig(settings.TLD); err != nil {
-			ui.Subtle(fmt.Sprintf("Vite TLS config: %v", err))
-		}
-		if err := certs.GenerateSiteTLS(hostname); err != nil {
-			ui.Subtle(fmt.Sprintf("Vite TLS: %v", err))
+			ui.Subtle(fmt.Sprintf("Skipped Vite TLS setup: %v", err))
+		} else if err := certs.GenerateSiteTLS(hostname); err != nil {
+			ui.Subtle(fmt.Sprintf("Vite TLS cert not generated (HTTPS HMR may need manual config): %v", err))
 		}
 
 		typeLabel := projectType

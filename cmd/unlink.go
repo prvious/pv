@@ -73,7 +73,9 @@ pv unlink`,
 		}
 
 		// Remove TLS certificate for Vite dev server.
-		certs.RemoveSiteTLS(name + "." + tld)
+		if err := certs.RemoveSiteTLS(name + "." + tld); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not remove Vite TLS certs: %v", err))
+		}
 
 		domain := "https://" + name + "." + tld
 
