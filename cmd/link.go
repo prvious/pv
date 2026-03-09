@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,14 +113,12 @@ pv link --name=myapp ~/Code/myapp`,
 
 			preSteps := []automation.Step{
 				&laravel.CopyEnvStep{},
+				&laravel.ComposerInstallStep{},
 				&laravel.GenerateKeyStep{},
 				&laravel.InstallOctaneStep{},
-				&laravel.ComposerInstallStep{},
 			}
 			if err := automation.RunPipeline(preSteps, autoCtx); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					return err
-				}
+				return err
 			}
 
 			// Re-detect if Octane was installed.
@@ -135,7 +132,9 @@ pv link --name=myapp ~/Code/myapp`,
 				}
 				project.Type = "laravel-octane"
 				autoCtx.ProjectType = "laravel-octane"
-				_ = reg.Save()
+				if err := reg.Save(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not persist Octane re-detection: %v", err))
+				}
 			}
 		}
 
@@ -186,9 +185,7 @@ pv link --name=myapp ~/Code/myapp`,
 				&laravel.RunMigrationsStep{},
 			}
 			if err := automation.RunPipeline(postSteps, autoCtx); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					return err
-				}
+				return err
 			}
 		}
 

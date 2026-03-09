@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"fmt"
 	"os"
 
 	"charm.land/huh/v2"
@@ -37,22 +38,31 @@ var isInteractiveFunc = func() bool {
 	return term.IsTerminal(os.Stdin.Fd())
 }
 
+// IsInteractive returns whether stdin is a TTY.
+// Exported so service hooks can check before prompting.
+func IsInteractive() bool {
+	return isInteractiveFunc()
+}
+
 // ConfirmFunc prompts the user for confirmation. Exported so service hooks
-// in Tier 2 can reference it. Swappable for tests.
-var ConfirmFunc = func(label string) bool {
+// (internal/commands/service/hooks.go) can reuse the same confirmation flow.
+// Swappable for tests.
+var ConfirmFunc = func(label string) (bool, error) {
 	var confirmed bool
 	err := huh.NewConfirm().
 		Title(label + "?").
 		Value(&confirmed).
 		Run()
 	if err != nil {
-		return false
+		return false, err
 	}
-	return confirmed
+	return confirmed, nil
 }
 
 // RunPipeline executes a sequence of Steps, respecting each step's gate
-// setting from the automation config.
+// setting from the automation config. Individual step failures are displayed
+// by ui.Step (✗) but do not abort the pipeline — automation is best-effort.
+// Returns an error only if a user prompt is interrupted (Ctrl+C).
 func RunPipeline(steps []Step, ctx *Context) error {
 	for _, step := range steps {
 		if !step.ShouldRun(ctx) {
@@ -68,23 +78,26 @@ func RunPipeline(steps []Step, ctx *Context) error {
 			if !isInteractiveFunc() {
 				continue
 			}
-			if !ConfirmFunc(step.Label()) {
+			confirmed, err := ConfirmFunc(step.Label())
+			if err != nil {
+				return fmt.Errorf("aborted")
+			}
+			if !confirmed {
 				continue
 			}
 		}
 
 		// AutoOn (or AutoAsk confirmed) — run the step.
-		if err := ui.Step(step.Label(), func() (string, error) {
+		// Step failures are displayed by ui.Step (✗); continue with remaining steps.
+		_ = ui.Step(step.Label(), func() (string, error) {
 			return step.Run(ctx)
-		}); err != nil {
-			return err
-		}
+		})
 	}
 	return nil
 }
 
 // LookupGate maps a gate string to its AutoMode value in the Automation config.
-// Unknown gates default to AutoOn.
+// Unknown gates default to AutoAsk to avoid accidentally running unconfigured steps.
 func LookupGate(a *config.Automation, gate string) config.AutoMode {
 	switch gate {
 	case "composer_install":
@@ -106,6 +119,7 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 	case "service_fallback":
 		return a.ServiceFallback
 	default:
-		return config.AutoOn
+		fmt.Fprintf(os.Stderr, "Warning: unknown automation gate %q, defaulting to ask\n", gate)
+		return config.AutoAsk
 	}
 }

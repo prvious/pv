@@ -88,11 +88,11 @@ func Start(tld string) error {
 	// Start file watcher for pv.yml changes in linked projects.
 	projectWatcher, watcherErr := watcher.New()
 	if watcherErr != nil {
-		fmt.Printf("Warning: cannot start file watcher: %v\n", watcherErr)
+		fmt.Fprintf(os.Stderr, "Warning: cannot start file watcher: %v\n", watcherErr)
 	} else {
 		for _, project := range reg.List() {
 			if err := projectWatcher.Watch(project.Name, project.Path); err != nil {
-				fmt.Printf("Warning: cannot watch %s: %v\n", project.Name, err)
+				fmt.Fprintf(os.Stderr, "Warning: cannot watch %s: %v\n", project.Name, err)
 			}
 		}
 		activeWatcher = projectWatcher
@@ -212,7 +212,7 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 	for event := range w.Events() {
 		reg, err := registry.Load()
 		if err != nil {
-			fmt.Printf("Watcher: cannot load registry: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Watcher: cannot load registry: %v\n", err)
 			continue
 		}
 		project := reg.Find(event.ProjectName)
@@ -232,7 +232,7 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 		}
 
 		if newPHP != "" && newPHP != project.PHP {
-			fmt.Printf("Watcher: %s PHP version changed %s -> %s\n", event.ProjectName, project.PHP, newPHP)
+			fmt.Fprintf(os.Stderr, "Watcher: %s PHP version changed %s -> %s\n", event.ProjectName, project.PHP, newPHP)
 			for i := range reg.Projects {
 				if reg.Projects[i].Name == event.ProjectName {
 					reg.Projects[i].PHP = newPHP
@@ -240,11 +240,11 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 				}
 			}
 			if err := reg.Save(); err != nil {
-				fmt.Printf("Watcher: cannot save registry: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Watcher: cannot save registry: %v\n", err)
 				continue
 			}
 			if err := ReconfigureServer(); err != nil {
-				fmt.Printf("Watcher: cannot reconfigure server: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Watcher: cannot reconfigure server: %v\n", err)
 			}
 		}
 	}
@@ -252,9 +252,14 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 
 // WatchProject adds a project directory to the active file watcher.
 // Safe to call when no watcher is running (e.g. server not started).
+// Note: this is a no-op from CLI processes (link/unlink) since activeWatcher
+// is only set in the daemon's Start(). Projects linked after server start
+// will be watched on next server restart.
 func WatchProject(name, path string) {
 	if activeWatcher != nil {
-		_ = activeWatcher.Watch(name, path)
+		if err := activeWatcher.Watch(name, path); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot watch %s for config changes: %v\n", name, err)
+		}
 	}
 }
 
@@ -262,6 +267,8 @@ func WatchProject(name, path string) {
 // Safe to call when no watcher is running.
 func UnwatchProject(path string) {
 	if activeWatcher != nil {
-		_ = activeWatcher.Unwatch(path)
+		if err := activeWatcher.Unwatch(path); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot unwatch project: %v\n", err)
+		}
 	}
 }

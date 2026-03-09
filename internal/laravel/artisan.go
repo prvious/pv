@@ -2,6 +2,7 @@ package laravel
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,7 +73,11 @@ func RunArtisan(projectPath, phpBin string, args ...string) (string, error) {
 	cmd := exec.Command(phpBin, cmdArgs...)
 	cmd.Dir = projectPath
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	trimmed := strings.TrimSpace(string(out))
+	if err != nil {
+		return trimmed, fmt.Errorf("%w: %s", err, trimmed)
+	}
+	return trimmed, nil
 }
 
 // KeyGenerate runs artisan key:generate.

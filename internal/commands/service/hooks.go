@@ -28,10 +28,14 @@ func extractVersion(key string) string {
 }
 
 // updateLinkedProjectsEnv updates .env for all linked Laravel projects
-// when a service is added or started.
+// (including Octane) when a service is added or started.
 func updateLinkedProjectsEnv(reg *registry.Registry, svcName string, svc services.Service, version string) {
 	settings, err := config.LoadSettings()
-	if err != nil || settings.Automation.ServiceEnvUpdate == config.AutoOff {
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("Could not load settings for service env hooks: %v", err))
+		return
+	}
+	if settings.Automation.ServiceEnvUpdate == config.AutoOff {
 		return
 	}
 
@@ -47,9 +51,16 @@ func updateLinkedProjectsEnv(reg *registry.Registry, svcName string, svc service
 
 	shouldUpdate := settings.Automation.ServiceEnvUpdate == config.AutoOn
 	if settings.Automation.ServiceEnvUpdate == config.AutoAsk {
-		shouldUpdate = automation.ConfirmFunc(
+		if !automation.IsInteractive() {
+			return
+		}
+		confirmed, err := automation.ConfirmFunc(
 			fmt.Sprintf("Update .env for %d linked Laravel project(s)", len(laravelProjects)),
 		)
+		if err != nil {
+			return
+		}
+		shouldUpdate = confirmed
 	}
 	if !shouldUpdate {
 		return
@@ -74,7 +85,11 @@ func updateLinkedProjectsEnv(reg *registry.Registry, svcName string, svc service
 // is stopped or removed.
 func applyFallbacksToLinkedProjects(reg *registry.Registry, svcName string) {
 	settings, err := config.LoadSettings()
-	if err != nil || settings.Automation.ServiceFallback == config.AutoOff {
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("Could not load settings for service fallback hooks: %v", err))
+		return
+	}
+	if settings.Automation.ServiceFallback == config.AutoOff {
 		return
 	}
 
@@ -85,9 +100,16 @@ func applyFallbacksToLinkedProjects(reg *registry.Registry, svcName string) {
 
 	shouldFallback := settings.Automation.ServiceFallback == config.AutoOn
 	if settings.Automation.ServiceFallback == config.AutoAsk {
-		shouldFallback = automation.ConfirmFunc(
+		if !automation.IsInteractive() {
+			return
+		}
+		confirmed, err := automation.ConfirmFunc(
 			fmt.Sprintf("Apply env fallbacks for %s to %d project(s)", svcName, len(projectNames)),
 		)
+		if err != nil {
+			return
+		}
+		shouldFallback = confirmed
 	}
 	if !shouldFallback {
 		return

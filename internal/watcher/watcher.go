@@ -1,6 +1,8 @@
 package watcher
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -137,11 +139,11 @@ func (w *Watcher) loop() {
 				Type:        evType,
 			})
 
-		case _, ok := <-w.fsWatcher.Errors:
+		case err, ok := <-w.fsWatcher.Errors:
 			if !ok {
 				return
 			}
-			// Silently ignore fsnotify errors; the watcher continues.
+			fmt.Fprintf(os.Stderr, "Watcher: filesystem notification error: %v\n", err)
 		}
 	}
 }

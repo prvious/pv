@@ -94,7 +94,7 @@ func (s *SetAppURLStep) Label() string { return "Set APP_URL" }
 func (s *SetAppURLStep) Gate() string  { return "set_app_url" }
 
 func (s *SetAppURLStep) ShouldRun(ctx *automation.Context) bool {
-	return isLaravel(ctx.ProjectType)
+	return isLaravel(ctx.ProjectType) && HasEnvFile(ctx.ProjectPath)
 }
 
 func (s *SetAppURLStep) Run(ctx *automation.Context) (string, error) {

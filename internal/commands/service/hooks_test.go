@@ -54,7 +54,7 @@ func TestApplyFallbacksToLinkedProjects_Integration(t *testing.T) {
 	}
 
 	origConfirm := automation.ConfirmFunc
-	automation.ConfirmFunc = func(label string) bool { return true }
+	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
 	defer func() { automation.ConfirmFunc = origConfirm }()
 
 	applyFallbacksToLinkedProjects(reg, "redis")

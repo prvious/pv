@@ -109,22 +109,34 @@ func TestCopyEnvStep_Run(t *testing.T) {
 
 func TestSetAppURLStep_ShouldRun_TrueForLaravel(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_URL=http://localhost\n"), 0644)
 	ctx := testCtx(dir)
 	step := &SetAppURLStep{}
 
 	if !step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be true for Laravel projects")
+		t.Error("ShouldRun should be true for Laravel projects with .env")
 	}
 }
 
 func TestSetAppURLStep_ShouldRun_TrueForLaravelOctane(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_URL=http://localhost\n"), 0644)
 	ctx := testCtx(dir)
 	ctx.ProjectType = "laravel-octane"
 	step := &SetAppURLStep{}
 
 	if !step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be true for laravel-octane projects")
+		t.Error("ShouldRun should be true for laravel-octane projects with .env")
+	}
+}
+
+func TestSetAppURLStep_ShouldRun_FalseWhenNoEnv(t *testing.T) {
+	dir := t.TempDir()
+	ctx := testCtx(dir)
+	step := &SetAppURLStep{}
+
+	if step.ShouldRun(ctx) {
+		t.Error("ShouldRun should be false when .env does not exist")
 	}
 }
 

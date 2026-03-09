@@ -130,7 +130,7 @@ func TestRunPipeline_AskRunsWhenConfirmed(t *testing.T) {
 	defer func() { isInteractiveFunc = origIsInteractive }()
 
 	origConfirm := ConfirmFunc
-	ConfirmFunc = func(label string) bool { return true }
+	ConfirmFunc = func(label string) (bool, error) { return true, nil }
 	defer func() { ConfirmFunc = origConfirm }()
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
@@ -158,7 +158,7 @@ func TestRunPipeline_AskSkipsWhenDenied(t *testing.T) {
 	defer func() { isInteractiveFunc = origIsInteractive }()
 
 	origConfirm := ConfirmFunc
-	ConfirmFunc = func(label string) bool { return false }
+	ConfirmFunc = func(label string) (bool, error) { return false, nil }
 	defer func() { ConfirmFunc = origConfirm }()
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
@@ -185,7 +185,7 @@ func TestLookupGate(t *testing.T) {
 		{"run_migrations", a.RunMigrations},
 		{"update_env_on_service", a.ServiceEnvUpdate},
 		{"service_fallback", a.ServiceFallback},
-		{"unknown_gate", config.AutoOn},
+		{"unknown_gate", config.AutoAsk},
 	}
 
 	for _, tt := range tests {

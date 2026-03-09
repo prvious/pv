@@ -48,7 +48,9 @@ var startCmd = &cobra.Command{
 				}
 				svcName := extractServiceName(key)
 				svc, lookupErr := services.Lookup(svcName)
-				if lookupErr == nil {
+				if lookupErr != nil {
+					ui.Subtle(fmt.Sprintf("Could not look up %s for env update: %v", svcName, lookupErr))
+				} else {
 					updateLinkedProjectsEnv(reg, svcName, svc, extractVersion(key))
 				}
 			}
@@ -66,7 +68,9 @@ var startCmd = &cobra.Command{
 			}
 			svcName := extractServiceName(key)
 			svc, lookupErr := services.Lookup(svcName)
-			if lookupErr == nil {
+			if lookupErr != nil {
+				ui.Subtle(fmt.Sprintf("Could not look up %s for env update: %v", svcName, lookupErr))
+			} else {
 				updateLinkedProjectsEnv(reg, svcName, svc, extractVersion(key))
 			}
 		}
