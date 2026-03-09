@@ -6,6 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/prvious/pv/internal/config"
 )
 
 var highlightColor = lipgloss.ANSIColor(141) // Purple matching ui.Purple
@@ -28,15 +30,44 @@ type setupModel struct {
 	svcOptions  []selectOption
 	svcCursor   int
 
-	tld       string
-	tldCursor int
-	editing   bool // Whether the TLD input is in edit mode.
+	tld            string
+	tldCursor      int
+	editing        bool // Whether the TLD input is in edit mode.
+	automation     config.Automation
+	settingsCursor int // 0=TLD, 1..N=automation items
 
 	confirmed bool
 	quitting  bool
 }
 
-func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string) setupModel {
+var automationItems = []struct {
+	label string
+	get   func(*config.Automation) config.AutoMode
+	set   func(*config.Automation, config.AutoMode)
+}{
+	{"Composer install", func(a *config.Automation) config.AutoMode { return a.ComposerInstall }, func(a *config.Automation, m config.AutoMode) { a.ComposerInstall = m }},
+	{"Copy .env", func(a *config.Automation) config.AutoMode { return a.CopyEnv }, func(a *config.Automation, m config.AutoMode) { a.CopyEnv = m }},
+	{"Generate app key", func(a *config.Automation) config.AutoMode { return a.GenerateKey }, func(a *config.Automation, m config.AutoMode) { a.GenerateKey = m }},
+	{"Set APP_URL", func(a *config.Automation) config.AutoMode { return a.SetAppURL }, func(a *config.Automation, m config.AutoMode) { a.SetAppURL = m }},
+	{"Install Octane", func(a *config.Automation) config.AutoMode { return a.InstallOctane }, func(a *config.Automation, m config.AutoMode) { a.InstallOctane = m }},
+	{"Create database", func(a *config.Automation) config.AutoMode { return a.CreateDatabase }, func(a *config.Automation, m config.AutoMode) { a.CreateDatabase = m }},
+	{"Run migrations", func(a *config.Automation) config.AutoMode { return a.RunMigrations }, func(a *config.Automation, m config.AutoMode) { a.RunMigrations = m }},
+	{"Service env update", func(a *config.Automation) config.AutoMode { return a.ServiceEnvUpdate }, func(a *config.Automation, m config.AutoMode) { a.ServiceEnvUpdate = m }},
+	{"Service fallback", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
+}
+
+func cycleAutoMode(m config.AutoMode) config.AutoMode {
+	switch m {
+	case config.AutoOn:
+		return config.AutoAsk
+	case config.AutoAsk:
+		return config.AutoOff
+	default:
+		return config.AutoOn
+	}
+}
+
+func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string, automation config.Automation) setupModel {
 	return setupModel{
 		tabs:        []string{"PHP Versions", "Tools", "Services", "Settings"},
 		phpOptions:  phpOpts,
@@ -44,6 +75,7 @@ func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string) setupM
 		svcOptions:  svcOpts,
 		tld:         tld,
 		tldCursor:   len(tld),
+		automation:  automation,
 		width:       80,
 	}
 }
@@ -105,8 +137,25 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 2:
 			m.svcOptions, m.svcCursor = handleMultiSelect(m.svcOptions, m.svcCursor, key)
 		case 3:
-			if key == "e" || key == "/" || key == "i" {
-				m.editing = true
+			switch key {
+			case "up", "k":
+				if m.settingsCursor > 0 {
+					m.settingsCursor--
+				}
+			case "down", "j":
+				if m.settingsCursor < len(automationItems) {
+					m.settingsCursor++
+				}
+			case " ", "space", "x":
+				if m.settingsCursor > 0 {
+					idx := m.settingsCursor - 1
+					current := automationItems[idx].get(&m.automation)
+					automationItems[idx].set(&m.automation, cycleAutoMode(current))
+				}
+			case "e", "/", "i":
+				if m.settingsCursor == 0 {
+					m.editing = true
+				}
 			}
 		}
 	}
@@ -213,7 +262,7 @@ func (m setupModel) View() tea.View {
 	case 2:
 		content = renderSetupMultiSelect("Select backing services to set up:", m.svcOptions, m.svcCursor)
 	case 3:
-		content = renderSetupSettings("TLD", "Top-level domain for local sites", m.tld, m.tldCursor, m.editing)
+		content = renderSettingsTab(m.tld, m.tldCursor, m.editing, &m.automation, m.settingsCursor)
 	}
 
 	windowStyle := lipgloss.NewStyle().
@@ -231,8 +280,10 @@ func (m setupModel) View() tea.View {
 	switch {
 	case m.editing:
 		doc.WriteString(helpStyle.Render("type to edit • ←/→ move cursor • enter/esc stop editing"))
+	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 0:
+		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • e to edit TLD • enter confirm • esc quit"))
 	case m.activeTab == len(m.tabs)-1:
-		doc.WriteString(helpStyle.Render("←/→ navigate • e to edit TLD • enter confirm • esc quit"))
+		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space cycle • enter confirm • esc quit"))
 	default:
 		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space toggle • enter confirm • esc quit"))
 	}
@@ -271,37 +322,82 @@ func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string
 	return b.String()
 }
 
-func renderSetupSettings(label, desc, value string, cursor int, editing bool) string {
+func renderSettingsTab(tld string, tldCursor int, editing bool, automation *config.Automation, settingsCursor int) string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render(label))
+	cursorStyle := lipgloss.NewStyle().Foreground(highlightColor).Bold(true)
+	faintStyle := lipgloss.NewStyle().Faint(true)
+
+	// --- TLD section ---
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Domain"))
 	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Faint(true).Render(desc))
+	b.WriteString(faintStyle.Render("Top-level domain for local sites"))
 	b.WriteString("\n\n")
 
-	if !editing {
-		// Show value without cursor.
-		b.WriteString("> " + value)
-		b.WriteString("\n\n")
-		b.WriteString(lipgloss.NewStyle().Faint(true).Render("Press e to edit"))
-		return b.String()
+	prefix := "  "
+	if settingsCursor == 0 {
+		prefix = cursorStyle.Render("> ")
 	}
 
-	// Show value with cursor.
-	runes := []rune(value)
-	cursorCharStyle := lipgloss.NewStyle().Reverse(true)
-
-	var before, cursorChar, after string
-	if cursor < len(runes) {
-		before = string(runes[:cursor])
-		cursorChar = cursorCharStyle.Render(string(runes[cursor]))
-		after = string(runes[cursor+1:])
+	if editing {
+		runes := []rune(tld)
+		cursorCharStyle := lipgloss.NewStyle().Reverse(true)
+		var before, cursorChar, after string
+		if tldCursor < len(runes) {
+			before = string(runes[:tldCursor])
+			cursorChar = cursorCharStyle.Render(string(runes[tldCursor]))
+			after = string(runes[tldCursor+1:])
+		} else {
+			before = tld
+			cursorChar = cursorCharStyle.Render(" ")
+		}
+		b.WriteString(prefix + before + cursorChar + after)
 	} else {
-		before = value
-		cursorChar = cursorCharStyle.Render(" ")
-		after = ""
+		b.WriteString(prefix + tld)
+		if settingsCursor == 0 {
+			b.WriteString(faintStyle.Render("  (press e to edit)"))
+		}
 	}
 
-	b.WriteString("> " + before + cursorChar + after)
+	// --- Automation section ---
+	b.WriteString("\n\n")
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Automation"))
+	b.WriteString("\n")
+	b.WriteString(faintStyle.Render("Configure which steps run during pv link"))
+	b.WriteString("\n\n")
+
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
+	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(3))
+
+	// Find longest label for alignment.
+	maxLen := 0
+	for _, item := range automationItems {
+		if len(item.label) > maxLen {
+			maxLen = len(item.label)
+		}
+	}
+
+	for i, item := range automationItems {
+		prefix := "  "
+		if settingsCursor == i+1 {
+			prefix = cursorStyle.Render("> ")
+		}
+
+		mode := item.get(automation)
+		padding := strings.Repeat(" ", maxLen-len(item.label)+2)
+
+		var modeStr string
+		switch mode {
+		case config.AutoOn:
+			modeStr = greenStyle.Render("true")
+		case config.AutoAsk:
+			modeStr = yellowStyle.Render("ask")
+		case config.AutoOff:
+			modeStr = faintStyle.Render("false")
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s%s%s\n", prefix, item.label, padding, modeStr))
+	}
+
 	return b.String()
 }
 

@@ -73,19 +73,23 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// TLD.
+		// Load settings.
 		settings, err := config.LoadSettings()
 		if err != nil {
 			ui.Subtle(fmt.Sprintf("Warning: could not load settings: %v", err))
 		}
 		tld := "test"
-		if settings != nil && settings.Defaults.TLD != "" {
-			tld = settings.Defaults.TLD
+		automation := config.DefaultAutomation()
+		if settings != nil {
+			if settings.Defaults.TLD != "" {
+				tld = settings.Defaults.TLD
+			}
+			automation = settings.Automation
 		}
 
 		// Run the tabbed setup wizard.
 		result, err := tea.NewProgram(
-			newSetupModel(phpOpts, toolOpts, svcOpts, tld),
+			newSetupModel(phpOpts, toolOpts, svcOpts, tld, automation),
 			tea.WithOutput(os.Stderr),
 		).Run()
 		if err != nil {
@@ -104,6 +108,7 @@ var setupCmd = &cobra.Command{
 		selectedTools := final.selectedToolValues()
 		selectedServices := final.selectedServiceValues()
 		tld = final.tld
+		automation = final.automation
 
 		fmt.Fprintln(os.Stderr)
 
@@ -124,8 +129,11 @@ var setupCmd = &cobra.Command{
 			return fmt.Errorf("cannot create directories: %w", err)
 		}
 
-		// Save TLD.
-		s := &config.Settings{Defaults: config.Defaults{TLD: tld}}
+		// Save settings.
+		s := &config.Settings{
+			Defaults:   config.Defaults{TLD: tld},
+			Automation: automation,
+		}
 		if settings != nil {
 			s.Defaults.PHP = settings.Defaults.PHP
 		}
