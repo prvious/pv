@@ -136,9 +136,9 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			if err := config.EnsureDirs(); err != nil {
 				return "", fmt.Errorf("cannot create directories: %w", err)
 			}
-			settings, _ := config.LoadSettings()
-			if settings == nil {
-				settings = config.DefaultSettings()
+			settings, err := config.LoadSettings()
+			if err != nil {
+				return "", fmt.Errorf("cannot load settings: %w", err)
 			}
 			settings.Defaults.TLD = installTLD
 			if err := settings.Save(); err != nil {
