@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
+	"github.com/prvious/pv/internal/certs"
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
@@ -200,6 +201,20 @@ var uninstallCmd = &cobra.Command{
 			}); err != nil {
 				// Error already displayed by ui.Step
 			}
+		}
+
+		// Remove Vite TLS certs for linked projects only.
+		if reg != nil {
+			var hostnames []string
+			for _, p := range reg.List() {
+				hostnames = append(hostnames, p.Name+"."+tld)
+			}
+			if err := certs.RemoveLinkedCerts(hostnames); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not remove some Vite TLS certs: %v", err))
+			}
+		}
+		if err := certs.RemoveConfig(); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not remove Valet config: %v", err))
 		}
 
 		// Remove ~/.pv directory.

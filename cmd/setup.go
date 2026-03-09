@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/prvious/pv/internal/binaries"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/service"
@@ -130,6 +131,11 @@ var setupCmd = &cobra.Command{
 		}
 		if err := s.Save(); err != nil {
 			return fmt.Errorf("cannot save settings: %w", err)
+		}
+
+		// Write Valet-compatible config for Vite TLS auto-detection.
+		if err := certs.EnsureValetConfig(tld); err != nil {
+			ui.Subtle(fmt.Sprintf("Vite TLS config: %v", err))
 		}
 
 		// Install PHP versions.

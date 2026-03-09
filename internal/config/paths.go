@@ -139,6 +139,11 @@ func CACertPath() string {
 	return filepath.Join(PvDir(), "caddy", "pki", "authorities", "local", "root.crt")
 }
 
+// CAKeyPath returns the path to Caddy's local CA private key.
+func CAKeyPath() string {
+	return filepath.Join(PvDir(), "caddy", "pki", "authorities", "local", "root.key")
+}
+
 func ServicesDir() string {
 	return filepath.Join(PvDir(), "services")
 }
