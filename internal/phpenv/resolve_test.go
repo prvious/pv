@@ -41,7 +41,7 @@ func TestMatchConstraint(t *testing.T) {
 	}
 }
 
-func TestResolveVersion_PvPhpFile(t *testing.T) {
+func TestResolveVersion_PvYml(t *testing.T) {
 	scaffold(t)
 	installFakeVersion(t, "8.3")
 	installFakeVersion(t, "8.4")
@@ -50,7 +50,7 @@ func TestResolveVersion_PvPhpFile(t *testing.T) {
 	}
 
 	projDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projDir, ".pv-php"), []byte("8.3\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,6 +60,28 @@ func TestResolveVersion_PvPhpFile(t *testing.T) {
 	}
 	if v != "8.3" {
 		t.Errorf("ResolveVersion() = %q, want %q", v, "8.3")
+	}
+}
+
+func TestResolveVersion_PvYmlUnquoted(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.4"); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	// Unquoted YAML value — should still work.
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: 8.4\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := ResolveVersion(projDir)
+	if err != nil {
+		t.Fatalf("ResolveVersion() error = %v", err)
+	}
+	if v != "8.4" {
+		t.Errorf("ResolveVersion() = %q, want %q", v, "8.4")
 	}
 }
 
@@ -104,7 +126,7 @@ func TestResolveVersion_FallsBackToGlobal(t *testing.T) {
 	}
 }
 
-func TestResolveVersion_PvPhpTakesPriority(t *testing.T) {
+func TestResolveVersion_PvYmlTakesPriority(t *testing.T) {
 	scaffold(t)
 	installFakeVersion(t, "8.3")
 	installFakeVersion(t, "8.4")
@@ -112,9 +134,9 @@ func TestResolveVersion_PvPhpTakesPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Project has both .pv-php and composer.json — .pv-php wins.
+	// Project has both pv.yml and composer.json — pv.yml wins.
 	projDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projDir, ".pv-php"), []byte("8.3"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	composer := `{"require": {"php": "^8.4"}}`
@@ -127,7 +149,142 @@ func TestResolveVersion_PvPhpTakesPriority(t *testing.T) {
 		t.Fatalf("ResolveVersion() error = %v", err)
 	}
 	if v != "8.3" {
-		t.Errorf("ResolveVersion() = %q, want %q (.pv-php should take priority)", v, "8.3")
+		t.Errorf("ResolveVersion() = %q, want %q (pv.yml should take priority)", v, "8.3")
+	}
+}
+
+func TestResolveVersionWalkUp_PvYmlInParent(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.3")
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.4"); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	subDir := filepath.Join(projDir, "src", "deep")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := ResolveVersionWalkUp(subDir)
+	if err != nil {
+		t.Fatalf("ResolveVersionWalkUp() error = %v", err)
+	}
+	if v != "8.3" {
+		t.Errorf("ResolveVersionWalkUp() = %q, want %q", v, "8.3")
+	}
+}
+
+func TestResolveVersionWalkUp_ComposerInParent(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.3")
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.3"); err != nil {
+		t.Fatal(err)
+	}
+
+	projDir := t.TempDir()
+	subDir := filepath.Join(projDir, "app", "Http")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	composer := `{"require": {"php": "^8.3"}}`
+	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composer), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := ResolveVersionWalkUp(subDir)
+	if err != nil {
+		t.Fatalf("ResolveVersionWalkUp() error = %v", err)
+	}
+	if v != "8.4" {
+		t.Errorf("ResolveVersionWalkUp() = %q, want %q (highest matching ^8.3)", v, "8.4")
+	}
+}
+
+func TestResolveVersionWalkUp_PvYmlBeatsComposerHigher(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.3")
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.4"); err != nil {
+		t.Fatal(err)
+	}
+
+	// pv.yml in project root, composer.json in a subdirectory.
+	// pv.yml should be found first (walking up from subDir hits both dirs,
+	// but pv.yml takes priority over composer.json).
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	composer := `{"require": {"php": "^8.4"}}`
+	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composer), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subDir := filepath.Join(projDir, "src")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := ResolveVersionWalkUp(subDir)
+	if err != nil {
+		t.Fatalf("ResolveVersionWalkUp() error = %v", err)
+	}
+	if v != "8.3" {
+		t.Errorf("ResolveVersionWalkUp() = %q, want %q (pv.yml should take priority)", v, "8.3")
+	}
+}
+
+func TestResolveVersionWalkUp_FallsBackToGlobal(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.4"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+
+	v, err := ResolveVersionWalkUp(dir)
+	if err != nil {
+		t.Fatalf("ResolveVersionWalkUp() error = %v", err)
+	}
+	if v != "8.4" {
+		t.Errorf("ResolveVersionWalkUp() = %q, want %q", v, "8.4")
+	}
+}
+
+func TestResolveVersionWalkUp_ClosestPvYmlWins(t *testing.T) {
+	scaffold(t)
+	installFakeVersion(t, "8.3")
+	installFakeVersion(t, "8.4")
+	if err := SetGlobal("8.4"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Parent has pv.yml with 8.4, child has pv.yml with 8.3.
+	parent := t.TempDir()
+	child := filepath.Join(parent, "sub")
+	if err := os.MkdirAll(child, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "pv.yml"), []byte("php: \"8.4\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := ResolveVersionWalkUp(child)
+	if err != nil {
+		t.Fatalf("ResolveVersionWalkUp() error = %v", err)
+	}
+	if v != "8.3" {
+		t.Errorf("ResolveVersionWalkUp() = %q, want %q (closest pv.yml should win)", v, "8.3")
 	}
 }
 

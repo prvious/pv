@@ -10,7 +10,7 @@ import (
 var installCmd = &cobra.Command{
 	Use:     "colima:install",
 	GroupID: "colima",
-	Short:   "Install or update the Colima container runtime",
+	Short:   "Install or update Colima and Lima",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Download.
 		if err := downloadCmd.RunE(downloadCmd, nil); err != nil {

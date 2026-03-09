@@ -55,6 +55,7 @@ Every managed tool (php, mago, composer, colima) follows a strict five-command p
 
 - `~/.pv/bin/` — user PATH. **Only** shims and symlinks go here. Never place real binaries.
 - `~/.pv/internal/bin/` — private storage. Real binaries (mago, composer.phar, colima) live here.
+- `~/.pv/internal/lima/` — Lima runtime (limactl and supporting binaries). Downloaded as part of `colima:install`.
 - `~/.pv/php/{ver}/` — versioned PHP binaries (php, frankenphp) live here.
 - Use `config.InternalBinDir()` for private storage paths, `config.BinDir()` for PATH entries.
 
@@ -124,7 +125,7 @@ The CLI uses a layered Charm stack:
 
 - Main FrankenPHP serves on :443/:80, proxies non-global versions via `reverse_proxy`.
 - Secondary FrankenPHP per version on high port: `8000 + major*100 + minor*10` (8.3 → 8830).
-- Version resolution order: `.pv-php` file → `composer.json` require.php → global default.
+- Version resolution order: `pv.yml` `php` field → `composer.json` require.php → global default.
 
 ## Services
 

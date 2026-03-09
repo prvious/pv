@@ -79,9 +79,18 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// colimaCmd creates an exec.Command for the Colima binary with Lima on PATH.
+func colimaCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command(config.ColimaPath(), args...)
+	cmd.Env = append(os.Environ(),
+		"PATH="+config.LimaBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	return cmd
+}
+
 // Start starts the Colima VM with the pv profile.
 func Start() error {
-	cmd := exec.Command(config.ColimaPath(),
+	cmd := colimaCmd(
 		"start", "--profile", "pv",
 		"--cpu", "2",
 		"--memory", "2",
@@ -96,7 +105,7 @@ func Start() error {
 
 // Stop stops the Colima VM with the pv profile.
 func Stop() error {
-	cmd := exec.Command(config.ColimaPath(), "stop", "--profile", "pv")
+	cmd := colimaCmd("stop", "--profile", "pv")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -104,7 +113,7 @@ func Stop() error {
 
 // Delete deletes the Colima VM with the pv profile.
 func Delete() error {
-	cmd := exec.Command(config.ColimaPath(), "delete", "--profile", "pv", "--force")
+	cmd := colimaCmd("delete", "--profile", "pv", "--force")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -112,7 +121,7 @@ func Delete() error {
 
 // IsRunning checks if the Colima VM with the pv profile is running.
 func IsRunning() bool {
-	cmd := exec.Command(config.ColimaPath(), "status", "--profile", "pv")
+	cmd := colimaCmd("status", "--profile", "pv")
 	return cmd.Run() == nil
 }
 
@@ -132,7 +141,7 @@ func IsInstalled() bool {
 
 // Version returns the Colima version string.
 func Version() (string, error) {
-	out, err := exec.Command(config.ColimaPath(), "version").Output()
+	out, err := colimaCmd("version").Output()
 	if err != nil {
 		return "", err
 	}

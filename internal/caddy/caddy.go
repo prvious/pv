@@ -45,7 +45,6 @@ const laravelTmpl = `{{.Name}}.{{.TLD}} {
 
     php_server {
         root {{.RootPath}}
-        worker index.php
     }
 }
 `
@@ -57,7 +56,6 @@ const phpTmpl = `{{.Name}}.{{.TLD}} {
 
     php_server {
         root {{.RootPath}}
-        worker index.php
     }
 }
 `
@@ -100,7 +98,6 @@ const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}} {
 
     php_server {
         root {{.RootPath}}
-        worker index.php
     }
 }
 `
@@ -111,7 +108,6 @@ const versionPhpTmpl = `http://{{.Name}}.{{.TLD}} {
 
     php_server {
         root {{.RootPath}}
-        worker index.php
     }
 }
 `

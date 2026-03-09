@@ -80,7 +80,7 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Read registry before deletion (for .pv-php file scan later).
+		// Read registry before deletion (for pv.yml file scan later).
 		var projectPaths []string
 		reg, err := registry.Load()
 		if err == nil {
@@ -236,16 +236,16 @@ var uninstallCmd = &cobra.Command{
 			// Error already displayed by ui.Step
 		}
 
-		// Report scattered .pv-php files.
+		// Report scattered pv.yml files.
 		var found []string
 		for _, p := range projectPaths {
-			pvPhpPath := filepath.Join(p, ".pv-php")
-			if _, err := os.Stat(pvPhpPath); err == nil {
-				found = append(found, pvPhpPath)
+			pvYmlPath := filepath.Join(p, "pv.yml")
+			if _, err := os.Stat(pvYmlPath); err == nil {
+				found = append(found, pvYmlPath)
 			}
 		}
 		if len(found) > 0 {
-			ui.Subtle("Found .pv-php files in your projects:")
+			ui.Subtle("Found pv.yml files in your projects:")
 			for _, f := range found {
 				ui.Subtle(fmt.Sprintf("  %s", f))
 			}

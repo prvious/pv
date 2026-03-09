@@ -66,7 +66,7 @@ pv php:list
 pv php:remove 8.3
 ```
 
-Per-project versions are supported too — drop a `.pv-php` file in your project root or let `pv` read the PHP constraint from `composer.json`. Multiple PHP versions run simultaneously, each project served by its own FrankenPHP process.
+Per-project versions are supported too — add a `pv.yml` file with `php: "8.4"` in your project root or let `pv` read the PHP constraint from `composer.json`. Multiple PHP versions run simultaneously, each project served by its own FrankenPHP process.
 
 `pv link` auto-detects your project type (Laravel, Laravel + Octane, generic PHP, static) and generates the right server configuration automatically.
 
@@ -169,7 +169,7 @@ pv uninstall         # Complete removal with guided cleanup
 
 The main FrankenPHP process (global PHP version) serves on :443/:80. Projects using a different PHP version are proxied to secondary FrankenPHP processes running on high ports (`8000 + major*100 + minor*10`, e.g., PHP 8.3 → port 8830).
 
-Version resolution: `.pv-php` file → `composer.json` `require.php` → global default.
+Version resolution: `pv.yml` `php` field → `composer.json` `require.php` → global default.
 
 ### Source layout
 

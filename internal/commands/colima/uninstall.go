@@ -14,7 +14,7 @@ import (
 var uninstallCmd = &cobra.Command{
 	Use:     "colima:uninstall",
 	GroupID: "colima",
-	Short:   "Stop Colima VM and remove the binary",
+	Short:   "Stop Colima VM and remove Colima and Lima binaries",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !internalcolima.IsInstalled() {
 			ui.Success("Colima not installed")
@@ -33,6 +33,10 @@ var uninstallCmd = &cobra.Command{
 
 			if err := os.Remove(config.ColimaPath()); err != nil && !os.IsNotExist(err) {
 				return "", err
+			}
+
+			if err := internalcolima.RemoveLima(); err != nil {
+				return "", fmt.Errorf("cannot remove Lima: %w", err)
 			}
 
 			if err := tools.Unexpose(tools.MustGet("colima")); err != nil {

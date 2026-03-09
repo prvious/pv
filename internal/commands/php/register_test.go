@@ -14,7 +14,7 @@ func TestRegister_AllCommandsPresent(t *testing.T) {
 	expected := []string{
 		"php:install", "php:download", "php:path",
 		"php:update", "php:uninstall", "php:use",
-		"php:list", "php:remove",
+		"php:list", "php:remove", "php:current",
 	}
 	for _, name := range expected {
 		cmd, _, err := root.Find([]string{name})

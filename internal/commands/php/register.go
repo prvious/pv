@@ -11,6 +11,7 @@ func Register(parent *cobra.Command) {
 	parent.AddCommand(useCmd)
 	parent.AddCommand(listCmd)
 	parent.AddCommand(removeCmd)
+	parent.AddCommand(currentCmd)
 }
 
 func RunInstall(args []string) error {

@@ -78,10 +78,11 @@ var registry = map[string]*Tool{
 	"colima": {
 		DisplayName: "Colima",
 		AutoExpose:  false,
-		Exposure:    ExposureSymlink,
+		Exposure:    ExposureShim,
 		InternalPath: func() string {
 			return config.ColimaPath()
 		},
+		WriteShim: writeColimaShim,
 	},
 }
 
