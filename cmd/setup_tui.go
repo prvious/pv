@@ -46,6 +46,7 @@ var automationItems = []struct {
 	get   func(*config.Automation) config.AutoMode
 	set   func(*config.Automation, config.AutoMode)
 }{
+	{"Auto install missing PHP version", func(a *config.Automation) config.AutoMode { return a.InstallPHPVersion }, func(a *config.Automation, m config.AutoMode) { a.InstallPHPVersion = m }},
 	{"Run composer install", func(a *config.Automation) config.AutoMode { return a.ComposerInstall }, func(a *config.Automation, m config.AutoMode) { a.ComposerInstall = m }},
 	{"Copy .env.example to .env", func(a *config.Automation) config.AutoMode { return a.CopyEnv }, func(a *config.Automation, m config.AutoMode) { a.CopyEnv = m }},
 	{"Generate APP_KEY", func(a *config.Automation) config.AutoMode { return a.GenerateKey }, func(a *config.Automation, m config.AutoMode) { a.GenerateKey = m }},

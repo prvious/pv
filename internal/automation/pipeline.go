@@ -100,6 +100,8 @@ func RunPipeline(steps []Step, ctx *Context) error {
 // Unknown gates default to AutoAsk to avoid accidentally running unconfigured steps.
 func LookupGate(a *config.Automation, gate string) config.AutoMode {
 	switch gate {
+	case "install_php_version":
+		return a.InstallPHPVersion
 	case "composer_install":
 		return a.ComposerInstall
 	case "copy_env":

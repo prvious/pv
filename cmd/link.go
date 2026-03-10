@@ -8,6 +8,7 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
+	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/detection"
@@ -76,6 +77,36 @@ pv link --name=myapp ~/Code/myapp`,
 		phpVersion := globalPHP
 		if v, err := phpenv.ResolveVersion(absPath); err == nil && v != "" {
 			phpVersion = v
+		}
+
+		// Auto-install missing PHP version if needed.
+		if phpVersion != "" && phpVersion != globalPHP && !phpenv.IsInstalled(phpVersion) {
+			mode := automation.LookupGate(&settings.Automation, "install_php_version")
+
+			switch mode {
+			case config.AutoOff:
+				ui.Subtle(fmt.Sprintf("PHP %s is not installed (auto-install disabled). Site may not work until installed.", phpVersion))
+			case config.AutoAsk:
+				if automation.IsInteractive() {
+					confirmed, err := automation.ConfirmFunc(fmt.Sprintf("Install PHP %s", phpVersion))
+					if err != nil {
+						return fmt.Errorf("aborted")
+					}
+					if confirmed {
+						if err := php.RunInstall([]string{phpVersion}); err != nil {
+							return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
+						}
+					} else {
+						ui.Subtle(fmt.Sprintf("PHP %s is not installed. Site may not work until installed.", phpVersion))
+					}
+				} else {
+					ui.Subtle(fmt.Sprintf("PHP %s is not installed (non-interactive). Site may not work until installed.", phpVersion))
+				}
+			case config.AutoOn:
+				if err := php.RunInstall([]string{phpVersion}); err != nil {
+					return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
+				}
+			}
 		}
 
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}

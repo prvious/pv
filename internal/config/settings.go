@@ -25,15 +25,16 @@ type Defaults struct {
 
 // Automation controls which link-time steps run automatically.
 type Automation struct {
-	ComposerInstall  AutoMode `yaml:"composer_install,omitempty"`
-	CopyEnv          AutoMode `yaml:"copy_env,omitempty"`
-	GenerateKey      AutoMode `yaml:"generate_key,omitempty"`
-	SetAppURL        AutoMode `yaml:"set_app_url,omitempty"`
-	InstallOctane    AutoMode `yaml:"install_octane,omitempty"`
-	CreateDatabase   AutoMode `yaml:"create_database,omitempty"`
-	RunMigrations    AutoMode `yaml:"run_migrations,omitempty"`
-	ServiceEnvUpdate AutoMode `yaml:"update_env_on_service,omitempty"`
-	ServiceFallback  AutoMode `yaml:"service_fallback,omitempty"`
+	InstallPHPVersion AutoMode `yaml:"install_php_version,omitempty"`
+	ComposerInstall   AutoMode `yaml:"composer_install,omitempty"`
+	CopyEnv           AutoMode `yaml:"copy_env,omitempty"`
+	GenerateKey       AutoMode `yaml:"generate_key,omitempty"`
+	SetAppURL         AutoMode `yaml:"set_app_url,omitempty"`
+	InstallOctane     AutoMode `yaml:"install_octane,omitempty"`
+	CreateDatabase    AutoMode `yaml:"create_database,omitempty"`
+	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
+	ServiceEnvUpdate  AutoMode `yaml:"update_env_on_service,omitempty"`
+	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
 }
 
 type Settings struct {
@@ -46,15 +47,16 @@ var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // DefaultAutomation returns the default automation settings.
 func DefaultAutomation() Automation {
 	return Automation{
-		ComposerInstall:  AutoOn,
-		CopyEnv:          AutoOn,
-		GenerateKey:      AutoOn,
-		SetAppURL:        AutoOn,
-		InstallOctane:    AutoAsk,
-		CreateDatabase:   AutoOn,
-		RunMigrations:    AutoAsk,
-		ServiceEnvUpdate: AutoOn,
-		ServiceFallback:  AutoOn,
+		InstallPHPVersion: AutoOn,
+		ComposerInstall:   AutoOn,
+		CopyEnv:           AutoOn,
+		GenerateKey:       AutoOn,
+		SetAppURL:         AutoOn,
+		InstallOctane:     AutoAsk,
+		CreateDatabase:    AutoOn,
+		RunMigrations:     AutoAsk,
+		ServiceEnvUpdate:  AutoOn,
+		ServiceFallback:   AutoOn,
 	}
 }
 
@@ -66,6 +68,9 @@ func validAutoMode(m AutoMode) bool {
 // and replaces invalid values with the default.
 func applyAutomationDefaults(a *Automation) {
 	d := DefaultAutomation()
+	if !validAutoMode(a.InstallPHPVersion) {
+		a.InstallPHPVersion = d.InstallPHPVersion
+	}
 	if !validAutoMode(a.ComposerInstall) {
 		a.ComposerInstall = d.ComposerInstall
 	}
