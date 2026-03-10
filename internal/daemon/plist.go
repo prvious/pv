@@ -23,11 +23,21 @@ type PlistConfig struct {
 }
 
 // DefaultPlistConfig returns a PlistConfig populated from the current environment.
+// The pv binary path is resolved from the running executable so the plist works
+// regardless of where pv was installed (e.g. ~/.local/bin, /usr/local/bin).
 func DefaultPlistConfig() PlistConfig {
 	pvDir := config.PvDir()
+
+	pvBinary := filepath.Join(config.BinDir(), "pv")
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			pvBinary = resolved
+		}
+	}
+
 	return PlistConfig{
 		Label:        Label,
-		PvBinaryPath: filepath.Join(config.BinDir(), "pv"),
+		PvBinaryPath: pvBinary,
 		LogDir:       config.LogsDir(),
 		HomeDir:      pvDir,
 		RunAtLoad:    false,
