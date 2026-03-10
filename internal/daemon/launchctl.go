@@ -32,7 +32,11 @@ func Uninstall() error {
 func Load() error {
 	out, err := exec.Command("launchctl", "load", PlistPath()).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("cannot start pv service: %s", strings.TrimSpace(string(out)))
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("cannot start pv service: %w (%s)", err, output)
+		}
+		return fmt.Errorf("cannot start pv service: %w", err)
 	}
 	return nil
 }
@@ -41,16 +45,24 @@ func Load() error {
 func Unload() error {
 	out, err := exec.Command("launchctl", "unload", PlistPath()).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("cannot stop pv service: %s", strings.TrimSpace(string(out)))
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("cannot stop pv service: %w (%s)", err, output)
+		}
+		return fmt.Errorf("cannot stop pv service: %w", err)
 	}
 	return nil
 }
 
-// Restart asks launchd to kill and restart the pv service in one atomic operation.
+// Restart asks launchd to kill and re-launch the pv service via kickstart -k.
 func Restart() error {
 	out, err := exec.Command("launchctl", "kickstart", "-k", serviceTarget()).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("cannot restart pv service: %s", strings.TrimSpace(string(out)))
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("cannot restart pv service: %w (%s)", err, output)
+		}
+		return fmt.Errorf("cannot restart pv service: %w", err)
 	}
 	return nil
 }

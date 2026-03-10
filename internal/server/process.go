@@ -51,9 +51,13 @@ func Start(tld string) error {
 	dnsServer := NewDNSServer(tld)
 	dnsErr := make(chan error, 1)
 	go func() { dnsErr <- dnsServer.Start() }()
-	defer dnsServer.Shutdown()
+	defer func() {
+		if err := dnsServer.Shutdown(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: DNS server shutdown error: %v\n", err)
+		}
+	}()
 
-	fmt.Printf("DNS server listening on %s\n", dnsServer.Addr)
+	fmt.Fprintf(os.Stderr, "DNS server listening on %s\n", dnsServer.Addr)
 
 	// Start main FrankenPHP.
 	mainFP, err := StartFrankenPHP()
@@ -62,22 +66,22 @@ func Start(tld string) error {
 	}
 	defer mainFP.Stop()
 
-	fmt.Println("FrankenPHP started")
-	fmt.Printf("Serving .%s domains on https (port 443) and http (port 80)\n", tld)
+	fmt.Fprintln(os.Stderr, "FrankenPHP started")
+	fmt.Fprintf(os.Stderr, "Serving .%s domains on https (port 443) and http (port 80)\n", tld)
 
 	// Start secondary FrankenPHP instances for non-global PHP versions.
 	activeVersions := caddy.ActiveVersions(reg.List(), globalPHP)
 	var secondaries []*FrankenPHP
 	for version := range activeVersions {
 		port := config.PortForVersion(version)
-		fmt.Printf("Starting FrankenPHP for PHP %s on port %d...\n", version, port)
+		fmt.Fprintf(os.Stderr, "Starting FrankenPHP for PHP %s on port %d...\n", version, port)
 		fp, err := StartVersionFrankenPHP(version)
 		if err != nil {
-			fmt.Printf("Warning: cannot start FrankenPHP for PHP %s: %v\n", version, err)
+			fmt.Fprintf(os.Stderr, "Warning: cannot start FrankenPHP for PHP %s: %v\n", version, err)
 			continue
 		}
 		secondaries = append(secondaries, fp)
-		fmt.Printf("FrankenPHP (PHP %s) started on port %d\n", version, port)
+		fmt.Fprintf(os.Stderr, "FrankenPHP (PHP %s) started on port %d\n", version, port)
 	}
 	defer func() {
 		for _, fp := range secondaries {
@@ -107,6 +111,7 @@ func Start(tld string) error {
 	// Wait for signals or child exit.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	return waitForEvent(sigCh, dnsErr, mainFP, secondaries)
 }
@@ -125,7 +130,7 @@ func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP, s
 			select {
 			case err := <-f.Done():
 				if err != nil {
-					fmt.Printf("FrankenPHP (PHP %s) exited: %v\n", f.Version(), err)
+					fmt.Fprintf(os.Stderr, "FrankenPHP (PHP %s) exited: %v\n", f.Version(), err)
 				}
 				select {
 				case merged <- f.Version():
@@ -138,23 +143,25 @@ func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP, s
 
 	select {
 	case sig := <-sigCh:
-		fmt.Printf("\nReceived %s, shutting down...\n", sig)
+		fmt.Fprintf(os.Stderr, "\nReceived %s, shutting down...\n", sig)
+		return nil
 	case err := <-dnsErr:
 		if err != nil {
-			fmt.Printf("DNS server error: %v\n", err)
+			return fmt.Errorf("DNS server failed: %w", err)
 		}
+		return fmt.Errorf("DNS server exited unexpectedly")
 	case err := <-mainFP.Done():
 		if err != nil {
-			fmt.Printf("FrankenPHP exited: %v\n", err)
+			return fmt.Errorf("FrankenPHP exited unexpectedly: %w", err)
 		}
+		return fmt.Errorf("FrankenPHP exited unexpectedly")
 	case v := <-merged:
-		fmt.Printf("Secondary FrankenPHP (PHP %s) exited\n", v)
+		return fmt.Errorf("secondary FrankenPHP (PHP %s) exited unexpectedly", v)
 	}
-	return nil
 }
 
 // ReconfigureServer regenerates all caddy configs and restarts/reloads as needed.
-// Called after pv use, pv link, pv unlink when the server is running.
+// Called after pv link, pv unlink, and watcher-triggered config changes.
 func ReconfigureServer() error {
 	settings, err := config.LoadSettings()
 	if err != nil {
@@ -203,7 +210,9 @@ func writePID() error {
 }
 
 func removePID() {
-	os.Remove(config.PidFilePath())
+	if err := os.Remove(config.PidFilePath()); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: cannot remove PID file: %v\n", err)
+	}
 }
 
 // handleWatcherEvents processes pv.yml change events, re-resolves PHP versions,
@@ -227,6 +236,9 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 			if v, err := phpenv.ResolveVersion(event.ProjectPath); err == nil && v != "" {
 				newPHP = v
 			} else {
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Watcher: cannot resolve PHP version for %s: %v (falling back to global)\n", event.ProjectName, err)
+				}
 				newPHP = globalPHP
 			}
 		}
