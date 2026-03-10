@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/miekg/dns"
 	"github.com/prvious/pv/internal/config"
@@ -63,5 +64,11 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
-	w.WriteMsg(msg)
+	if err := w.WriteMsg(msg); err != nil {
+		qname := "(unknown)"
+		if len(r.Question) > 0 {
+			qname = r.Question[0].Name
+		}
+		fmt.Fprintf(os.Stderr, "DNS: failed to write response for %s: %v\n", qname, err)
+	}
 }

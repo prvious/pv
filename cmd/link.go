@@ -9,6 +9,7 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
@@ -190,11 +191,19 @@ pv link --name=myapp ~/Code/myapp`,
 		}
 
 		if server.IsRunning() {
-			if err := server.ReconfigureServer(); err != nil {
-				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
-			}
-			if phpVersion != "" && phpVersion != globalPHP {
-				ui.Subtle("Restart the server to serve this project: pv stop && pv start")
+			needsRestart := phpVersion != "" && phpVersion != globalPHP
+			if needsRestart && daemon.IsLoaded() {
+				// Daemon mode: full process restart so the relaunched server spawns a secondary FrankenPHP.
+				if err := daemon.Restart(); err != nil {
+					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
+				}
+			} else {
+				if err := server.ReconfigureServer(); err != nil {
+					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
+				}
+				if needsRestart {
+					ui.Subtle("Stop and restart the server to serve this project: pv stop && pv start")
+				}
 			}
 		}
 
