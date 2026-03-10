@@ -186,10 +186,20 @@ func TestSettings_SaveWithPHPOnlyDefaultsTLD(t *testing.T) {
 	}
 }
 
+func TestDefaultSettings_HasInstallPHPVersion(t *testing.T) {
+	s := DefaultSettings()
+	if s.Automation.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q", s.Automation.InstallPHPVersion, AutoOn)
+	}
+}
+
 func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	s := DefaultSettings()
 
 	a := s.Automation
+	if a.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
+	}
 	if a.ComposerInstall != AutoOn {
 		t.Errorf("ComposerInstall = %q, want %q", a.ComposerInstall, AutoOn)
 	}
@@ -268,6 +278,9 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 
 	a := loaded.Automation
+	if a.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
+	}
 	if a.ComposerInstall != AutoOn {
 		t.Errorf("ComposerInstall = %q, want %q", a.ComposerInstall, AutoOn)
 	}

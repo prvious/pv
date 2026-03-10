@@ -169,6 +169,20 @@ func TestRunPipeline_AskSkipsWhenDenied(t *testing.T) {
 	}
 }
 
+func TestLookupGate_InstallPHPVersion(t *testing.T) {
+	a := config.DefaultAutomation()
+	mode := LookupGate(&a, "install_php_version")
+	if mode != config.AutoOn {
+		t.Errorf("LookupGate(install_php_version) = %q, want %q", mode, config.AutoOn)
+	}
+
+	a.InstallPHPVersion = config.AutoAsk
+	mode = LookupGate(&a, "install_php_version")
+	if mode != config.AutoAsk {
+		t.Errorf("LookupGate(install_php_version) = %q, want %q", mode, config.AutoAsk)
+	}
+}
+
 func TestLookupGate(t *testing.T) {
 	a := config.DefaultAutomation()
 
@@ -176,6 +190,7 @@ func TestLookupGate(t *testing.T) {
 		gate string
 		want config.AutoMode
 	}{
+		{"install_php_version", a.InstallPHPVersion},
 		{"composer_install", a.ComposerInstall},
 		{"copy_env", a.CopyEnv},
 		{"generate_key", a.GenerateKey},
