@@ -8,6 +8,7 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
@@ -46,12 +47,13 @@ pv unlink`,
 			name = p.Name
 		}
 
-		// Check project exists before removing and capture path for unwatching.
+		// Check project exists before removing and capture details for cleanup.
 		project := reg.Find(name)
 		if project == nil {
 			return fmt.Errorf("project %q is not linked", name)
 		}
 		projectPath := project.Path
+		projectPHP := project.PHP
 
 		if err := reg.Remove(name); err != nil {
 			return err
@@ -87,8 +89,26 @@ pv unlink`,
 		ui.Success(fmt.Sprintf("Unlinked %s", ui.Purple.Bold(true).Render(domain)))
 
 		if server.IsRunning() {
-			if err := server.ReconfigureServer(); err != nil {
-				ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
+			// Check if unlinking this project orphans a secondary FrankenPHP.
+			globalPHP := ""
+			if settings != nil {
+				globalPHP = settings.Defaults.PHP
+			}
+			hadSecondary := projectPHP != "" && projectPHP != globalPHP
+			versionOrphaned := hadSecondary && !caddy.ActiveVersions(reg.List(), globalPHP)[projectPHP]
+
+			if versionOrphaned && daemon.IsLoaded() {
+				// Daemon mode: full restart to stop orphaned secondary FrankenPHP.
+				if err := daemon.Restart(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
+				}
+			} else {
+				if err := server.ReconfigureServer(); err != nil {
+					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
+				}
+				if versionOrphaned {
+					ui.Subtle("Restart the server to clean up unused PHP processes: pv restart")
+				}
 			}
 		}
 
