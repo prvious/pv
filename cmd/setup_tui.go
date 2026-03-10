@@ -96,10 +96,7 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// When editing the TLD input, capture all keys there.
 		if m.editing {
 			switch key {
-			case "esc":
-				m.editing = false
-				return m, nil
-			case "enter":
+			case "esc", "enter":
 				m.editing = false
 				return m, nil
 			default:
@@ -429,29 +426,9 @@ func setupInactiveTab() lipgloss.Style {
 
 // Result extraction.
 
-func (m setupModel) selectedPHPValues() []string {
+func selectedValues(opts []selectOption) []string {
 	var result []string
-	for _, opt := range m.phpOptions {
-		if opt.selected {
-			result = append(result, opt.value)
-		}
-	}
-	return result
-}
-
-func (m setupModel) selectedToolValues() []string {
-	var result []string
-	for _, opt := range m.toolOptions {
-		if opt.selected {
-			result = append(result, opt.value)
-		}
-	}
-	return result
-}
-
-func (m setupModel) selectedServiceValues() []string {
-	var result []string
-	for _, opt := range m.svcOptions {
+	for _, opt := range opts {
 		if opt.selected {
 			result = append(result, opt.value)
 		}
