@@ -18,8 +18,9 @@ const (
 )
 
 type Defaults struct {
-	PHP string `yaml:"php,omitempty"`
-	TLD string `yaml:"tld"`
+	PHP    string `yaml:"php,omitempty"`
+	TLD    string `yaml:"tld"`
+	Daemon *bool  `yaml:"daemon,omitempty"`
 }
 
 // Automation controls which link-time steps run automatically.
@@ -94,9 +95,21 @@ func applyAutomationDefaults(a *Automation) {
 	}
 }
 
+// DaemonEnabled returns whether the daemon should be enabled.
+// Defaults to true when not set.
+func (d Defaults) DaemonEnabled() bool {
+	if d.Daemon == nil {
+		return true
+	}
+	return *d.Daemon
+}
+
+// BoolPtr returns a pointer to a bool value.
+func BoolPtr(b bool) *bool { return &b }
+
 func DefaultSettings() *Settings {
 	return &Settings{
-		Defaults:   Defaults{TLD: "test"},
+		Defaults:   Defaults{TLD: "test", Daemon: BoolPtr(true)},
 		Automation: DefaultAutomation(),
 	}
 }
@@ -116,6 +129,9 @@ func LoadSettings() (*Settings, error) {
 	}
 	if s.Defaults.TLD == "" {
 		s.Defaults.TLD = "test"
+	}
+	if s.Defaults.Daemon == nil {
+		s.Defaults.Daemon = BoolPtr(true)
 	}
 	applyAutomationDefaults(&s.Automation)
 	return &s, nil
