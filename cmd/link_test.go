@@ -475,6 +475,87 @@ func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
 	}
 }
 
+func TestLink_AutoOffWarnsButLinksWithMissingVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := config.DefaultSettings()
+	s.Defaults.PHP = "8.4"
+	s.Automation.InstallPHPVersion = config.AutoOff
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save settings error = %v", err)
+	}
+
+	// Fake that 8.4 is installed (global).
+	versionDir := config.PhpVersionDir("8.4")
+	if err := os.MkdirAll(versionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "frankenphp"), []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project requests 8.3, which is NOT installed.
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "offtest"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v (AutoOff should warn, not fail)", err)
+	}
+
+	reg, _ := registry.Load()
+	p := reg.Find("offtest")
+	if p == nil {
+		t.Fatal("project not found — AutoOff should still link")
+	}
+	if p.PHP != "8.3" {
+		t.Errorf("PHP = %q, want %q", p.PHP, "8.3")
+	}
+}
+
+func TestLink_SkipsInstallWhenNonGlobalVersionIsInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := config.DefaultSettings()
+	s.Defaults.PHP = "8.4"
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save settings error = %v", err)
+	}
+
+	// Fake both versions installed.
+	for _, ver := range []string{"8.4", "8.3"} {
+		versionDir := config.PhpVersionDir(ver)
+		if err := os.MkdirAll(versionDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(versionDir, "frankenphp"), []byte("fake"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Project requests 8.3 (non-global but installed).
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.3\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "installedtest"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	reg, _ := registry.Load()
+	p := reg.Find("installedtest")
+	if p == nil {
+		t.Fatal("project not found")
+	}
+	if p.PHP != "8.3" {
+		t.Errorf("PHP = %q, want %q", p.PHP, "8.3")
+	}
+}
+
 func TestLink_SkipsInstallWhenVersionIsGlobal(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s := config.DefaultSettings()

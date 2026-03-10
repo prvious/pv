@@ -102,7 +102,7 @@ pv link --name=myapp ~/Code/myapp`,
 				} else {
 					ui.Subtle(fmt.Sprintf("PHP %s is not installed (non-interactive). Site may not work until installed.", phpVersion))
 				}
-			default: // AutoOn
+			case config.AutoOn:
 				if err := php.RunInstall([]string{phpVersion}); err != nil {
 					return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
 				}
