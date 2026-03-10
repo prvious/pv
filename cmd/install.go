@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/commands/composer"
+	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/commands/service"
@@ -175,7 +176,17 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			return err
 		}
 
-		// Step 7: Install services from --with.
+		// Step 7: Enable daemon (default: true, configurable via settings).
+		settings, loadErr := config.LoadSettings()
+		if loadErr == nil && settings.Defaults.DaemonEnabled() {
+			if err := daemoncmds.RunEnable(); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Daemon setup failed: %v", err))
+				}
+			}
+		}
+
+		// Step 8: Install services from --with.
 		for _, svc := range spec.services {
 			svcArgs := []string{svc.name}
 			if svc.version != "" {

@@ -33,8 +33,9 @@ type setupModel struct {
 	tld            string
 	tldCursor      int
 	editing        bool // Whether the TLD input is in edit mode.
+	daemon         bool
 	automation     config.Automation
-	settingsCursor int // 0=TLD, 1..N=automation items
+	settingsCursor int // 0=TLD, 1=daemon, 2..N+1=automation items
 
 	confirmed bool
 	quitting  bool
@@ -67,7 +68,7 @@ func cycleAutoMode(m config.AutoMode) config.AutoMode {
 	}
 }
 
-func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string, automation config.Automation) setupModel {
+func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string, daemon bool, automation config.Automation) setupModel {
 	return setupModel{
 		tabs:        []string{"PHP Versions", "Tools", "Services", "Settings"},
 		phpOptions:  phpOpts,
@@ -75,6 +76,7 @@ func newSetupModel(phpOpts, toolOpts, svcOpts []selectOption, tld string, automa
 		svcOptions:  svcOpts,
 		tld:         tld,
 		tldCursor:   len(tld),
+		daemon:      daemon,
 		automation:  automation,
 		width:       80,
 	}
@@ -140,12 +142,14 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsCursor--
 				}
 			case "down", "j":
-				if m.settingsCursor < len(automationItems) {
+				if m.settingsCursor < len(automationItems)+1 {
 					m.settingsCursor++
 				}
 			case " ", "space", "x":
-				if m.settingsCursor > 0 {
-					idx := m.settingsCursor - 1
+				if m.settingsCursor == 1 {
+					m.daemon = !m.daemon
+				} else if m.settingsCursor > 1 {
+					idx := m.settingsCursor - 2
 					current := automationItems[idx].get(&m.automation)
 					automationItems[idx].set(&m.automation, cycleAutoMode(current))
 				}
@@ -259,7 +263,7 @@ func (m setupModel) View() tea.View {
 	case 2:
 		content = renderSetupMultiSelect("Select backing services to set up:", m.svcOptions, m.svcCursor)
 	case 3:
-		content = renderSettingsTab(m.tld, m.tldCursor, m.editing, &m.automation, m.settingsCursor)
+		content = renderSettingsTab(m.tld, m.tldCursor, m.editing, m.daemon, &m.automation, m.settingsCursor)
 	}
 
 	windowStyle := lipgloss.NewStyle().
@@ -279,6 +283,8 @@ func (m setupModel) View() tea.View {
 		doc.WriteString(helpStyle.Render("type to edit • ←/→ move cursor • enter/esc stop editing"))
 	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 0:
 		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • e to edit TLD • enter confirm • esc quit"))
+	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 1:
+		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space toggle • enter confirm • esc quit"))
 	case m.activeTab == len(m.tabs)-1:
 		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space cycle • enter confirm • esc quit"))
 	default:
@@ -319,10 +325,11 @@ func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string
 	return b.String()
 }
 
-func renderSettingsTab(tld string, tldCursor int, editing bool, automation *config.Automation, settingsCursor int) string {
+func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, automation *config.Automation, settingsCursor int) string {
 	var b strings.Builder
 	cursorStyle := lipgloss.NewStyle().Foreground(highlightColor).Bold(true)
 	faintStyle := lipgloss.NewStyle().Faint(true)
+	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
 
 	// --- TLD section ---
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Domain"))
@@ -355,6 +362,23 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, automation *conf
 		}
 	}
 
+	// --- Daemon section ---
+	b.WriteString("\n\n")
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Daemon"))
+	b.WriteString("\n")
+	b.WriteString(faintStyle.Render("Start pv automatically on login"))
+	b.WriteString("\n\n")
+
+	prefix = "  "
+	if settingsCursor == 1 {
+		prefix = cursorStyle.Render("> ")
+	}
+	if daemon {
+		b.WriteString(prefix + greenStyle.Render("true"))
+	} else {
+		b.WriteString(prefix + faintStyle.Render("false"))
+	}
+
 	// --- Automation section ---
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Automation"))
@@ -362,7 +386,6 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, automation *conf
 	b.WriteString(faintStyle.Render("Configure which steps run during pv link"))
 	b.WriteString("\n\n")
 
-	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
 	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(3))
 
 	// Find longest label for alignment.
@@ -375,7 +398,7 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, automation *conf
 
 	for i, item := range automationItems {
 		prefix := "  "
-		if settingsCursor == i+1 {
+		if settingsCursor == i+2 {
 			prefix = cursorStyle.Render("> ")
 		}
 

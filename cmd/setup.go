@@ -11,6 +11,7 @@ import (
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/commands/composer"
+	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
@@ -80,11 +81,12 @@ var setupCmd = &cobra.Command{
 			settings = config.DefaultSettings()
 		}
 		tld := settings.Defaults.TLD
+		daemon := settings.Defaults.DaemonEnabled()
 		automation := settings.Automation
 
 		// Run the tabbed setup wizard.
 		result, err := tea.NewProgram(
-			newSetupModel(phpOpts, toolOpts, svcOpts, tld, automation),
+			newSetupModel(phpOpts, toolOpts, svcOpts, tld, daemon, automation),
 			tea.WithOutput(os.Stderr),
 		).Run()
 		if err != nil {
@@ -103,6 +105,7 @@ var setupCmd = &cobra.Command{
 		selectedTools := selectedValues(final.toolOptions)
 		selectedServices := selectedValues(final.svcOptions)
 		tld = final.tld
+		daemon = final.daemon
 		automation = final.automation
 
 		fmt.Fprintln(os.Stderr)
@@ -126,7 +129,7 @@ var setupCmd = &cobra.Command{
 
 		// Build settings from wizard output, preserving existing PHP default.
 		s := &config.Settings{
-			Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP},
+			Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon)},
 			Automation: automation,
 		}
 		if err := s.Save(); err != nil {
@@ -204,6 +207,15 @@ var setupCmd = &cobra.Command{
 		// Finalize: Caddyfile, DNS, CA trust, shell PATH.
 		if err := bootstrapFinalize(tld); err != nil {
 			return err
+		}
+
+		// Enable daemon if selected.
+		if daemon {
+			if err := daemoncmds.RunEnable(); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Daemon setup failed: %v", err))
+				}
+			}
 		}
 
 		// Spin up selected services.

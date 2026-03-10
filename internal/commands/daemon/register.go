@@ -8,6 +8,10 @@ func Register(parent *cobra.Command) {
 	parent.AddCommand(restartCmd)
 }
 
+func RunEnable() error {
+	return enableCmd.RunE(enableCmd, nil)
+}
+
 func RunRestart() error {
 	return restartCmd.RunE(restartCmd, nil)
 }
