@@ -17,6 +17,22 @@ go test ./cmd/ -run TestLink   # pattern match
 
 Build version is set via `go build -ldflags "-X github.com/prvious/pv/cmd.version=1.0.0"` — defaults to `"dev"`.
 
+## Lint & format
+
+Run after every change, before committing:
+
+```bash
+gofmt -w .                     # format all files
+go vet ./...                   # catch common mistakes
+go build ./...                 # verify compilation
+go test ./...                  # run tests
+```
+
+**Hard rules:**
+1. All code must be `gofmt`-formatted. No exceptions.
+2. `go vet` must pass clean. Fix all warnings before committing.
+3. Imports must be alphabetically ordered within each group (stdlib, then external). `gofmt` does not sort imports — manually keep them ordered.
+
 ## Command conventions
 
 - **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `service:add`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.

@@ -25,15 +25,15 @@ type Defaults struct {
 
 // Automation controls which link-time steps run automatically.
 type Automation struct {
-	ComposerInstall AutoMode `yaml:"composer_install,omitempty"`
-	CopyEnv         AutoMode `yaml:"copy_env,omitempty"`
-	GenerateKey     AutoMode `yaml:"generate_key,omitempty"`
-	SetAppURL       AutoMode `yaml:"set_app_url,omitempty"`
-	InstallOctane   AutoMode `yaml:"install_octane,omitempty"`
-	CreateDatabase  AutoMode `yaml:"create_database,omitempty"`
-	RunMigrations   AutoMode `yaml:"run_migrations,omitempty"`
+	ComposerInstall  AutoMode `yaml:"composer_install,omitempty"`
+	CopyEnv          AutoMode `yaml:"copy_env,omitempty"`
+	GenerateKey      AutoMode `yaml:"generate_key,omitempty"`
+	SetAppURL        AutoMode `yaml:"set_app_url,omitempty"`
+	InstallOctane    AutoMode `yaml:"install_octane,omitempty"`
+	CreateDatabase   AutoMode `yaml:"create_database,omitempty"`
+	RunMigrations    AutoMode `yaml:"run_migrations,omitempty"`
 	ServiceEnvUpdate AutoMode `yaml:"update_env_on_service,omitempty"`
-	ServiceFallback AutoMode `yaml:"service_fallback,omitempty"`
+	ServiceFallback  AutoMode `yaml:"service_fallback,omitempty"`
 }
 
 type Settings struct {

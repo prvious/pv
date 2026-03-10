@@ -16,8 +16,8 @@ type stubStep struct {
 	ran       bool
 }
 
-func (s *stubStep) Label() string           { return s.label }
-func (s *stubStep) Gate() string            { return s.gate }
+func (s *stubStep) Label() string             { return s.label }
+func (s *stubStep) Gate() string              { return s.gate }
 func (s *stubStep) ShouldRun(_ *Context) bool { return s.shouldRun }
 func (s *stubStep) Run(_ *Context) (string, error) {
 	s.ran = true
