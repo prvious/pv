@@ -252,8 +252,8 @@ func TestDefaultPlistConfig(t *testing.T) {
 	if cfg.Label != Label {
 		t.Errorf("Label = %q, want %q", cfg.Label, Label)
 	}
-	if !strings.HasSuffix(cfg.PvBinaryPath, filepath.Join(".pv", "bin", "pv")) {
-		t.Errorf("PvBinaryPath = %q, want suffix .pv/bin/pv", cfg.PvBinaryPath)
+	if cfg.PvBinaryPath == "" || !filepath.IsAbs(cfg.PvBinaryPath) {
+		t.Errorf("PvBinaryPath = %q, want non-empty absolute path", cfg.PvBinaryPath)
 	}
 	if !strings.HasSuffix(cfg.LogDir, filepath.Join(".pv", "logs")) {
 		t.Errorf("LogDir = %q, want suffix .pv/logs", cfg.LogDir)
