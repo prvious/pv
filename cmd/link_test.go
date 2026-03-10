@@ -474,3 +474,41 @@ func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
 		t.Errorf("APP_KEY = %q, want %q", env["APP_KEY"], "base64:existingkey")
 	}
 }
+
+func TestLink_SkipsInstallWhenVersionIsGlobal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s := config.DefaultSettings()
+	s.Defaults.PHP = "8.4"
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save settings error = %v", err)
+	}
+
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte("php: \"8.4\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake that 8.4 is installed by creating the frankenphp binary.
+	versionDir := config.PhpVersionDir("8.4")
+	if err := os.MkdirAll(versionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "frankenphp"), []byte("fake"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir, "--name", "globalver"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("link command error = %v", err)
+	}
+
+	reg, _ := registry.Load()
+	p := reg.Find("globalver")
+	if p == nil {
+		t.Fatal("project not found")
+	}
+	if p.PHP != "8.4" {
+		t.Errorf("PHP = %q, want %q", p.PHP, "8.4")
+	}
+}
