@@ -215,6 +215,7 @@ var setupCmd = &cobra.Command{
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Daemon setup failed: %v", err))
 				}
+				ui.Subtle("Run 'pv daemon:enable' to retry.")
 			}
 		}
 

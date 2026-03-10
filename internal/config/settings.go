@@ -130,6 +130,9 @@ func LoadSettings() (*Settings, error) {
 	if s.Defaults.TLD == "" {
 		s.Defaults.TLD = "test"
 	}
+	if s.Defaults.Daemon == nil {
+		s.Defaults.Daemon = BoolPtr(true)
+	}
 	applyAutomationDefaults(&s.Automation)
 	return &s, nil
 }

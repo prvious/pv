@@ -35,7 +35,7 @@ type setupModel struct {
 	editing        bool // Whether the TLD input is in edit mode.
 	daemon         bool
 	automation     config.Automation
-	settingsCursor int // 0=TLD, 1=daemon, 2..N+1=automation items
+	settingsCursor int // Indexes: 0=TLD, 1=daemon, i+2=automationItems[i]
 
 	confirmed bool
 	quitting  bool

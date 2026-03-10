@@ -176,13 +176,18 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			return err
 		}
 
-		// Step 7: Enable daemon (default: true, configurable via settings).
+		// Step 7: Enable daemon unless explicitly disabled in ~/.pv/pv.yml.
 		settings, loadErr := config.LoadSettings()
-		if loadErr == nil && settings.Defaults.DaemonEnabled() {
+		if loadErr != nil {
+			ui.Subtle(fmt.Sprintf("Warning: could not load settings for daemon setup: %v", loadErr))
+			settings = config.DefaultSettings()
+		}
+		if settings.Defaults.DaemonEnabled() {
 			if err := daemoncmds.RunEnable(); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Daemon setup failed: %v", err))
 				}
+				ui.Subtle("Run 'pv daemon:enable' to retry.")
 			}
 		}
 
