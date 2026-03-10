@@ -72,8 +72,11 @@ pv unlink`,
 			return fmt.Errorf("cannot generate Caddyfile: %w", err)
 		}
 
-		settings, _ := config.LoadSettings()
+		settings, settingsErr := config.LoadSettings()
 		tld := "test"
+		if settingsErr != nil {
+			ui.Subtle(fmt.Sprintf("Could not load settings: %v", settingsErr))
+		}
 		if settings != nil {
 			tld = settings.Defaults.TLD
 		}
@@ -89,7 +92,8 @@ pv unlink`,
 		ui.Success(fmt.Sprintf("Unlinked %s", ui.Purple.Bold(true).Render(domain)))
 
 		if server.IsRunning() {
-			// Check if unlinking this project orphans a secondary FrankenPHP.
+			// Check if unlinking this project orphans a secondary FrankenPHP
+			// (no remaining projects use its PHP version).
 			globalPHP := ""
 			if settings != nil {
 				globalPHP = settings.Defaults.PHP
@@ -98,16 +102,16 @@ pv unlink`,
 			versionOrphaned := hadSecondary && !caddy.ActiveVersions(reg.List(), globalPHP)[projectPHP]
 
 			if versionOrphaned && daemon.IsLoaded() {
-				// Daemon mode: full restart to stop orphaned secondary FrankenPHP.
+				// Daemon mode: full process restart so the relaunched server no longer spawns the unneeded secondary.
 				if err := daemon.Restart(); err != nil {
-					ui.Subtle(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
+					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
 				}
 			} else {
 				if err := server.ReconfigureServer(); err != nil {
 					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 				}
 				if versionOrphaned {
-					ui.Subtle("Restart the server to clean up unused PHP processes: pv restart")
+					ui.Subtle("Stop and restart the server to clean up unused PHP processes: pv stop && pv start")
 				}
 			}
 		}

@@ -9,10 +9,10 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
-	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
@@ -193,16 +193,16 @@ pv link --name=myapp ~/Code/myapp`,
 		if server.IsRunning() {
 			needsRestart := phpVersion != "" && phpVersion != globalPHP
 			if needsRestart && daemon.IsLoaded() {
-				// Daemon mode: full restart to spawn secondary FrankenPHP for new PHP version.
+				// Daemon mode: full process restart so the relaunched server spawns a secondary FrankenPHP.
 				if err := daemon.Restart(); err != nil {
-					ui.Subtle(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
+					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
 				}
 			} else {
 				if err := server.ReconfigureServer(); err != nil {
 					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
 				}
 				if needsRestart {
-					ui.Subtle("Restart the server to serve this project: pv restart")
+					ui.Subtle("Stop and restart the server to serve this project: pv stop && pv start")
 				}
 			}
 		}

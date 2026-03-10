@@ -65,6 +65,10 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	if err := w.WriteMsg(msg); err != nil {
-		fmt.Fprintf(os.Stderr, "DNS: failed to write response for %s: %v\n", r.Question[0].Name, err)
+		qname := "(unknown)"
+		if len(r.Question) > 0 {
+			qname = r.Question[0].Name
+		}
+		fmt.Fprintf(os.Stderr, "DNS: failed to write response for %s: %v\n", qname, err)
 	}
 }

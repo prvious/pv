@@ -120,7 +120,7 @@ func Start(tld string) error {
 func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP, secondaries []*FrankenPHP) error {
 	// Since Go doesn't support dynamic select, we merge secondary done channels
 	// into a single channel.
-	merged := make(chan string, 1) // version string or "" for non-secondary event
+	merged := make(chan string, 1) // version string of the exited secondary
 	done := make(chan struct{})
 	defer close(done)
 
@@ -160,8 +160,8 @@ func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP, s
 	}
 }
 
-// ReconfigureServer regenerates all caddy configs and restarts/reloads as needed.
-// Called after pv link, pv unlink, and watcher-triggered config changes.
+// ReconfigureServer regenerates all caddy configs and reloads the main FrankenPHP via its admin API.
+// Called after pv link, pv unlink, pv restart (foreground mode), and watcher-triggered config changes.
 func ReconfigureServer() error {
 	settings, err := config.LoadSettings()
 	if err != nil {
