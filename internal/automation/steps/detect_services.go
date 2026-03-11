@@ -3,6 +3,7 @@ package steps
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/prvious/pv/internal/automation"
@@ -78,7 +79,7 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	for i := range ctx.Registry.Projects {
 		if ctx.Registry.Projects[i].Name == ctx.ProjectName && ctx.Registry.Projects[i].Services != nil {
 			if ctx.Registry.Projects[i].Services.MySQL != "" || ctx.Registry.Projects[i].Services.Postgres != "" {
-				if !containsStr(ctx.Registry.Projects[i].Databases, dbName) {
+				if !slices.Contains(ctx.Registry.Projects[i].Databases, dbName) {
 					ctx.Registry.Projects[i].Databases = append(ctx.Registry.Projects[i].Databases, dbName)
 				}
 			}
@@ -131,13 +132,4 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 		}
 		break
 	}
-}
-
-func containsStr(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
