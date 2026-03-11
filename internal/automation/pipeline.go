@@ -123,6 +123,14 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 		return a.ServiceEnvUpdate
 	case "service_fallback":
 		return a.ServiceFallback
+	case "generate_site_config":
+		return a.GenerateSiteConfig
+	case "generate_caddyfile":
+		return a.GenerateCaddyfile
+	case "generate_tls_cert":
+		return a.GenerateTLSCert
+	case "detect_services":
+		return a.DetectServices
 	default:
 		fmt.Fprintf(os.Stderr, "Warning: unknown automation gate %q, defaulting to ask\n", gate)
 		return config.AutoAsk

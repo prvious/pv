@@ -227,6 +227,18 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
+	if a.GenerateSiteConfig != AutoOn {
+		t.Errorf("GenerateSiteConfig = %q, want %q", a.GenerateSiteConfig, AutoOn)
+	}
+	if a.GenerateCaddyfile != AutoOn {
+		t.Errorf("GenerateCaddyfile = %q, want %q", a.GenerateCaddyfile, AutoOn)
+	}
+	if a.GenerateTLSCert != AutoOn {
+		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
+	}
+	if a.DetectServices != AutoOn {
+		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
+	}
 }
 
 func TestSettings_AutomationRoundTrip(t *testing.T) {
@@ -307,6 +319,18 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
+	}
+	if a.GenerateSiteConfig != AutoOn {
+		t.Errorf("GenerateSiteConfig = %q, want %q", a.GenerateSiteConfig, AutoOn)
+	}
+	if a.GenerateCaddyfile != AutoOn {
+		t.Errorf("GenerateCaddyfile = %q, want %q", a.GenerateCaddyfile, AutoOn)
+	}
+	if a.GenerateTLSCert != AutoOn {
+		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
+	}
+	if a.DetectServices != AutoOn {
+		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
 	}
 }
 

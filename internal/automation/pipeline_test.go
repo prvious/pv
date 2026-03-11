@@ -239,6 +239,10 @@ func TestLookupGate(t *testing.T) {
 		{"run_migrations", a.RunMigrations},
 		{"update_env_on_service", a.ServiceEnvUpdate},
 		{"service_fallback", a.ServiceFallback},
+		{"generate_site_config", a.GenerateSiteConfig},
+		{"generate_caddyfile", a.GenerateCaddyfile},
+		{"generate_tls_cert", a.GenerateTLSCert},
+		{"detect_services", a.DetectServices},
 		{"unknown_gate", config.AutoAsk},
 	}
 
