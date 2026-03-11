@@ -1,15 +1,18 @@
 package automation
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/registry"
 )
 
 // stubStep implements Step for testing.
 type stubStep struct {
 	label     string
 	gate      string
+	critical  bool
 	shouldRun bool
 	result    string
 	err       error
@@ -18,6 +21,7 @@ type stubStep struct {
 
 func (s *stubStep) Label() string             { return s.label }
 func (s *stubStep) Gate() string              { return s.gate }
+func (s *stubStep) Critical() bool            { return s.critical }
 func (s *stubStep) ShouldRun(_ *Context) bool { return s.shouldRun }
 func (s *stubStep) Run(_ *Context) (string, error) {
 	s.ran = true
@@ -26,15 +30,25 @@ func (s *stubStep) Run(_ *Context) (string, error) {
 
 func defaultCtx() *Context {
 	s := config.DefaultSettings()
+	reg, _ := registry.Load()
+	if reg == nil {
+		reg = &registry.Registry{}
+	}
 	return &Context{
 		ProjectPath: "/tmp/test-project",
 		ProjectName: "test-project",
 		Settings:    s,
+		Registry:    reg,
 		Env:         make(map[string]string),
 	}
 }
 
 func TestRunPipeline_SkipsWhenShouldRunFalse(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "skip me",
 		gate:      "composer_install",
@@ -52,6 +66,11 @@ func TestRunPipeline_SkipsWhenShouldRunFalse(t *testing.T) {
 }
 
 func TestRunPipeline_SkipsWhenGateOff(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "composer install",
 		gate:      "composer_install",
@@ -71,6 +90,11 @@ func TestRunPipeline_SkipsWhenGateOff(t *testing.T) {
 }
 
 func TestRunPipeline_RunsWhenGateOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "composer install",
 		gate:      "composer_install",
@@ -90,6 +114,11 @@ func TestRunPipeline_RunsWhenGateOn(t *testing.T) {
 }
 
 func TestRunPipeline_AskTreatedAsOffWhenNonInteractive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "run migrations",
 		gate:      "run_migrations",
@@ -114,6 +143,11 @@ func TestRunPipeline_AskTreatedAsOffWhenNonInteractive(t *testing.T) {
 }
 
 func TestRunPipeline_AskRunsWhenConfirmed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "run migrations",
 		gate:      "run_migrations",
@@ -142,6 +176,11 @@ func TestRunPipeline_AskRunsWhenConfirmed(t *testing.T) {
 }
 
 func TestRunPipeline_AskSkipsWhenDenied(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
 	step := &stubStep{
 		label:     "run migrations",
 		gate:      "run_migrations",
@@ -210,5 +249,65 @@ func TestLookupGate(t *testing.T) {
 				t.Errorf("LookupGate(%q) = %q, want %q", tt.gate, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunPipeline_AbortOnCriticalFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	criticalStep := &stubStep{
+		label:     "critical step",
+		gate:      "composer_install",
+		shouldRun: true,
+		critical:  true,
+		err:       fmt.Errorf("critical failure"),
+	}
+	nextStep := &stubStep{
+		label:     "next step",
+		gate:      "copy_env",
+		shouldRun: true,
+		result:    "done",
+	}
+
+	ctx := defaultCtx()
+	err := RunPipeline([]Step{criticalStep, nextStep}, ctx)
+	if err == nil {
+		t.Fatal("expected error from critical step failure")
+	}
+	if nextStep.ran {
+		t.Error("next step should not have run after critical failure")
+	}
+}
+
+func TestRunPipeline_ContinuesOnNonCriticalFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	failStep := &stubStep{
+		label:     "non-critical step",
+		gate:      "composer_install",
+		shouldRun: true,
+		critical:  false,
+		err:       fmt.Errorf("non-critical failure"),
+	}
+	nextStep := &stubStep{
+		label:     "next step",
+		gate:      "copy_env",
+		shouldRun: true,
+		result:    "done",
+	}
+
+	ctx := defaultCtx()
+	err := RunPipeline([]Step{failStep, nextStep}, ctx)
+	if err != nil {
+		t.Fatalf("non-critical failure should not abort pipeline: %v", err)
+	}
+	if !nextStep.ran {
+		t.Error("next step should have run after non-critical failure")
 	}
 }

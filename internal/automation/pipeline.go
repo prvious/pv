@@ -18,6 +18,7 @@ type Context struct {
 	ProjectName string
 	ProjectType string
 	PHPVersion  string
+	GlobalPHP   string
 	TLD         string
 	Registry    *registry.Registry
 	Settings    *config.Settings
@@ -29,6 +30,7 @@ type Context struct {
 type Step interface {
 	Label() string
 	Gate() string
+	Critical() bool
 	ShouldRun(ctx *Context) bool
 	Run(ctx *Context) (string, error)
 }
@@ -60,9 +62,9 @@ var ConfirmFunc = func(label string) (bool, error) {
 }
 
 // RunPipeline executes a sequence of Steps, respecting each step's gate
-// setting from the automation config. Individual step failures are displayed
-// by ui.Step (✗) but do not abort the pipeline — automation is best-effort.
-// Returns an error only if a user prompt is interrupted (Ctrl+C).
+// setting from the automation config. Non-critical step failures are displayed
+// by ui.Step (✗) but do not abort the pipeline. Critical step failures abort
+// immediately. The registry is saved at the end of a successful run.
 func RunPipeline(steps []Step, ctx *Context) error {
 	for _, step := range steps {
 		if !step.ShouldRun(ctx) {
@@ -87,13 +89,14 @@ func RunPipeline(steps []Step, ctx *Context) error {
 			}
 		}
 
-		// AutoOn (or AutoAsk confirmed) — run the step.
-		// Step failures are displayed by ui.Step (✗); continue with remaining steps.
-		_ = ui.Step(step.Label(), func() (string, error) {
+		err := ui.Step(step.Label(), func() (string, error) {
 			return step.Run(ctx)
 		})
+		if err != nil && step.Critical() {
+			return err
+		}
 	}
-	return nil
+	return ctx.Registry.Save()
 }
 
 // LookupGate maps a gate string to its AutoMode value in the Automation config.
