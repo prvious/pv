@@ -141,6 +141,19 @@ func (s *InstallOctaneStep) Run(ctx *automation.Context) (string, error) {
 	if err := OctaneInstall(ctx.ProjectPath, phpBin); err != nil {
 		return "", fmt.Errorf("artisan octane:install: %w", err)
 	}
+
+	// Re-detect project type after Octane installation.
+	if HasOctaneWorker(ctx.ProjectPath) && ctx.ProjectType != "laravel-octane" {
+		ctx.ProjectType = "laravel-octane"
+		// Update registry to reflect the new type.
+		for i := range ctx.Registry.Projects {
+			if ctx.Registry.Projects[i].Name == ctx.ProjectName {
+				ctx.Registry.Projects[i].Type = "laravel-octane"
+				break
+			}
+		}
+	}
+
 	return "Octane installed with FrankenPHP", nil
 }
 
