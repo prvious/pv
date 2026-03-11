@@ -30,15 +30,11 @@ func (s *stubStep) Run(_ *Context) (string, error) {
 
 func defaultCtx() *Context {
 	s := config.DefaultSettings()
-	reg, _ := registry.Load()
-	if reg == nil {
-		reg = &registry.Registry{}
-	}
 	return &Context{
 		ProjectPath: "/tmp/test-project",
 		ProjectName: "test-project",
 		Settings:    s,
-		Registry:    reg,
+		Registry:    &registry.Registry{},
 		Env:         make(map[string]string),
 	}
 }

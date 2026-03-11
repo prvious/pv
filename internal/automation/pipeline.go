@@ -75,9 +75,15 @@ func RunPipeline(steps []Step, ctx *Context) error {
 
 		switch mode {
 		case config.AutoOff:
+			if step.Critical() {
+				ui.Subtle(fmt.Sprintf("Skipped: %s (disabled in automation config)", step.Label()))
+			}
 			continue
 		case config.AutoAsk:
 			if !isInteractiveFunc() {
+				if step.Critical() {
+					ui.Subtle(fmt.Sprintf("Skipped: %s (non-interactive)", step.Label()))
+				}
 				continue
 			}
 			confirmed, err := ConfirmFunc(step.Label())

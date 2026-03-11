@@ -9,6 +9,7 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/ui"
 )
 
 // DetectServicesStep reads the project .env file, detects backing services,
@@ -35,43 +36,41 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	var bound int
 	dbName := services.SanitizeProjectName(ctx.ProjectName)
 
-	// Detect MySQL.
-	if conn, ok := envVars["DB_CONNECTION"]; ok && conn == "mysql" {
-		if svcKey := findServiceByName(ctx.Registry, "mysql"); svcKey != "" {
-			bindProjectService(ctx.Registry, ctx.ProjectName, "mysql", svcKey)
-			bound++
-		}
+	type probe struct {
+		match  bool
+		name   string
+		addCmd string
 	}
 
-	// Detect PostgreSQL.
-	if conn, ok := envVars["DB_CONNECTION"]; ok && conn == "pgsql" {
-		if svcKey := findServiceByName(ctx.Registry, "postgres"); svcKey != "" {
-			bindProjectService(ctx.Registry, ctx.ProjectName, "postgres", svcKey)
-			bound++
-		}
+	probes := []probe{
+		{envVars["DB_CONNECTION"] == "mysql", "mysql", "pv service:add mysql"},
+		{envVars["DB_CONNECTION"] == "pgsql", "postgres", "pv service:add postgres"},
+		{envVars["REDIS_HOST"] != "", "redis", "pv service:add redis"},
+		{
+			func() bool {
+				h := envVars["MAIL_HOST"]
+				return h != "" && (strings.Contains(h, "localhost") || strings.Contains(h, "127.0.0.1"))
+			}(),
+			"mail", "pv service:add mail",
+		},
+		{
+			func() bool {
+				e := envVars["AWS_ENDPOINT"]
+				return e != "" && (strings.Contains(e, "localhost") || strings.Contains(e, "127.0.0.1"))
+			}(),
+			"s3", "pv service:add s3",
+		},
 	}
 
-	// Detect Redis.
-	if _, ok := envVars["REDIS_HOST"]; ok {
-		if svcKey := findServiceByName(ctx.Registry, "redis"); svcKey != "" {
-			bindProjectService(ctx.Registry, ctx.ProjectName, "redis", svcKey)
-			bound++
+	for _, p := range probes {
+		if !p.match {
+			continue
 		}
-	}
-
-	// Detect Mail.
-	if host, ok := envVars["MAIL_HOST"]; ok && (strings.Contains(host, "localhost") || strings.Contains(host, "127.0.0.1")) {
-		if svcKey := findServiceByName(ctx.Registry, "mail"); svcKey != "" {
-			bindProjectService(ctx.Registry, ctx.ProjectName, "mail", svcKey)
+		if svcKey := findServiceByName(ctx.Registry, p.name); svcKey != "" {
+			bindProjectService(ctx.Registry, ctx.ProjectName, p.name, svcKey)
 			bound++
-		}
-	}
-
-	// Detect S3.
-	if endpoint, ok := envVars["AWS_ENDPOINT"]; ok && (strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1")) {
-		if svcKey := findServiceByName(ctx.Registry, "s3"); svcKey != "" {
-			bindProjectService(ctx.Registry, ctx.ProjectName, "s3", svcKey)
-			bound++
+		} else {
+			ui.Subtle(fmt.Sprintf("%s detected but no service running. Run: %s", p.name, p.addCmd))
 		}
 	}
 
