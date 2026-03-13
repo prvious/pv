@@ -1,15 +1,19 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/packages"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/watcher"
@@ -107,6 +111,11 @@ func Start(tld string) error {
 
 		go handleWatcherEvents(projectWatcher, globalPHP)
 	}
+
+	// Start background package updater.
+	pkgCtx, pkgCancel := context.WithCancel(context.Background())
+	defer pkgCancel()
+	packages.StartBackgroundUpdater(pkgCtx, &http.Client{}, 24*time.Hour)
 
 	// Wait for signals or child exit.
 	sigCh := make(chan os.Signal, 1)

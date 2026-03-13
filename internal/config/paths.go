@@ -156,6 +156,10 @@ func InternalBinDir() string {
 	return filepath.Join(PvDir(), "internal", "bin")
 }
 
+func PackagesDir() string {
+	return filepath.Join(PvDir(), "internal", "packages")
+}
+
 func ColimaPath() string {
 	return filepath.Join(InternalBinDir(), "colima")
 }
@@ -185,6 +189,7 @@ func EnsureDirs() error {
 		ComposerCacheDir(),
 		ServicesDir(),
 		InternalBinDir(),
+		PackagesDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
