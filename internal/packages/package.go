@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/config"
@@ -30,12 +31,45 @@ var Managed = []Package{
 	{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"},
 }
 
-// PharPath returns the full path where this package's PHAR is stored.
+func init() {
+	seen := make(map[string]bool)
+	for _, pkg := range Managed {
+		if err := pkg.Validate(); err != nil {
+			panic(fmt.Sprintf("invalid managed package: %v", err))
+		}
+		if seen[pkg.Name] {
+			panic(fmt.Sprintf("duplicate managed package name: %q", pkg.Name))
+		}
+		seen[pkg.Name] = true
+	}
+}
+
+// Validate checks that a Package has all required fields for its install method.
+func (p Package) Validate() error {
+	if p.Name == "" {
+		return fmt.Errorf("package name is required")
+	}
+	switch p.Method {
+	case MethodPHAR:
+		if p.Repo == "" || p.Asset == "" {
+			return fmt.Errorf("PHAR package %q requires Repo and Asset", p.Name)
+		}
+	case MethodComposer:
+		if p.Composer == "" {
+			return fmt.Errorf("Composer package %q requires Composer field", p.Name)
+		}
+	default:
+		return fmt.Errorf("unknown install method %d for %q", p.Method, p.Name)
+	}
+	return nil
+}
+
+// PharPath returns the full path where this package's PHAR is stored (MethodPHAR only).
 func (p Package) PharPath() string {
 	return filepath.Join(config.PackagesDir(), p.Name+".phar")
 }
 
-// SymlinkPath returns the full path for the symlink in the user's PATH.
+// SymlinkPath returns the full path for the symlink in the user's PATH (MethodPHAR only).
 func (p Package) SymlinkPath() string {
 	return filepath.Join(config.BinDir(), p.Name)
 }

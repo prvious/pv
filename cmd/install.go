@@ -168,10 +168,11 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 
 		// Step 5: Install managed packages.
 		pkgClient := &http.Client{}
+		var pkgFailures []string
 		for _, pkg := range packages.Managed {
 			if pkg.Method == packages.MethodPHAR {
 				if err := ui.StepProgress(fmt.Sprintf("Installing %s...", pkg.Name), func(progress func(written, total int64)) (string, error) {
-					version, err := packages.Install(pkgClient, pkg, progress)
+					version, err := packages.Install(cmd.Context(), pkgClient, pkg, progress)
 					if err != nil {
 						return "", err
 					}
@@ -180,10 +181,11 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("%s install failed: %v", pkg.Name, err))
 					}
+					pkgFailures = append(pkgFailures, pkg.Name)
 				}
 			} else {
 				if err := ui.Step(fmt.Sprintf("Installing %s...", pkg.Name), func() (string, error) {
-					version, err := packages.Install(pkgClient, pkg, nil)
+					version, err := packages.Install(cmd.Context(), pkgClient, pkg, nil)
 					if err != nil {
 						return "", err
 					}
@@ -192,8 +194,12 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("%s install failed: %v", pkg.Name, err))
 					}
+					pkgFailures = append(pkgFailures, pkg.Name)
 				}
 			}
+		}
+		if len(pkgFailures) > 0 {
+			ui.Subtle(fmt.Sprintf("Warning: some packages failed to install: %s", strings.Join(pkgFailures, ", ")))
 		}
 
 		// Step 6: Install Mago (opt-in via --with).

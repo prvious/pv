@@ -1,6 +1,8 @@
 package packages
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -8,30 +10,32 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-// Update checks if a package has a newer version and updates it.
-// For PHAR packages, the PHAR is replaced in-place (symlink untouched).
-// For Composer packages, runs composer global update.
-func Update(client *http.Client, pkg Package) (updated bool, version string, err error) {
+// Update updates a managed package and reports whether the version changed.
+// For PHAR packages, checks the latest GitHub release first and only downloads if newer.
+// For Composer packages, runs composer global update and detects version changes after.
+func Update(ctx context.Context, client *http.Client, pkg Package) (updated bool, version string, err error) {
 	if err := config.EnsureDirs(); err != nil {
 		return false, "", err
 	}
 
 	switch pkg.Method {
 	case MethodComposer:
-		return updateViaComposer(pkg)
+		return updateViaComposer(ctx, pkg)
+	case MethodPHAR:
+		return updateViaPHAR(ctx, client, pkg)
 	default:
-		return updateViaPHAR(client, pkg)
+		return false, "", fmt.Errorf("unknown install method %d for package %s", pkg.Method, pkg.Name)
 	}
 }
 
-func updateViaComposer(pkg Package) (bool, string, error) {
+func updateViaComposer(ctx context.Context, pkg Package) (bool, string, error) {
 	vs, err := binaries.LoadVersions()
 	if err != nil {
 		return false, "", err
 	}
 	installed := vs.Get(pkg.Name)
 
-	version, err := composerGlobalUpdate(pkg)
+	version, err := composerGlobalUpdate(ctx, pkg)
 	if err != nil {
 		return false, "", err
 	}
@@ -48,8 +52,8 @@ func updateViaComposer(pkg Package) (bool, string, error) {
 	return true, version, nil
 }
 
-func updateViaPHAR(client *http.Client, pkg Package) (bool, string, error) {
-	tag, downloadURL, err := fetchLatestRelease(client, pkg)
+func updateViaPHAR(ctx context.Context, client *http.Client, pkg Package) (bool, string, error) {
+	tag, downloadURL, err := fetchLatestRelease(ctx, client, pkg)
 	if err != nil {
 		return false, "", err
 	}
@@ -74,18 +78,19 @@ func updateViaPHAR(client *http.Client, pkg Package) (bool, string, error) {
 
 	vs.Set(pkg.Name, tag)
 	if err := vs.Save(); err != nil {
-		return false, "", err
+		return false, "", fmt.Errorf("save version after updating %s to %s (binary already on disk): %w", pkg.Name, tag, err)
 	}
 
 	return true, tag, nil
 }
 
 // UpdateAll checks and updates all managed packages.
-// Returns a slice of package names that were updated.
-func UpdateAll(client *http.Client) ([]string, error) {
+// Returns the names of packages that were successfully updated.
+// On error, returns the packages updated so far along with the error.
+func UpdateAll(ctx context.Context, client *http.Client) ([]string, error) {
 	var updated []string
 	for _, pkg := range Managed {
-		wasUpdated, _, err := Update(client, pkg)
+		wasUpdated, _, err := Update(ctx, client, pkg)
 		if err != nil {
 			return updated, err
 		}

@@ -21,7 +21,7 @@ func TestStartBackgroundUpdater_RunsImmediately(t *testing.T) {
 	// Mock composer commands since Managed[0] is MethodComposer.
 	orig := runComposer
 	t.Cleanup(func() { runComposer = orig })
-	runComposer = func(args ...string) ([]byte, error) {
+	runComposer = func(_ context.Context, args ...string) ([]byte, error) {
 		callCount.Add(1)
 		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
 			out, _ := json.Marshal(map[string]any{
@@ -53,7 +53,7 @@ func TestStartBackgroundUpdater_StopsOnCancel(t *testing.T) {
 	// Mock composer commands since Managed[0] is MethodComposer.
 	orig := runComposer
 	t.Cleanup(func() { runComposer = orig })
-	runComposer = func(args ...string) ([]byte, error) {
+	runComposer = func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
 			out, _ := json.Marshal(map[string]any{
 				"versions": []string{"v5.3.0"},

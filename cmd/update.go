@@ -85,7 +85,7 @@ var updateCmd = &cobra.Command{
 		// Step 3: Update managed packages.
 		for _, pkg := range packages.Managed {
 			if err := ui.Step(fmt.Sprintf("Updating %s...", pkg.Name), func() (string, error) {
-				updated, version, err := packages.Update(client, pkg)
+				updated, version, err := packages.Update(cmd.Context(), client, pkg)
 				if err != nil {
 					return "", err
 				}

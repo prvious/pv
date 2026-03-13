@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,8 +15,8 @@ import (
 // Replaceable in tests for isolation.
 var runComposer = defaultRunComposer
 
-func defaultRunComposer(args ...string) ([]byte, error) {
-	cmd := exec.Command(config.ComposerPharPath(), args...)
+func defaultRunComposer(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, config.ComposerPharPath(), args...)
 	cmd.Env = composerEnv()
 	return cmd.CombinedOutput()
 }
@@ -42,29 +43,29 @@ func replaceOrAppendEnv(env []string, key, val string) []string {
 	return append(env, prefix+val)
 }
 
-// composerGlobalRequire installs a package via composer global require.
-func composerGlobalRequire(pkg Package) (string, error) {
-	out, err := runComposer("global", "require", pkg.Composer, "--no-interaction", "--no-ansi")
+func composerGlobalRequire(ctx context.Context, pkg Package) (string, error) {
+	out, err := runComposer(ctx, "global", "require", pkg.Composer, "--no-interaction", "--no-ansi")
 	if err != nil {
-		return "", fmt.Errorf("composer global require %s: %s", pkg.Composer, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("composer global require %s: %w\nOutput: %s", pkg.Composer, err, strings.TrimSpace(string(out)))
 	}
-	return getComposerPackageVersion(pkg)
+	return getComposerPackageVersion(ctx, pkg)
 }
 
-// composerGlobalUpdate updates a package via composer global update.
-func composerGlobalUpdate(pkg Package) (string, error) {
-	out, err := runComposer("global", "update", pkg.Composer, "--no-interaction", "--no-ansi")
+func composerGlobalUpdate(ctx context.Context, pkg Package) (string, error) {
+	out, err := runComposer(ctx, "global", "update", pkg.Composer, "--no-interaction", "--no-ansi")
 	if err != nil {
-		return "", fmt.Errorf("composer global update %s: %s", pkg.Composer, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("composer global update %s: %w\nOutput: %s", pkg.Composer, err, strings.TrimSpace(string(out)))
 	}
-	return getComposerPackageVersion(pkg)
+	return getComposerPackageVersion(ctx, pkg)
 }
 
 // getComposerPackageVersion returns the installed version of a composer package.
-func getComposerPackageVersion(pkg Package) (string, error) {
-	out, err := runComposer("global", "show", pkg.Composer, "--format=json", "--no-ansi")
+// Composer >=2.x returns "version" as a string; older versions return
+// "versions" as an array where the active version is prefixed with "* ".
+func getComposerPackageVersion(ctx context.Context, pkg Package) (string, error) {
+	out, err := runComposer(ctx, "global", "show", pkg.Composer, "--format=json", "--no-ansi")
 	if err != nil {
-		return "", fmt.Errorf("composer show %s: %s", pkg.Composer, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("composer show %s: %w\nOutput: %s", pkg.Composer, err, strings.TrimSpace(string(out)))
 	}
 
 	var info struct {

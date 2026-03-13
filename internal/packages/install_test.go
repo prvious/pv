@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func TestFetchLatestRelease(t *testing.T) {
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
 	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
-	tag, downloadURL, err := fetchLatestRelease(client, pkg)
+	tag, downloadURL, err := fetchLatestRelease(context.Background(), client, pkg)
 	if err != nil {
 		t.Fatalf("fetchLatestRelease() error = %v", err)
 	}
@@ -71,7 +72,7 @@ func TestInstallViaPHAR(t *testing.T) {
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
 	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
-	version, err := Install(client, pkg, nil)
+	version, err := Install(context.Background(), client, pkg, nil)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -122,7 +123,7 @@ func TestInstallViaComposer(t *testing.T) {
 	// Mock composer commands.
 	orig := runComposer
 	t.Cleanup(func() { runComposer = orig })
-	runComposer = func(args ...string) ([]byte, error) {
+	runComposer = func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
 			return json.Marshal(map[string]any{
 				"versions": []string{"v5.3.0"},
@@ -132,7 +133,7 @@ func TestInstallViaComposer(t *testing.T) {
 	}
 
 	pkg := Package{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"}
-	version, err := Install(nil, pkg, nil)
+	version, err := Install(context.Background(), nil, pkg, nil)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}

@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func TestUpdatePHAR_AlreadyUpToDate(t *testing.T) {
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
 	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
-	updated, version, err := Update(client, pkg)
+	updated, version, err := Update(context.Background(), client, pkg)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -76,7 +77,7 @@ func TestUpdatePHAR_NewVersionAvailable(t *testing.T) {
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
 	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
-	updated, version, err := Update(client, pkg)
+	updated, version, err := Update(context.Background(), client, pkg)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -120,7 +121,7 @@ func TestUpdatePHAR_NormalizesVPrefix(t *testing.T) {
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
 	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
-	updated, _, err := Update(client, pkg)
+	updated, _, err := Update(context.Background(), client, pkg)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -139,7 +140,7 @@ func TestUpdateComposer_AlreadyUpToDate(t *testing.T) {
 
 	orig := runComposer
 	t.Cleanup(func() { runComposer = orig })
-	runComposer = func(args ...string) ([]byte, error) {
+	runComposer = func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
 			return json.Marshal(map[string]any{
 				"versions": []string{"v5.3.0"},
@@ -149,7 +150,7 @@ func TestUpdateComposer_AlreadyUpToDate(t *testing.T) {
 	}
 
 	pkg := Package{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"}
-	updated, version, err := Update(nil, pkg)
+	updated, version, err := Update(context.Background(), nil, pkg)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -171,7 +172,7 @@ func TestUpdateComposer_NewVersionAvailable(t *testing.T) {
 
 	orig := runComposer
 	t.Cleanup(func() { runComposer = orig })
-	runComposer = func(args ...string) ([]byte, error) {
+	runComposer = func(_ context.Context, args ...string) ([]byte, error) {
 		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
 			return json.Marshal(map[string]any{
 				"versions": []string{"v5.3.0"},
@@ -181,7 +182,7 @@ func TestUpdateComposer_NewVersionAvailable(t *testing.T) {
 	}
 
 	pkg := Package{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"}
-	updated, version, err := Update(nil, pkg)
+	updated, version, err := Update(context.Background(), nil, pkg)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
