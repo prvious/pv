@@ -6,9 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/automation"
-	"github.com/prvious/pv/internal/caddy"
-	"github.com/prvious/pv/internal/certs"
-	"github.com/prvious/pv/internal/commands/php"
+	"github.com/prvious/pv/internal/automation/steps"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/detection"
@@ -65,9 +63,12 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
+		if existing := reg.Find(name); existing != nil {
+			return fmt.Errorf("%s is already linked at %s\nTo re-link, run: pv unlink %s && pv link %s", name, existing.Path, name, path)
+		}
+
 		projectType := detection.Detect(absPath)
 
-		// Resolve PHP version for this project.
 		settings, err := config.LoadSettings()
 		if err != nil {
 			return fmt.Errorf("cannot load settings: %w", err)
@@ -79,113 +80,52 @@ pv link --name=myapp ~/Code/myapp`,
 			phpVersion = v
 		}
 
-		// Auto-install missing PHP version if needed.
-		if phpVersion != "" && phpVersion != globalPHP && !phpenv.IsInstalled(phpVersion) {
-			mode := automation.LookupGate(&settings.Automation, "install_php_version")
-
-			switch mode {
-			case config.AutoOff:
-				ui.Subtle(fmt.Sprintf("PHP %s is not installed (auto-install disabled). Site may not work until installed.", phpVersion))
-			case config.AutoAsk:
-				if automation.IsInteractive() {
-					confirmed, err := automation.ConfirmFunc(fmt.Sprintf("Install PHP %s", phpVersion))
-					if err != nil {
-						return fmt.Errorf("aborted")
-					}
-					if confirmed {
-						if err := php.RunInstall([]string{phpVersion}); err != nil {
-							return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
-						}
-					} else {
-						ui.Subtle(fmt.Sprintf("PHP %s is not installed. Site may not work until installed.", phpVersion))
-					}
-				} else {
-					ui.Subtle(fmt.Sprintf("PHP %s is not installed (non-interactive). Site may not work until installed.", phpVersion))
-				}
-			case config.AutoOn:
-				if err := php.RunInstall([]string{phpVersion}); err != nil {
-					return fmt.Errorf("cannot install PHP %s: %w", phpVersion, err)
-				}
-			}
-		}
-
+		// Register project.
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
-
-		if existing := reg.Find(name); existing != nil {
-			return fmt.Errorf("%s is already linked at %s\nTo re-link, run: pv unlink %s && pv link %s", name, existing.Path, name, path)
-		}
 		if err := reg.Add(project); err != nil {
 			return err
 		}
 
-		if err := reg.Save(); err != nil {
-			return fmt.Errorf("cannot save registry: %w", err)
+		// Build automation context.
+		ctx := &automation.Context{
+			ProjectPath: absPath,
+			ProjectName: name,
+			ProjectType: projectType,
+			PHPVersion:  phpVersion,
+			GlobalPHP:   globalPHP,
+			TLD:         settings.Defaults.TLD,
+			Registry:    reg,
+			Settings:    settings,
+			Env:         make(map[string]string),
 		}
 
-		// Automation context — declared here so both pre and post steps can access it.
-		var autoCtx *automation.Context
-
-		// Pre-Caddyfile automation steps for Laravel projects.
-		if projectType == "laravel" || projectType == "laravel-octane" {
-			autoCtx = &automation.Context{
-				ProjectPath: absPath,
-				ProjectName: name,
-				ProjectType: projectType,
-				PHPVersion:  phpVersion,
-				TLD:         settings.Defaults.TLD,
-				Registry:    reg,
-				Settings:    settings,
-				Env:         make(map[string]string),
-			}
-
-			// Load existing .env if present.
-			if envVars, err := services.ReadDotEnv(filepath.Join(absPath, ".env")); err == nil {
-				autoCtx.Env = envVars
-			}
-
-			preSteps := []automation.Step{
-				&laravel.CopyEnvStep{},
-				&laravel.ComposerInstallStep{},
-				&laravel.GenerateKeyStep{},
-				&laravel.InstallOctaneStep{},
-			}
-			if err := automation.RunPipeline(preSteps, autoCtx); err != nil {
-				return err
-			}
-
-			// Re-detect if Octane was installed.
-			if laravel.HasOctaneWorker(absPath) && projectType != "laravel-octane" {
-				projectType = "laravel-octane"
-				for i := range reg.Projects {
-					if reg.Projects[i].Name == name {
-						reg.Projects[i].Type = "laravel-octane"
-						break
-					}
-				}
-				project.Type = "laravel-octane"
-				autoCtx.ProjectType = "laravel-octane"
-				if err := reg.Save(); err != nil {
-					ui.Subtle(fmt.Sprintf("Could not persist Octane re-detection: %v", err))
-				}
-			}
+		// Load existing .env if present.
+		if envVars, err := services.ReadDotEnv(filepath.Join(absPath, ".env")); err == nil {
+			ctx.Env = envVars
 		}
 
-		if err := caddy.GenerateSiteConfig(project, globalPHP); err != nil {
-			return fmt.Errorf("cannot generate site config: %w", err)
+		// Run the full pipeline.
+		allSteps := []automation.Step{
+			&steps.InstallPHPStep{},
+			&laravel.CopyEnvStep{},
+			&laravel.ComposerInstallStep{},
+			&laravel.GenerateKeyStep{},
+			&laravel.InstallOctaneStep{},
+			&steps.GenerateSiteConfigStep{},
+			&steps.GenerateCaddyfileStep{},
+			&steps.GenerateTLSCertStep{},
+			&steps.DetectServicesStep{},
+			&laravel.DetectServicesStep{},
+			&laravel.SetAppURLStep{},
+			&laravel.CreateDatabaseStep{},
+			&laravel.RunMigrationsStep{},
 		}
-		if err := caddy.GenerateCaddyfile(); err != nil {
-			return fmt.Errorf("cannot generate Caddyfile: %w", err)
+		if err := automation.RunPipeline(allSteps, ctx); err != nil {
+			return err
 		}
 
-		// Generate TLS certificate for Vite dev server auto-detection.
-		hostname := name + "." + settings.Defaults.TLD
-		if err := certs.EnsureValetConfig(settings.Defaults.TLD); err != nil {
-			ui.Subtle(fmt.Sprintf("Skipped Vite TLS setup: %v", err))
-		} else if err := certs.GenerateSiteTLS(hostname); err != nil {
-			ui.Subtle(fmt.Sprintf("Vite TLS cert not generated (HTTPS HMR may need manual config): %v", err))
-		}
-
-		typeLabel := projectType
+		// Print success output.
+		typeLabel := ctx.ProjectType
 		if typeLabel == "" {
 			typeLabel = "unknown"
 		}
@@ -197,34 +137,13 @@ pv link --name=myapp ~/Code/myapp`,
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Path"), absPath)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Type"), typeLabel)
-		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(phpVersion))
+		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(ctx.PHPVersion))
 		fmt.Fprintln(os.Stderr)
 
-		// Detect and bind services.
-		detectAndBindServices(absPath, name, reg)
-
-		// Save again in case services were bound.
-		if err := reg.Save(); err != nil {
-			return fmt.Errorf("cannot save registry: %w", err)
-		}
-
-		// Post-binding automation steps for Laravel projects.
-		if autoCtx != nil {
-			postSteps := []automation.Step{
-				&laravel.DetectServicesStep{},
-				&laravel.SetAppURLStep{},
-				&laravel.CreateDatabaseStep{},
-				&laravel.RunMigrationsStep{},
-			}
-			if err := automation.RunPipeline(postSteps, autoCtx); err != nil {
-				return err
-			}
-		}
-
+		// Reload/restart server if needed.
 		if server.IsRunning() {
 			needsRestart := phpVersion != "" && phpVersion != globalPHP
 			if needsRestart && daemon.IsLoaded() {
-				// Daemon mode: full process restart so the relaunched server spawns a secondary FrankenPHP.
 				if err := daemon.Restart(); err != nil {
 					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
 				}

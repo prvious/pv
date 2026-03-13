@@ -21,8 +21,9 @@ type CopyEnvStep struct{}
 
 var _ automation.Step = (*CopyEnvStep)(nil)
 
-func (s *CopyEnvStep) Label() string { return "Copy .env" }
-func (s *CopyEnvStep) Gate() string  { return "copy_env" }
+func (s *CopyEnvStep) Label() string  { return "Copy .env" }
+func (s *CopyEnvStep) Gate() string   { return "copy_env" }
+func (s *CopyEnvStep) Critical() bool { return false }
 
 func (s *CopyEnvStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -59,8 +60,9 @@ type GenerateKeyStep struct{}
 
 var _ automation.Step = (*GenerateKeyStep)(nil)
 
-func (s *GenerateKeyStep) Label() string { return "Generate application key" }
-func (s *GenerateKeyStep) Gate() string  { return "generate_key" }
+func (s *GenerateKeyStep) Label() string  { return "Generate application key" }
+func (s *GenerateKeyStep) Gate() string   { return "generate_key" }
+func (s *GenerateKeyStep) Critical() bool { return false }
 
 func (s *GenerateKeyStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -90,8 +92,9 @@ type SetAppURLStep struct{}
 
 var _ automation.Step = (*SetAppURLStep)(nil)
 
-func (s *SetAppURLStep) Label() string { return "Set APP_URL" }
-func (s *SetAppURLStep) Gate() string  { return "set_app_url" }
+func (s *SetAppURLStep) Label() string  { return "Set APP_URL" }
+func (s *SetAppURLStep) Gate() string   { return "set_app_url" }
+func (s *SetAppURLStep) Critical() bool { return false }
 
 func (s *SetAppURLStep) ShouldRun(ctx *automation.Context) bool {
 	return isLaravel(ctx.ProjectType) && HasEnvFile(ctx.ProjectPath)
@@ -119,8 +122,9 @@ type InstallOctaneStep struct{}
 
 var _ automation.Step = (*InstallOctaneStep)(nil)
 
-func (s *InstallOctaneStep) Label() string { return "Install Octane" }
-func (s *InstallOctaneStep) Gate() string  { return "install_octane" }
+func (s *InstallOctaneStep) Label() string  { return "Install Octane" }
+func (s *InstallOctaneStep) Gate() string   { return "install_octane" }
+func (s *InstallOctaneStep) Critical() bool { return false }
 
 func (s *InstallOctaneStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -137,6 +141,19 @@ func (s *InstallOctaneStep) Run(ctx *automation.Context) (string, error) {
 	if err := OctaneInstall(ctx.ProjectPath, phpBin); err != nil {
 		return "", fmt.Errorf("artisan octane:install: %w", err)
 	}
+
+	// Re-detect project type after Octane installation.
+	if HasOctaneWorker(ctx.ProjectPath) && ctx.ProjectType != "laravel-octane" {
+		ctx.ProjectType = "laravel-octane"
+		// Update registry to reflect the new type.
+		for i := range ctx.Registry.Projects {
+			if ctx.Registry.Projects[i].Name == ctx.ProjectName {
+				ctx.Registry.Projects[i].Type = "laravel-octane"
+				break
+			}
+		}
+	}
+
 	return "Octane installed with FrankenPHP", nil
 }
 
@@ -147,8 +164,9 @@ type ComposerInstallStep struct{}
 
 var _ automation.Step = (*ComposerInstallStep)(nil)
 
-func (s *ComposerInstallStep) Label() string { return "Install Composer dependencies" }
-func (s *ComposerInstallStep) Gate() string  { return "composer_install" }
+func (s *ComposerInstallStep) Label() string  { return "Install Composer dependencies" }
+func (s *ComposerInstallStep) Gate() string   { return "composer_install" }
+func (s *ComposerInstallStep) Critical() bool { return false }
 
 func (s *ComposerInstallStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -175,8 +193,9 @@ type DetectServicesStep struct{}
 
 var _ automation.Step = (*DetectServicesStep)(nil)
 
-func (s *DetectServicesStep) Label() string { return "Configure service environment" }
-func (s *DetectServicesStep) Gate() string  { return "update_env_on_service" }
+func (s *DetectServicesStep) Label() string  { return "Configure service environment" }
+func (s *DetectServicesStep) Gate() string   { return "update_env_on_service" }
+func (s *DetectServicesStep) Critical() bool { return false }
 
 func (s *DetectServicesStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -217,8 +236,9 @@ type CreateDatabaseStep struct{}
 
 var _ automation.Step = (*CreateDatabaseStep)(nil)
 
-func (s *CreateDatabaseStep) Label() string { return "Create database" }
-func (s *CreateDatabaseStep) Gate() string  { return "create_database" }
+func (s *CreateDatabaseStep) Label() string  { return "Create database" }
+func (s *CreateDatabaseStep) Gate() string   { return "create_database" }
+func (s *CreateDatabaseStep) Critical() bool { return false }
 
 func (s *CreateDatabaseStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {
@@ -269,8 +289,9 @@ type RunMigrationsStep struct{}
 
 var _ automation.Step = (*RunMigrationsStep)(nil)
 
-func (s *RunMigrationsStep) Label() string { return "Run migrations" }
-func (s *RunMigrationsStep) Gate() string  { return "run_migrations" }
+func (s *RunMigrationsStep) Label() string  { return "Run migrations" }
+func (s *RunMigrationsStep) Gate() string   { return "run_migrations" }
+func (s *RunMigrationsStep) Critical() bool { return false }
 
 func (s *RunMigrationsStep) ShouldRun(ctx *automation.Context) bool {
 	if !isLaravel(ctx.ProjectType) {

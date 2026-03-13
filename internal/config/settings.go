@@ -35,6 +35,12 @@ type Automation struct {
 	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
 	ServiceEnvUpdate  AutoMode `yaml:"update_env_on_service,omitempty"`
 	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
+
+	// Hidden gates — not shown in setup wizard, configurable via pv.yml.
+	GenerateSiteConfig AutoMode `yaml:"generate_site_config,omitempty"`
+	GenerateCaddyfile  AutoMode `yaml:"generate_caddyfile,omitempty"`
+	GenerateTLSCert    AutoMode `yaml:"generate_tls_cert,omitempty"`
+	DetectServices     AutoMode `yaml:"detect_services,omitempty"`
 }
 
 type Settings struct {
@@ -47,16 +53,20 @@ var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // DefaultAutomation returns the default automation settings.
 func DefaultAutomation() Automation {
 	return Automation{
-		InstallPHPVersion: AutoOn,
-		ComposerInstall:   AutoOn,
-		CopyEnv:           AutoOn,
-		GenerateKey:       AutoOn,
-		SetAppURL:         AutoOn,
-		InstallOctane:     AutoAsk,
-		CreateDatabase:    AutoOn,
-		RunMigrations:     AutoAsk,
-		ServiceEnvUpdate:  AutoOn,
-		ServiceFallback:   AutoOn,
+		InstallPHPVersion:  AutoOn,
+		ComposerInstall:    AutoOn,
+		CopyEnv:            AutoOn,
+		GenerateKey:        AutoOn,
+		SetAppURL:          AutoOn,
+		InstallOctane:      AutoAsk,
+		CreateDatabase:     AutoOn,
+		RunMigrations:      AutoAsk,
+		ServiceEnvUpdate:   AutoOn,
+		ServiceFallback:    AutoOn,
+		GenerateSiteConfig: AutoOn,
+		GenerateCaddyfile:  AutoOn,
+		GenerateTLSCert:    AutoOn,
+		DetectServices:     AutoOn,
 	}
 }
 
@@ -97,6 +107,18 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback
+	}
+	if !validAutoMode(a.GenerateSiteConfig) {
+		a.GenerateSiteConfig = d.GenerateSiteConfig
+	}
+	if !validAutoMode(a.GenerateCaddyfile) {
+		a.GenerateCaddyfile = d.GenerateCaddyfile
+	}
+	if !validAutoMode(a.GenerateTLSCert) {
+		a.GenerateTLSCert = d.GenerateTLSCert
+	}
+	if !validAutoMode(a.DetectServices) {
+		a.DetectServices = d.DetectServices
 	}
 }
 
