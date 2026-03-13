@@ -313,6 +313,7 @@ func TestEnsureDirs(t *testing.T) {
 		ComposerDir(),
 		ComposerCacheDir(),
 		InternalBinDir(),
+		PackagesDir(),
 	}
 	for _, dir := range dirs {
 		info, err := os.Stat(dir)
