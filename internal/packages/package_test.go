@@ -17,8 +17,11 @@ func TestManagedRegistryContainsLaravel(t *testing.T) {
 			if pkg.Repo != "laravel/installer" {
 				t.Errorf("laravel.Repo = %q, want %q", pkg.Repo, "laravel/installer")
 			}
-			if pkg.Asset != "laravel.phar" {
-				t.Errorf("laravel.Asset = %q, want %q", pkg.Asset, "laravel.phar")
+			if pkg.Method != MethodComposer {
+				t.Errorf("laravel.Method = %d, want MethodComposer", pkg.Method)
+			}
+			if pkg.Composer != "laravel/installer" {
+				t.Errorf("laravel.Composer = %q, want %q", pkg.Composer, "laravel/installer")
 			}
 		}
 	}
@@ -31,9 +34,9 @@ func TestPackagePharPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	pkg := Managed[0]
+	pkg := Package{Name: "phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
 	got := pkg.PharPath()
-	want := filepath.Join(home, ".pv", "internal", "packages", "laravel.phar")
+	want := filepath.Join(home, ".pv", "internal", "packages", "phpstan.phar")
 	if got != want {
 		t.Errorf("PharPath() = %q, want %q", got, want)
 	}
@@ -43,9 +46,9 @@ func TestPackageSymlinkPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	pkg := Managed[0]
+	pkg := Package{Name: "phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
 	got := pkg.SymlinkPath()
-	want := filepath.Join(home, ".pv", "bin", "laravel")
+	want := filepath.Join(home, ".pv", "bin", "phpstan")
 	if got != want {
 		t.Errorf("SymlinkPath() = %q, want %q", got, want)
 	}

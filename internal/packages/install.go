@@ -58,13 +58,41 @@ func fetchLatestRelease(client *http.Client, pkg Package) (tag, downloadURL stri
 	return "", "", fmt.Errorf("asset %q not found in %s release %s", pkg.Asset, pkg.Repo, release.TagName)
 }
 
-// Install downloads a package PHAR, symlinks it, and records the version.
-// Returns the installed version tag.
+// Install installs a managed package and records the version.
+// For PHAR packages, downloads from GitHub releases and creates a symlink.
+// For Composer packages, runs composer global require.
 func Install(client *http.Client, pkg Package, progress binaries.ProgressFunc) (string, error) {
 	if err := config.EnsureDirs(); err != nil {
 		return "", err
 	}
 
+	switch pkg.Method {
+	case MethodComposer:
+		return installViaComposer(pkg)
+	default:
+		return installViaPHAR(client, pkg, progress)
+	}
+}
+
+func installViaComposer(pkg Package) (string, error) {
+	version, err := composerGlobalRequire(pkg)
+	if err != nil {
+		return "", err
+	}
+
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		return "", err
+	}
+	vs.Set(pkg.Name, version)
+	if err := vs.Save(); err != nil {
+		return "", err
+	}
+
+	return version, nil
+}
+
+func installViaPHAR(client *http.Client, pkg Package, progress binaries.ProgressFunc) (string, error) {
 	tag, downloadURL, err := fetchLatestRelease(client, pkg)
 	if err != nil {
 		return "", err

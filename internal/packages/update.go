@@ -8,14 +8,47 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-// Update checks if a package has a newer version and downloads it if so.
-// Returns whether an update occurred and the current/new version tag.
-// The symlink is not touched — the PHAR is replaced in-place.
+// Update checks if a package has a newer version and updates it.
+// For PHAR packages, the PHAR is replaced in-place (symlink untouched).
+// For Composer packages, runs composer global update.
 func Update(client *http.Client, pkg Package) (updated bool, version string, err error) {
 	if err := config.EnsureDirs(); err != nil {
 		return false, "", err
 	}
 
+	switch pkg.Method {
+	case MethodComposer:
+		return updateViaComposer(pkg)
+	default:
+		return updateViaPHAR(client, pkg)
+	}
+}
+
+func updateViaComposer(pkg Package) (bool, string, error) {
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		return false, "", err
+	}
+	installed := vs.Get(pkg.Name)
+
+	version, err := composerGlobalUpdate(pkg)
+	if err != nil {
+		return false, "", err
+	}
+
+	if normalizeVersion(installed) == normalizeVersion(version) {
+		return false, version, nil
+	}
+
+	vs.Set(pkg.Name, version)
+	if err := vs.Save(); err != nil {
+		return false, "", err
+	}
+
+	return true, version, nil
+}
+
+func updateViaPHAR(client *http.Client, pkg Package) (bool, string, error) {
 	tag, downloadURL, err := fetchLatestRelease(client, pkg)
 	if err != nil {
 		return false, "", err

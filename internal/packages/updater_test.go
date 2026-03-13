@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,28 +18,24 @@ func TestStartBackgroundUpdater_RunsImmediately(t *testing.T) {
 
 	var callCount atomic.Int32
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock composer commands since Managed[0] is MethodComposer.
+	orig := runComposer
+	t.Cleanup(func() { runComposer = orig })
+	runComposer = func(args ...string) ([]byte, error) {
 		callCount.Add(1)
-		if r.URL.Path == "/repos/laravel/installer/releases/latest" {
-			release := gitHubRelease{
-				TagName: "v5.3.0",
-				Assets:  []gitHubAsset{{Name: "laravel.phar", DownloadURL: srv.URL + "/dl"}},
-			}
-			json.NewEncoder(w).Encode(release)
-			return
+		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
+			out, _ := json.Marshal(map[string]any{
+				"versions": []string{"v5.3.0"},
+			})
+			return out, nil
 		}
-		w.Write([]byte("phar-content"))
-	}))
-	defer srv.Close()
-
-	client := srv.Client()
-	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
+		return []byte(""), nil
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	StartBackgroundUpdater(ctx, client, 1*time.Hour)
+	StartBackgroundUpdater(ctx, &http.Client{}, 1*time.Hour)
 
 	// Give the immediate check time to complete.
 	time.Sleep(500 * time.Millisecond)
@@ -55,25 +50,21 @@ func TestStartBackgroundUpdater_StopsOnCancel(t *testing.T) {
 	t.Setenv("HOME", home)
 	config.EnsureDirs()
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/laravel/installer/releases/latest" {
-			release := gitHubRelease{
-				TagName: "v5.3.0",
-				Assets:  []gitHubAsset{{Name: "laravel.phar", DownloadURL: srv.URL + "/dl"}},
-			}
-			json.NewEncoder(w).Encode(release)
-			return
+	// Mock composer commands since Managed[0] is MethodComposer.
+	orig := runComposer
+	t.Cleanup(func() { runComposer = orig })
+	runComposer = func(args ...string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
+			out, _ := json.Marshal(map[string]any{
+				"versions": []string{"v5.3.0"},
+			})
+			return out, nil
 		}
-		w.Write([]byte("phar-content"))
-	}))
-	defer srv.Close()
-
-	client := srv.Client()
-	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
+		return []byte(""), nil
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	StartBackgroundUpdater(ctx, client, 50*time.Millisecond)
+	StartBackgroundUpdater(ctx, &http.Client{}, 50*time.Millisecond)
 
 	time.Sleep(200 * time.Millisecond)
 	cancel()

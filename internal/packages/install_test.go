@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 )
 
@@ -15,7 +16,7 @@ func TestFetchLatestRelease(t *testing.T) {
 	release := gitHubRelease{
 		TagName: "v5.3.0",
 		Assets: []gitHubAsset{
-			{Name: "laravel.phar", DownloadURL: "https://example.com/laravel.phar"},
+			{Name: "phpstan.phar", DownloadURL: "https://example.com/phpstan.phar"},
 		},
 	}
 
@@ -27,7 +28,7 @@ func TestFetchLatestRelease(t *testing.T) {
 	client := srv.Client()
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
-	pkg := Package{Name: "laravel", Repo: "laravel/installer", Asset: "laravel.phar"}
+	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
 	tag, downloadURL, err := fetchLatestRelease(client, pkg)
 	if err != nil {
 		t.Fatalf("fetchLatestRelease() error = %v", err)
@@ -40,7 +41,7 @@ func TestFetchLatestRelease(t *testing.T) {
 	}
 }
 
-func TestInstall(t *testing.T) {
+func TestInstallViaPHAR(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -52,11 +53,11 @@ func TestInstall(t *testing.T) {
 
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/laravel/installer/releases/latest" {
+		if r.URL.Path == "/repos/phpstan/phpstan/releases/latest" {
 			release := gitHubRelease{
-				TagName: "v5.3.0",
+				TagName: "v2.1.0",
 				Assets: []gitHubAsset{
-					{Name: "laravel.phar", DownloadURL: srv.URL + "/download/laravel.phar"},
+					{Name: "phpstan.phar", DownloadURL: srv.URL + "/download/phpstan.phar"},
 				},
 			}
 			json.NewEncoder(w).Encode(release)
@@ -69,13 +70,13 @@ func TestInstall(t *testing.T) {
 	client := srv.Client()
 	client.Transport = &urlRewriteTransport{base: http.DefaultTransport, testURL: srv.URL}
 
-	pkg := Package{Name: "laravel", Repo: "laravel/installer", Asset: "laravel.phar"}
+	pkg := Package{Name: "phpstan", Repo: "phpstan/phpstan", Method: MethodPHAR, Asset: "phpstan.phar"}
 	version, err := Install(client, pkg, nil)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
-	if version != "v5.3.0" {
-		t.Errorf("Install() version = %q, want %q", version, "v5.3.0")
+	if version != "v2.1.0" {
+		t.Errorf("Install() version = %q, want %q", version, "v2.1.0")
 	}
 
 	// Verify PHAR exists and is executable.
@@ -105,8 +106,47 @@ func TestInstall(t *testing.T) {
 		Versions map[string]string `json:"versions"`
 	}
 	json.Unmarshal(data, &vs)
-	if vs.Versions["laravel"] != "v5.3.0" {
-		t.Errorf("versions.json[laravel] = %q, want %q", vs.Versions["laravel"], "v5.3.0")
+	if vs.Versions["phpstan"] != "v2.1.0" {
+		t.Errorf("versions.json[phpstan] = %q, want %q", vs.Versions["phpstan"], "v2.1.0")
+	}
+}
+
+func TestInstallViaComposer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	// Mock composer commands.
+	orig := runComposer
+	t.Cleanup(func() { runComposer = orig })
+	runComposer = func(args ...string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "global" && args[1] == "show" {
+			return json.Marshal(map[string]any{
+				"versions": []string{"v5.3.0"},
+			})
+		}
+		return []byte(""), nil
+	}
+
+	pkg := Package{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"}
+	version, err := Install(nil, pkg, nil)
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if version != "v5.3.0" {
+		t.Errorf("Install() version = %q, want %q", version, "v5.3.0")
+	}
+
+	// Verify version was saved.
+	loaded, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions() error = %v", err)
+	}
+	if loaded.Get("laravel") != "v5.3.0" {
+		t.Errorf("versions.json[laravel] = %q, want %q", loaded.Get("laravel"), "v5.3.0")
 	}
 }
 

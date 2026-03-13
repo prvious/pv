@@ -6,16 +6,28 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-// Package defines a managed PHAR package that pv keeps up-to-date.
+// InstallMethod determines how a package is installed.
+type InstallMethod int
+
+const (
+	// MethodPHAR downloads a standalone PHAR from GitHub releases.
+	MethodPHAR InstallMethod = iota
+	// MethodComposer installs via composer global require.
+	MethodComposer
+)
+
+// Package defines a managed package that pv keeps up-to-date.
 type Package struct {
-	Name  string // binary name and symlink name (e.g., "laravel")
-	Repo  string // GitHub owner/repo (e.g., "laravel/installer")
-	Asset string // release asset filename (e.g., "laravel.phar")
+	Name     string        // binary name (e.g., "laravel", "phpstan")
+	Repo     string        // GitHub owner/repo (e.g., "laravel/installer")
+	Asset    string        // release asset filename (MethodPHAR only)
+	Method   InstallMethod // how to install this package
+	Composer string        // composer package name (MethodComposer only)
 }
 
 // Managed is the compiled-in registry of packages pv manages.
 var Managed = []Package{
-	{Name: "laravel", Repo: "laravel/installer", Asset: "laravel.phar"},
+	{Name: "laravel", Repo: "laravel/installer", Method: MethodComposer, Composer: "laravel/installer"},
 }
 
 // PharPath returns the full path where this package's PHAR is stored.

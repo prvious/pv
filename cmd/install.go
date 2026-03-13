@@ -166,18 +166,32 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			return err
 		}
 
-		// Step 5: Install managed packages (laravel installer).
+		// Step 5: Install managed packages.
 		pkgClient := &http.Client{}
 		for _, pkg := range packages.Managed {
-			if err := ui.StepProgress(fmt.Sprintf("Installing %s...", pkg.Name), func(progress func(written, total int64)) (string, error) {
-				version, err := packages.Install(pkgClient, pkg, progress)
-				if err != nil {
-					return "", err
+			if pkg.Method == packages.MethodPHAR {
+				if err := ui.StepProgress(fmt.Sprintf("Installing %s...", pkg.Name), func(progress func(written, total int64)) (string, error) {
+					version, err := packages.Install(pkgClient, pkg, progress)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("%s %s", pkg.Name, version), nil
+				}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("%s install failed: %v", pkg.Name, err))
+					}
 				}
-				return fmt.Sprintf("%s %s", pkg.Name, version), nil
-			}); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Fail(fmt.Sprintf("%s install failed: %v", pkg.Name, err))
+			} else {
+				if err := ui.Step(fmt.Sprintf("Installing %s...", pkg.Name), func() (string, error) {
+					version, err := packages.Install(pkgClient, pkg, nil)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("%s %s", pkg.Name, version), nil
+				}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("%s install failed: %v", pkg.Name, err))
+					}
 				}
 			}
 		}
