@@ -367,3 +367,27 @@ func TestEnsureDirs_Idempotent(t *testing.T) {
 		t.Fatalf("second EnsureDirs() error = %v", err)
 	}
 }
+
+func TestPackagesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PackagesDir()
+	want := filepath.Join(home, ".pv", "internal", "packages")
+	if got != want {
+		t.Errorf("PackagesDir() = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDirs_CreatesPackagesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	if _, err := os.Stat(PackagesDir()); os.IsNotExist(err) {
+		t.Error("EnsureDirs() did not create PackagesDir()")
+	}
+}
