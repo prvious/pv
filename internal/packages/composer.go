@@ -1,6 +1,7 @@
 package packages
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,7 +19,16 @@ var runComposer = defaultRunComposer
 func defaultRunComposer(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, config.ComposerPharPath(), args...)
 	cmd.Env = composerEnv()
-	return cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		// On error, return combined output for diagnostic messages.
+		return append(stdout.Bytes(), stderr.Bytes()...), err
+	}
+	// On success, return stdout only so JSON output is clean.
+	return stdout.Bytes(), nil
 }
 
 // composerEnv builds the environment for composer commands, ensuring
