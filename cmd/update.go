@@ -14,6 +14,7 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
+	"github.com/prvious/pv/internal/packages"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -78,6 +79,25 @@ var updateCmd = &cobra.Command{
 					ui.Fail(fmt.Sprintf("Colima update failed: %v", err))
 				}
 				failures = append(failures, "Colima")
+			}
+		}
+
+		// Step 3: Update managed packages.
+		for _, pkg := range packages.Managed {
+			if err := ui.Step(fmt.Sprintf("Updating %s...", pkg.Name), func() (string, error) {
+				updated, version, err := packages.Update(client, pkg)
+				if err != nil {
+					return "", err
+				}
+				if !updated {
+					return fmt.Sprintf("%s already up to date", pkg.Name), nil
+				}
+				return fmt.Sprintf("%s updated to %s", pkg.Name, version), nil
+			}); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("%s update failed: %v", pkg.Name, err))
+				}
+				failures = append(failures, pkg.Name)
 			}
 		}
 
