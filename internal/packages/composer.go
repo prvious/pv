@@ -52,9 +52,12 @@ func composerGlobalRequire(ctx context.Context, pkg Package) (string, error) {
 }
 
 func composerGlobalUpdate(ctx context.Context, pkg Package) (string, error) {
-	out, err := runComposer(ctx, "global", "update", pkg.Composer, "--no-interaction", "--no-ansi")
+	// Use "require" instead of "update" because require is idempotent:
+	// it installs the package if missing and updates it if already present.
+	// Plain "update" does nothing if the package isn't in the global composer.json.
+	out, err := runComposer(ctx, "global", "require", pkg.Composer, "--no-interaction", "--no-ansi")
 	if err != nil {
-		return "", fmt.Errorf("composer global update %s: %w\nOutput: %s", pkg.Composer, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("composer global require %s: %w\nOutput: %s", pkg.Composer, err, strings.TrimSpace(string(out)))
 	}
 	return getComposerPackageVersion(ctx, pkg)
 }
