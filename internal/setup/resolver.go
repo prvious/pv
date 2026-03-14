@@ -1,6 +1,9 @@
 package setup
 
 import (
+	"bytes"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,29 +17,27 @@ import (
 const (
 	resolverDir     = "/etc/resolver"
 	resolverContent = "nameserver 127.0.0.1\nport 10053\n"
+	systemKeychain  = "/Library/Keychains/System.keychain"
+	caCommonName    = "Caddy Local Authority"
 )
 
 // SudoSetupScript returns the shell script for the combined sudo operations:
 // creating the DNS resolver file and trusting the Caddy CA certificate.
 func SudoSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
-	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
-	pvDir := config.PvDir()
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && XDG_DATA_HOME="%s" XDG_CONFIG_HOME="%s" "%s" trust`,
-		resolverDir, resolverFile, pvDir, pvDir, frankenphp,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s`,
+		resolverDir, resolverFile,
 	)
 }
 
 // RunSudoSetup executes the combined sudo command for DNS resolver and CA trust.
 // It connects stdin/stdout/stderr so the user can enter their password.
 func RunSudoSetup(tld string) error {
-	script := SudoSetupScript(tld)
-	cmd := exec.Command("sudo", "sh", "-c", script)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := RunSudoResolver(tld); err != nil {
+		return err
+	}
+	return RunSudoTrustWithServer()
 }
 
 // ResolverSetupScript returns the shell script for creating the DNS resolver file only (no trust).
@@ -63,8 +64,121 @@ func RunSudoResolver(tld string) error {
 	return cmd.Run()
 }
 
-// RunSudoTrustWithServer starts FrankenPHP temporarily so the admin API is
-// available, runs `sudo frankenphp trust`, then stops the server.
+func caFingerprint(certPath string) ([]byte, error) {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("read CA certificate: %w", err)
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("decode CA certificate: no PEM block found")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA certificate: %w", err)
+	}
+
+	return cert.Raw, nil
+}
+
+func keychainHasCert(certPath string, args ...string) (bool, error) {
+	out, err := exec.Command("security", args...).Output()
+	if err != nil {
+		return false, err
+	}
+
+	target, err := caFingerprint(certPath)
+	if err != nil {
+		return false, err
+	}
+
+	rest := out
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err == nil && bytes.Equal(cert.Raw, target) {
+				return true, nil
+			}
+		}
+		rest = remaining
+	}
+
+	return false, nil
+}
+
+// IsCATrusted reports whether the current Caddy local CA certificate is present
+// in the System keychain.
+func IsCATrusted() (bool, error) {
+	certPath := config.CACertPath()
+	if _, err := os.Stat(certPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat CA certificate: %w", err)
+	}
+
+	trusted, err := keychainHasCert(certPath, "find-certificate", "-c", caCommonName, "-a", "-p", systemKeychain)
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return false, nil
+		}
+		return false, fmt.Errorf("check System keychain: %w", err)
+	}
+
+	return trusted, nil
+}
+
+// RunSudoTrustCACert trusts the current Caddy local CA certificate using
+// FrankenPHP's trust command.
+func RunSudoTrustCACert() error {
+	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
+	pvDir := config.PvDir()
+	trust := exec.Command(frankenphp, "trust")
+	trust.Env = append(os.Environ(), "XDG_DATA_HOME="+pvDir, "XDG_CONFIG_HOME="+pvDir)
+	trust.Stdin = os.Stdin
+	if Verbose {
+		trust.Stdout = os.Stdout
+		trust.Stderr = os.Stderr
+	}
+	if err := trust.Run(); err != nil {
+		return fmt.Errorf("frankenphp trust: %w", err)
+	}
+
+	return nil
+}
+
+// RunSudoUntrustCACert removes the current Caddy local CA certificate using
+// FrankenPHP's untrust command.
+func RunSudoUntrustCACert() error {
+	certPath := config.CACertPath()
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("Caddy CA not found at %s: %w", certPath, err)
+	}
+
+	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
+	pvDir := config.PvDir()
+	cmd := exec.Command(frankenphp, "untrust", "--cert", certPath)
+	cmd.Env = append(os.Environ(), "XDG_DATA_HOME="+pvDir, "XDG_CONFIG_HOME="+pvDir)
+	cmd.Stdin = os.Stdin
+	if Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("frankenphp untrust: %w", err)
+	}
+
+	return nil
+}
+
+// RunSudoTrustWithServer starts FrankenPHP temporarily so the local CA exists,
+// then trusts that CA in the System keychain.
 func RunSudoTrustWithServer() error {
 	frankenphp := filepath.Join(config.BinDir(), "frankenphp")
 	caddyfile := config.CaddyfilePath()
@@ -102,17 +216,8 @@ func RunSudoTrustWithServer() error {
 		return fmt.Errorf("FrankenPHP admin API did not become ready within 5s")
 	}
 
-	// Run trust with sudo — use sh -c with explicit env vars since sudo clears env.
-	pvDir := config.PvDir()
-	script := fmt.Sprintf(`XDG_DATA_HOME="%s" XDG_CONFIG_HOME="%s" "%s" trust`, pvDir, pvDir, frankenphp)
-	trust := exec.Command("sudo", "sh", "-c", script)
-	trust.Stdin = os.Stdin
-	if Verbose {
-		trust.Stdout = os.Stdout
-		trust.Stderr = os.Stderr
-	}
-	if err := trust.Run(); err != nil {
-		return fmt.Errorf("frankenphp trust: %w", err)
+	if err := RunSudoTrustCACert(); err != nil {
+		return err
 	}
 
 	return nil

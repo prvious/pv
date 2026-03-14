@@ -32,6 +32,8 @@ var uninstallCmd = &cobra.Command{
 	GroupID: "core",
 	Short:   "Completely remove pv and all its data",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		start := time.Now()
+
 		// Confirmation prompt.
 		ui.Subtle("This will remove:")
 		ui.Subtle("- The pv binary")
@@ -81,19 +83,30 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Read registry before deletion (for pv.yml file scan later).
-		var projectPaths []string
-		reg, err := registry.Load()
-		if err == nil {
-			for _, p := range reg.List() {
-				projectPaths = append(projectPaths, p.Path)
-			}
-		}
+		fmt.Fprintln(os.Stderr)
+		ui.Header(version)
 
-		settings, _ := config.LoadSettings()
+		var projectPaths []string
 		tld := "test"
-		if settings != nil {
-			tld = settings.Defaults.TLD
+		var reg *registry.Registry
+
+		if err := ui.Step("Preparing uninstall...", func() (string, error) {
+			loadedReg, err := registry.Load()
+			if err == nil {
+				reg = loadedReg
+				for _, p := range reg.List() {
+					projectPaths = append(projectPaths, p.Path)
+				}
+			}
+
+			settings, _ := config.LoadSettings()
+			if settings != nil {
+				tld = settings.Defaults.TLD
+			}
+
+			return fmt.Sprintf("Using .%s domain", tld), nil
+		}); err != nil {
+			return err
 		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
@@ -162,9 +175,31 @@ var uninstallCmd = &cobra.Command{
 			// Error already displayed by ui.Step
 		}
 
+		resolverFile := filepath.Join("/etc/resolver", tld)
+		caCertPath := config.CACertPath()
+		if err := ui.Step("Checking system cleanup requirements...", func() (string, error) {
+			needSudo := false
+			if _, err := os.Stat(resolverFile); err == nil {
+				needSudo = true
+			}
+			if _, err := os.Stat(caCertPath); err == nil {
+				needSudo = true
+			}
+
+			if needSudo {
+				if err := acquireSudo(); err != nil {
+					return "", err
+				}
+				return "Sudo ready for system cleanup", nil
+			}
+
+			return "No sudo cleanup needed", nil
+		}); err != nil {
+			return err
+		}
+
 		// Remove system configuration (sudo).
 		if err := ui.Step("Removing DNS resolver...", func() (string, error) {
-			resolverFile := filepath.Join("/etc/resolver", tld)
 			if runSudo("rm", "-f", resolverFile) {
 				return "DNS resolver removed", nil
 			}
@@ -174,30 +209,12 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		// Untrust CA certificate.
-		caCertPath := config.CACertPath()
 		if _, err := os.Stat(caCertPath); err == nil {
 			if err := ui.Step("Removing CA certificate...", func() (string, error) {
-				certCmd := exec.Command("sudo", "-n", "security", "remove-trusted-cert", "-d", caCertPath)
-				certCmd.Stdout = os.Stdout
-				certCmd.Stderr = os.Stderr
-
-				if err := certCmd.Start(); err != nil {
+				if err := setup.RunSudoUntrustCACert(); err != nil {
 					return "", fmt.Errorf("could not untrust CA — run: sudo security remove-trusted-cert -d %s", caCertPath)
 				}
-
-				done := make(chan error, 1)
-				go func() { done <- certCmd.Wait() }()
-				select {
-				case err := <-done:
-					if err != nil {
-						return "", fmt.Errorf("could not untrust CA — run: sudo security remove-trusted-cert -d %s", caCertPath)
-					}
-					return "CA certificate removed", nil
-				case <-time.After(10 * time.Second):
-					certCmd.Process.Kill()
-					<-done
-					return "", fmt.Errorf("CA removal timed out — run: sudo security remove-trusted-cert -d %s", caCertPath)
-				}
+				return "CA certificate removed", nil
 			}); err != nil {
 				// Error already displayed by ui.Step
 			}
@@ -278,6 +295,7 @@ var uninstallCmd = &cobra.Command{
 		ui.Subtle("  eval \"$(pv env)\"   # if present")
 
 		ui.Success("pv has been completely uninstalled. Your projects were not modified.")
+		ui.Footer(start, "https://pv.prvious.dev/docs")
 
 		return nil
 	},

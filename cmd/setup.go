@@ -17,6 +17,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
+	setupinternal "github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -117,28 +118,42 @@ var setupCmd = &cobra.Command{
 			return err
 		}
 
+		if err := ui.Step("Checking prerequisites...", func() (string, error) {
+			if err := setupinternal.CheckOS(); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("macOS %s", setupinternal.PlatformLabel()), nil
+		}); err != nil {
+			return err
+		}
+
 		// Acquire sudo upfront.
 		if err := acquireSudo(); err != nil {
 			return err
 		}
 
-		// Ensure directories exist.
-		if err := config.EnsureDirs(); err != nil {
-			return fmt.Errorf("cannot create directories: %w", err)
-		}
+		if err := ui.Step("Preparing environment...", func() (string, error) {
+			if err := config.EnsureDirs(); err != nil {
+				return "", fmt.Errorf("cannot create directories: %w", err)
+			}
 
-		// Build settings from wizard output, preserving existing PHP default.
-		s := &config.Settings{
-			Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon)},
-			Automation: automation,
-		}
-		if err := s.Save(); err != nil {
-			return fmt.Errorf("cannot save settings: %w", err)
-		}
+			// Build settings from wizard output, preserving existing PHP default.
+			s := &config.Settings{
+				Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon)},
+				Automation: automation,
+			}
+			if err := s.Save(); err != nil {
+				return "", fmt.Errorf("cannot save settings: %w", err)
+			}
 
-		// Write Valet-compatible config for Vite TLS auto-detection.
-		if err := certs.EnsureValetConfig(tld); err != nil {
-			ui.Subtle(fmt.Sprintf("Vite TLS config: %v", err))
+			// Write Valet-compatible config for Vite TLS auto-detection.
+			if err := certs.EnsureValetConfig(tld); err != nil {
+				ui.Subtle(fmt.Sprintf("Vite TLS config: %v", err))
+			}
+
+			return "Settings saved", nil
+		}); err != nil {
+			return err
 		}
 
 		// Install PHP versions.
@@ -159,11 +174,24 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Set global PHP if not set.
-		if _, err := phpenv.GlobalVersion(); err != nil && len(selectedPHP) > 0 {
+		if err := ui.Step("Configuring global PHP...", func() (string, error) {
+			if len(selectedPHP) == 0 {
+				return "No PHP versions selected", nil
+			}
+
+			if _, err := phpenv.GlobalVersion(); err == nil {
+				return "Global PHP already configured", nil
+			}
+
 			latest := selectedPHP[len(selectedPHP)-1]
-			if err := phpenv.SetGlobal(latest); err == nil {
-				ui.Success(fmt.Sprintf("PHP %s set as global default", latest))
+			if err := phpenv.SetGlobal(latest); err != nil {
+				return "", err
+			}
+
+			return fmt.Sprintf("PHP %s set as global default", latest), nil
+		}); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Global PHP setup failed: %v", err))
 			}
 		}
 
@@ -188,20 +216,24 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Expose all installed tools (shims + symlinks).
-		if err := tools.ExposeAll(); err != nil {
-			ui.Fail(fmt.Sprintf("Tool exposure failed: %v", err))
-		}
+		if err := ui.Step("Updating tool shims...", func() (string, error) {
+			if err := tools.ExposeAll(); err != nil {
+				return "", err
+			}
 
-		// Save version manifest.
-		vs, err := binaries.LoadVersions()
-		if err == nil {
-			if len(selectedPHP) > 0 {
-				vs.Set("php", selectedPHP[len(selectedPHP)-1])
+			vs, err := binaries.LoadVersions()
+			if err == nil {
+				if len(selectedPHP) > 0 {
+					vs.Set("php", selectedPHP[len(selectedPHP)-1])
+				}
+				if saveErr := vs.Save(); saveErr != nil {
+					ui.Fail(fmt.Sprintf("Cannot save version manifest: %v", saveErr))
+				}
 			}
-			if saveErr := vs.Save(); saveErr != nil {
-				ui.Fail(fmt.Sprintf("Cannot save version manifest: %v", saveErr))
-			}
+
+			return "Tool shims updated", nil
+		}); err != nil {
+			ui.Fail(fmt.Sprintf("Tool exposure failed: %v", err))
 		}
 
 		// Finalize: Caddyfile, DNS, CA trust, shell PATH.
