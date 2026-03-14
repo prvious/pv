@@ -26,7 +26,7 @@
               "width": "fill_container",
               "padding": [
                 20,
-                48
+                120
               ],
               "justifyContent": "space_between",
               "alignItems": "center",
@@ -341,6 +341,11 @@
                   "width": 780,
                   "fill": "$bg-elevated",
                   "cornerRadius": 16,
+                  "stroke": {
+                    "align": "inside",
+                    "thickness": 1,
+                    "fill": "$bg-placeholder"
+                  },
                   "layout": "vertical",
                   "children": [
                     {
@@ -468,7 +473,7 @@
                           "type": "text",
                           "id": "u6Wn6",
                           "name": "blank1",
-                          "fill": "$accent-teal",
+                          "fill": "$accent-orange",
                           "content": "  ✓ pv installed to ~/.pv/bin/pv",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -531,7 +536,7 @@
                           "type": "text",
                           "id": "sQlYA",
                           "name": "line1",
-                          "fill": "$accent-teal",
+                          "fill": "$accent-orange",
                           "content": "  ? Select PHP versions: [8.4] [8.3]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -540,7 +545,7 @@
                           "type": "text",
                           "id": "re1es",
                           "name": "line2",
-                          "fill": "$accent-teal",
+                          "fill": "$text-primary",
                           "content": "  ? Select tools: [composer] [mago]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -549,7 +554,7 @@
                           "type": "text",
                           "id": "HaXzO",
                           "name": "line3",
-                          "fill": "$accent-teal",
+                          "fill": "$accent-cyan",
                           "content": "  ? Select services: [mysql] [postgres]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -558,7 +563,7 @@
                           "type": "text",
                           "id": "L18Et",
                           "name": "line4",
-                          "fill": "$accent-teal",
+                          "fill": "$text-secondary",
                           "content": "  ? Configure domain: [.test]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -577,7 +582,7 @@
                           "type": "text",
                           "id": "36Sy1",
                           "name": "finalLine",
-                          "fill": "$text-secondary",
+                          "fill": "$accent-orange",
                           "content": "  ✓ Setup saved. Run pv link in your project.",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
@@ -621,7 +626,7 @@
                       "type": "frame",
                       "id": "C0tty",
                       "name": "goBadge",
-                      "fill": "$bg-elevated",
+                      "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
                         6,
@@ -644,7 +649,7 @@
                       "type": "frame",
                       "id": "nToAk",
                       "name": "fpBadge",
-                      "fill": "$bg-elevated",
+                      "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
                         6,
@@ -667,7 +672,7 @@
                       "type": "frame",
                       "id": "5PspD",
                       "name": "caddyBadge",
-                      "fill": "$bg-elevated",
+                      "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
                         6,
@@ -690,7 +695,7 @@
                       "type": "frame",
                       "id": "JZe1z",
                       "name": "dockerBadge",
-                      "fill": "$bg-elevated",
+                      "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
                         6,
@@ -720,7 +725,7 @@
           "id": "MY1aM",
           "name": "Section: Quick Install",
           "width": "fill_container",
-          "fill": "$bg-page",
+          "fill": "$bg-elevated",
           "layout": "vertical",
           "gap": 32,
           "padding": [
@@ -765,8 +770,13 @@
               "name": "Terminal Block",
               "clip": true,
               "width": 720,
-              "fill": "$bg-elevated",
+              "fill": "$bg-card",
               "cornerRadius": 16,
+              "stroke": {
+                "align": "inside",
+                "thickness": 1,
+                "fill": "$inactive"
+              },
               "effect": {
                 "type": "shadow",
                 "shadowType": "outer",
@@ -784,6 +794,7 @@
                   "id": "oqIPo",
                   "name": "Terminal Top Bar",
                   "width": "fill_container",
+                  "fill": "$bg-elevated",
                   "gap": 8,
                   "padding": [
                     16,
@@ -821,7 +832,7 @@
                   "type": "rectangle",
                   "id": "SECnE",
                   "name": "Divider",
-                  "fill": "$bg-placeholder",
+                  "fill": "$inactive",
                   "width": "fill_container",
                   "height": 1
                 },
@@ -830,6 +841,7 @@
                   "id": "qvaPR",
                   "name": "Command Area",
                   "width": "fill_container",
+                  "fill": "$bg-card",
                   "padding": 24,
                   "children": [
                     {
@@ -917,7 +929,7 @@
                   "type": "frame",
                   "id": "l1FED",
                   "name": "step1",
-                  "fill": "$bg-card",
+                  "fill": "$bg-elevated",
                   "cornerRadius": 16,
                   "padding": [
                     8,
@@ -950,7 +962,7 @@
                   "type": "frame",
                   "id": "nC3x8",
                   "name": "step2",
-                  "fill": "$bg-card",
+                  "fill": "$bg-elevated",
                   "cornerRadius": 16,
                   "padding": [
                     8,
@@ -1023,9 +1035,13 @@
           "id": "GGOPN",
           "name": "Section: Features + How It Works",
           "width": "fill_container",
+          "fill": "$bg-card",
           "layout": "vertical",
           "gap": 64,
-          "padding": 80,
+          "padding": [
+            80,
+            120
+          ],
           "children": [
             {
               "type": "frame",
@@ -1446,7 +1462,7 @@
               "id": "xqp9I",
               "name": "Terminal Showcase",
               "width": "fill_container",
-              "fill": "$bg-page",
+              "fill": "$bg-elevated",
               "layout": "vertical",
               "gap": 40,
               "padding": [
@@ -1508,8 +1524,13 @@
                       "name": "Terminal: PHP Versions",
                       "clip": true,
                       "width": "fill_container",
-                      "fill": "$bg-card",
+                      "fill": "$bg-elevated",
                       "cornerRadius": 16,
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "$inactive"
+                      },
                       "layout": "vertical",
                       "children": [
                         {
@@ -1517,7 +1538,7 @@
                           "id": "m6hNO",
                           "name": "Title Bar",
                           "width": "fill_container",
-                          "fill": "$bg-elevated",
+                          "fill": "$bg-card",
                           "padding": [
                             12,
                             16
@@ -1841,8 +1862,13 @@
                       "name": "Terminal: Services",
                       "clip": true,
                       "width": "fill_container",
-                      "fill": "$bg-card",
+                      "fill": "$bg-elevated",
                       "cornerRadius": 16,
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "$inactive"
+                      },
                       "layout": "vertical",
                       "children": [
                         {
@@ -1850,7 +1876,7 @@
                           "id": "HWMMD",
                           "name": "Title Bar 2",
                           "width": "fill_container",
-                          "fill": "$bg-elevated",
+                          "fill": "$bg-card",
                           "padding": [
                             12,
                             16
@@ -2159,7 +2185,7 @@
               "id": "bQTQd",
               "name": "Final CTA",
               "width": "fill_container",
-              "fill": "$bg-card",
+              "fill": "$bg-elevated",
               "layout": "vertical",
               "gap": 32,
               "padding": [
@@ -2389,7 +2415,7 @@
               "id": "vPufy",
               "name": "Footer",
               "width": "fill_container",
-              "fill": "$bg-elevated",
+              "fill": "$bg-card",
               "layout": "vertical",
               "gap": 48,
               "padding": [
@@ -2607,7 +2633,7 @@
                   "type": "rectangle",
                   "id": "pj4q5",
                   "name": "divider",
-                  "fill": "$inactive",
+                  "fill": "$bg-placeholder",
                   "width": "fill_container",
                   "height": 1
                 },
@@ -3153,10 +3179,8 @@
           "fill": "$tui-bg",
           "cornerRadius": 12,
           "layout": "vertical",
-          "padding": [
-            28,
-            32
-          ],
+          "gap": 12,
+          "padding": 24,
           "children": [
             {
               "type": "text",
@@ -3165,7 +3189,7 @@
               "fill": "$tui-faint",
               "content": "$ pv setup",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 14,
+              "fontSize": 13,
               "fontWeight": "normal"
             },
             {
@@ -3197,7 +3221,7 @@
                   "type": "text",
                   "id": "keChq",
                   "name": "sep1",
-                  "fill": "$tui-faint",
+                  "fill": "$tui-purple",
                   "content": "  │  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3217,7 +3241,7 @@
                   "type": "text",
                   "id": "aGXGd",
                   "name": "sep2",
-                  "fill": "$tui-faint",
+                  "fill": "$tui-purple",
                   "content": "  │  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3237,7 +3261,7 @@
                   "type": "text",
                   "id": "HlHFM",
                   "name": "sep3",
-                  "fill": "$tui-faint",
+                  "fill": "$tui-purple",
                   "content": "  │  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3267,7 +3291,7 @@
               "type": "rectangle",
               "id": "3m2no",
               "name": "d3",
-              "opacity": 0.7,
+              "opacity": 0.8,
               "fill": "$tui-purple",
               "width": "fill_container",
               "height": 1
@@ -3287,7 +3311,7 @@
               "fill": "$tui-faint",
               "content": "Select backing services to set up:",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 14,
+              "fontSize": 12,
               "fontWeight": "normal"
             },
             {
@@ -3357,7 +3381,7 @@
                   "fill": "$tui-green",
                   "content": "     ● MySQL",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 14,
+                  "fontSize": 13,
                   "fontWeight": "normal"
                 },
                 {
@@ -3367,7 +3391,7 @@
                   "fill": "$tui-green",
                   "content": "     ● PostgreSQL",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 14,
+                  "fontSize": 13,
                   "fontWeight": "normal"
                 },
                 {
@@ -3377,7 +3401,7 @@
                   "fill": "$tui-text",
                   "content": "     ○ Redis",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 14,
+                  "fontSize": 13,
                   "fontWeight": "normal"
                 },
                 {
@@ -3387,7 +3411,7 @@
                   "fill": "$tui-text",
                   "content": "     ○ S3 Storage",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 14,
+                  "fontSize": 13,
                   "fontWeight": "normal"
                 }
               ]
@@ -3407,7 +3431,7 @@
               "fill": "$tui-faint",
               "content": "←/→ tab • ↑/↓ move • space toggle • enter confirm • esc quit",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 12,
+              "fontSize": 11,
               "fontWeight": "normal"
             }
           ]
@@ -3421,10 +3445,8 @@
           "fill": "$tui-bg",
           "cornerRadius": 12,
           "layout": "vertical",
-          "padding": [
-            20,
-            24
-          ],
+          "gap": 12,
+          "padding": 24,
           "children": [
             {
               "type": "text",
@@ -3433,7 +3455,8 @@
               "fill": "$tui-faint",
               "content": "$ pv setup",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 13
+              "fontSize": 13,
+              "fontWeight": "normal"
             },
             {
               "type": "frame",
@@ -3456,7 +3479,8 @@
                   "fill": "$tui-faint",
                   "content": "  PHP Versions  ",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 13
+                  "fontSize": 13,
+                  "fontWeight": "normal"
                 },
                 {
                   "type": "text",
@@ -3474,7 +3498,8 @@
                   "fill": "$tui-faint",
                   "content": "  Tools  ",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 13
+                  "fontSize": 13,
+                  "fontWeight": "normal"
                 },
                 {
                   "type": "text",
@@ -3492,7 +3517,8 @@
                   "fill": "$tui-faint",
                   "content": "  Services  ",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 13
+                  "fontSize": 13,
+                  "fontWeight": "normal"
                 },
                 {
                   "type": "text",
@@ -5449,11 +5475,25 @@
   "variables": {
     "accent-cyan": {
       "type": "color",
-      "value": "#00E5FF"
+      "value": [
+        {
+          "value": "#00E5FF"
+        },
+        {
+          "value": "#4DA3FF"
+        }
+      ]
     },
     "accent-orange": {
       "type": "color",
-      "value": "#FF6B35"
+      "value": [
+        {
+          "value": "#FF6B35"
+        },
+        {
+          "value": "#FFD60A"
+        }
+      ]
     },
     "accent-red": {
       "type": "color",
@@ -5461,19 +5501,50 @@
     },
     "accent-teal": {
       "type": "color",
-      "value": "#00D4AA"
+      "value": [
+        {
+          "value": "#00D4AA"
+        },
+        {
+          "value": "#2F80FF"
+        }
+      ]
     },
     "bg-card": {
       "type": "color",
-      "value": "#212121"
+      "value": [
+        {
+          "value": "#212121"
+        },
+        {
+          "value": "#111111"
+        }
+      ]
     },
     "bg-elevated": {
       "type": "color",
-      "value": "#2D2D2D"
+      "value": [
+        {
+          "value": "#2D2D2D"
+        },
+        {
+          "value": "#0A0A0A"
+        }
+      ]
     },
     "bg-page": {
       "type": "color",
-      "value": "#1A1A1A"
+      "value": [
+        {
+          "value": "#1A1A1A"
+        },
+        {
+          "value": "#000000"
+        },
+        {
+          "value": "#000000"
+        }
+      ]
     },
     "bg-placeholder": {
       "type": "color",
@@ -5485,7 +5556,14 @@
     },
     "text-on-accent": {
       "type": "color",
-      "value": "#0D0D0D"
+      "value": [
+        {
+          "value": "#0D0D0D"
+        },
+        {
+          "value": "#000000"
+        }
+      ]
     },
     "text-primary": {
       "type": "color",
@@ -5506,6 +5584,9 @@
         },
         {
           "value": "#000000"
+        },
+        {
+          "value": "#000000"
         }
       ]
     },
@@ -5517,6 +5598,9 @@
         },
         {
           "value": "$accent-teal"
+        },
+        {
+          "value": "#2F80FF"
         }
       ]
     },
@@ -5550,6 +5634,9 @@
         },
         {
           "value": "$accent-teal"
+        },
+        {
+          "value": "#FFD60A"
         }
       ]
     },
@@ -5561,6 +5648,9 @@
         },
         {
           "value": "$accent-teal"
+        },
+        {
+          "value": "#2F80FF"
         }
       ]
     },
@@ -5594,6 +5684,9 @@
         },
         {
           "value": "$accent-orange"
+        },
+        {
+          "value": "#FFD60A"
         }
       ]
     }

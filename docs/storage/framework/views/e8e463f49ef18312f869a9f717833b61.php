@@ -40,8 +40,9 @@
         <div class="h-px bg-placeholder"></div>
 
         <div class="flex flex-col gap-2 font-mono text-[11px] text-muted md:flex-row md:justify-between">
-            <span>&copy; {{ date('Y') }} pv. Open source under MIT License.</span>
+            <span>&copy; <?php echo e(date('Y')); ?> pv. Open source under MIT License.</span>
             <span>Built with FrankenPHP + Go</span>
         </div>
     </div>
 </footer>
+<?php /**PATH /Users/clovismuneza/Apps/pv/docs/resources/views/components/site-footer.blade.php ENDPATH**/ ?>

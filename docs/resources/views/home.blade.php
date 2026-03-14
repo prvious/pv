@@ -2,17 +2,18 @@
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
     {{-- SECTION: Nav + Hero + Trust Bar                                       --}}
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
-    <div class="bg-background">
+    <x-site-header />
 
-        <x-site-header />
+    <div class="relative bg-background">
+
+        {{-- Ambient glow --}}
+        <div class="pointer-events-none absolute inset-x-0 top-16 h-[500px]" style="mask-image: linear-gradient(to bottom, black 40%, transparent)" aria-hidden="true">
+            <div class="absolute left-1/2 top-0 h-[400px] w-[800px] -translate-x-1/2 rounded-full bg-white/20 blur-[120px]"></div>
+            <div class="absolute left-1/3 top-0 h-[300px] w-[500px] -translate-x-1/2 rounded-full bg-white/10 blur-[100px]"></div>
+        </div>
 
         {{-- Hero --}}
-        <div class="flex flex-col items-center gap-8 px-6 py-16 md:px-20 md:py-24">
-            {{-- Badge --}}
-            <div class="rounded-full bg-card px-3 py-1.5 font-mono text-[11px] font-semibold text-accent">
-                [ AUTOMATION READY ]
-            </div>
-
+        <div class="flex flex-col items-center gap-8 px-6 pt-28 pb-16 md:px-20 md:pb-24">
             {{-- Headline --}}
             <h1 class="max-w-5xl text-center font-heading text-5xl font-bold leading-[1.1] text-foreground md:text-[60px]">
                 One command. Full PHP environment.
@@ -25,40 +26,84 @@
 
             <x-install-command />
 
-            {{-- CTA Buttons --}}
-            <div class="flex items-center gap-4">
-                <a href="#get_started" class="rounded-2xl bg-accent-orange px-7 py-3.5 font-mono text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-orange/90">
-                    pv install
-                </a>
-                <a href="https://pv.prvious.dev/docs" class="rounded-2xl border border-muted px-7 py-3.5 font-mono text-[13px] font-semibold text-foreground transition-colors hover:bg-elevated">
-                    Read Docs
-                </a>
-            </div>
+            {{-- CTA Button --}}
+            <a href="https://pv.prvious.dev/docs" class="rounded-2xl border border-muted px-7 py-3.5 font-mono text-[13px] font-semibold text-foreground transition-colors hover:bg-elevated">
+                Read Docs
+            </a>
 
-            {{-- Terminal Mockup --}}
-            <div class="w-full max-w-[780px] overflow-hidden rounded-2xl bg-elevated">
-                {{-- Title bar --}}
-                <div class="flex items-center gap-2 bg-card px-4 py-3">
-                    <span class="size-3 rounded-full bg-accent-red"></span>
-                    <span class="size-3 rounded-full bg-accent-orange"></span>
-                    <span class="size-3 rounded-full bg-accent"></span>
-                    <span class="ml-2 font-mono text-[11px] text-muted">terminal</span>
+            <x-terminal title="terminal" class="w-full max-w-[780px] text-[12px] md:text-[13px]" x-data="{ tab: 'php' }">
+                {{-- curl command --}}
+                <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">curl</span><span class="font-semibold text-muted"> -fsSL </span><span class="font-semibold text-foreground">https://pv.prvious.dev/install</span><span class="font-semibold text-muted"> | </span><span class="font-semibold text-accent-orange">bash</span></div>
+                <div class="h-2"></div>
+
+                {{-- Setup TUI --}}
+                <div class="text-accent">Setting up environment...</div>
+                <div class="h-4"></div>
+
+                {{-- Tab bar --}}
+                <div class="flex items-center">
+                    <button x-on:click="tab = 'php'" class="cursor-pointer px-3 transition-colors" :class="tab === 'php' ? 'font-bold text-foreground' : 'text-muted hover:text-foreground/70'">PHP Versions</button>
+                    <span class="text-accent">│</span>
+                    <button x-on:click="tab = 'tools'" class="cursor-pointer px-3 transition-colors" :class="tab === 'tools' ? 'font-bold text-foreground' : 'text-muted hover:text-foreground/70'">Tools</button>
+                    <span class="text-accent">│</span>
+                    <button x-on:click="tab = 'services'" class="cursor-pointer px-3 transition-colors" :class="tab === 'services' ? 'font-bold text-foreground' : 'text-muted hover:text-foreground/70'">Services</button>
+                    <span class="text-accent">│</span>
+                    <button x-on:click="tab = 'settings'" class="cursor-pointer px-3 transition-colors" :class="tab === 'settings' ? 'font-bold text-foreground' : 'text-muted hover:text-foreground/70'">Settings</button>
                 </div>
-                {{-- Body --}}
-                <div class="space-y-1.5 p-5 font-mono text-[12px] leading-relaxed md:text-[13px]">
-                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">curl</span><span class="font-semibold text-muted"> -fsSL </span><span class="font-semibold text-foreground">https://pv.prvious.dev/install</span><span class="font-semibold text-muted"> | </span><span class="font-semibold text-accent-orange">bash</span></div>
-                    <div class="text-accent">  ✓ pv installed to ~/.pv/bin/pv</div>
-                    <div class="h-2"></div>
-                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="font-semibold text-accent-orange"> setup</span></div>
-                    <div class="h-2"></div>
-                    <div class="text-accent">  ? Select PHP versions: [8.4] [8.3]</div>
-                    <div class="text-accent">  ? Select tools: [composer] [mago]</div>
-                    <div class="text-accent">  ? Select services: [mysql] [postgres]</div>
-                    <div class="text-accent">  ? Configure domain: [.test]</div>
-                    <div class="h-2"></div>
-                    <div class="text-muted">  ✓ Setup saved. Run pv link in your project.</div>
+                <div class="h-px w-full bg-accent"></div>
+                <div class="h-4"></div>
+
+                {{-- PHP Versions --}}
+                <div x-show="tab === 'php'">
+                    <div class="text-muted">Select which PHP versions to install:</div>
+                    <div class="h-3"></div>
+                    <div><span class="font-bold text-accent">&gt; </span><span class="text-muted">○</span><span class="text-foreground"> PHP 8.3</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-foreground">○ PHP 8.4</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-accent">● PHP 8.5 </span><span class="text-muted">(installed)</span></div>
                 </div>
-            </div>
+
+                {{-- Tools --}}
+                <div x-show="tab === 'tools'" x-cloak>
+                    <div class="text-muted">Composer is always installed. Select additional tools:</div>
+                    <div class="h-3"></div>
+                    <div><span class="font-bold text-accent">&gt; </span><span class="text-accent">●</span><span class="text-accent"> Mago </span><span class="text-muted">(PHP linter &amp; formatter)</span></div>
+                </div>
+
+                {{-- Services --}}
+                <div x-show="tab === 'services'" x-cloak>
+                    <div class="text-muted">Select backing services to set up:</div>
+                    <div class="h-3"></div>
+                    <div><span class="font-bold text-accent">&gt; </span><span class="text-accent">●</span><span class="text-accent"> MySQL</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-accent">● PostgreSQL</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-foreground">○ Redis</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-foreground">○ Mail</span></div>
+                    <div class="h-1"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-foreground">○ S3 Storage</span></div>
+                </div>
+
+                {{-- Settings --}}
+                <div x-show="tab === 'settings'" x-cloak>
+                    <div class="font-bold text-accent">Domain</div>
+                    <div class="text-muted">Top-level domain for local sites</div>
+                    <div class="h-2"></div>
+                    <div><span class="font-bold text-accent">&gt; </span><span class="text-foreground">test</span> <span class="text-muted">(press e to edit)</span></div>
+                    <div class="h-3"></div>
+                    <div class="font-bold text-accent">Daemon</div>
+                    <div class="text-muted">Start pv automatically on login</div>
+                    <div class="h-2"></div>
+                    <div><span class="invisible">&gt; </span><span class="text-accent">true</span></div>
+                </div>
+
+                <div class="h-4"></div>
+
+                {{-- Help bar --}}
+                <div class="text-muted">←/→ tab • ↑/↓ move • space toggle • enter confirm • esc quit</div>
+            </x-terminal>
         </div>
 
         {{-- Trust Bar --}}
@@ -78,42 +123,29 @@
     <div class="flex flex-col items-center gap-8 bg-background px-6 py-16 md:px-20">
         {{-- Header --}}
         <div class="flex flex-col items-center gap-2">
-            <span class="font-mono text-[13px] text-muted">// quick_setup</span>
-            <h2 class="font-heading text-5xl font-bold text-foreground">Setup in seconds.</h2>
+            <span class="font-mono text-[13px] text-muted">// link_a_project</span>
+            <h2 class="font-heading text-5xl font-bold text-foreground">Link. Serve. Done.</h2>
         </div>
 
-        {{-- Terminal --}}
-        <div class="w-full max-w-[720px] overflow-hidden rounded-2xl bg-elevated shadow-[0_8px_32px_rgba(26,26,26,0.8)]">
-            <div class="flex items-center gap-2 px-5 py-4">
-                <span class="size-3 rounded-full bg-accent-red"></span>
-                <span class="size-3 rounded-full bg-accent-orange"></span>
-                <span class="size-3 rounded-full bg-accent"></span>
-            </div>
-            <div class="h-px bg-placeholder"></div>
-            <div class="p-6 font-mono text-[17px]">
-                <span class="text-muted">$ </span>
-                <span class="font-semibold text-accent">curl</span>
-                <span class="text-muted"> -fsSL </span>
-                <span class="text-foreground">https://pv.prvious.dev/install</span>
-                <span class="text-muted"> | </span>
-                <span class="font-semibold text-accent">bash</span>
-            </div>
-        </div>
+        <x-terminal title="terminal" class="w-full max-w-[720px] text-[13px] shadow-[0_8px_32px_rgba(0,0,0,0.8)]">
+            <div><span class="font-semibold text-muted">$ </span><span class="text-muted">cd ~/Code/myapp</span></div>
+            <div class="h-2"></div>
+            <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> link</span></div>
+            <div class="h-2"></div>
+            <div class="text-foreground">  ✓ myapp.caddy</div>
+            <div class="text-foreground">  ✓ Caddyfile updated</div>
+            <div class="text-foreground">  ✓ myapp.test</div>
+            <div class="text-foreground">  ✓ no services detected</div>
+            <div class="text-foreground">  ✓ https://myapp.test</div>
+            <div class="h-2"></div>
+            <div>  <span class="text-accent">✓</span> <span class="text-foreground">Linked</span> <span class="font-bold text-accent">https://myapp.test</span></div>
+            <div class="h-2"></div>
+            <div class="text-muted">  Path  ~/Code/myapp</div>
+            <div class="text-muted">  Type  laravel</div>
+            <div class="text-muted">  PHP   <span class="text-accent">8.5</span></div>
+        </x-terminal>
 
-        {{-- Explain --}}
-        <p class="font-mono text-[13px] text-muted">Then run pv setup to configure PHP, FrankenPHP, Composer and Mago.</p>
-
-        {{-- Flow indicator --}}
-        <div class="flex items-center gap-4">
-            <span class="rounded-full bg-card px-4 py-2 font-mono text-[11px] font-semibold text-accent">curl install</span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted"><path d="m9 18 6-6-6-6"/></svg>
-            <span class="rounded-full bg-card px-4 py-2 font-mono text-[11px] font-semibold text-accent-orange">pv setup</span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-muted"><path d="m9 18 6-6-6-6"/></svg>
-            <span class="flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 font-mono text-[11px] font-semibold text-on-accent">
-                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                ready
-            </span>
-        </div>
+        <p class="font-mono text-[13px] text-muted">One command to link any PHP project. HTTPS, domain, and PHP version — automatic.</p>
     </div>
 
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
@@ -185,57 +217,35 @@
             </div>
 
             <div class="grid gap-6 md:grid-cols-2">
-                {{-- Terminal: PHP Versions --}}
-                <div class="overflow-hidden rounded-2xl bg-card">
-                    <div class="flex items-center justify-between bg-elevated px-4 py-3">
-                        <span class="font-mono text-xs font-semibold text-muted">TERMINAL:~PHP_VERSIONS</span>
-                        <div class="flex gap-1.5">
-                            <span class="size-2.5 rounded-full bg-muted"></span>
-                            <span class="size-2.5 rounded-full bg-accent"></span>
-                            <span class="size-2.5 rounded-full bg-accent-orange"></span>
-                        </div>
-                    </div>
-                    <div class="space-y-1.5 p-5 font-mono text-[13px] leading-relaxed">
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:install </span><span class="text-muted">8.4</span></div>
-                        <div class="text-muted">  Downloading PHP 8.4.3...</div>
-                        <div class="text-accent">  PHP 8.4.3 installed successfully</div>
-                        <div class="h-2"></div>
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:use </span><span class="text-muted">8.4</span></div>
-                        <div class="text-accent">  Global PHP version set to 8.4</div>
-                        <div class="h-2"></div>
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:list</span></div>
-                        <div class="text-xs font-semibold text-muted">  VERSION    STATUS      PATH</div>
-                        <div class="text-xs text-placeholder">  ─────────────────────────────────────</div>
-                        <div class="text-xs text-muted">  8.3        installed   ~/.pv/php/8.3</div>
-                        <div class="text-xs text-accent-orange">* 8.4        active      ~/.pv/php/8.4</div>
-                    </div>
-                </div>
+                <x-terminal title="TERMINAL:~PHP_VERSIONS" :dots-right="true" class="text-[13px]">
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:install </span><span class="text-muted">8.4</span></div>
+                    <div class="text-muted">  Downloading PHP 8.4.3...</div>
+                    <div class="text-accent">  PHP 8.4.3 installed successfully</div>
+                    <div class="h-2"></div>
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:use </span><span class="text-muted">8.4</span></div>
+                    <div class="text-accent">  Global PHP version set to 8.4</div>
+                    <div class="h-2"></div>
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> php:list</span></div>
+                    <div class="text-xs font-semibold text-muted">  VERSION    STATUS      PATH</div>
+                    <div class="text-xs text-placeholder">  ─────────────────────────────────────</div>
+                    <div class="text-xs text-muted">  8.3        installed   ~/.pv/php/8.3</div>
+                    <div class="text-xs text-accent-orange">* 8.4        active      ~/.pv/php/8.4</div>
+                </x-terminal>
 
-                {{-- Terminal: Services --}}
-                <div class="overflow-hidden rounded-2xl bg-card">
-                    <div class="flex items-center justify-between bg-elevated px-4 py-3">
-                        <span class="font-mono text-xs font-semibold text-muted">TERMINAL:~SERVICES</span>
-                        <div class="flex gap-1.5">
-                            <span class="size-2.5 rounded-full bg-muted"></span>
-                            <span class="size-2.5 rounded-full bg-accent"></span>
-                            <span class="size-2.5 rounded-full bg-accent-orange"></span>
-                        </div>
-                    </div>
-                    <div class="space-y-1.5 p-5 font-mono text-[13px] leading-relaxed">
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:add </span><span class="text-muted">mysql</span></div>
-                        <div class="text-muted">  Pulling mysql:8.0...</div>
-                        <div class="text-accent">  MySQL 8.0 running on 127.0.0.1:3306</div>
-                        <div class="h-2"></div>
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:add </span><span class="text-muted">redis</span></div>
-                        <div class="text-accent">  Redis 7 running on 127.0.0.1:6379</div>
-                        <div class="h-2"></div>
-                        <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:list</span></div>
-                        <div class="text-xs font-semibold text-muted">  SERVICE     STATUS     PORT</div>
-                        <div class="text-xs text-placeholder">  ─────────────────────────────────────</div>
-                        <div class="text-xs text-accent">  mysql       running    3306</div>
-                        <div class="text-xs text-accent">  redis       running    6379</div>
-                    </div>
-                </div>
+                <x-terminal title="TERMINAL:~SERVICES" :dots-right="true" class="text-[13px]">
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:add </span><span class="text-muted">mysql</span></div>
+                    <div class="text-muted">  Pulling mysql:8.0...</div>
+                    <div class="text-accent">  MySQL 8.0 running on 127.0.0.1:3306</div>
+                    <div class="h-2"></div>
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:add </span><span class="text-muted">redis</span></div>
+                    <div class="text-accent">  Redis 7 running on 127.0.0.1:6379</div>
+                    <div class="h-2"></div>
+                    <div><span class="font-semibold text-muted">$ </span><span class="font-semibold text-accent">pv</span><span class="text-foreground"> service:list</span></div>
+                    <div class="text-xs font-semibold text-muted">  SERVICE     STATUS     PORT</div>
+                    <div class="text-xs text-placeholder">  ─────────────────────────────────────</div>
+                    <div class="text-xs text-accent">  mysql       running    3306</div>
+                    <div class="text-xs text-accent">  redis       running    6379</div>
+                </x-terminal>
             </div>
         </div>
     </div>

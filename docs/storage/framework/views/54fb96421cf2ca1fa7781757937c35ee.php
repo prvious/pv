@@ -14,3 +14,4 @@
         Star
     </a>
 </nav>
+<?php /**PATH /Users/clovismuneza/Apps/pv/docs/resources/views/components/site-header.blade.php ENDPATH**/ ?>

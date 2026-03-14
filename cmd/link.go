@@ -137,7 +137,7 @@ pv link --name=myapp ~/Code/myapp`,
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Path"), absPath)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Type"), typeLabel)
-		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(ctx.PHPVersion))
+		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Positive.Render(ctx.PHPVersion))
 		fmt.Fprintln(os.Stderr)
 
 		// Reload/restart server if needed.
