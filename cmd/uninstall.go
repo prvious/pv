@@ -109,28 +109,6 @@ var uninstallCmd = &cobra.Command{
 			return err
 		}
 
-		// Uninstall tools (each cleans up its own binary + PATH entry).
-		if err := colimacmd.RunUninstall(); err != nil {
-			if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
-			}
-		}
-		if err := php.RunUninstall(); err != nil {
-			if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
-			}
-		}
-		if err := mago.RunUninstall(); err != nil {
-			if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
-			}
-		}
-		if err := composer.RunUninstall(); err != nil {
-			if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
-			}
-		}
-
 		// Stop services.
 		if err := ui.Step("Stopping services...", func() (string, error) {
 			if daemon.IsLoaded() {
@@ -217,6 +195,28 @@ var uninstallCmd = &cobra.Command{
 				return "CA certificate removed", nil
 			}); err != nil {
 				// Error already displayed by ui.Step
+			}
+		}
+
+		// Uninstall tools (each cleans up its own binary + PATH entry).
+		if err := colimacmd.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
+			}
+		}
+		if err := php.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
+			}
+		}
+		if err := mago.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
+			}
+		}
+		if err := composer.RunUninstall(); err != nil {
+			if !errors.Is(err, ui.ErrAlreadyPrinted) {
+				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
 			}
 		}
 
