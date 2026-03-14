@@ -89,7 +89,7 @@ pv unlink`,
 		domain := "https://" + name + "." + tld
 
 		fmt.Fprintln(os.Stderr)
-		ui.Success(fmt.Sprintf("Unlinked %s", ui.Purple.Bold(true).Render(domain)))
+		ui.Success(fmt.Sprintf("Unlinked %s", ui.Accent.Bold(true).Render(domain)))
 
 		if server.IsRunning() {
 			// Check if unlinking this project orphans a secondary FrankenPHP

@@ -8,11 +8,12 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Colors matching install.sh: PURPLE=#b39ddb (ANSI 141), GREEN, RED, MUTED (dim).
+// Accent is the primary brand color (#00D4AA teal). Green, Red, Orange are semantic.
 var (
-	Purple = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(141))
+	Accent = lipgloss.NewStyle().Foreground(lipgloss.Color("#00D4AA"))
 	Green  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
 	Red    = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1))
+	Orange = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B35"))
 	Muted  = lipgloss.NewStyle().Faint(true)
 	Bold   = lipgloss.NewStyle().Bold(true)
 )
@@ -24,7 +25,7 @@ var ErrAlreadyPrinted = errors.New("error already printed")
 // Header prints the pv version banner.
 func Header(version string) {
 	fmt.Fprintf(os.Stderr, "\n  %s %s\n\n",
-		Purple.Bold(true).Render("pv"),
+		Accent.Bold(true).Render("pv"),
 		Muted.Render("v"+version),
 	)
 }

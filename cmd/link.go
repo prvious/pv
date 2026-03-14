@@ -133,7 +133,7 @@ pv link --name=myapp ~/Code/myapp`,
 		domain := "https://" + name + "." + settings.Defaults.TLD
 
 		fmt.Fprintln(os.Stderr)
-		ui.Success(fmt.Sprintf("Linked %s", ui.Purple.Bold(true).Render(domain)))
+		ui.Success(fmt.Sprintf("Linked %s", ui.Accent.Bold(true).Render(domain)))
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Path"), absPath)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Type"), typeLabel)

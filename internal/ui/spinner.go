@@ -37,7 +37,7 @@ func (s *spinner) start() {
 
 		for {
 			frame := spinnerFrames[i%len(spinnerFrames)]
-			fmt.Fprintf(os.Stderr, "\r  %s %s", Purple.Render(frame), Muted.Render(s.label))
+			fmt.Fprintf(os.Stderr, "\r  %s %s", Accent.Render(frame), Muted.Render(s.label))
 			i++
 
 			select {

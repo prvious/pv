@@ -53,7 +53,7 @@ var listCmd = &cobra.Command{
 				parts = append(parts, ui.Green.Bold(true).Render(v))
 				parts = append(parts, ui.Muted.Render("(default)"))
 			} else {
-				parts = append(parts, ui.Purple.Render(v))
+				parts = append(parts, ui.Accent.Render(v))
 			}
 
 			// Projects using this version

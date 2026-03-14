@@ -51,7 +51,7 @@ pv service:add postgres 16`,
 
 		if reg.FindService(key) != nil {
 			fmt.Fprintln(os.Stderr)
-			ui.Success(fmt.Sprintf("%s is already added", ui.Purple.Bold(true).Render(svc.DisplayName()+" "+version)))
+			ui.Success(fmt.Sprintf("%s is already added", ui.Accent.Bold(true).Render(svc.DisplayName()+" "+version)))
 			fmt.Fprintln(os.Stderr)
 			return nil
 		}
