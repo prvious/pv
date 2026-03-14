@@ -8,13 +8,12 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/ui"
 )
 
 var (
-	accentColor = lipgloss.Color("#00D4AA")
-	orangeColor = lipgloss.Color("#FF6B35")
-	mutedColor  = lipgloss.Color("#777777")
-	rowBg       = lipgloss.Color("#212121")
+	mutedColor = lipgloss.Color("#777777")
+	rowBg      = lipgloss.Color("#212121")
 )
 
 type selectOption struct {
@@ -233,7 +232,7 @@ func (m setupModel) View() tea.View {
 	doc := strings.Builder{}
 
 	// Tab bar: inline text with │ separators.
-	sep := lipgloss.NewStyle().Foreground(accentColor).Render("│")
+	sep := lipgloss.NewStyle().Foreground(ui.AccentColor).Render("│")
 	var tabs []string
 	for i, t := range m.tabs {
 		if i == m.activeTab {
@@ -250,7 +249,7 @@ func (m setupModel) View() tea.View {
 	if divLen > 72 {
 		divLen = 72
 	}
-	divider := lipgloss.NewStyle().Foreground(accentColor).Render(strings.Repeat("─", divLen))
+	divider := lipgloss.NewStyle().Foreground(ui.AccentColor).Render(strings.Repeat("─", divLen))
 	doc.WriteString(divider)
 	doc.WriteString("\n\n")
 
@@ -274,9 +273,7 @@ func (m setupModel) View() tea.View {
 		doc.WriteString(helpStyle.Render("type to edit • ←/→ move cursor • enter/esc stop editing"))
 	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 0:
 		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • e to edit TLD • enter confirm • esc quit"))
-	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 1:
-		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • space toggle • enter confirm • esc quit"))
-	case m.activeTab == len(m.tabs)-1:
+	case m.activeTab == len(m.tabs)-1 && m.settingsCursor > 1:
 		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • space cycle • enter confirm • esc quit"))
 	default:
 		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • space toggle • enter confirm • esc quit"))
@@ -288,15 +285,16 @@ func (m setupModel) View() tea.View {
 
 func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Render(desc))
+	descStyle := lipgloss.NewStyle().Foreground(mutedColor)
+	b.WriteString(descStyle.Render(desc))
 	b.WriteString("\n\n")
 
 	if len(opts) == 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Render("  No options available"))
+		b.WriteString(descStyle.Render("  No options available"))
 		return b.String()
 	}
 
-	accentStyle := lipgloss.NewStyle().Foreground(accentColor)
+	accentStyle := lipgloss.NewStyle().Foreground(ui.AccentColor)
 
 	for i, opt := range opts {
 		isCursor := i == cursor
@@ -311,13 +309,13 @@ func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string
 
 		if opt.selected {
 			indicator = accentStyle.Render("●")
-			if isCursor {
-				label = accentStyle.Render(opt.label)
-			} else {
-				label = opt.label
-			}
 		} else {
 			indicator = "○"
+		}
+
+		if isCursor && opt.selected {
+			label = accentStyle.Render(opt.label)
+		} else {
 			label = opt.label
 		}
 
@@ -334,19 +332,18 @@ func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string
 
 func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, automation *config.Automation, settingsCursor int) string {
 	var b strings.Builder
-	accentStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	accentBold := lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true)
 	descStyle := lipgloss.NewStyle().Foreground(mutedColor)
-	cursorStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 
 	// --- TLD section ---
-	b.WriteString(accentStyle.Render("Domain"))
+	b.WriteString(accentBold.Render("Domain"))
 	b.WriteString("\n")
 	b.WriteString(descStyle.Render("Top-level domain for local sites"))
 	b.WriteString("\n\n")
 
 	prefix := "  "
 	if settingsCursor == 0 {
-		prefix = cursorStyle.Render("> ")
+		prefix = accentBold.Render("> ")
 	}
 
 	if editing {
@@ -371,24 +368,24 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 
 	// --- Daemon section ---
 	b.WriteString("\n\n")
-	b.WriteString(accentStyle.Render("Daemon"))
+	b.WriteString(accentBold.Render("Daemon"))
 	b.WriteString("\n")
 	b.WriteString(descStyle.Render("Start pv automatically on login"))
 	b.WriteString("\n\n")
 
 	prefix = "  "
 	if settingsCursor == 1 {
-		prefix = cursorStyle.Render("> ")
+		prefix = accentBold.Render("> ")
 	}
 	if daemon {
-		b.WriteString(prefix + lipgloss.NewStyle().Foreground(accentColor).Render("true"))
+		b.WriteString(prefix + ui.Accent.Render("true"))
 	} else {
-		b.WriteString(prefix + lipgloss.NewStyle().Faint(true).Render("false"))
+		b.WriteString(prefix + ui.Muted.Render("false"))
 	}
 
 	// --- Automation section ---
 	b.WriteString("\n\n")
-	b.WriteString(accentStyle.Render("Automation"))
+	b.WriteString(accentBold.Render("Automation"))
 	b.WriteString("\n")
 	b.WriteString(descStyle.Render("Configure which steps run during pv link"))
 	b.WriteString("\n\n")
@@ -404,7 +401,7 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 	for i, item := range automationItems {
 		prefix := "    "
 		if settingsCursor == i+2 {
-			prefix = "  " + cursorStyle.Render("> ")
+			prefix = "  " + accentBold.Render("> ")
 		}
 
 		mode := item.get(automation)
@@ -418,37 +415,24 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 
 // renderAutoToggle renders a segmented pill toggle like: [true] ask  false
 func renderAutoToggle(mode config.AutoMode) string {
-	activeTrueStyle := lipgloss.NewStyle().
-		Background(accentColor).
-		Foreground(lipgloss.Color("#000000")).
-		Padding(0, 1)
-	activeAskStyle := lipgloss.NewStyle().
-		Background(orangeColor).
-		Foreground(lipgloss.Color("#000000")).
-		Padding(0, 1)
-	inactiveStyle := lipgloss.NewStyle().
-		Padding(0, 1)
+	inactive := lipgloss.NewStyle().Padding(0, 1)
+	activeOn := inactive.Background(ui.AccentColor).Foreground(lipgloss.Color("#000000"))
+	activeAsk := inactive.Background(ui.OrangeColor).Foreground(lipgloss.Color("#000000"))
+	activeFalse := inactive.Background(mutedColor).Foreground(lipgloss.Color("#000000"))
 
-	var trueStr, askStr, falseStr string
+	trueStyle, askStyle, falseStyle := inactive, inactive, inactive
 	switch mode {
 	case config.AutoOn:
-		trueStr = activeTrueStyle.Render("true")
-		askStr = inactiveStyle.Render("ask")
-		falseStr = inactiveStyle.Render("false")
+		trueStyle = activeOn
 	case config.AutoAsk:
-		trueStr = inactiveStyle.Render("true")
-		askStr = activeAskStyle.Render("ask")
-		falseStr = inactiveStyle.Render("false")
-	default: // AutoOff
-		trueStr = inactiveStyle.Render("true")
-		askStr = inactiveStyle.Render("ask")
-		falseStr = inactiveStyle.Render("false")
+		askStyle = activeAsk
+	default:
+		falseStyle = activeFalse
 	}
 
-	// Wrap in a dark background container.
 	return lipgloss.NewStyle().
 		Background(rowBg).
-		Render(trueStr + askStr + falseStr)
+		Render(trueStyle.Render("true") + askStyle.Render("ask") + falseStyle.Render("false"))
 }
 
 // Result extraction.

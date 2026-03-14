@@ -37,11 +37,10 @@ func Tree(items []TreeItem) {
 }
 
 var (
-	accent    = lipgloss.Color("#00D4AA")
 	gray      = lipgloss.ANSIColor(245)
 	lightGray = lipgloss.ANSIColor(241)
 
-	headerStyle  = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	headerStyle  = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	cellStyle    = lipgloss.NewStyle().Padding(0, 1)
 	oddRowStyle  = cellStyle.Foreground(gray)
 	evenRowStyle = cellStyle.Foreground(lightGray)
@@ -51,7 +50,7 @@ var (
 func Table(headers []string, rows [][]string) {
 	t := table.New().
 		Border(lipgloss.RoundedBorder()).
-		BorderStyle(lipgloss.NewStyle().Foreground(accent)).
+		BorderStyle(lipgloss.NewStyle().Foreground(AccentColor)).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			switch {
 			case row == table.HeaderRow:

@@ -48,12 +48,12 @@ func Execute() {
 
 func pvColorScheme(c lipgloss.LightDarkFunc) fang.ColorScheme {
 	cs := fang.DefaultColorScheme(c)
-	cs.Title = lipgloss.Color("#00D4AA")
+	cs.Title = ui.AccentColor
 	return cs
 }
 
 func pvErrorHandler(w io.Writer, styles fang.Styles, err error) {
-	if errors.Is(err, ui.ErrAlreadyPrinted) {
+	if errors.Is(err, ui.ErrAlreadyPrinted) || errors.Is(err, ui.ErrUserCancelled) {
 		return
 	}
 	fang.DefaultErrorHandler(w, styles, err)
