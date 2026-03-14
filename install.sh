@@ -22,13 +22,10 @@ Options:
     -h, --help              Display this help message
     -v, --version [version] Install a specific pv version (e.g., 0.1.0)
     --install-dir <path>    Where to install the pv binary (default: ~/.local/bin)
-    --php [version]         PHP version to install (e.g., 8.4). Auto-detects if omitted.
-    --tld <tld>             Top-level domain for local sites (default: test)
     --no-modify-path        Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
     curl -fsSL https://pv.prvious.dev/install | bash
-    curl -fsSL https://pv.prvious.dev/install | bash -s -- --php 8.4
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --version 0.2.0
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --install-dir /usr/local/bin
 EOF
@@ -38,8 +35,6 @@ EOF
 
 requested_version=""
 no_modify_path=false
-php_version=""
-tld=""
 install_dir=""
 
 while [[ $# -gt 0 ]]; do
@@ -54,24 +49,6 @@ while [[ $# -gt 0 ]]; do
                 shift 2
             else
                 echo -e "${RED}Error: --version requires a version argument${NC}"
-                exit 1
-            fi
-            ;;
-        --php)
-            if [[ -n "${2:-}" ]]; then
-                php_version="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --php requires a version argument${NC}"
-                exit 1
-            fi
-            ;;
-        --tld)
-            if [[ -n "${2:-}" ]]; then
-                tld="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --tld requires a value${NC}"
                 exit 1
             fi
             ;;
@@ -389,7 +366,7 @@ main() {
     local dest_dir="${install_dir:-$HOME/.local/bin}"
     mkdir -p "$dest_dir"
 
-    # Acquire sudo credentials upfront if pv install needs it
+    # Acquire sudo credentials upfront before running pv setup.
     # (DNS resolver in /etc/resolver/ and CA trust require sudo).
     # Skip in CI where passwordless sudo is available.
     if [[ -z "${GITHUB_ACTIONS-}" ]]; then
@@ -432,19 +409,11 @@ main() {
     echo -e "  ${GREEN}✓${NC} pv v${version} installed"
     echo ""
 
-    # Run pv install (full bootstrap — this calls sudo internally for DNS/CA)
+    # Run pv setup (interactive bootstrap — this calls sudo internally for DNS/CA)
     echo -e "  ${PURPLE}Setting up environment...${NC}"
     echo ""
 
-    local install_args=(install --force)
-    if [[ -n "$php_version" ]]; then
-        install_args+=(--php "$php_version")
-    fi
-    if [[ -n "$tld" ]]; then
-        install_args+=(--tld "$tld")
-    fi
-
-    "$dest_dir/pv" "${install_args[@]}"
+    "$dest_dir/pv" setup
 
     # Set up PATH
     echo ""
