@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -664,14 +663,9 @@ func checkPortListening(port int) bool {
 }
 
 func checkCATrusted() bool {
-	out, err := exec.Command("security", "find-certificate", "-c", "Caddy Local Authority", "/Library/Keychains/System.keychain").CombinedOutput()
+	trusted, err := setup.IsCATrusted()
 	if err != nil {
-		// Also check login keychain.
-		out2, err2 := exec.Command("security", "find-certificate", "-c", "Caddy Local Authority").CombinedOutput()
-		if err2 != nil {
-			return false
-		}
-		return strings.Contains(string(out2), "Caddy Local Authority")
+		return false
 	}
-	return strings.Contains(string(out), "Caddy Local Authority")
+	return trusted
 }

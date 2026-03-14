@@ -28,6 +28,7 @@ Examples:
     curl -fsSL https://pv.prvious.dev/install | bash
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --version 0.2.0
     curl -fsSL https://pv.prvious.dev/install | bash -s -- --install-dir /usr/local/bin
+    PV_INSTALL_LOCAL_BUILD=./pv bash install.sh
 EOF
 }
 
@@ -36,6 +37,7 @@ EOF
 requested_version=""
 no_modify_path=false
 install_dir=""
+local_build="${PV_INSTALL_LOCAL_BUILD:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -352,9 +354,11 @@ main() {
     local platform
     platform=$(detect_platform)
 
-    # Resolve version
-    local version
-    version=$(resolve_version)
+    # Resolve version unless we are testing with a local build.
+    local version="local"
+    if [[ -z "$local_build" ]]; then
+        version=$(resolve_version)
+    fi
 
     # Print header
     print_header "$version"
@@ -378,25 +382,36 @@ main() {
     # Check for existing installation
     check_existing
 
-    # Download pv binary
-    local url="https://github.com/prvious/pv/releases/download/v${version}/pv-${platform}"
     local tmp_dir="${TMPDIR:-/tmp}/pv_install_$$"
     mkdir -p "$tmp_dir"
     trap "rm -rf '$tmp_dir'" EXIT
 
-    echo -e "  ${MUTED}Downloading pv...${NC}"
-
-    if [[ -t 2 ]] && download_with_progress "$url" "$tmp_dir/pv" 2>&1; then
-        : # progress bar showed
-    else
-        # Fallback: no TTY or progress bar failed
-        if ! curl -fsSL -o "$tmp_dir/pv" "$url"; then
+    if [[ -n "$local_build" ]]; then
+        if [[ ! -f "$local_build" ]]; then
             echo ""
-            echo -e "  ${RED}Failed to download pv${NC}"
-            echo -e "  ${MUTED}Check your internet connection and try again.${NC}"
-            echo -e "  ${MUTED}Manual download: https://github.com/prvious/pv/releases${NC}"
+            echo -e "  ${RED}Local build not found: $local_build${NC}"
             echo ""
             exit 1
+        fi
+        echo -e "  ${MUTED}Using local pv build from ${local_build}...${NC}"
+        cp "$local_build" "$tmp_dir/pv"
+    else
+        local url="https://github.com/prvious/pv/releases/download/v${version}/pv-${platform}"
+
+        echo -e "  ${MUTED}Downloading pv...${NC}"
+
+        if [[ -t 2 ]] && download_with_progress "$url" "$tmp_dir/pv" 2>&1; then
+            : # progress bar showed
+        else
+            # Fallback: no TTY or progress bar failed
+            if ! curl -fsSL -o "$tmp_dir/pv" "$url"; then
+                echo ""
+                echo -e "  ${RED}Failed to download pv${NC}"
+                echo -e "  ${MUTED}Check your internet connection and try again.${NC}"
+                echo -e "  ${MUTED}Manual download: https://github.com/prvious/pv/releases${NC}"
+                echo ""
+                exit 1
+            fi
         fi
     fi
 

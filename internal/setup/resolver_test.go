@@ -40,19 +40,21 @@ func TestSudoSetupScript_ContainsTrust(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	script := SudoSetupScript("test")
-	if !strings.Contains(script, "trust") {
-		t.Errorf("script missing trust command: %s", script)
+	if strings.Contains(script, "trust") {
+		t.Errorf("script should not contain trust command: %s", script)
 	}
 }
 
-func TestSudoSetupScript_UsesFrankenPHPPath(t *testing.T) {
+func TestSudoSetupScript_NoFrankenPHPOrCAPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	script := SudoSetupScript("test")
-	expected := filepath.Join(config.BinDir(), "frankenphp")
-	if !strings.Contains(script, expected) {
-		t.Errorf("script missing frankenphp path %q: %s", expected, script)
+	if strings.Contains(script, filepath.Join(config.BinDir(), "frankenphp")) {
+		t.Errorf("script should not call frankenphp: %s", script)
+	}
+	if strings.Contains(script, config.CACertPath()) {
+		t.Errorf("script should not contain CA path %q: %s", config.CACertPath(), script)
 	}
 }
 
