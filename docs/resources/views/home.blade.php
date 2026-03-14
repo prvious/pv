@@ -4,21 +4,7 @@
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
     <div class="bg-background">
 
-        {{-- Navbar --}}
-        <nav class="flex items-center justify-between px-6 py-5 md:px-12">
-            <span class="font-heading text-2xl font-bold text-foreground">pv</span>
-
-            <div class="hidden items-center gap-8 font-mono text-[13px] text-muted md:flex">
-                <a href="#features" class="transition-colors hover:text-foreground">features</a>
-                <a href="#how_it_works" class="transition-colors hover:text-foreground">how_it_works</a>
-                <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">docs</a>
-                <a href="https://github.com/prvious/pv" class="transition-colors hover:text-foreground">github</a>
-            </div>
-
-            <a href="#get_started" class="rounded-full bg-accent-orange px-5 py-2.5 font-mono text-xs font-semibold text-on-accent transition-colors hover:bg-accent-orange/90">
-                Get Started
-            </a>
-        </nav>
+        <x-site-header />
 
         {{-- Hero --}}
         <div class="flex flex-col items-center gap-8 px-6 py-16 md:px-20 md:py-24">
@@ -37,18 +23,7 @@
                 Install pv with a single curl, then set up PHP, FrankenPHP, Composer and Mago — no Docker, no Nginx, no config files.
             </p>
 
-            {{-- Install command block --}}
-            <div class="flex items-center gap-3 rounded-2xl border border-placeholder bg-elevated px-6 py-3.5 font-mono text-sm">
-                <span class="font-semibold text-muted">$</span>
-                <span class="font-semibold text-accent">curl</span>
-                <span class="text-muted"> -fsSL </span>
-                <span class="text-foreground">https://pv.prvious.dev/install</span>
-                <span class="text-muted"> | </span>
-                <span class="font-semibold text-accent">bash</span>
-                <button class="ml-2 text-foreground transition-colors hover:text-accent" title="Copy">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                </button>
-            </div>
+            <x-install-command />
 
             {{-- CTA Buttons --}}
             <div class="flex items-center gap-4">
@@ -273,18 +248,7 @@
         <h2 class="text-center font-heading text-5xl font-bold text-foreground">STOP CONFIGURING. START BUILDING.</h2>
         <p class="text-center font-mono text-sm text-muted">One curl. Then pv setup. Your PHP environment in under a minute.</p>
 
-        {{-- Install block --}}
-        <div class="flex items-center gap-3 rounded-2xl border border-placeholder bg-elevated px-6 py-3.5 font-mono text-sm">
-            <span class="font-semibold text-muted">$</span>
-            <span class="font-semibold text-accent">curl</span>
-            <span class="text-muted"> -fsSL </span>
-            <span class="text-foreground">https://pv.prvious.dev/install</span>
-            <span class="text-muted"> | </span>
-            <span class="font-semibold text-accent">bash</span>
-            <button class="ml-2 text-foreground transition-colors hover:text-accent" title="Copy">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-            </button>
-        </div>
+        <x-install-command />
 
         {{-- CTA buttons --}}
         <div class="flex items-center gap-4">
@@ -304,56 +268,5 @@
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
     {{-- FOOTER                                                                --}}
     {{-- ═══════════════════════════════════════════════════════════════════════ --}}
-    <footer class="bg-elevated px-6 py-12 md:px-20">
-        <div class="mx-auto max-w-6xl space-y-12">
-            {{-- Top --}}
-            <div class="flex flex-col gap-10 md:flex-row md:justify-between">
-                {{-- Brand --}}
-                <div class="max-w-[280px] space-y-3">
-                    <span class="font-heading text-[28px] font-bold text-accent-orange">pv</span>
-                    <p class="font-mono text-xs leading-relaxed text-muted">Local dev environments,<br>powered by FrankenPHP.</p>
-                </div>
-
-                {{-- Columns --}}
-                <div class="flex gap-16">
-                    <div class="space-y-3">
-                        <h4 class="font-heading text-[13px] font-semibold text-foreground">PRODUCT</h4>
-                        <div class="flex flex-col gap-3 font-mono text-xs text-muted">
-                            <a href="#features" class="transition-colors hover:text-foreground">Features</a>
-                            <a href="#get_started" class="transition-colors hover:text-foreground">Installation</a>
-                            <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">Documentation</a>
-                            <a href="https://github.com/prvious/pv/releases" class="transition-colors hover:text-foreground">Changelog</a>
-                        </div>
-                    </div>
-                    <div class="space-y-3">
-                        <h4 class="font-heading text-[13px] font-semibold text-foreground">RESOURCES</h4>
-                        <div class="flex flex-col gap-3 font-mono text-xs text-muted">
-                            <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">Getting Started</a>
-                            <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">PHP Versions</a>
-                            <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">Services Guide</a>
-                            <a href="https://pv.prvious.dev/docs" class="transition-colors hover:text-foreground">Troubleshooting</a>
-                        </div>
-                    </div>
-                    <div class="space-y-3">
-                        <h4 class="font-heading text-[13px] font-semibold text-foreground">COMMUNITY</h4>
-                        <div class="flex flex-col gap-3 font-mono text-xs text-muted">
-                            <a href="https://github.com/prvious/pv" class="transition-colors hover:text-foreground">GitHub</a>
-                            <a href="https://github.com/prvious/pv/issues" class="transition-colors hover:text-foreground">Issues</a>
-                            <a href="https://github.com/prvious/pv/discussions" class="transition-colors hover:text-foreground">Discussions</a>
-                            <a href="https://github.com/prvious/pv/blob/main/CONTRIBUTING.md" class="transition-colors hover:text-foreground">Contributing</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {{-- Divider --}}
-            <div class="h-px bg-placeholder"></div>
-
-            {{-- Copyright --}}
-            <div class="flex flex-col gap-2 font-mono text-[11px] text-muted md:flex-row md:justify-between">
-                <span>&copy; 2026 pv. Open source under MIT License.</span>
-                <span>Built with FrankenPHP + Go</span>
-            </div>
-        </div>
-    </footer>
+    <x-site-footer />
 </x-layouts.app>

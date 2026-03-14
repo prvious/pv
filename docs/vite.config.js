@@ -9,6 +9,7 @@ export default defineConfig({
         laravel({
             input: ['resources/css/app.css', 'resources/js/app.js'],
             refresh: true,
+            detectTls: 'pv.test',
         }),
         tailwindcss(),
     ],
