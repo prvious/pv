@@ -8,11 +8,18 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Colors matching install.sh: PURPLE=#b39ddb (ANSI 141), GREEN, RED, MUTED (dim).
+// Raw color values for use in contexts that need lipgloss.Color directly.
 var (
-	Purple = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(141))
+	AccentColor = lipgloss.Color("#00D4AA")
+	OrangeColor = lipgloss.Color("#FF6B35")
+)
+
+// Accent is the primary brand color (#00D4AA teal). Green, Red, Orange are semantic.
+var (
+	Accent = lipgloss.NewStyle().Foreground(AccentColor)
 	Green  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
 	Red    = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1))
+	Orange = lipgloss.NewStyle().Foreground(OrangeColor)
 	Muted  = lipgloss.NewStyle().Faint(true)
 	Bold   = lipgloss.NewStyle().Bold(true)
 )
@@ -21,10 +28,14 @@ var (
 // to the user via styled output. Callers should exit without printing again.
 var ErrAlreadyPrinted = errors.New("error already printed")
 
+// ErrUserCancelled is returned when the user intentionally cancels an
+// interactive operation (e.g. Ctrl+C / Esc). Exits non-zero without message.
+var ErrUserCancelled = errors.New("user cancelled")
+
 // Header prints the pv version banner.
 func Header(version string) {
 	fmt.Fprintf(os.Stderr, "\n  %s %s\n\n",
-		Purple.Bold(true).Render("pv"),
+		Accent.Bold(true).Render("pv"),
 		Muted.Render("v"+version),
 	)
 }

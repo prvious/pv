@@ -8,7 +8,6 @@ import (
 
 	"charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -49,12 +48,12 @@ func Execute() {
 
 func pvColorScheme(c lipgloss.LightDarkFunc) fang.ColorScheme {
 	cs := fang.DefaultColorScheme(c)
-	cs.Title = charmtone.Charple
+	cs.Title = ui.AccentColor
 	return cs
 }
 
 func pvErrorHandler(w io.Writer, styles fang.Styles, err error) {
-	if errors.Is(err, ui.ErrAlreadyPrinted) {
+	if errors.Is(err, ui.ErrAlreadyPrinted) || errors.Is(err, ui.ErrUserCancelled) {
 		return
 	}
 	fang.DefaultErrorHandler(w, styles, err)

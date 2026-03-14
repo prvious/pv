@@ -8,9 +8,13 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/ui"
 )
 
-var highlightColor = lipgloss.ANSIColor(141) // Purple matching ui.Purple
+var (
+	mutedColor = lipgloss.Color("#777777")
+	rowBg      = lipgloss.Color("#212121")
+)
 
 type selectOption struct {
 	label    string
@@ -220,76 +224,59 @@ func (m setupModel) View() tea.View {
 		return tea.NewView("")
 	}
 
+	contentWidth := m.width - 4
+	if contentWidth < 40 {
+		contentWidth = 40
+	}
+
 	doc := strings.Builder{}
 
-	// Render tabs.
-	var renderedTabs []string
+	// Tab bar: inline text with │ separators.
+	sep := lipgloss.NewStyle().Foreground(ui.AccentColor).Render("│")
+	var tabs []string
 	for i, t := range m.tabs {
-		isFirst := i == 0
-		isLast := i == len(m.tabs)-1
-		isActive := i == m.activeTab
-
-		var style lipgloss.Style
-		if isActive {
-			style = setupActiveTab()
+		if i == m.activeTab {
+			tabs = append(tabs, lipgloss.NewStyle().Bold(true).Render("  "+t+"  "))
 		} else {
-			style = setupInactiveTab()
+			tabs = append(tabs, lipgloss.NewStyle().Foreground(mutedColor).Render("  "+t+"  "))
 		}
-
-		border, _, _, _, _ := style.GetBorder()
-		if isFirst && isActive {
-			border.BottomLeft = "│"
-		} else if isFirst && !isActive {
-			border.BottomLeft = "├"
-		} else if isLast && isActive {
-			border.BottomRight = "│"
-		} else if isLast && !isActive {
-			border.BottomRight = "┤"
-		}
-		style = style.Border(border)
-		renderedTabs = append(renderedTabs, style.Render(t))
 	}
-
-	row := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
-	doc.WriteString(row)
+	doc.WriteString(strings.Join(tabs, sep))
 	doc.WriteString("\n")
 
-	// Render active tab content.
-	var content string
+	// Teal divider line.
+	divLen := contentWidth
+	if divLen > 72 {
+		divLen = 72
+	}
+	divider := lipgloss.NewStyle().Foreground(ui.AccentColor).Render(strings.Repeat("─", divLen))
+	doc.WriteString(divider)
+	doc.WriteString("\n\n")
+
+	// Tab content.
 	switch m.activeTab {
 	case 0:
-		content = renderSetupMultiSelect("Select which PHP versions to install:", m.phpOptions, m.phpCursor)
+		doc.WriteString(renderSetupMultiSelect("Select which PHP versions to install:", m.phpOptions, m.phpCursor))
 	case 1:
-		content = renderSetupMultiSelect("Composer is always installed. Select additional tools:", m.toolOptions, m.toolCursor)
+		doc.WriteString(renderSetupMultiSelect("Composer is always installed. Select additional tools:", m.toolOptions, m.toolCursor))
 	case 2:
-		content = renderSetupMultiSelect("Select backing services to set up:", m.svcOptions, m.svcCursor)
+		doc.WriteString(renderSetupMultiSelect("Select backing services to set up:", m.svcOptions, m.svcCursor))
 	case 3:
-		content = renderSettingsTab(m.tld, m.tldCursor, m.editing, m.daemon, &m.automation, m.settingsCursor)
+		doc.WriteString(renderSettingsTab(m.tld, m.tldCursor, m.editing, m.daemon, &m.automation, m.settingsCursor))
 	}
 
-	windowStyle := lipgloss.NewStyle().
-		BorderForeground(highlightColor).
-		Padding(1, 2).
-		Border(lipgloss.NormalBorder()).
-		UnsetBorderTop().
-		Width(lipgloss.Width(row))
-
-	doc.WriteString(windowStyle.Render(content))
-
 	// Help bar.
-	doc.WriteString("\n\n")
-	helpStyle := lipgloss.NewStyle().Faint(true)
+	doc.WriteString("\n")
+	helpStyle := lipgloss.NewStyle().Foreground(mutedColor)
 	switch {
 	case m.editing:
 		doc.WriteString(helpStyle.Render("type to edit • ←/→ move cursor • enter/esc stop editing"))
 	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 0:
-		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • e to edit TLD • enter confirm • esc quit"))
-	case m.activeTab == len(m.tabs)-1 && m.settingsCursor == 1:
-		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space toggle • enter confirm • esc quit"))
-	case m.activeTab == len(m.tabs)-1:
-		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space cycle • enter confirm • esc quit"))
+		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • e to edit TLD • enter confirm • esc quit"))
+	case m.activeTab == len(m.tabs)-1 && m.settingsCursor > 1:
+		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • space cycle • enter confirm • esc quit"))
 	default:
-		doc.WriteString(helpStyle.Render("←/→ navigate • ↑/↓ move • space toggle • enter confirm • esc quit"))
+		doc.WriteString(helpStyle.Render("←/→ tab • ↑/↓ move • space toggle • enter confirm • esc quit"))
 	}
 
 	outer := lipgloss.NewStyle().Padding(1, 2)
@@ -298,29 +285,46 @@ func (m setupModel) View() tea.View {
 
 func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Faint(true).Render(desc))
+	descStyle := lipgloss.NewStyle().Foreground(mutedColor)
+	b.WriteString(descStyle.Render(desc))
 	b.WriteString("\n\n")
 
 	if len(opts) == 0 {
-		b.WriteString(lipgloss.NewStyle().Faint(true).Render("  No options available"))
+		b.WriteString(descStyle.Render("  No options available"))
 		return b.String()
 	}
 
-	cursorStyle := lipgloss.NewStyle().Foreground(highlightColor).Bold(true)
-	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
+	accentStyle := lipgloss.NewStyle().Foreground(ui.AccentColor)
 
 	for i, opt := range opts {
-		prefix := "  "
-		if i == cursor {
-			prefix = cursorStyle.Render("> ")
+		isCursor := i == cursor
+
+		var prefix, indicator, label string
+
+		if isCursor {
+			prefix = accentStyle.Bold(true).Render("> ")
+		} else {
+			prefix = "  "
 		}
-		check := "[ ]"
-		label := opt.label
+
 		if opt.selected {
-			check = greenStyle.Render("[x]")
-			label = greenStyle.Render(opt.label)
+			indicator = accentStyle.Render("●")
+		} else {
+			indicator = "○"
 		}
-		b.WriteString(fmt.Sprintf("%s%s %s\n", prefix, check, label))
+
+		if isCursor && opt.selected {
+			label = accentStyle.Render(opt.label)
+		} else {
+			label = opt.label
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s %s\n", prefix, indicator, label))
+
+		// Gap between items.
+		if i < len(opts)-1 {
+			b.WriteString("\n")
+		}
 	}
 
 	return b.String()
@@ -328,19 +332,18 @@ func renderSetupMultiSelect(desc string, opts []selectOption, cursor int) string
 
 func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, automation *config.Automation, settingsCursor int) string {
 	var b strings.Builder
-	cursorStyle := lipgloss.NewStyle().Foreground(highlightColor).Bold(true)
-	faintStyle := lipgloss.NewStyle().Faint(true)
-	greenStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
+	accentBold := lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(mutedColor)
 
 	// --- TLD section ---
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Domain"))
+	b.WriteString(accentBold.Render("Domain"))
 	b.WriteString("\n")
-	b.WriteString(faintStyle.Render("Top-level domain for local sites"))
+	b.WriteString(descStyle.Render("Top-level domain for local sites"))
 	b.WriteString("\n\n")
 
 	prefix := "  "
 	if settingsCursor == 0 {
-		prefix = cursorStyle.Render("> ")
+		prefix = accentBold.Render("> ")
 	}
 
 	if editing {
@@ -359,35 +362,33 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 	} else {
 		b.WriteString(prefix + tld)
 		if settingsCursor == 0 {
-			b.WriteString(faintStyle.Render("  (press e to edit)"))
+			b.WriteString(descStyle.Render("  (press e to edit)"))
 		}
 	}
 
 	// --- Daemon section ---
 	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Daemon"))
+	b.WriteString(accentBold.Render("Daemon"))
 	b.WriteString("\n")
-	b.WriteString(faintStyle.Render("Start pv automatically on login"))
+	b.WriteString(descStyle.Render("Start pv automatically on login"))
 	b.WriteString("\n\n")
 
 	prefix = "  "
 	if settingsCursor == 1 {
-		prefix = cursorStyle.Render("> ")
+		prefix = accentBold.Render("> ")
 	}
 	if daemon {
-		b.WriteString(prefix + greenStyle.Render("true"))
+		b.WriteString(prefix + ui.Accent.Render("true"))
 	} else {
-		b.WriteString(prefix + faintStyle.Render("false"))
+		b.WriteString(prefix + ui.Muted.Render("false"))
 	}
 
 	// --- Automation section ---
 	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(highlightColor).Render("Automation"))
+	b.WriteString(accentBold.Render("Automation"))
 	b.WriteString("\n")
-	b.WriteString(faintStyle.Render("Configure which steps run during pv link"))
+	b.WriteString(descStyle.Render("Configure which steps run during pv link"))
 	b.WriteString("\n\n")
-
-	yellowStyle := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(3))
 
 	// Find longest label for alignment.
 	maxLen := 0
@@ -398,54 +399,40 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 	}
 
 	for i, item := range automationItems {
-		prefix := "  "
+		prefix := "    "
 		if settingsCursor == i+2 {
-			prefix = cursorStyle.Render("> ")
+			prefix = "  " + accentBold.Render("> ")
 		}
 
 		mode := item.get(automation)
 		padding := strings.Repeat(" ", maxLen-len(item.label)+2)
 
-		var modeStr string
-		switch mode {
-		case config.AutoOn:
-			modeStr = greenStyle.Render("true")
-		case config.AutoAsk:
-			modeStr = yellowStyle.Render("ask")
-		case config.AutoOff:
-			modeStr = faintStyle.Render("false")
-		}
-
-		b.WriteString(fmt.Sprintf("%s%s%s%s\n", prefix, item.label, padding, modeStr))
+		b.WriteString(fmt.Sprintf("%s%s%s%s\n", prefix, item.label, padding, renderAutoToggle(mode)))
 	}
 
 	return b.String()
 }
 
-// Tab border helpers using normal (non-rounded) borders.
+// renderAutoToggle renders a segmented pill toggle like: [true] ask  false
+func renderAutoToggle(mode config.AutoMode) string {
+	inactive := lipgloss.NewStyle().Padding(0, 1)
+	activeOn := inactive.Background(ui.AccentColor).Foreground(lipgloss.Color("#000000"))
+	activeAsk := inactive.Background(ui.OrangeColor).Foreground(lipgloss.Color("#000000"))
+	activeFalse := inactive.Background(mutedColor).Foreground(lipgloss.Color("#000000"))
 
-func setupTabBorder(left, middle, right string) lipgloss.Border {
-	border := lipgloss.NormalBorder()
-	border.BottomLeft = left
-	border.Bottom = middle
-	border.BottomRight = right
-	return border
-}
+	trueStyle, askStyle, falseStyle := inactive, inactive, inactive
+	switch mode {
+	case config.AutoOn:
+		trueStyle = activeOn
+	case config.AutoAsk:
+		askStyle = activeAsk
+	default:
+		falseStyle = activeFalse
+	}
 
-func setupActiveTab() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Border(setupTabBorder("┘", " ", "└"), true).
-		BorderForeground(highlightColor).
-		Padding(0, 1).
-		Bold(true)
-}
-
-func setupInactiveTab() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Border(setupTabBorder("┴", "─", "┴"), true).
-		BorderForeground(highlightColor).
-		Padding(0, 1).
-		Faint(true)
+		Background(rowBg).
+		Render(trueStyle.Render("true") + askStyle.Render("ask") + falseStyle.Render("false"))
 }
 
 // Result extraction.

@@ -7,7 +7,6 @@ require (
 	charm.land/fang/v2 v2.0.0-20260307033620-73847d32708b
 	charm.land/huh/v2 v2.0.0-20260226141913-a8934362ea3b
 	charm.land/lipgloss/v2 v2.0.0
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260305213658-fe36e8c10185
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/miekg/dns v1.1.72
@@ -22,6 +21,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
+	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260305213658-fe36e8c10185 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect

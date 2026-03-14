@@ -61,7 +61,7 @@ func (pw *ProgressWriter) draw() {
 		empty += "･"
 	}
 
-	fmt.Fprintf(os.Stderr, "\r  %s %3d%%", Purple.Render(filled+empty), percent)
+	fmt.Fprintf(os.Stderr, "\r  %s %3d%%", Accent.Render(filled+empty), percent)
 }
 
 // Finish clears the progress line and restores cursor.

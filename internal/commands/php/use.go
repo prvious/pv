@@ -39,7 +39,7 @@ pv php:use 8.3`,
 		if oldV != "" && oldV != version {
 			ui.Success(fmt.Sprintf("Global PHP switched %s %s %s",
 				ui.Muted.Render(oldV),
-				ui.Purple.Render("→"),
+				ui.Accent.Render("→"),
 				ui.Green.Bold(true).Render(version),
 			))
 		} else {

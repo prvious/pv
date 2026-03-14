@@ -57,11 +57,11 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintln(os.Stderr)
 
 		// Network info.
-		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("TLD"), ui.Bold.Render("."+settings.Defaults.TLD))
+		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Accent.Render("TLD"), ui.Bold.Render("."+settings.Defaults.TLD))
 		fmt.Fprintf(os.Stderr, "  %s  %s  %s  %s\n",
-			ui.Purple.Render("DNS"),
+			ui.Accent.Render("DNS"),
 			fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
-			ui.Purple.Render("HTTPS"),
+			ui.Accent.Render("HTTPS"),
 			":443",
 		)
 
@@ -74,12 +74,12 @@ var statusCmd = &cobra.Command{
 				if v == globalPHP {
 					labels = append(labels, ui.Green.Bold(true).Render(v)+" "+ui.Muted.Render("(default)"))
 				} else {
-					labels = append(labels, ui.Purple.Render(v))
+					labels = append(labels, ui.Accent.Render(v))
 				}
 			}
-			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("PHP"), strings.Join(labels, ui.Muted.Render(" · ")))
+			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Accent.Render("PHP"), strings.Join(labels, ui.Muted.Render(" · ")))
 		} else if globalPHP != "" {
-			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Purple.Render("PHP"), globalPHP)
+			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Accent.Render("PHP"), globalPHP)
 		}
 
 		// Sites.
@@ -95,7 +95,7 @@ var statusCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "\n  %s\n", ui.Muted.Render("No sites linked. Run pv link in a project to get started."))
 		} else {
 			fmt.Fprintf(os.Stderr, "\n  %s  %s\n\n",
-				ui.Purple.Render("Sites"),
+				ui.Accent.Render("Sites"),
 				ui.Muted.Render(fmt.Sprintf("%d linked", len(projects))),
 			)
 			rows := make([][]string, len(projects))

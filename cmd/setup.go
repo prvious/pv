@@ -99,7 +99,7 @@ var setupCmd = &cobra.Command{
 			return fmt.Errorf("setup wizard returned unexpected state")
 		}
 		if !final.confirmed {
-			return nil
+			return ui.ErrUserCancelled
 		}
 
 		selectedPHP := selectedValues(final.phpOptions)
