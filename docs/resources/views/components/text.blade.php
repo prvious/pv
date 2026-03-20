@@ -1,4 +1,4 @@
-@props([
+@props ([
     'variant' => 'default',
     'size' => 'default',
     'as' => 'p',

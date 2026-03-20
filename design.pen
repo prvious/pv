@@ -119,9 +119,9 @@
               "name": "Hero Section",
               "width": "fill_container",
               "layout": "vertical",
-              "gap": 32,
+              "gap": 36,
               "padding": [
-                64,
+                72,
                 120
               ],
               "alignItems": "center",
@@ -143,7 +143,7 @@
                       "id": "HuXUG",
                       "name": "badgeText",
                       "fill": "$accent-teal",
-                      "content": "[ AUTOMATION READY ]",
+                      "content": "[ LOCAL DEV, SOLVED ]",
                       "fontFamily": "JetBrains Mono",
                       "fontSize": 11,
                       "fontWeight": "600"
@@ -157,7 +157,7 @@
                   "fill": "$text-primary",
                   "textGrowth": "fixed-width",
                   "width": 1100,
-                  "content": "One command. Full PHP environment.",
+                  "content": "Your entire PHP stack. One curl away.",
                   "lineHeight": 1.1,
                   "textAlign": "center",
                   "fontFamily": "Oswald",
@@ -171,7 +171,7 @@
                   "fill": "$text-secondary",
                   "textGrowth": "fixed-width",
                   "width": 700,
-                  "content": "Install pv with a single curl, then set up PHP, FrankenPHP, Composer and Mago — no Docker, no Nginx, no config files.",
+                  "content": "pv replaces your Homebrew scripts, Docker configs and Nginx files with a single tool that just works. Install, link, ship.",
                   "lineHeight": 1.6,
                   "textAlign": "center",
                   "fontFamily": "JetBrains Mono",
@@ -273,60 +273,126 @@
                 {
                   "type": "frame",
                   "id": "QMbDl",
-                  "name": "CTA Buttons",
-                  "gap": 16,
+                  "name": "Supported Platforms",
+                  "gap": 12,
                   "alignItems": "center",
                   "children": [
                     {
                       "type": "frame",
-                      "id": "pY0bl",
-                      "name": "Primary CTA",
-                      "fill": "$accent-orange",
-                      "cornerRadius": 16,
+                      "id": "GnfMv",
+                      "name": "macChip",
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 999,
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "$accent-teal"
+                      },
                       "gap": 8,
                       "padding": [
-                        14,
-                        28
+                        8,
+                        12
                       ],
                       "alignItems": "center",
                       "children": [
                         {
+                          "type": "icon_font",
+                          "id": "wDey1",
+                          "name": "macIcon",
+                          "width": 14,
+                          "height": 14,
+                          "iconFontName": "apple-logo",
+                          "iconFontFamily": "phosphor",
+                          "fill": "$accent-teal"
+                        },
+                        {
                           "type": "text",
-                          "id": "MNJlj",
-                          "name": "primaryText",
-                          "fill": "$text-on-accent",
-                          "content": "pv install",
+                          "id": "iryfM",
+                          "name": "macText",
+                          "fill": "$text-primary",
+                          "content": "macOS",
                           "fontFamily": "JetBrains Mono",
-                          "fontSize": 13,
+                          "fontSize": 12,
                           "fontWeight": "600"
                         }
                       ]
                     },
                     {
                       "type": "frame",
-                      "id": "Y3q1V",
-                      "name": "Ghost CTA",
-                      "cornerRadius": 16,
+                      "id": "MaEC5",
+                      "name": "linuxChip",
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 999,
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "$text-secondary"
+                        "fill": "$accent-orange"
                       },
                       "gap": 8,
                       "padding": [
-                        14,
-                        28
+                        8,
+                        12
                       ],
                       "alignItems": "center",
                       "children": [
                         {
+                          "type": "icon_font",
+                          "id": "gJYOc",
+                          "name": "linuxIcon",
+                          "width": 14,
+                          "height": 14,
+                          "iconFontName": "linux-logo",
+                          "iconFontFamily": "phosphor",
+                          "fill": "$accent-orange"
+                        },
+                        {
                           "type": "text",
-                          "id": "2UIFv",
-                          "name": "ghostText",
+                          "id": "vD47j",
+                          "name": "linuxText",
                           "fill": "$text-primary",
-                          "content": "Read Docs",
+                          "content": "Linux",
                           "fontFamily": "JetBrains Mono",
-                          "fontSize": 13,
+                          "fontSize": 12,
+                          "fontWeight": "600"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "SxSvk",
+                      "name": "winChip",
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 999,
+                      "stroke": {
+                        "align": "inside",
+                        "thickness": 1,
+                        "fill": "$accent-teal"
+                      },
+                      "gap": 8,
+                      "padding": [
+                        8,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon_font",
+                          "id": "zbo7V",
+                          "name": "winIcon",
+                          "width": 14,
+                          "height": 14,
+                          "iconFontName": "windows-logo",
+                          "iconFontFamily": "phosphor",
+                          "fill": "$accent-teal"
+                        },
+                        {
+                          "type": "text",
+                          "id": "acHmH",
+                          "name": "winText",
+                          "fill": "$text-primary",
+                          "content": "Windows",
+                          "fontFamily": "JetBrains Mono",
+                          "fontSize": 12,
                           "fontWeight": "600"
                         }
                       ]
@@ -473,8 +539,8 @@
                           "type": "text",
                           "id": "u6Wn6",
                           "name": "blank1",
-                          "fill": "$accent-orange",
-                          "content": "  ✓ pv installed to ~/.pv/bin/pv",
+                          "fill": "$text-primary",
+                          "content": "  ✓ pv installed to ~/.pv/bin/pv — launching setup wizard...",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         },
@@ -490,54 +556,130 @@
                         },
                         {
                           "type": "frame",
-                          "id": "3QSgX",
-                          "name": "cmdB",
+                          "id": "6qKQo",
+                          "name": "Wizard Tabs",
+                          "gap": 8,
                           "children": [
                             {
-                              "type": "text",
-                              "id": "wt6lu",
-                              "fill": "$text-secondary",
-                              "content": "$ ",
-                              "fontFamily": "JetBrains Mono",
-                              "fontSize": 13,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "YY5Dm",
-                              "fill": "$accent-teal",
-                              "content": "pv",
-                              "fontFamily": "JetBrains Mono",
-                              "fontSize": 13,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "Qoreq",
+                              "type": "frame",
+                              "id": "f3DwH",
+                              "name": "activeTab",
                               "fill": "$accent-orange",
-                              "content": " setup",
-                              "fontFamily": "JetBrains Mono",
-                              "fontSize": 13,
-                              "fontWeight": "600"
+                              "cornerRadius": 6,
+                              "stroke": {
+                                "align": "inside",
+                                "thickness": 1,
+                                "fill": "$accent-orange"
+                              },
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "e3VTv",
+                                  "name": "activeTabText",
+                                  "fill": "$bg-page",
+                                  "content": "PHP Versions",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "700"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "crPHq",
+                              "name": "toolsTab",
+                              "fill": "$bg-card",
+                              "cornerRadius": 6,
+                              "stroke": {
+                                "align": "inside",
+                                "thickness": 1,
+                                "fill": "$bg-placeholder"
+                              },
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "TFRn6",
+                                  "name": "toolsTabText",
+                                  "fill": "$text-primary",
+                                  "content": "Tools",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "700"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "8OX87",
+                              "name": "servicesTab",
+                              "fill": "$bg-card",
+                              "cornerRadius": 6,
+                              "stroke": {
+                                "align": "inside",
+                                "thickness": 1,
+                                "fill": "$bg-placeholder"
+                              },
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "NJmaN",
+                                  "name": "servicesTabText",
+                                  "fill": "$text-primary",
+                                  "content": "Services",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "700"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "U1g3D",
+                              "name": "settingsTab",
+                              "fill": "$bg-card",
+                              "cornerRadius": 6,
+                              "stroke": {
+                                "align": "inside",
+                                "thickness": 1,
+                                "fill": "$bg-placeholder"
+                              },
+                              "padding": [
+                                4,
+                                8
+                              ],
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "gMkJ9",
+                                  "name": "settingsTabText",
+                                  "fill": "$text-primary",
+                                  "content": "Settings",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "700"
+                                }
+                              ]
                             }
                           ]
                         },
                         {
                           "type": "text",
-                          "id": "MWfH3",
-                          "name": "sp2",
-                          "fill": "$bg-elevated",
-                          "content": " ",
-                          "fontFamily": "JetBrains Mono",
-                          "fontSize": 8,
-                          "fontWeight": "normal"
-                        },
-                        {
-                          "type": "text",
                           "id": "sQlYA",
                           "name": "line1",
-                          "fill": "$accent-orange",
-                          "content": "  ? Select PHP versions: [8.4] [8.3]",
+                          "fill": "$text-primary",
+                          "content": "  ┌ Select PHP versions: [8.4] [8.3]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         },
@@ -546,7 +688,7 @@
                           "id": "re1es",
                           "name": "line2",
                           "fill": "$text-primary",
-                          "content": "  ? Select tools: [composer] [mago]",
+                          "content": "  ├ Select tools: [composer] [mago]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         },
@@ -554,8 +696,8 @@
                           "type": "text",
                           "id": "HaXzO",
                           "name": "line3",
-                          "fill": "$accent-cyan",
-                          "content": "  ? Select services: [mysql] [postgres]",
+                          "fill": "$text-primary",
+                          "content": "  ├ Select services: [mysql] [postgres]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         },
@@ -563,8 +705,8 @@
                           "type": "text",
                           "id": "L18Et",
                           "name": "line4",
-                          "fill": "$text-secondary",
-                          "content": "  ? Configure domain: [.test]",
+                          "fill": "$text-primary",
+                          "content": "  └ Configure domain: [.test]",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         },
@@ -582,8 +724,8 @@
                           "type": "text",
                           "id": "36Sy1",
                           "name": "finalLine",
-                          "fill": "$accent-orange",
-                          "content": "  ✓ Setup saved. Run pv link in your project.",
+                          "fill": "$text-primary",
+                          "content": "  Press Enter to confirm  •  Tab to switch sections",
                           "fontFamily": "JetBrains Mono",
                           "fontSize": 13
                         }
@@ -598,7 +740,7 @@
               "id": "IMJjL",
               "name": "Trust Bar",
               "width": "fill_container",
-              "gap": 16,
+              "gap": 24,
               "padding": [
                 24,
                 120
@@ -611,15 +753,15 @@
                   "id": "v1TaK",
                   "name": "label",
                   "fill": "$text-secondary",
-                  "content": "// built_with",
+                  "content": "// powered_by",
                   "fontFamily": "JetBrains Mono",
-                  "fontSize": 9
+                  "fontSize": 10
                 },
                 {
                   "type": "frame",
                   "id": "hkfY6",
                   "name": "badgeRow",
-                  "gap": 10,
+                  "gap": 12,
                   "alignItems": "center",
                   "children": [
                     {
@@ -629,8 +771,8 @@
                       "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
-                        6,
-                        12
+                        8,
+                        14
                       ],
                       "children": [
                         {
@@ -652,8 +794,8 @@
                       "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
-                        6,
-                        12
+                        8,
+                        14
                       ],
                       "children": [
                         {
@@ -675,8 +817,8 @@
                       "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
-                        6,
-                        12
+                        8,
+                        14
                       ],
                       "children": [
                         {
@@ -698,8 +840,8 @@
                       "fill": "$bg-card",
                       "cornerRadius": 16,
                       "padding": [
-                        6,
-                        12
+                        8,
+                        14
                       ],
                       "children": [
                         {
@@ -722,324 +864,14 @@
         },
         {
           "type": "frame",
-          "id": "MY1aM",
-          "name": "Section: Quick Install",
-          "width": "fill_container",
-          "fill": "$bg-elevated",
-          "layout": "vertical",
-          "gap": 32,
-          "padding": [
-            60,
-            120
-          ],
-          "alignItems": "center",
-          "children": [
-            {
-              "type": "frame",
-              "id": "9XTj9",
-              "name": "Install Header",
-              "layout": "vertical",
-              "gap": 8,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "text",
-                  "id": "umcGG",
-                  "name": "commentTxt",
-                  "fill": "$text-secondary",
-                  "content": "// quick_setup",
-                  "fontFamily": "JetBrains Mono",
-                  "fontSize": 13,
-                  "fontWeight": "normal"
-                },
-                {
-                  "type": "text",
-                  "id": "mvk4s",
-                  "name": "titleTxt",
-                  "fill": "$text-primary",
-                  "content": "Setup in seconds.",
-                  "fontFamily": "Oswald",
-                  "fontSize": 48,
-                  "fontWeight": "700"
-                }
-              ]
-            },
-            {
-              "type": "frame",
-              "id": "1nQL9",
-              "name": "Terminal Block",
-              "clip": true,
-              "width": 720,
-              "fill": "$bg-card",
-              "cornerRadius": 16,
-              "stroke": {
-                "align": "inside",
-                "thickness": 1,
-                "fill": "$inactive"
-              },
-              "effect": {
-                "type": "shadow",
-                "shadowType": "outer",
-                "color": "$bg-page",
-                "offset": {
-                  "x": 0,
-                  "y": 8
-                },
-                "blur": 32
-              },
-              "layout": "vertical",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "oqIPo",
-                  "name": "Terminal Top Bar",
-                  "width": "fill_container",
-                  "fill": "$bg-elevated",
-                  "gap": 8,
-                  "padding": [
-                    16,
-                    20
-                  ],
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "ellipse",
-                      "id": "wSLG7",
-                      "name": "dot1",
-                      "fill": "$accent-red",
-                      "width": 12,
-                      "height": 12
-                    },
-                    {
-                      "type": "ellipse",
-                      "id": "PSK85",
-                      "name": "dot2",
-                      "fill": "$accent-orange",
-                      "width": 12,
-                      "height": 12
-                    },
-                    {
-                      "type": "ellipse",
-                      "id": "s2cwi",
-                      "name": "dot3",
-                      "fill": "$accent-teal",
-                      "width": 12,
-                      "height": 12
-                    }
-                  ]
-                },
-                {
-                  "type": "rectangle",
-                  "id": "SECnE",
-                  "name": "Divider",
-                  "fill": "$inactive",
-                  "width": "fill_container",
-                  "height": 1
-                },
-                {
-                  "type": "frame",
-                  "id": "qvaPR",
-                  "name": "Command Area",
-                  "width": "fill_container",
-                  "fill": "$bg-card",
-                  "padding": 24,
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "Ld3rz",
-                      "name": "promptTxt",
-                      "fill": "$text-secondary",
-                      "content": "$ ",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "text",
-                      "id": "JRz9A",
-                      "name": "curlTxt",
-                      "fill": "$accent-teal",
-                      "content": "curl",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "600"
-                    },
-                    {
-                      "type": "text",
-                      "id": "N17Mc",
-                      "name": "flagsTxt",
-                      "fill": "$text-secondary",
-                      "content": " -fsSL ",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "text",
-                      "id": "898AZ",
-                      "name": "urlTxt",
-                      "fill": "$text-primary",
-                      "content": "https://pv.prvious.dev/install",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "text",
-                      "id": "Ie5lZ",
-                      "name": "pipeTxt",
-                      "fill": "$text-secondary",
-                      "content": " | ",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "normal"
-                    },
-                    {
-                      "type": "text",
-                      "id": "iSdfs",
-                      "name": "bashTxt",
-                      "fill": "$accent-teal",
-                      "content": "bash",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 17,
-                      "fontWeight": "600"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "id": "8u3tV",
-              "name": "explainTxt",
-              "fill": "$text-secondary",
-              "content": "Then run pv setup to configure PHP, FrankenPHP, Composer and Mago.",
-              "fontFamily": "JetBrains Mono",
-              "fontSize": 13,
-              "fontWeight": "normal"
-            },
-            {
-              "type": "frame",
-              "id": "e51Iw",
-              "name": "Flow Indicator",
-              "gap": 16,
-              "alignItems": "center",
-              "children": [
-                {
-                  "type": "frame",
-                  "id": "l1FED",
-                  "name": "step1",
-                  "fill": "$bg-elevated",
-                  "cornerRadius": 16,
-                  "padding": [
-                    8,
-                    16
-                  ],
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "GCm90",
-                      "name": "s1Txt",
-                      "fill": "$accent-teal",
-                      "content": "curl install",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 11,
-                      "fontWeight": "600"
-                    }
-                  ]
-                },
-                {
-                  "type": "icon_font",
-                  "id": "9usjZ",
-                  "name": "arr1",
-                  "width": 14,
-                  "height": 14,
-                  "iconFontName": "chevron-right",
-                  "iconFontFamily": "lucide",
-                  "fill": "$text-secondary"
-                },
-                {
-                  "type": "frame",
-                  "id": "nC3x8",
-                  "name": "step2",
-                  "fill": "$bg-elevated",
-                  "cornerRadius": 16,
-                  "padding": [
-                    8,
-                    16
-                  ],
-                  "children": [
-                    {
-                      "type": "text",
-                      "id": "zRXQM",
-                      "name": "s2Txt",
-                      "fill": "$accent-orange",
-                      "content": "pv setup",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 11,
-                      "fontWeight": "600"
-                    }
-                  ]
-                },
-                {
-                  "type": "icon_font",
-                  "id": "oGCPk",
-                  "name": "arr2",
-                  "width": 14,
-                  "height": 14,
-                  "iconFontName": "chevron-right",
-                  "iconFontFamily": "lucide",
-                  "fill": "$text-secondary"
-                },
-                {
-                  "type": "frame",
-                  "id": "a3BG7",
-                  "name": "step3",
-                  "fill": "$accent-teal",
-                  "cornerRadius": 16,
-                  "gap": 6,
-                  "padding": [
-                    8,
-                    16
-                  ],
-                  "alignItems": "center",
-                  "children": [
-                    {
-                      "type": "icon_font",
-                      "id": "Zuz4b",
-                      "name": "s3Icon",
-                      "width": 12,
-                      "height": 12,
-                      "iconFontName": "check",
-                      "iconFontFamily": "lucide",
-                      "fill": "$text-on-accent"
-                    },
-                    {
-                      "type": "text",
-                      "id": "4N1B6",
-                      "name": "s3Txt",
-                      "fill": "$text-on-accent",
-                      "content": "ready",
-                      "fontFamily": "JetBrains Mono",
-                      "fontSize": 11,
-                      "fontWeight": "600"
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "frame",
           "id": "GGOPN",
           "name": "Section: Features + How It Works",
           "width": "fill_container",
           "fill": "$bg-card",
           "layout": "vertical",
-          "gap": 64,
+          "gap": 72,
           "padding": [
-            80,
+            88,
             120
           ],
           "children": [
@@ -1057,7 +889,8 @@
                   "name": "Features Header",
                   "width": "fill_container",
                   "layout": "vertical",
-                  "gap": 8,
+                  "gap": 10,
+                  "alignItems": "center",
                   "children": [
                     {
                       "type": "text",
@@ -1065,6 +898,7 @@
                       "name": "commentText",
                       "fill": "$text-secondary",
                       "content": "// core_features",
+                      "textAlign": "center",
                       "fontFamily": "JetBrains Mono",
                       "fontSize": 13
                     },
@@ -1074,6 +908,7 @@
                       "name": "titleText",
                       "fill": "$text-primary",
                       "content": "Everything you need. Nothing you don't.",
+                      "textAlign": "center",
                       "fontFamily": "Oswald",
                       "fontSize": 36,
                       "fontWeight": "700"
@@ -1240,7 +1075,8 @@
                   "name": "HIW Header",
                   "width": "fill_container",
                   "layout": "vertical",
-                  "gap": 8,
+                  "gap": 10,
+                  "alignItems": "center",
                   "children": [
                     {
                       "type": "text",
@@ -1248,6 +1084,7 @@
                       "name": "hiwComment",
                       "fill": "$text-secondary",
                       "content": "// how_it_works",
+                      "textAlign": "center",
                       "fontFamily": "JetBrains Mono",
                       "fontSize": 13
                     },
@@ -1257,6 +1094,7 @@
                       "name": "hiwTitle",
                       "fill": "$text-primary",
                       "content": "From zero to serving in two steps.",
+                      "textAlign": "center",
                       "fontFamily": "Oswald",
                       "fontSize": 36,
                       "fontWeight": "700"
@@ -1464,9 +1302,9 @@
               "width": "fill_container",
               "fill": "$bg-elevated",
               "layout": "vertical",
-              "gap": 40,
+              "gap": 44,
               "padding": [
-                80,
+                88,
                 120
               ],
               "children": [
@@ -1529,7 +1367,7 @@
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "$inactive"
+                        "fill": "$bg-placeholder"
                       },
                       "layout": "vertical",
                       "children": [
@@ -1867,7 +1705,7 @@
                       "stroke": {
                         "align": "inside",
                         "thickness": 1,
-                        "fill": "$inactive"
+                        "fill": "$bg-placeholder"
                       },
                       "layout": "vertical",
                       "children": [
@@ -2208,7 +2046,7 @@
                   "id": "wHwyL",
                   "name": "ctaTitle",
                   "fill": "$text-primary",
-                  "content": "STOP CONFIGURING. START BUILDING.",
+                  "content": "LOCAL DEV, SOLVED.",
                   "textAlign": "center",
                   "fontFamily": "Oswald",
                   "fontSize": 48,
@@ -2219,7 +2057,7 @@
                   "id": "bCoEF",
                   "name": "ctaSub",
                   "fill": "$text-secondary",
-                  "content": "One curl. Then pv setup. Your PHP environment in under a minute.",
+                  "content": "One curl to install. One command to set up. Your entire PHP stack, ready to go.",
                   "textAlign": "center",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 14
@@ -2417,9 +2255,9 @@
               "width": "fill_container",
               "fill": "$bg-card",
               "layout": "vertical",
-              "gap": 48,
+              "gap": 40,
               "padding": [
-                48,
+                56,
                 120
               ],
               "children": [
@@ -2428,7 +2266,7 @@
                   "id": "slKkk",
                   "name": "footerTop",
                   "width": "fill_container",
-                  "gap": 32,
+                  "gap": 40,
                   "justifyContent": "space_between",
                   "children": [
                     {
@@ -2677,7 +2515,7 @@
       "x": 0,
       "y": 4205,
       "name": "PV Setup TUI",
-      "gap": 80,
+      "gap": 64,
       "padding": 40,
       "children": [
         {
@@ -2688,9 +2526,23 @@
           "width": 720,
           "fill": "$tui-bg",
           "cornerRadius": 12,
+          "stroke": {
+            "thickness": 1,
+            "fill": "$tui-faint"
+          },
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 8
+            },
+            "blur": 24
+          },
           "layout": "vertical",
-          "gap": 12,
-          "padding": 24,
+          "gap": 14,
+          "padding": 26,
           "children": [
             {
               "type": "text",
@@ -2706,7 +2558,7 @@
               "id": "0el9F",
               "name": "s1",
               "width": "fill_container",
-              "height": 16
+              "height": 10
             },
             {
               "type": "frame",
@@ -2719,7 +2571,7 @@
                   "type": "text",
                   "id": "lgLnq",
                   "name": "t1a",
-                  "fill": "$tui-bright",
+                  "fill": "$tui-yellow",
                   "content": "  PHP Versions  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -2791,8 +2643,8 @@
               "type": "rectangle",
               "id": "58um3",
               "name": "d1",
-              "opacity": 0.8,
-              "fill": "$tui-purple",
+              "opacity": 0.45,
+              "fill": "$tui-faint",
               "width": "fill_container",
               "height": 1
             },
@@ -2801,24 +2653,24 @@
               "id": "dQlKZ",
               "name": "sc1",
               "width": "fill_container",
-              "height": 20
+              "height": 14
             },
             {
               "type": "text",
               "id": "pICWC",
               "name": "hdr1",
-              "fill": "$tui-faint",
+              "fill": "$tui-yellow",
               "content": "Select which PHP versions to install:",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 12,
-              "fontWeight": "normal"
+              "fontSize": 13,
+              "fontWeight": "700"
             },
             {
               "type": "frame",
               "id": "q3AIU",
               "name": "sg1",
               "width": "fill_container",
-              "height": 12
+              "height": 8
             },
             {
               "type": "frame",
@@ -2827,9 +2679,13 @@
               "width": "fill_container",
               "fill": "$bg-elevated",
               "cornerRadius": 8,
-              "gap": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-yellow"
+              },
+              "gap": 8,
               "padding": [
-                6,
+                7,
                 10
               ],
               "alignItems": "center",
@@ -2960,7 +2816,7 @@
               "id": "osVrV",
               "name": "hsp1",
               "width": "fill_container",
-              "height": 40
+              "height": 22
             },
             {
               "type": "text",
@@ -2982,9 +2838,23 @@
           "width": 720,
           "fill": "$tui-bg",
           "cornerRadius": 12,
+          "stroke": {
+            "thickness": 1,
+            "fill": "$tui-faint"
+          },
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 8
+            },
+            "blur": 24
+          },
           "layout": "vertical",
-          "gap": 12,
-          "padding": 24,
+          "gap": 14,
+          "padding": 26,
           "children": [
             {
               "type": "text",
@@ -3001,7 +2871,7 @@
               "id": "o7Grj",
               "name": "s2a",
               "width": "fill_container",
-              "height": 16
+              "height": 10
             },
             {
               "type": "frame",
@@ -3034,7 +2904,7 @@
                   "type": "text",
                   "id": "qPFw6",
                   "name": "t2b",
-                  "fill": "$tui-bright",
+                  "fill": "$tui-yellow",
                   "content": "  Tools  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3086,8 +2956,8 @@
               "type": "rectangle",
               "id": "Y23O2",
               "name": "d2",
-              "opacity": 0.8,
-              "fill": "$tui-purple",
+              "opacity": 0.45,
+              "fill": "$tui-faint",
               "width": "fill_container",
               "height": 1
             },
@@ -3096,24 +2966,24 @@
               "id": "aHlRw",
               "name": "sc2",
               "width": "fill_container",
-              "height": 20
+              "height": 14
             },
             {
               "type": "text",
               "id": "dLAi9",
               "name": "hdr2",
-              "fill": "$tui-faint",
+              "fill": "$tui-yellow",
               "content": "Composer is always installed. Select additional tools:",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 12,
-              "fontWeight": "normal"
+              "fontSize": 13,
+              "fontWeight": "700"
             },
             {
               "type": "frame",
               "id": "Obq60",
               "name": "sg2",
               "width": "fill_container",
-              "height": 12
+              "height": 8
             },
             {
               "type": "frame",
@@ -3122,9 +2992,13 @@
               "width": "fill_container",
               "fill": "$bg-elevated",
               "cornerRadius": 8,
-              "gap": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-yellow"
+              },
+              "gap": 8,
               "padding": [
-                6,
+                7,
                 10
               ],
               "alignItems": "center",
@@ -3156,7 +3030,7 @@
               "id": "XWm0b",
               "name": "mhsp",
               "width": "fill_container",
-              "height": 40
+              "height": 22
             },
             {
               "type": "text",
@@ -3178,9 +3052,23 @@
           "width": 720,
           "fill": "$tui-bg",
           "cornerRadius": 12,
+          "stroke": {
+            "thickness": 1,
+            "fill": "$tui-faint"
+          },
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 8
+            },
+            "blur": 24
+          },
           "layout": "vertical",
-          "gap": 12,
-          "padding": 24,
+          "gap": 14,
+          "padding": 26,
           "children": [
             {
               "type": "text",
@@ -3197,7 +3085,7 @@
               "id": "KNyio",
               "name": "sp1",
               "width": "fill_container",
-              "height": 20,
+              "height": 10,
               "layout": "none"
             },
             {
@@ -3251,7 +3139,7 @@
                   "type": "text",
                   "id": "JmfGE",
                   "name": "t3",
-                  "fill": "$tui-bright",
+                  "fill": "$tui-yellow",
                   "content": "Services",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3284,15 +3172,15 @@
               "id": "pdwRI",
               "name": "sp2",
               "width": "fill_container",
-              "height": 4,
+              "height": 10,
               "layout": "none"
             },
             {
               "type": "rectangle",
               "id": "3m2no",
               "name": "d3",
-              "opacity": 0.8,
-              "fill": "$tui-purple",
+              "opacity": 0.45,
+              "fill": "$tui-faint",
               "width": "fill_container",
               "height": 1
             },
@@ -3301,25 +3189,25 @@
               "id": "3thYX",
               "name": "sp3",
               "width": "fill_container",
-              "height": 20,
+              "height": 14,
               "layout": "none"
             },
             {
               "type": "text",
               "id": "ewtlR",
               "name": "header",
-              "fill": "$tui-faint",
+              "fill": "$tui-yellow",
               "content": "Select backing services to set up:",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 12,
-              "fontWeight": "normal"
+              "fontSize": 13,
+              "fontWeight": "700"
             },
             {
               "type": "frame",
               "id": "KX9Wf",
               "name": "sp4",
               "width": "fill_container",
-              "height": 12,
+              "height": 8,
               "layout": "none"
             },
             {
@@ -3328,7 +3216,7 @@
               "name": "listArea",
               "width": "fill_container",
               "layout": "vertical",
-              "gap": 6,
+              "gap": 8,
               "children": [
                 {
                   "type": "frame",
@@ -3337,8 +3225,13 @@
                   "width": "fill_container",
                   "fill": "$bg-elevated",
                   "cornerRadius": 8,
+                  "stroke": {
+                    "thickness": 1,
+                    "fill": "$tui-yellow"
+                  },
+                  "gap": 8,
                   "padding": [
-                    6,
+                    7,
                     10
                   ],
                   "children": [
@@ -3444,9 +3337,23 @@
           "width": 720,
           "fill": "$tui-bg",
           "cornerRadius": 12,
+          "stroke": {
+            "thickness": 1,
+            "fill": "$tui-faint"
+          },
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 8
+            },
+            "blur": 24
+          },
           "layout": "vertical",
-          "gap": 12,
-          "padding": 24,
+          "gap": 14,
+          "padding": 26,
           "children": [
             {
               "type": "text",
@@ -3463,7 +3370,7 @@
               "id": "9UrOm",
               "name": "sp0",
               "width": "fill_container",
-              "height": 16
+              "height": 10
             },
             {
               "type": "frame",
@@ -3533,7 +3440,7 @@
                   "type": "text",
                   "id": "7MBQd",
                   "name": "tab4",
-                  "fill": "$tui-bright",
+                  "fill": "$tui-yellow",
                   "content": "  Settings  ",
                   "fontFamily": "JetBrains Mono",
                   "fontSize": 13,
@@ -3555,13 +3462,13 @@
               "id": "Jr6zu",
               "name": "spContent",
               "width": "fill_container",
-              "height": 20
+              "height": 14
             },
             {
               "type": "text",
               "id": "r7MM7",
               "name": "domainHeading",
-              "fill": "$tui-purple",
+              "fill": "$tui-yellow",
               "content": "Domain",
               "fontFamily": "JetBrains Mono",
               "fontSize": 13,
@@ -3581,14 +3488,24 @@
               "id": "bQ25Q",
               "name": "spDomain",
               "width": "fill_container",
-              "height": 8
+              "height": 6
             },
             {
               "type": "frame",
               "id": "JVa9a",
               "name": "domainRow",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-yellow"
+              },
               "gap": 8,
+              "padding": [
+                6,
+                8
+              ],
               "alignItems": "center",
               "children": [
                 {
@@ -3626,13 +3543,13 @@
               "id": "UVeIM",
               "name": "spDaemon",
               "width": "fill_container",
-              "height": 20
+              "height": 14
             },
             {
               "type": "text",
               "id": "jl4oq",
               "name": "daemonHeading",
-              "fill": "$tui-purple",
+              "fill": "$tui-yellow",
               "content": "Daemon",
               "fontFamily": "JetBrains Mono",
               "fontSize": 13,
@@ -3652,14 +3569,24 @@
               "id": "fIXwE",
               "name": "spDaemon2",
               "width": "fill_container",
-              "height": 8
+              "height": 6
             },
             {
               "type": "frame",
               "id": "UBf6L",
               "name": "daemonRow",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "gap": 8,
+              "padding": [
+                6,
+                8
+              ],
               "alignItems": "center",
               "children": [
                 {
@@ -3687,13 +3614,13 @@
               "id": "s0w4A",
               "name": "spAuto",
               "width": "fill_container",
-              "height": 20
+              "height": 14
             },
             {
               "type": "text",
               "id": "is3MV",
               "name": "autoHeading",
-              "fill": "$tui-purple",
+              "fill": "$tui-yellow",
               "content": "Automation",
               "fontFamily": "JetBrains Mono",
               "fontSize": 13,
@@ -3713,17 +3640,23 @@
               "id": "Aqu9n",
               "name": "spAuto2",
               "width": "fill_container",
-              "height": 8
+              "height": 6
             },
             {
               "type": "frame",
               "id": "oSZWW",
               "name": "a1",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -3817,17 +3750,23 @@
               "id": "9nfz0",
               "name": "sp_a1",
               "width": "fill_container",
-              "height": 3
+              "height": 4
             },
             {
               "type": "frame",
               "id": "cuGpS",
               "name": "a2",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -3921,17 +3860,23 @@
               "id": "vaJie",
               "name": "sp_a2",
               "width": "fill_container",
-              "height": 3
+              "height": 4
             },
             {
               "type": "frame",
               "id": "IxJyU",
               "name": "a3",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4025,17 +3970,23 @@
               "id": "b9L6e",
               "name": "sp_a3",
               "width": "fill_container",
-              "height": 3
+              "height": 4
             },
             {
               "type": "frame",
               "id": "AIGxW",
               "name": "a4",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4136,10 +4087,16 @@
               "id": "0s3Qj",
               "name": "a5",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4240,10 +4197,16 @@
               "id": "KHLQq",
               "name": "a6",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4337,17 +4300,23 @@
               "id": "UtLcg",
               "name": "sp_a6",
               "width": "fill_container",
-              "height": 3
+              "height": 4
             },
             {
               "type": "frame",
               "id": "VORCQ",
               "name": "a7",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4448,10 +4417,16 @@
               "id": "FK2OQ",
               "name": "a8",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4545,17 +4520,23 @@
               "id": "zjNqr",
               "name": "sp_a8",
               "width": "fill_container",
-              "height": 3
+              "height": 4
             },
             {
               "type": "frame",
               "id": "NVERw",
               "name": "a9",
               "width": "fill_container",
+              "fill": "$bg-elevated",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4656,10 +4637,16 @@
               "id": "sMiFe",
               "name": "a10",
               "width": "fill_container",
+              "fill": "$bg-card",
+              "cornerRadius": 6,
+              "stroke": {
+                "thickness": 1,
+                "fill": "$tui-faint"
+              },
               "padding": [
-                0,
                 4,
-                0,
+                8,
+                4,
                 20
               ],
               "justifyContent": "space_between",
@@ -4753,13 +4740,13 @@
               "id": "kO86N",
               "name": "spHelp",
               "width": "fill_container",
-              "height": 20
+              "height": 16
             },
             {
               "type": "text",
               "id": "Eew5M",
               "name": "helpBar",
-              "fill": "$tui-faint",
+              "fill": "$tui-text",
               "content": "←/→ navigate • ↑/↓ move • e to edit TLD • enter confirm • esc quit",
               "fontFamily": "JetBrains Mono",
               "fontSize": 11
@@ -4774,10 +4761,24 @@
           "width": 720,
           "fill": "$tui-bg",
           "cornerRadius": 12,
+          "stroke": {
+            "thickness": 1,
+            "fill": "$tui-faint"
+          },
+          "effect": {
+            "type": "shadow",
+            "shadowType": "outer",
+            "color": "#00000066",
+            "offset": {
+              "x": 0,
+              "y": 8
+            },
+            "blur": 24
+          },
           "layout": "vertical",
           "padding": [
-            24,
-            28
+            26,
+            30
           ],
           "children": [
             {
@@ -4794,23 +4795,24 @@
               "id": "PlGFk",
               "name": "spacer0",
               "width": "fill_container",
-              "height": 20
+              "height": 16
             },
             {
               "type": "text",
               "id": "hqqFX",
               "name": "versionHeader",
-              "fill": "$tui-faint",
+              "fill": "$tui-yellow",
               "content": "pv v1.0.0",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 13
+              "fontSize": 13,
+              "fontWeight": "700"
             },
             {
               "type": "frame",
               "id": "DMX6e",
               "name": "spacer1",
               "width": "fill_container",
-              "height": 16
+              "height": 12
             },
             {
               "type": "frame",
@@ -5134,16 +5136,17 @@
               "id": "9JmV8",
               "name": "sp10",
               "width": "fill_container",
-              "height": 10
+              "height": 8
             },
             {
               "type": "text",
               "id": "lq1di",
               "name": "svcLabel",
-              "fill": "$tui-faint",
+              "fill": "$tui-yellow",
               "content": "// services",
               "fontFamily": "JetBrains Mono",
-              "fontSize": 11
+              "fontSize": 11,
+              "fontWeight": "700"
             },
             {
               "type": "frame",
@@ -5317,7 +5320,7 @@
               "id": "1qlrT",
               "name": "sp12",
               "width": "fill_container",
-              "height": 12
+              "height": 10
             },
             {
               "type": "frame",
@@ -5403,12 +5406,13 @@
               "id": "wpcwY",
               "name": "sp14",
               "width": "fill_container",
-              "height": 24
+              "height": 18
             },
             {
               "type": "text",
               "id": "gAAWQ",
               "name": "divider",
+              "opacity": 0.45,
               "fill": "$tui-faint",
               "content": "─────────────────────────────────────────────────",
               "fontFamily": "JetBrains Mono",
@@ -5419,7 +5423,7 @@
               "id": "3RgrV",
               "name": "sp15",
               "width": "fill_container",
-              "height": 8
+              "height": 6
             },
             {
               "type": "frame",
@@ -5456,7 +5460,7 @@
               "id": "X8bSv",
               "name": "sp16",
               "width": "fill_container",
-              "height": 4
+              "height": 8
             },
             {
               "type": "text",

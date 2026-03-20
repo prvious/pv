@@ -1,4 +1,4 @@
-@props([
+@props ([
     'prompt' => '$',
     'type' => 'command',
 ])
@@ -15,7 +15,7 @@
 
 <div {{ $attributes->cn('flex gap-2', $typeClasses) }}>
     @if ($type === 'command')
-        <span class="text-muted select-none shrink-0">{{ $prompt }}</span>
+        <span class="text-muted shrink-0 select-none">{{ $prompt }}</span>
     @endif
     <span>{{ $slot }}</span>
 </div>

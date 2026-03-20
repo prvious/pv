@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Support;
 
 use Illuminate\View\ComponentAttributeBag;
@@ -8,7 +10,7 @@ use TalesFromADev\TailwindMerge\TailwindMergeInterface;
 class TailwindBootstrapper
 {
     public function __construct(
-        private TailwindMergeInterface $tailwindMerge
+        private TailwindMergeInterface $tailwindMerge,
     ) {}
 
     public function bootMacro(): void

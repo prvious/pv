@@ -1,34 +1,40 @@
-@props([
+@props ([
     'title' => null,
     'dotsRight' => false,
 ])
 
-<div {{ $attributes->cn('overflow-hidden rounded-2xl border border-placeholder bg-elevated font-mono') }}>
+<div
+    {{ $attributes->cn('overflow-hidden rounded-2xl border border-placeholder bg-elevated font-mono') }}
+>
     {{-- Title bar --}}
-    <div class="flex items-center justify-between bg-card px-4 py-3">
+    <div class="bg-card flex items-center justify-between px-4 py-3">
         @if ($dotsRight)
             @if ($title)
-                <span class="text-xs font-semibold text-muted">{{ $title }}</span>
+                <span
+                    class="text-muted text-xs font-semibold"
+                    >{{ $title }}</span
+                >
             @endif
             <div class="flex gap-1.5">
-                <span class="size-2.5 rounded-full bg-muted"></span>
-                <span class="size-2.5 rounded-full bg-accent"></span>
-                <span class="size-2.5 rounded-full bg-accent-orange"></span>
+                <span class="bg-muted size-2.5 rounded-full"></span>
+                <span class="bg-accent size-2.5 rounded-full"></span>
+                <span class="bg-accent-orange size-2.5 rounded-full"></span>
             </div>
         @else
             <div class="flex items-center gap-2">
-                <span class="size-3 rounded-full bg-accent-red"></span>
-                <span class="size-3 rounded-full bg-accent-orange"></span>
-                <span class="size-3 rounded-full bg-accent"></span>
+                <span class="bg-accent-red size-3 rounded-full"></span>
+                <span class="bg-accent-orange size-3 rounded-full"></span>
+                <span class="bg-accent size-3 rounded-full"></span>
                 @if ($title)
-                    <span class="ml-1 text-[11px] text-muted">{{ $title }}</span>
+                    <span
+                        class="text-muted ml-1 text-[11px]"
+                        >{{ $title }}</span
+                    >
                 @endif
             </div>
         @endif
     </div>
 
     {{-- Body --}}
-    <div class="space-y-1.5 p-5 leading-relaxed">
-        {{ $slot }}
-    </div>
+    <div class="space-y-1.5 p-5 leading-relaxed">{{ $slot }}</div>
 </div>

@@ -34,34 +34,40 @@ foreach ($attributes->all() as $__key => $__value) {
 
 unset($__defined_vars, $__key, $__value); ?>
 
-<div <?php echo e($attributes->cn('overflow-hidden rounded-2xl border border-placeholder bg-elevated font-mono')); ?>>
+<div
+    <?php echo e($attributes->cn('overflow-hidden rounded-2xl border border-placeholder bg-elevated font-mono')); ?>
+
+>
     
-    <div class="flex items-center justify-between bg-card px-4 py-3">
+    <div class="bg-card flex items-center justify-between px-4 py-3">
         <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($dotsRight): ?>
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($title): ?>
-                <span class="text-xs font-semibold text-muted"><?php echo e($title); ?></span>
+                <span
+                    class="text-muted text-xs font-semibold"
+                    ><?php echo e($title); ?></span
+                >
             <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
             <div class="flex gap-1.5">
-                <span class="size-2.5 rounded-full bg-muted"></span>
-                <span class="size-2.5 rounded-full bg-accent"></span>
-                <span class="size-2.5 rounded-full bg-accent-orange"></span>
+                <span class="bg-muted size-2.5 rounded-full"></span>
+                <span class="bg-accent size-2.5 rounded-full"></span>
+                <span class="bg-accent-orange size-2.5 rounded-full"></span>
             </div>
         <?php else: ?>
             <div class="flex items-center gap-2">
-                <span class="size-3 rounded-full bg-accent-red"></span>
-                <span class="size-3 rounded-full bg-accent-orange"></span>
-                <span class="size-3 rounded-full bg-accent"></span>
+                <span class="bg-accent-red size-3 rounded-full"></span>
+                <span class="bg-accent-orange size-3 rounded-full"></span>
+                <span class="bg-accent size-3 rounded-full"></span>
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($title): ?>
-                    <span class="ml-1 text-[11px] text-muted"><?php echo e($title); ?></span>
+                    <span
+                        class="text-muted ml-1 text-[11px]"
+                        ><?php echo e($title); ?></span
+                    >
                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
             </div>
         <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
     </div>
 
     
-    <div class="space-y-1.5 p-5 leading-relaxed">
-        <?php echo e($slot); ?>
-
-    </div>
+    <div class="space-y-1.5 p-5 leading-relaxed"><?php echo e($slot); ?></div>
 </div>
 <?php /**PATH /Users/clovismuneza/Apps/pv/docs/resources/views/components/terminal.blade.php ENDPATH**/ ?>

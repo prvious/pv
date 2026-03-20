@@ -1,4 +1,4 @@
-@props([
+@props ([
     'level' => 2,
     'size' => 'default',
 ])

@@ -1,4 +1,4 @@
-@props([
+@props ([
     'number' => null,
     'title' => null,
     'description' => null,
@@ -6,7 +6,9 @@
 
 <div {{ $attributes->cn('flex gap-4') }}>
     @if ($number)
-        <div class="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent text-sm font-bold">
+        <div
+            class="bg-accent text-on-accent flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-bold"
+        >
             {{ $number }}
         </div>
     @endif

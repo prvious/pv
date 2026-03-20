@@ -1,4 +1,4 @@
-@props([
+@props ([
     'icon' => null,
     'title' => null,
     'description' => null,
@@ -7,7 +7,9 @@
 <x-card {{ $attributes }}>
     <div class="flex flex-col gap-3">
         @if ($icon)
-            <div class="flex size-10 items-center justify-center rounded-lg bg-accent/10 text-accent">
+            <div
+                class="bg-accent/10 text-accent flex size-10 items-center justify-center rounded-lg"
+            >
                 {{ $icon }}
             </div>
         @endif

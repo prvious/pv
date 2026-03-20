@@ -1,4 +1,4 @@
-@props([
+@props ([
     'variant' => 'default',
 ])
 
@@ -14,6 +14,4 @@
     ];
 @endphp
 
-<div {{ $attributes->cn($classes, $variantClasses) }}>
-    {{ $slot }}
-</div>
+<div {{ $attributes->cn($classes, $variantClasses) }}> {{ $slot }}</div>
