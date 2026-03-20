@@ -40,10 +40,10 @@ pv php:use 8.3`,
 			ui.Success(fmt.Sprintf("Global PHP switched %s %s %s",
 				ui.Muted.Render(oldV),
 				ui.Accent.Render("→"),
-				ui.Green.Bold(true).Render(version),
+				ui.Positive.Bold(true).Render(version),
 			))
 		} else {
-			ui.Success(fmt.Sprintf("Global PHP set to %s", ui.Green.Bold(true).Render(version)))
+			ui.Success(fmt.Sprintf("Global PHP set to %s", ui.Positive.Bold(true).Render(version)))
 		}
 
 		// If daemon is running, sync the plist and restart.

@@ -10,18 +10,20 @@ import (
 
 // Raw color values for use in contexts that need lipgloss.Color directly.
 var (
-	AccentColor = lipgloss.Color("#00D4AA")
-	OrangeColor = lipgloss.Color("#FF6B35")
+	AccentColor  = lipgloss.Color("#2F80FF")
+	WarnColor    = lipgloss.Color("#FFD60A")
+	SuccessColor = lipgloss.ANSIColor(2)
+	DangerColor  = lipgloss.ANSIColor(1)
 )
 
-// Accent is the primary brand color (#00D4AA teal). Green, Red, Orange are semantic.
+// Styles using semantic design tokens — not color names.
 var (
-	Accent = lipgloss.NewStyle().Foreground(AccentColor)
-	Green  = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(2))
-	Red    = lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(1))
-	Orange = lipgloss.NewStyle().Foreground(OrangeColor)
-	Muted  = lipgloss.NewStyle().Faint(true)
-	Bold   = lipgloss.NewStyle().Bold(true)
+	Accent   = lipgloss.NewStyle().Foreground(AccentColor)
+	Positive = lipgloss.NewStyle().Foreground(SuccessColor)
+	Negative = lipgloss.NewStyle().Foreground(DangerColor)
+	Caution  = lipgloss.NewStyle().Foreground(WarnColor)
+	Muted    = lipgloss.NewStyle().Faint(true)
+	Bold     = lipgloss.NewStyle().Bold(true)
 )
 
 // ErrAlreadyPrinted is returned when the error has already been displayed
@@ -42,12 +44,12 @@ func Header(version string) {
 
 // Success prints a green checkmark line.
 func Success(text string) {
-	fmt.Fprintf(os.Stderr, "  %s %s\n", Green.Render("✓"), text)
+	fmt.Fprintf(os.Stderr, "  %s %s\n", Positive.Render("✓"), text)
 }
 
 // Fail prints a red cross line.
 func Fail(text string) {
-	fmt.Fprintf(os.Stderr, "  %s %s\n", Red.Render("✗"), text)
+	fmt.Fprintf(os.Stderr, "  %s %s\n", Negative.Render("✗"), text)
 }
 
 // Subtle prints muted text.

@@ -50,7 +50,7 @@ var listCmd = &cobra.Command{
 
 			// Version number
 			if v == globalV {
-				parts = append(parts, ui.Green.Bold(true).Render(v))
+				parts = append(parts, ui.Positive.Bold(true).Render(v))
 				parts = append(parts, ui.Muted.Render("(default)"))
 			} else {
 				parts = append(parts, ui.Accent.Render(v))
@@ -62,7 +62,7 @@ var listCmd = &cobra.Command{
 			}
 
 			fmt.Fprintf(os.Stderr, "  %s %s\n",
-				ui.Green.Render("●"),
+				ui.Positive.Render("●"),
 				strings.Join(parts, " "),
 			)
 		}

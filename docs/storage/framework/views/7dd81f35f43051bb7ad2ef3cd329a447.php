@@ -1,0 +1,1 @@
+<?php /**PATH /Users/clovismuneza/Apps/pv/docs/resources/views/partials/head.blade.php ENDPATH**/ ?>
