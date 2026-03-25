@@ -65,7 +65,9 @@ var destroyCmd = &cobra.Command{
 		}
 
 		// Regenerate Caddy configs for service consoles.
-		_ = caddy.GenerateServiceSiteConfigs(reg)
+		if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not regenerate service site configs: %v", err))
+		}
 
 		if len(projects) > 0 {
 			fmt.Fprintf(os.Stderr, "  %s Unbound from: %s\n",
