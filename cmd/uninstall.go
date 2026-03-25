@@ -109,6 +109,8 @@ var uninstallCmd = &cobra.Command{
 			return err
 		}
 
+		hadFailures := false
+
 		// Stop services.
 		if err := ui.Step("Stopping services...", func() (string, error) {
 			if daemon.IsLoaded() {
@@ -140,7 +142,7 @@ var uninstallCmd = &cobra.Command{
 
 			return "Services stopped", nil
 		}); err != nil {
-			// Error already displayed by ui.Step
+			hadFailures = true // Error already displayed by ui.Step
 		}
 
 		// Remove launchd plist.
@@ -150,7 +152,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "Launchd service removed", nil
 		}); err != nil {
-			// Error already displayed by ui.Step
+			hadFailures = true // Error already displayed by ui.Step
 		}
 
 		resolverFile := filepath.Join("/etc/resolver", tld)
@@ -183,7 +185,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "", fmt.Errorf("could not remove %s — run: sudo rm -f %s", resolverFile, resolverFile)
 		}); err != nil {
-			// Error already displayed by ui.Step
+			hadFailures = true // Error already displayed by ui.Step
 		}
 
 		// Untrust CA certificate.
@@ -200,21 +202,25 @@ var uninstallCmd = &cobra.Command{
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
 		if err := colimacmd.RunUninstall(); err != nil {
+			hadFailures = true
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
 			}
 		}
 		if err := php.RunUninstall(); err != nil {
+			hadFailures = true
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("PHP uninstall failed: %v", err))
 			}
 		}
 		if err := mago.RunUninstall(); err != nil {
+			hadFailures = true
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Mago uninstall failed: %v", err))
 			}
 		}
 		if err := composer.RunUninstall(); err != nil {
+			hadFailures = true
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Composer uninstall failed: %v", err))
 			}
@@ -245,7 +251,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return "~/.pv removed", nil
 		}); err != nil {
-			// Error already displayed by ui.Step
+			hadFailures = true // Error already displayed by ui.Step
 		}
 
 		// Remove the pv binary itself.
@@ -265,7 +271,7 @@ var uninstallCmd = &cobra.Command{
 			}
 			return fmt.Sprintf("Removed %s", pvBin), nil
 		}); err != nil {
-			// Error already displayed by ui.Step
+			hadFailures = true // Error already displayed by ui.Step
 		}
 
 		// Report scattered pv.yml files.
@@ -294,7 +300,11 @@ var uninstallCmd = &cobra.Command{
 		ui.Subtle(fmt.Sprintf("  %s", exportLine))
 		ui.Subtle("  eval \"$(pv env)\"   # if present")
 
-		ui.Success("pv has been completely uninstalled. Your projects were not modified.")
+		if hadFailures {
+			ui.Subtle("pv has been partially uninstalled. Some steps failed — see errors above.")
+		} else {
+			ui.Success("pv has been completely uninstalled. Your projects were not modified.")
+		}
 		ui.Footer(start, "https://pv.prvious.dev/docs")
 
 		return nil
