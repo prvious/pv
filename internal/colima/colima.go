@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
@@ -88,13 +89,14 @@ func colimaCmd(args ...string) *exec.Cmd {
 	return cmd
 }
 
-// Start starts the Colima VM with the pv profile.
-func Start() error {
+// Start starts the Colima VM with the pv profile using the given resource config.
+func Start(vm config.VMConfig) error {
+	vm = vm.WithDefaults()
 	cmd := colimaCmd(
 		"start", "--profile", "pv",
-		"--cpu", "2",
-		"--memory", "2",
-		"--disk", "60",
+		"--cpu", strconv.Itoa(vm.CPU),
+		"--memory", strconv.Itoa(vm.Memory),
+		"--disk", strconv.Itoa(vm.Disk),
 		"--vm-type", "vz",
 		"--mount-type", "virtiofs",
 	)
@@ -128,12 +130,12 @@ func IsRunning() bool {
 // EnsureRunning starts Colima if it's not already running. If Start fails
 // (e.g. the VM is in a broken state after sleep or macOS update), it attempts
 // automatic recovery by force-stopping, deleting, and restarting the VM.
-func EnsureRunning() error {
+func EnsureRunning(vm config.VMConfig) error {
 	if IsRunning() {
 		return nil
 	}
 
-	err := Start()
+	err := Start(vm)
 	if err == nil {
 		return nil
 	}
@@ -144,7 +146,7 @@ func EnsureRunning() error {
 	_ = forceStop()
 	_ = Delete()
 
-	if retryErr := Start(); retryErr != nil {
+	if retryErr := Start(vm); retryErr != nil {
 		return fmt.Errorf("cannot start Colima (recovery also failed): %w", retryErr)
 	}
 	return nil
