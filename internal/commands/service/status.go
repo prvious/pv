@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -43,8 +44,12 @@ var statusCmd = &cobra.Command{
 		}
 
 		status := "stopped"
-		if instance.ContainerID != "" {
-			status = "running"
+		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+		if engineErr == nil {
+			defer engine.Close()
+			if running, err := engine.IsRunning(cmd.Context(), svc.ContainerName(version)); err == nil && running {
+				status = "running"
+			}
 		}
 
 		dataDir := config.ServiceDataDir(svcName, version)

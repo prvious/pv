@@ -12,7 +12,6 @@ type ServiceInstance struct {
 	Image       string `json:"image"`
 	Port        int    `json:"port"`
 	ConsolePort int    `json:"console_port,omitempty"`
-	ContainerID string `json:"container_id,omitempty"`
 }
 
 type ProjectServices struct {

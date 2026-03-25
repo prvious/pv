@@ -445,9 +445,8 @@ func TestServiceSaveLoad_RoundTrip(t *testing.T) {
 	reg := &Registry{Services: make(map[string]*ServiceInstance)}
 	_ = reg.Add(Project{Name: "app1", Path: "/srv/app1", Type: "laravel"})
 	_ = reg.AddService("mysql:8.0.32", &ServiceInstance{
-		Image:       "mysql:8.0.32",
-		Port:        33032,
-		ContainerID: "abc123",
+		Image: "mysql:8.0.32",
+		Port:  33032,
 	})
 	_ = reg.AddService("redis", &ServiceInstance{
 		Image: "redis:latest",

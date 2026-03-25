@@ -59,7 +59,6 @@ pv service:add postgres 16`,
 		fmt.Fprintln(os.Stderr)
 
 		opts := svc.CreateOpts(version)
-		var containerID string
 
 		// Ensure Colima is installed (lazy install on first service:add).
 		containerReady := false
@@ -95,7 +94,6 @@ pv service:add postgres 16`,
 				// Create and start container.
 				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
 					// Container creation and health check would happen here via Docker SDK.
-					containerID = "" // Would be set by engine.CreateAndStart()
 					port := svc.Port(version)
 					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
 				}); err != nil {
@@ -119,7 +117,6 @@ pv service:add postgres 16`,
 			Image:       opts.Image,
 			Port:        svc.Port(version),
 			ConsolePort: svc.ConsolePort(version),
-			ContainerID: containerID,
 		}
 		if err := reg.AddService(key, instance); err != nil {
 			return err

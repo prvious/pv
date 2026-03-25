@@ -5,7 +5,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -30,17 +33,25 @@ var listCmd = &cobra.Command{
 
 		fmt.Fprintln(os.Stderr)
 
+		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+		if engineErr == nil {
+			defer engine.Close()
+		}
+
 		var rows [][]string
 		for key, svc := range svcs {
-			// Determine service name from key.
-			svcName := key
-			if idx := strings.Index(key, ":"); idx > 0 {
-				svcName = key[:idx]
-			}
+			// Determine service name and version from key.
+			svcName := extractServiceName(key)
+			version := extractVersion(key)
 
 			status := "added"
-			if svc.ContainerID != "" {
-				status = "running"
+			if engine != nil {
+				svcDef, lookupErr := services.Lookup(svcName)
+				if lookupErr == nil {
+					if running, err := engine.IsRunning(cmd.Context(), svcDef.ContainerName(version)); err == nil && running {
+						status = "running"
+					}
+				}
 			}
 
 			portStr := fmt.Sprintf(":%d", svc.Port)

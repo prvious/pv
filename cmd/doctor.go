@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -12,10 +13,12 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -598,8 +601,29 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 	}
 
 	// Check each registered service.
+	engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+	if engineErr == nil {
+		defer engine.Close()
+	}
+
 	for key, svc := range svcs {
-		if svc.ContainerID != "" {
+		svcName := key
+		version := "latest"
+		if idx := strings.Index(key, ":"); idx > 0 {
+			svcName = key[:idx]
+			version = key[idx+1:]
+		}
+
+		running := false
+		if engine != nil {
+			if svcDef, err := services.Lookup(svcName); err == nil {
+				if ok, err := engine.IsRunning(context.Background(), svcDef.ContainerName(version)); err == nil && ok {
+					running = true
+				}
+			}
+		}
+
+		if running {
 			checks = append(checks, check{
 				Name:   fmt.Sprintf("%s running on :%d", key, svc.Port),
 				Status: true,
