@@ -17,15 +17,6 @@ const (
 	releaseRepo = "prvious/pv"
 )
 
-// Verbose controls whether install functions print progress details.
-var Verbose bool
-
-func logf(format string, args ...any) {
-	if Verbose {
-		fmt.Printf(format, args...)
-	}
-}
-
 // Install downloads and installs a PHP version (FrankenPHP + PHP CLI).
 // The phpVersion is a major.minor string like "8.4".
 func Install(client *http.Client, phpVersion string) error {
@@ -54,7 +45,6 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 	fpURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", releaseRepo, tag, assetName)
 	fpDest := FrankenPHPPath(phpVersion)
 
-	logf("  Downloading FrankenPHP (PHP %s)...\n", phpVersion)
 	if err := binaries.DownloadProgress(client, fpURL, fpDest, progress); err != nil {
 		return fmt.Errorf("download FrankenPHP: %w", err)
 	}
@@ -65,7 +55,6 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 	// 3. Detect the full PHP version from the binary.
 	fullVersion, err := binaries.DetectPHPVersion(versionDir)
 	if err != nil {
-		logf("  (could not detect full PHP version: %v)\n", err)
 		fullVersion = phpVersion + ".0"
 	}
 
@@ -78,7 +67,6 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 	phpArchive := fpDest + ".php.tar.gz"
 	phpDest := PHPPath(phpVersion)
 
-	logf("  Downloading PHP CLI %s...\n", fullVersion)
 	if err := binaries.DownloadProgress(client, phpURL, phpArchive, progress); err != nil {
 		return fmt.Errorf("download PHP CLI: %w", err)
 	}
@@ -92,7 +80,6 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 		return err
 	}
 
-	logf("  ✓ PHP %s installed\n", phpVersion)
 	return nil
 }
 

@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -41,27 +40,3 @@ func PathExportLine(shell string) string {
 	}
 }
 
-// PrintPathInstructions prints the instructions for adding pv to the user's PATH.
-func PrintPathInstructions() {
-	shell := DetectShell()
-	configFile := ShellConfigFile(shell)
-
-	fmt.Println("Add pv to your PATH:")
-	fmt.Println()
-	switch shell {
-	case "fish":
-		fmt.Printf("  echo 'pv env | source' >> %s\n", configFile)
-	default:
-		fmt.Printf("  echo 'eval \"$(pv env)\"' >> %s\n", configFile)
-	}
-	fmt.Printf("  source %s\n", configFile)
-	fmt.Println()
-	fmt.Println("Or configure your current session:")
-	fmt.Println()
-	switch shell {
-	case "fish":
-		fmt.Println("  pv env | source")
-	default:
-		fmt.Println("  eval \"$(pv env)\"")
-	}
-}
