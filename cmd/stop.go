@@ -67,9 +67,14 @@ var stopCmd = &cobra.Command{
 			}
 
 			if !exited {
-				_ = proc.Signal(syscall.SIGKILL)
+				if killErr := proc.Signal(syscall.SIGKILL); killErr != nil {
+					return "", fmt.Errorf("process %d did not respond to SIGTERM and SIGKILL failed: %w", pid, killErr)
+				}
 				// Brief wait for SIGKILL to take effect.
 				time.Sleep(500 * time.Millisecond)
+				if proc.Signal(syscall.Signal(0)) == nil {
+					return "", fmt.Errorf("process %d did not exit after SIGKILL", pid)
+				}
 			}
 
 			return "pv stopped", nil
