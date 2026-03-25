@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/miekg/dns"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
@@ -645,12 +647,22 @@ func containsPath(paths []string, target string) bool {
 }
 
 func checkDNSResponding(tld string) bool {
-	conn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", config.DNSPort))
-	if err != nil {
+	c := new(dns.Client)
+	c.Timeout = 2 * time.Second
+	m := new(dns.Msg)
+	m.SetQuestion("healthcheck."+tld+".", dns.TypeA)
+
+	r, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", config.DNSPort))
+	if err != nil || r == nil {
 		return false
 	}
-	conn.Close()
-	return true
+
+	for _, ans := range r.Answer {
+		if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP("127.0.0.1")) {
+			return true
+		}
+	}
+	return false
 }
 
 func checkPortListening(port int) bool {
