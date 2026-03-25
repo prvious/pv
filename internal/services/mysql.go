@@ -15,7 +15,7 @@ type MySQL struct{}
 func (m *MySQL) Name() string        { return "mysql" }
 func (m *MySQL) DisplayName() string { return "MySQL" }
 
-func (m *MySQL) DefaultVersion() string { return "latest" }
+func (m *MySQL) DefaultVersion() string { return "8.4" }
 
 func (m *MySQL) ImageName(version string) string {
 	return "mysql:" + version
