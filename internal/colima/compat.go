@@ -2,6 +2,7 @@ package colima
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,16 +21,18 @@ func checkVZCompat() error {
 
 	ver, err := syscall.Sysctl("kern.osproductversion")
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not detect macOS version for VZ compatibility check: %v\n", err)
 		return nil
 	}
 
 	major, err := parseMajorVersion(ver)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not parse macOS version %q for VZ compatibility check: %v\n", ver, err)
 		return nil
 	}
 
 	if major < minMacOSMajor {
-		return fmt.Errorf("Colima requires macOS %d+ (Ventura) for the Virtualization framework, detected macOS %s", minMacOSMajor, ver)
+		return fmt.Errorf("colima requires macOS %d+ (Ventura) for the Virtualization framework, detected macOS %s", minMacOSMajor, ver)
 	}
 	return nil
 }
