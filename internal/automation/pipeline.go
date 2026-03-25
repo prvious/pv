@@ -88,7 +88,7 @@ func RunPipeline(steps []Step, ctx *Context) error {
 			}
 			confirmed, err := ConfirmFunc(step.Label())
 			if err != nil {
-				return fmt.Errorf("aborted")
+				return fmt.Errorf("automation prompt failed: %w", err)
 			}
 			if !confirmed {
 				continue
@@ -102,7 +102,10 @@ func RunPipeline(steps []Step, ctx *Context) error {
 			return err
 		}
 	}
-	return ctx.Registry.Save()
+	if ctx.Registry != nil {
+		return ctx.Registry.Save()
+	}
+	return nil
 }
 
 // LookupGate maps a gate string to its AutoMode value in the Automation config.
