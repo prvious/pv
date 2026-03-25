@@ -86,18 +86,18 @@ func (r *Registry) Remove(name string) error {
 }
 
 func (r *Registry) Find(name string) *Project {
-	for _, p := range r.Projects {
-		if p.Name == name {
-			return &p
+	for i := range r.Projects {
+		if r.Projects[i].Name == name {
+			return &r.Projects[i]
 		}
 	}
 	return nil
 }
 
 func (r *Registry) FindByPath(path string) *Project {
-	for _, p := range r.Projects {
-		if p.Path == path {
-			return &p
+	for i := range r.Projects {
+		if r.Projects[i].Path == path {
+			return &r.Projects[i]
 		}
 	}
 	return nil
