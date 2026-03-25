@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -17,15 +18,11 @@ var envCmd = &cobra.Command{
 eval "$(pv env)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		shell := detectShell()
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot determine home directory: %w", err)
-		}
 
-		binDir := filepath.Join(home, ".pv", "bin")
-		composerBinDir := filepath.Join(home, ".pv", "composer", "vendor", "bin")
-		composerHome := filepath.Join(home, ".pv", "composer")
-		composerCacheDir := filepath.Join(home, ".pv", "composer", "cache")
+		binDir := config.BinDir()
+		composerBinDir := config.ComposerBinDir()
+		composerHome := config.ComposerDir()
+		composerCacheDir := config.ComposerCacheDir()
 
 		switch shell {
 		case "fish":
