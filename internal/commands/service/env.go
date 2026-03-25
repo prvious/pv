@@ -55,6 +55,7 @@ var envCmd = &cobra.Command{
 		}
 
 		key := args[0]
+		key = reg.ResolveServiceKey(key)
 		instance := reg.FindService(key)
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)

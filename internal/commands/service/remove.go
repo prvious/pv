@@ -24,6 +24,7 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
+		key = reg.ResolveServiceKey(key)
 
 		svc := reg.FindService(key)
 		if svc == nil {
