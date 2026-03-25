@@ -20,10 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	updateVerbose bool
-	noSelfUpdate  bool
-)
+var noSelfUpdate bool
 
 var updateCmd = &cobra.Command{
 	Use:     "update",
@@ -139,15 +136,11 @@ func selfUpdate(client *http.Client) (bool, error) {
 
 	// Re-exec the new binary with --no-self-update to continue with tool updates.
 	newArgs := []string{"pv", "update", "--no-self-update"}
-	if updateVerbose {
-		newArgs = append(newArgs, "--verbose")
-	}
 
 	return true, syscall.Exec(newBinary, newArgs, os.Environ())
 }
 
 func init() {
-	updateCmd.Flags().BoolVarP(&updateVerbose, "verbose", "v", false, "Show detailed output")
 	updateCmd.Flags().BoolVar(&noSelfUpdate, "no-self-update", false, "Skip updating the pv binary itself")
 	rootCmd.AddCommand(updateCmd)
 }
