@@ -51,7 +51,8 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 	msg.Authoritative = true
 
 	for _, q := range r.Question {
-		if q.Qtype == dns.TypeA {
+		switch q.Qtype {
+		case dns.TypeA:
 			msg.Answer = append(msg.Answer, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   q.Name,
@@ -60,6 +61,16 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 					Ttl:    60,
 				},
 				A: net.ParseIP("127.0.0.1"),
+			})
+		case dns.TypeAAAA:
+			msg.Answer = append(msg.Answer, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				AAAA: net.ParseIP("::1"),
 			})
 		}
 	}
