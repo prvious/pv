@@ -102,7 +102,6 @@ pv log myapp -n 50`,
 					if err != nil {
 						return fmt.Errorf("cannot reopen rotated log: %w", err)
 					}
-					defer f.Close()
 					scanner = bufio.NewScanner(f)
 				}
 			}
