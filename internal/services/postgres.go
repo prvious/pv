@@ -52,7 +52,7 @@ func (p *Postgres) CreateOpts(version string) container.CreateOpts {
 			port: 5432,
 		},
 		Volumes: map[string]string{
-			config.ServiceDataDir("postgres", version): "/var/lib/postgresql/data",
+			config.ServiceDataDir("postgres", version): "/var/lib/postgresql",
 		},
 		Labels: map[string]string{
 			"dev.prvious.pv":         "true",
