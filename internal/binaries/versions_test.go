@@ -48,25 +48,25 @@ func TestVersions_SaveLoadRoundTrip(t *testing.T) {
 
 func TestNeedsUpdate_NoInstalledVersion(t *testing.T) {
 	vs := &VersionState{Versions: make(map[string]string)}
-	if !NeedsUpdate(vs, FrankenPHP, "1.11.3") {
+	if !NeedsUpdate(vs, Mago, "1.13.2") {
 		t.Error("NeedsUpdate() = false, want true for uninstalled binary")
 	}
 }
 
 func TestNeedsUpdate_SameVersion(t *testing.T) {
 	vs := &VersionState{Versions: map[string]string{
-		"frankenphp": "1.11.3",
+		"mago": "1.13.2",
 	}}
-	if NeedsUpdate(vs, FrankenPHP, "1.11.3") {
+	if NeedsUpdate(vs, Mago, "1.13.2") {
 		t.Error("NeedsUpdate() = true, want false for same version")
 	}
 }
 
 func TestNeedsUpdate_NormalizesVPrefix(t *testing.T) {
 	vs := &VersionState{Versions: map[string]string{
-		"frankenphp": "v1.11.3",
+		"mago": "v1.13.2",
 	}}
-	if NeedsUpdate(vs, FrankenPHP, "1.11.3") {
+	if NeedsUpdate(vs, Mago, "1.13.2") {
 		t.Error("NeedsUpdate() = true, want false after v-prefix normalization")
 	}
 }
@@ -105,7 +105,7 @@ func TestFetchLatestVersion_GitHub(t *testing.T) {
 	}
 	client.Transport = transport
 
-	version, err := FetchLatestVersion(client, FrankenPHP)
+	version, err := FetchLatestVersion(client, Mago)
 	if err != nil {
 		t.Fatalf("FetchLatestVersion() error = %v", err)
 	}

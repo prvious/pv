@@ -22,19 +22,6 @@ func TestTools_MagoFirst(t *testing.T) {
 	}
 }
 
-func TestDownloadURL_FrankenPHP(t *testing.T) {
-	url, err := DownloadURL(FrankenPHP, "1.11.3")
-	if err != nil {
-		t.Fatalf("DownloadURL() error = %v", err)
-	}
-	if !strings.Contains(url, "v1.11.3") {
-		t.Errorf("URL %q does not contain version segment", url)
-	}
-	if !strings.Contains(url, "github.com/dunglas/frankenphp") {
-		t.Errorf("URL %q does not contain FrankenPHP repo", url)
-	}
-}
-
 func TestDownloadURL_Mago(t *testing.T) {
 	url, err := DownloadURL(Mago, "1.13.2")
 	if err != nil {
@@ -68,39 +55,10 @@ func TestDownloadURL_Composer(t *testing.T) {
 	}
 }
 
-func TestDownloadURL_PHP(t *testing.T) {
-	url, err := DownloadURL(PHP, "8.5.3")
-	if err != nil {
-		t.Fatalf("DownloadURL() error = %v", err)
-	}
-	if !strings.Contains(url, "8.5.3") {
-		t.Errorf("URL %q does not contain version segment", url)
-	}
-	if !strings.Contains(url, "dl.static-php.dev") {
-		t.Errorf("URL %q does not contain dl.static-php.dev", url)
-	}
-	if !strings.HasSuffix(url, ".tar.gz") {
-		t.Errorf("URL %q does not end with .tar.gz", url)
-	}
-	if !strings.Contains(url, "-cli-") {
-		t.Errorf("URL %q does not contain -cli-", url)
-	}
-}
-
-func TestLatestVersionURL_PHP_Empty(t *testing.T) {
-	url := LatestVersionURL(PHP)
-	if url != "" {
-		t.Errorf("LatestVersionURL(PHP) = %q, want empty (version from FrankenPHP)", url)
-	}
-}
-
-func TestChecksumURL_FrankenPHP_Empty(t *testing.T) {
-	url, err := ChecksumURL(FrankenPHP, "1.11.3")
-	if err != nil {
-		t.Fatalf("ChecksumURL() error = %v", err)
-	}
-	if url != "" {
-		t.Errorf("ChecksumURL(FrankenPHP) = %q, want empty (no checksums published)", url)
+func TestDownloadURL_Unknown(t *testing.T) {
+	_, err := DownloadURL(Binary{Name: "unknown"}, "1.0")
+	if err == nil {
+		t.Error("DownloadURL(unknown) should return error")
 	}
 }
 
@@ -121,13 +79,6 @@ func TestChecksumURL_Composer(t *testing.T) {
 	}
 	if !strings.Contains(url, "sha256") {
 		t.Errorf("ChecksumURL(Composer) = %q, want sha256 in URL", url)
-	}
-}
-
-func TestLatestVersionURL_FrankenPHP(t *testing.T) {
-	url := LatestVersionURL(FrankenPHP)
-	if !strings.Contains(url, "dunglas/frankenphp") {
-		t.Errorf("LatestVersionURL(FrankenPHP) = %q, want dunglas/frankenphp", url)
 	}
 }
 
