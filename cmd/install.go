@@ -166,6 +166,10 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 			return err
 		}
 
+		// Migrate existing Composer credentials (auth.json, config.json) into
+		// pv's isolated COMPOSER_HOME so private packages keep working.
+		setup.MigrateComposerConfig()
+
 		// Step 5: Install managed packages.
 		pkgClient := &http.Client{}
 		var pkgFailures []string
