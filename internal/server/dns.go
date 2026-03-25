@@ -14,14 +14,21 @@ type DNSServer struct {
 	tld    string
 	Addr   string // listen address, default "127.0.0.1:{DNSPort}"
 	server *dns.Server
+	ready  chan struct{}
 }
 
 // NewDNSServer creates a DNS server for the given TLD.
 func NewDNSServer(tld string) *DNSServer {
 	return &DNSServer{
-		tld:  tld,
-		Addr: fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
+		tld:   tld,
+		Addr:  fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
+		ready: make(chan struct{}),
 	}
+}
+
+// Ready returns a channel that is closed when the server has bound its port.
+func (d *DNSServer) Ready() <-chan struct{} {
+	return d.ready
 }
 
 // Start begins serving DNS queries. It blocks until Shutdown is called.
@@ -33,6 +40,7 @@ func (d *DNSServer) Start() error {
 		Addr:    d.Addr,
 		Net:     "udp",
 		Handler: mux,
+		NotifyStartedFunc: func() { close(d.ready) },
 	}
 	return d.server.ListenAndServe()
 }

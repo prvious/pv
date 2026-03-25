@@ -61,6 +61,16 @@ func Start(tld string) error {
 		}
 	}()
 
+	// Wait for DNS server to bind before proceeding.
+	select {
+	case <-dnsServer.Ready():
+		// Port bound successfully.
+	case err := <-dnsErr:
+		return fmt.Errorf("DNS server failed to start: %w", err)
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("DNS server did not start within 5s")
+	}
+
 	fmt.Fprintf(os.Stderr, "DNS server listening on %s\n", dnsServer.Addr)
 
 	// Start main FrankenPHP.
