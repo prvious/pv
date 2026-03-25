@@ -22,7 +22,7 @@ func TestS3ImageName(t *testing.T) {
 func TestS3EnvVars(t *testing.T) {
 	s := &S3{}
 	env := s.EnvVars("my_app", 9000)
-	if env["AWS_ACCESS_KEY_ID"] != "minioadmin" {
+	if env["AWS_ACCESS_KEY_ID"] != "rstfsadmin" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q", env["AWS_ACCESS_KEY_ID"])
 	}
 	if env["AWS_BUCKET"] != "my_app" {

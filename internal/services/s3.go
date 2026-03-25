@@ -35,8 +35,8 @@ func (s *S3) CreateOpts(version string) container.CreateOpts {
 		Name:  s.ContainerName(version),
 		Image: s.ImageName(version),
 		Env: []string{
-			"RUSTFS_ROOT_USER=minioadmin",
-			"RUSTFS_ROOT_PASSWORD=minioadmin",
+			"RUSTFS_ROOT_USER=rstfsadmin",
+			"RUSTFS_ROOT_PASSWORD=rstfsadmin",
 		},
 		Ports: map[int]int{
 			9000: 9000,
@@ -60,8 +60,8 @@ func (s *S3) CreateOpts(version string) container.CreateOpts {
 
 func (s *S3) EnvVars(projectName string, _ int) map[string]string {
 	return map[string]string{
-		"AWS_ACCESS_KEY_ID":           "minioadmin",
-		"AWS_SECRET_ACCESS_KEY":       "minioadmin",
+		"AWS_ACCESS_KEY_ID":           "rstfsadmin",
+		"AWS_SECRET_ACCESS_KEY":       "rstfsadmin",
 		"AWS_DEFAULT_REGION":          "us-east-1",
 		"AWS_BUCKET":                  projectName,
 		"AWS_ENDPOINT":                "http://127.0.0.1:9000",
