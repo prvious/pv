@@ -97,7 +97,7 @@ func TestIsRunning_DeadProcess(t *testing.T) {
 	// Write a PID that almost certainly doesn't exist.
 	fakePID := 99999
 	pidPath := filepath.Join(config.DataDir(), "pv.pid")
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(fakePID)), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(fakePID)), 0600); err != nil {
 		t.Fatalf("write fake PID error = %v", err)
 	}
 

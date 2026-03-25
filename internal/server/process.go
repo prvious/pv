@@ -225,7 +225,7 @@ func ReadPID() (int, error) {
 }
 
 func writePID() error {
-	return os.WriteFile(config.PidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0644)
+	return os.WriteFile(config.PidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0600)
 }
 
 func removePID() {
