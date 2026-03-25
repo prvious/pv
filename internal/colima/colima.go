@@ -91,6 +91,10 @@ func colimaCmd(args ...string) *exec.Cmd {
 
 // Start starts the Colima VM with the pv profile using the given resource config.
 func Start(vm config.VMConfig) error {
+	if err := checkVZCompat(); err != nil {
+		return err
+	}
+
 	vm = vm.WithDefaults()
 	cmd := colimaCmd(
 		"start", "--profile", "pv",
