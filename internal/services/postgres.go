@@ -46,6 +46,8 @@ func (p *Postgres) CreateOpts(version string) container.CreateOpts {
 		Name:  p.ContainerName(version),
 		Image: p.ImageName(version),
 		Env: []string{
+			"POSTGRES_USER=postgres",
+			"POSTGRES_PASSWORD=postgres",
 			"POSTGRES_HOST_AUTH_METHOD=trust",
 		},
 		Ports: map[int]int{
@@ -59,10 +61,10 @@ func (p *Postgres) CreateOpts(version string) container.CreateOpts {
 			"dev.prvious.pv.service": "postgres",
 			"dev.prvious.pv.version": version,
 		},
-		HealthCmd:      []string{"CMD-SHELL", "pg_isready"},
-		HealthInterval: "2s",
+		HealthCmd:      []string{"CMD-SHELL", "pg_isready -d postgres -U postgres"},
+		HealthInterval: "3s",
 		HealthTimeout:  "5s",
-		HealthRetries:  15,
+		HealthRetries:  20,
 	}
 }
 

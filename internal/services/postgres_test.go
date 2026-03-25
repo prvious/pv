@@ -48,7 +48,7 @@ func TestPostgresEnvVars(t *testing.T) {
 func TestPostgresCreateOpts(t *testing.T) {
 	p := &Postgres{}
 	opts := p.CreateOpts("16")
-	if opts.HealthCmd[1] != "pg_isready" {
-		t.Errorf("HealthCmd = %v, want pg_isready", opts.HealthCmd)
+	if opts.HealthCmd[1] != "pg_isready -d postgres -U postgres" {
+		t.Errorf("HealthCmd = %v, want pg_isready -d postgres -U postgres", opts.HealthCmd)
 	}
 }
