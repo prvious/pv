@@ -26,7 +26,7 @@ const (
 func SudoSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s`,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && dscacheutil -flushcache && killall -HUP mDNSResponder 2>/dev/null || true`,
 		resolverDir, resolverFile,
 	)
 }
@@ -44,7 +44,7 @@ func RunSudoSetup(tld string) error {
 func ResolverSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
 	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s`,
+		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && dscacheutil -flushcache && killall -HUP mDNSResponder 2>/dev/null || true`,
 		resolverDir, resolverFile,
 	)
 }
