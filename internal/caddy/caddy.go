@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 
 	"github.com/prvious/pv/internal/config"
@@ -357,15 +358,10 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 	}
 
 	for key := range reg.Services {
-		// Parse service name from key.
+		// Parse service name from key (e.g. "mysql:8.0" → "mysql").
 		svcName := key
-		if idx := len(key) - 1; idx > 0 {
-			for i := 0; i < len(key); i++ {
-				if key[i] == ':' {
-					svcName = key[:i]
-					break
-				}
-			}
+		if idx := strings.Index(key, ":"); idx > 0 {
+			svcName = key[:idx]
 		}
 
 		svc, err := services.Lookup(svcName)
