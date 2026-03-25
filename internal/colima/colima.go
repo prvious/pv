@@ -149,21 +149,26 @@ func EnsureRunning(vm config.VMConfig) error {
 	// VM may be in a broken state. Attempt recovery: force stop, delete, restart.
 	fmt.Fprintf(os.Stderr, "Warning: Colima start failed (%v), attempting VM recovery...\n", err)
 
-	_ = forceStop()
-	_ = Delete()
+	stopErr := forceStop()
+	deleteErr := Delete()
 
 	if retryErr := Start(vm); retryErr != nil {
-		return fmt.Errorf("cannot start Colima (recovery also failed): %w", retryErr)
+		msg := fmt.Sprintf("cannot start Colima (recovery also failed): %v", retryErr)
+		if stopErr != nil {
+			msg += fmt.Sprintf("; force-stop error: %v", stopErr)
+		}
+		if deleteErr != nil {
+			msg += fmt.Sprintf("; delete error: %v", deleteErr)
+		}
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
 }
 
 // forceStop force-stops the Colima VM without graceful shutdown.
+// Output is suppressed since this is called during automated recovery.
 func forceStop() error {
-	cmd := colimaCmd("stop", "--profile", "pv", "--force")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return colimaCmd("stop", "--profile", "pv", "--force").Run()
 }
 
 // IsInstalled checks if the Colima binary exists at the expected path.
