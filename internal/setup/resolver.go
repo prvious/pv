@@ -21,25 +21,6 @@ const (
 	caCommonName    = "Caddy Local Authority"
 )
 
-// SudoSetupScript returns the shell script for the combined sudo operations:
-// creating the DNS resolver file and trusting the Caddy CA certificate.
-func SudoSetupScript(tld string) string {
-	resolverFile := filepath.Join(resolverDir, tld)
-	return fmt.Sprintf(
-		`mkdir -p %s && printf 'nameserver 127.0.0.1\nport 10053\n' > %s && (dscacheutil -flushcache; killall -HUP mDNSResponder 2>/dev/null || true)`,
-		resolverDir, resolverFile,
-	)
-}
-
-// RunSudoSetup executes the combined sudo command for DNS resolver and CA trust.
-// It connects stdin/stdout/stderr so the user can enter their password.
-func RunSudoSetup(tld string) error {
-	if err := RunSudoResolver(tld); err != nil {
-		return err
-	}
-	return RunSudoTrustWithServer()
-}
-
 // ResolverSetupScript returns the shell script for creating the DNS resolver file only (no trust).
 func ResolverSetupScript(tld string) string {
 	resolverFile := filepath.Join(resolverDir, tld)
