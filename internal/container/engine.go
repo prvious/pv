@@ -109,8 +109,14 @@ func (e *Engine) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 	var healthCheck *container.HealthConfig
 	hasHealth := len(opts.HealthCmd) > 0
 	if hasHealth {
-		interval, _ := time.ParseDuration(opts.HealthInterval)
-		timeout, _ := time.ParseDuration(opts.HealthTimeout)
+		interval, err := time.ParseDuration(opts.HealthInterval)
+		if err != nil || interval <= 0 {
+			interval = 2 * time.Second
+		}
+		timeout, err := time.ParseDuration(opts.HealthTimeout)
+		if err != nil || timeout <= 0 {
+			timeout = 5 * time.Second
+		}
 		healthCheck = &container.HealthConfig{
 			Test:     opts.HealthCmd,
 			Interval: interval,
@@ -153,11 +159,11 @@ func (e *Engine) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		if retries <= 0 {
 			retries = 15
 		}
-		interval, _ := time.ParseDuration(opts.HealthInterval)
-		if interval <= 0 {
-			interval = 2 * time.Second
+		pollInterval, _ := time.ParseDuration(opts.HealthInterval)
+		if pollInterval <= 0 {
+			pollInterval = 2 * time.Second
 		}
-		if err := e.waitHealthy(ctx, resp.ID, retries, interval); err != nil {
+		if err := e.waitHealthy(ctx, resp.ID, retries, pollInterval); err != nil {
 			return resp.ID, fmt.Errorf("container %s unhealthy: %w", opts.Name, err)
 		}
 	}

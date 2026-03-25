@@ -604,35 +604,48 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 	engine, engineErr := container.NewEngine(config.ColimaSocketPath())
 	if engineErr == nil {
 		defer engine.Close()
+	} else {
+		checks = append(checks, check{
+			Name:    "Docker Engine connection",
+			Status:  false,
+			Message: fmt.Sprintf("cannot connect to Docker: %v", engineErr),
+			Fix:     "pv service:start",
+		})
 	}
 
 	for key, svc := range svcs {
-		svcName := key
-		version := "latest"
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-			version = key[idx+1:]
-		}
+		svcName, version := services.ParseServiceKey(key)
 
-		running := false
+		status := "unknown"
 		if engine != nil {
 			if svcDef, err := services.Lookup(svcName); err == nil {
-				if ok, err := engine.IsRunning(context.Background(), svcDef.ContainerName(version)); err == nil && ok {
-					running = true
+				running, runErr := engine.IsRunning(context.Background(), svcDef.ContainerName(version))
+				if runErr != nil {
+					status = "error"
+				} else if running {
+					status = "running"
+				} else {
+					status = "stopped"
 				}
 			}
 		}
 
-		if running {
+		if status == "running" {
 			checks = append(checks, check{
 				Name:   fmt.Sprintf("%s running on :%d", key, svc.Port),
 				Status: true,
 			})
 		} else {
+			msg := "not running"
+			if status == "error" {
+				msg = "cannot determine status"
+			} else if status == "unknown" {
+				msg = "cannot check status (Docker unavailable)"
+			}
 			checks = append(checks, check{
 				Name:    key,
 				Status:  false,
-				Message: "not running",
+				Message: msg,
 				Fix:     fmt.Sprintf("pv service:start %s", key),
 			})
 		}

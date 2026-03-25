@@ -25,7 +25,7 @@ func TestNewEngine_InvalidSocket(t *testing.T) {
 	defer engine.Close()
 }
 
-func TestNewEngine_CloseNil(t *testing.T) {
+func TestEngine_Close(t *testing.T) {
 	engine, err := NewEngine("/tmp/test-docker.sock")
 	if err != nil {
 		t.Fatalf("NewEngine() error = %v", err)

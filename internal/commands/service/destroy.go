@@ -26,20 +26,19 @@ var destroyCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
-		key = reg.ResolveServiceKey(key)
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
 		svc := reg.FindService(key)
 		if svc == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		// Determine service name and version from key.
-		svcName := key
-		version := "latest"
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-			version = key[idx+1:]
-		}
+		svcName := extractServiceName(key)
+		version := extractVersion(key)
 
 		// Stop + remove container + delete data.
 		if err := ui.Step(fmt.Sprintf("Destroying %s...", key), func() (string, error) {
@@ -49,8 +48,12 @@ var destroyCmd = &cobra.Command{
 				if engineErr == nil {
 					defer engine.Close()
 					containerName := svcDef.ContainerName(version)
-					_ = engine.Stop(cmd.Context(), containerName)
-					_ = engine.Remove(cmd.Context(), containerName)
+					if stopErr := engine.Stop(cmd.Context(), containerName); stopErr != nil {
+						ui.Subtle(fmt.Sprintf("Warning: could not stop container: %v", stopErr))
+					}
+					if removeErr := engine.Remove(cmd.Context(), containerName); removeErr != nil {
+						return "", fmt.Errorf("cannot remove container %s (data not deleted): %w", containerName, removeErr)
+					}
 				}
 			}
 

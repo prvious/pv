@@ -24,20 +24,19 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
-		key = reg.ResolveServiceKey(key)
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
 		instance := reg.FindService(key)
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		// Parse service name and version from key.
-		svcName := key
-		version := "latest"
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-			version = key[idx+1:]
-		}
+		svcName := extractServiceName(key)
+		version := extractVersion(key)
 
 		svc, err := services.Lookup(svcName)
 		if err != nil {
@@ -46,9 +45,16 @@ var statusCmd = &cobra.Command{
 
 		status := "stopped"
 		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
-		if engineErr == nil {
+		if engineErr != nil {
+			status = "unknown"
+			ui.Subtle(fmt.Sprintf("Cannot determine container status: %v", engineErr))
+		} else {
 			defer engine.Close()
-			if running, err := engine.IsRunning(cmd.Context(), svc.ContainerName(version)); err == nil && running {
+			running, runErr := engine.IsRunning(cmd.Context(), svc.ContainerName(version))
+			if runErr != nil {
+				status = "unknown"
+				ui.Subtle(fmt.Sprintf("Cannot check container status: %v", runErr))
+			} else if running {
 				status = "running"
 			}
 		}

@@ -40,7 +40,6 @@ var listCmd = &cobra.Command{
 
 		var rows [][]string
 		for key, svc := range svcs {
-			// Determine service name and version from key.
 			svcName := extractServiceName(key)
 			version := extractVersion(key)
 
@@ -48,10 +47,15 @@ var listCmd = &cobra.Command{
 			if engine != nil {
 				svcDef, lookupErr := services.Lookup(svcName)
 				if lookupErr == nil {
-					if running, err := engine.IsRunning(cmd.Context(), svcDef.ContainerName(version)); err == nil && running {
+					running, runErr := engine.IsRunning(cmd.Context(), svcDef.ContainerName(version))
+					if runErr != nil {
+						status = "unknown"
+					} else if running {
 						status = "running"
 					}
 				}
+			} else {
+				status = "unknown"
 			}
 
 			portStr := fmt.Sprintf(":%d", svc.Port)

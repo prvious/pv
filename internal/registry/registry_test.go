@@ -367,6 +367,82 @@ func TestFindService(t *testing.T) {
 	}
 }
 
+func TestFindService_FuzzyMatch(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
+
+	// Fuzzy match by name prefix.
+	svc := r.FindService("mysql")
+	if svc == nil {
+		t.Fatal("FindService(mysql) returned nil, want fuzzy match for mysql:8.4")
+	}
+	if svc.Port != 33000 {
+		t.Errorf("Port = %d, want 33000", svc.Port)
+	}
+
+	// Exact match still works.
+	svc = r.FindService("mysql:8.4")
+	if svc == nil {
+		t.Fatal("FindService(mysql:8.4) returned nil")
+	}
+
+	// No match returns nil.
+	if r.FindService("postgres") != nil {
+		t.Error("FindService(postgres) should return nil")
+	}
+}
+
+func TestResolveServiceKey_Exact(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
+
+	key, err := r.ResolveServiceKey("mysql:8.4")
+	if err != nil {
+		t.Fatalf("ResolveServiceKey() error = %v", err)
+	}
+	if key != "mysql:8.4" {
+		t.Errorf("key = %q, want %q", key, "mysql:8.4")
+	}
+}
+
+func TestResolveServiceKey_Prefix(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("postgres:18-alpine", &ServiceInstance{Image: "postgres:18-alpine", Port: 54018})
+
+	key, err := r.ResolveServiceKey("postgres")
+	if err != nil {
+		t.Fatalf("ResolveServiceKey() error = %v", err)
+	}
+	if key != "postgres:18-alpine" {
+		t.Errorf("key = %q, want %q", key, "postgres:18-alpine")
+	}
+}
+
+func TestResolveServiceKey_NoMatch(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
+
+	key, err := r.ResolveServiceKey("redis")
+	if err != nil {
+		t.Fatalf("ResolveServiceKey() error = %v", err)
+	}
+	// Returns original key when not found.
+	if key != "redis" {
+		t.Errorf("key = %q, want %q", key, "redis")
+	}
+}
+
+func TestResolveServiceKey_Ambiguous(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("mysql:8.0", &ServiceInstance{Image: "mysql:8.0", Port: 33000})
+	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
+
+	_, err := r.ResolveServiceKey("mysql")
+	if err == nil {
+		t.Fatal("expected error for ambiguous match, got nil")
+	}
+}
+
 func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
@@ -435,6 +511,32 @@ func TestLoad_BackwardCompat_NoServicesField(t *testing.T) {
 	}
 	if len(reg.Projects) != 1 {
 		t.Errorf("expected 1 project, got %d", len(reg.Projects))
+	}
+}
+
+func TestLoad_BackwardCompat_ContainerID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	// Old-format JSON with container_id field (now removed).
+	data := `{"services":{"mysql:8.0":{"image":"mysql:8.0","port":33000,"container_id":"abc123"}},"projects":[]}`
+	if err := os.WriteFile(config.RegistryPath(), []byte(data), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	reg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v (old container_id field should be silently ignored)", err)
+	}
+	if len(reg.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(reg.Services))
+	}
+	if reg.Services["mysql:8.0"].Port != 33000 {
+		t.Errorf("port = %d, want 33000", reg.Services["mysql:8.0"].Port)
 	}
 }
 

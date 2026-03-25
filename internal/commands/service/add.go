@@ -83,40 +83,37 @@ pv service:add postgres 16`,
 			ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
 			ui.Subtle("Service registered — container will start when runtime is available.")
 		} else {
-			// Pull image.
-			if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
-				engine, err := container.NewEngine(config.ColimaSocketPath())
-				if err != nil {
-					return "", fmt.Errorf("cannot connect to Docker: %w", err)
-				}
-				defer engine.Close()
-				if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
-					return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
-				}
-				return fmt.Sprintf("Pulled %s", opts.Image), nil
-			}); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
-				}
+			engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+			if engineErr != nil {
+				ui.Fail(fmt.Sprintf("Cannot connect to Docker: %v", engineErr))
 			} else {
-				// Create and start container.
-				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
-					engine, err := container.NewEngine(config.ColimaSocketPath())
-					if err != nil {
-						return "", fmt.Errorf("cannot connect to Docker: %w", err)
+				defer engine.Close()
+
+				// Pull image.
+				if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
+					if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
+						return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
 					}
-					defer engine.Close()
-					if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
-						return "", err
-					}
-					port := svc.Port(version)
-					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
+					return fmt.Sprintf("Pulled %s", opts.Image), nil
 				}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
-						ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
+						ui.Fail(fmt.Sprintf("Image pull failed: %v", err))
 					}
 				} else {
-					containerReady = true
+					// Create and start container.
+					if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
+						if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
+							return "", err
+						}
+						port := svc.Port(version)
+						return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
+					}); err != nil {
+						if !errors.Is(err, ui.ErrAlreadyPrinted) {
+							ui.Fail(fmt.Sprintf("Container start failed: %v", err))
+						}
+					} else {
+						containerReady = true
+					}
 				}
 			}
 		}

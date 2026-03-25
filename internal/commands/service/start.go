@@ -77,7 +77,11 @@ var startCmd = &cobra.Command{
 			}
 		} else {
 			key := args[0]
-			key = reg.ResolveServiceKey(key)
+			var resolveErr error
+			key, resolveErr = reg.ResolveServiceKey(key)
+			if resolveErr != nil {
+				return resolveErr
+			}
 			if reg.FindService(key) == nil {
 				return fmt.Errorf("service %q not found, run 'pv service:list' to see available services", key)
 			}

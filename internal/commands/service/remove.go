@@ -24,7 +24,11 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
-		key = reg.ResolveServiceKey(key)
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
 		svc := reg.FindService(key)
 		if svc == nil {
@@ -46,7 +50,9 @@ var removeCmd = &cobra.Command{
 			defer engine.Close()
 
 			containerName := svcDef.ContainerName(version)
-			_ = engine.Stop(cmd.Context(), containerName)
+			if stopErr := engine.Stop(cmd.Context(), containerName); stopErr != nil {
+				ui.Subtle(fmt.Sprintf("Warning: graceful stop failed: %v", stopErr))
+			}
 			if err := engine.Remove(cmd.Context(), containerName); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %w", key, err)
 			}

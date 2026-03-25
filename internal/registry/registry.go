@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
@@ -126,30 +127,32 @@ func (r *Registry) RemoveService(key string) error {
 // FindService looks up a service by exact key first (e.g. "mysql:8.4"),
 // then falls back to matching by service name prefix (e.g. "mysql" matches "mysql:8.4").
 func (r *Registry) FindService(key string) *ServiceInstance {
-	if svc, ok := r.Services[key]; ok {
-		return svc
-	}
-	// Fuzzy match: "postgres" matches "postgres:18-alpine".
-	for k, svc := range r.Services {
-		if strings.HasPrefix(k, key+":") || k == key {
-			return svc
-		}
-	}
-	return nil
+	resolved, _ := r.ResolveServiceKey(key)
+	return r.Services[resolved]
 }
 
 // ResolveServiceKey returns the full registry key for a service, supporting
 // both exact keys ("mysql:8.4") and name-only lookups ("mysql").
-func (r *Registry) ResolveServiceKey(key string) string {
+// Returns an error if the name prefix matches multiple registered services.
+func (r *Registry) ResolveServiceKey(key string) (string, error) {
 	if _, ok := r.Services[key]; ok {
-		return key
+		return key, nil
 	}
+	var matches []string
 	for k := range r.Services {
-		if strings.HasPrefix(k, key+":") || k == key {
-			return k
+		if strings.HasPrefix(k, key+":") {
+			matches = append(matches, k)
 		}
 	}
-	return key
+	switch len(matches) {
+	case 0:
+		return key, nil
+	case 1:
+		return matches[0], nil
+	default:
+		sort.Strings(matches)
+		return key, fmt.Errorf("ambiguous service %q matches multiple: %s (specify the full key)", key, strings.Join(matches, ", "))
+	}
 }
 
 func (r *Registry) ListServices() map[string]*ServiceInstance {
