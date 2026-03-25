@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -241,7 +242,7 @@ func (e *Engine) Logs(ctx context.Context, name string, w io.Writer) error {
 	}
 	defer reader.Close()
 
-	if _, err := io.Copy(w, reader); err != nil {
+	if _, err := stdcopy.StdCopy(w, w, reader); err != nil {
 		return fmt.Errorf("logs stream for %s: %w", name, err)
 	}
 	return nil

@@ -24,8 +24,7 @@ var logsCmd = &cobra.Command{
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		instance := reg.FindService(key)
-		if instance == nil {
+		if reg.FindService(key) == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
@@ -39,15 +38,18 @@ var logsCmd = &cobra.Command{
 
 		engine, err := container.NewEngine(config.ColimaSocketPath())
 		if err != nil {
-			return fmt.Errorf("service %q is not running, start it first: pv service:start %s", key, key)
+			return fmt.Errorf("cannot connect to Docker: %w", err)
 		}
 		defer engine.Close()
 
 		running, err := engine.IsRunning(cmd.Context(), containerName)
-		if err != nil || !running {
+		if err != nil {
+			return fmt.Errorf("cannot check if %s is running: %w", key, err)
+		}
+		if !running {
 			return fmt.Errorf("service %q is not running, start it first: pv service:start %s", key, key)
 		}
 
-		return engine.Logs(cmd.Context(), containerName, os.Stdout)
+		return engine.Logs(cmd.Context(), containerName, os.Stderr)
 	},
 }
