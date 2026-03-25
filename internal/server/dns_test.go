@@ -114,7 +114,7 @@ func TestDNSServer_CustomTLD(t *testing.T) {
 	}
 }
 
-func TestDNSServer_IgnoresNonAQuery(t *testing.T) {
+func TestDNSServer_ResolvesAAAAQuery(t *testing.T) {
 	_, addr := startTestDNS(t, "test")
 
 	c := new(dns.Client)
@@ -126,8 +126,33 @@ func TestDNSServer_IgnoresNonAQuery(t *testing.T) {
 		t.Fatalf("DNS query failed: %v", err)
 	}
 
+	if len(r.Answer) != 1 {
+		t.Fatalf("expected 1 answer for AAAA query, got %d", len(r.Answer))
+	}
+
+	aaaa, ok := r.Answer[0].(*dns.AAAA)
+	if !ok {
+		t.Fatal("expected AAAA record")
+	}
+	if aaaa.AAAA.String() != "::1" {
+		t.Errorf("got %s, want ::1", aaaa.AAAA.String())
+	}
+}
+
+func TestDNSServer_EmptyAnswerForUnsupportedType(t *testing.T) {
+	_, addr := startTestDNS(t, "test")
+
+	c := new(dns.Client)
+	m := new(dns.Msg)
+	m.SetQuestion("myapp.test.", dns.TypeMX)
+
+	r, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatalf("DNS query failed: %v", err)
+	}
+
 	if len(r.Answer) != 0 {
-		t.Errorf("expected 0 answers for AAAA query, got %d", len(r.Answer))
+		t.Errorf("expected 0 answers for MX query, got %d", len(r.Answer))
 	}
 }
 

@@ -56,11 +56,24 @@ var stopCmd = &cobra.Command{
 				return "", fmt.Errorf("cannot send signal to process %d: %w", pid, err)
 			}
 
-			// Wait for process to exit.
+			// Wait for process to exit (5s).
+			exited := false
 			for i := 0; i < 25; i++ {
 				time.Sleep(200 * time.Millisecond)
 				if proc.Signal(syscall.Signal(0)) != nil {
+					exited = true
 					break
+				}
+			}
+
+			if !exited {
+				if killErr := proc.Signal(syscall.SIGKILL); killErr != nil {
+					return "", fmt.Errorf("process %d did not respond to SIGTERM and SIGKILL failed: %w", pid, killErr)
+				}
+				// Brief wait for SIGKILL to take effect.
+				time.Sleep(500 * time.Millisecond)
+				if proc.Signal(syscall.Signal(0)) == nil {
+					return "", fmt.Errorf("process %d did not exit after SIGKILL", pid)
 				}
 			}
 

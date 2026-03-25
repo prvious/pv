@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/prvious/pv/internal/colima"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -23,7 +24,11 @@ var startCmd = &cobra.Command{
 		}
 
 		if colima.IsInstalled() {
-			if err := colima.EnsureRunning(); err != nil {
+			settings, settingsErr := config.LoadSettings()
+			if settingsErr != nil {
+				return fmt.Errorf("cannot load settings: %w", settingsErr)
+			}
+			if err := colima.EnsureRunning(settings.Defaults.VM); err != nil {
 				fmt.Fprintln(os.Stderr)
 				ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
 			}

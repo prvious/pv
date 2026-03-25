@@ -164,6 +164,12 @@ func ColimaPath() string {
 	return filepath.Join(InternalBinDir(), "colima")
 }
 
+// ColimaHomeDir returns the directory used as COLIMA_HOME, keeping all Colima
+// and Lima state under ~/.pv/ instead of the default ~/.colima/.
+func ColimaHomeDir() string {
+	return filepath.Join(PvDir(), "internal", "colima")
+}
+
 func LimaDir() string {
 	return filepath.Join(PvDir(), "internal", "lima")
 }
@@ -173,8 +179,7 @@ func LimaBinDir() string {
 }
 
 func ColimaSocketPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".colima", "pv", "docker.sock")
+	return filepath.Join(ColimaHomeDir(), "pv", "docker.sock")
 }
 
 func EnsureDirs() error {
@@ -190,6 +195,7 @@ func EnsureDirs() error {
 		ServicesDir(),
 		InternalBinDir(),
 		PackagesDir(),
+		ColimaHomeDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {

@@ -29,8 +29,16 @@ func Uninstall() error {
 }
 
 // Load tells launchd to load the pv service.
+// Uses the modern bootstrap API with a fallback to the legacy load command.
 func Load() error {
-	out, err := exec.Command("launchctl", "load", PlistPath()).CombinedOutput()
+	// Modern API (macOS 10.10+): launchctl bootstrap gui/<uid> <plist>
+	out, err := exec.Command("launchctl", "bootstrap", domainTarget(), PlistPath()).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	// Fallback to legacy API for older macOS.
+	out, err = exec.Command("launchctl", "load", PlistPath()).CombinedOutput()
 	if err != nil {
 		output := strings.TrimSpace(string(out))
 		if output != "" {
@@ -42,8 +50,16 @@ func Load() error {
 }
 
 // Unload tells launchd to unload the pv service.
+// Uses the modern bootout API with a fallback to the legacy unload command.
 func Unload() error {
-	out, err := exec.Command("launchctl", "unload", PlistPath()).CombinedOutput()
+	// Modern API: launchctl bootout gui/<uid>/dev.prvious.pv
+	out, err := exec.Command("launchctl", "bootout", serviceTarget()).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	// Fallback to legacy API for older macOS.
+	out, err = exec.Command("launchctl", "unload", PlistPath()).CombinedOutput()
 	if err != nil {
 		output := strings.TrimSpace(string(out))
 		if output != "" {

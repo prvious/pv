@@ -69,7 +69,12 @@ pv service:add postgres 16`,
 			}
 		}
 
-		if err := colima.EnsureRunning(); err != nil {
+		settings, err := config.LoadSettings()
+		if err != nil {
+			return fmt.Errorf("cannot load settings: %w", err)
+		}
+
+		if err := colima.EnsureRunning(settings.Defaults.VM); err != nil {
 			ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
 			ui.Subtle("Service registered — container will start when runtime is available.")
 		} else {

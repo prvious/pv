@@ -137,9 +137,9 @@ var setupCmd = &cobra.Command{
 				return "", fmt.Errorf("cannot create directories: %w", err)
 			}
 
-			// Build settings from wizard output, preserving existing PHP default.
+			// Build settings from wizard output, preserving existing PHP default and VM config.
 			s := &config.Settings{
-				Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon)},
+				Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon), VM: settings.Defaults.VM},
 				Automation: automation,
 			}
 			if err := s.Save(); err != nil {

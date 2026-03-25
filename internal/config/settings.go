@@ -17,10 +17,38 @@ const (
 	AutoAsk AutoMode = "ask"
 )
 
+// VMConfig holds Colima VM resource allocation settings.
+type VMConfig struct {
+	CPU    int `yaml:"cpu,omitempty"`
+	Memory int `yaml:"memory,omitempty"`
+	Disk   int `yaml:"disk,omitempty"`
+}
+
+// DefaultVMConfig returns sensible defaults for the Colima VM.
+func DefaultVMConfig() VMConfig {
+	return VMConfig{CPU: 2, Memory: 2, Disk: 60}
+}
+
+// WithDefaults returns a copy with zero values replaced by defaults.
+func (vm VMConfig) WithDefaults() VMConfig {
+	d := DefaultVMConfig()
+	if vm.CPU <= 0 {
+		vm.CPU = d.CPU
+	}
+	if vm.Memory <= 0 {
+		vm.Memory = d.Memory
+	}
+	if vm.Disk <= 0 {
+		vm.Disk = d.Disk
+	}
+	return vm
+}
+
 type Defaults struct {
-	PHP    string `yaml:"php,omitempty"`
-	TLD    string `yaml:"tld"`
-	Daemon *bool  `yaml:"daemon,omitempty"`
+	PHP    string   `yaml:"php,omitempty"`
+	TLD    string   `yaml:"tld"`
+	Daemon *bool    `yaml:"daemon,omitempty"`
+	VM     VMConfig `yaml:"vm,omitempty"`
 }
 
 // Automation controls which link-time steps run automatically.

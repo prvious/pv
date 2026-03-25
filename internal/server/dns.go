@@ -14,14 +14,21 @@ type DNSServer struct {
 	tld    string
 	Addr   string // listen address, default "127.0.0.1:{DNSPort}"
 	server *dns.Server
+	ready  chan struct{}
 }
 
 // NewDNSServer creates a DNS server for the given TLD.
 func NewDNSServer(tld string) *DNSServer {
 	return &DNSServer{
-		tld:  tld,
-		Addr: fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
+		tld:   tld,
+		Addr:  fmt.Sprintf("127.0.0.1:%d", config.DNSPort),
+		ready: make(chan struct{}),
 	}
+}
+
+// Ready returns a channel that is closed when the server has bound its port.
+func (d *DNSServer) Ready() <-chan struct{} {
+	return d.ready
 }
 
 // Start begins serving DNS queries. It blocks until Shutdown is called.
@@ -33,6 +40,7 @@ func (d *DNSServer) Start() error {
 		Addr:    d.Addr,
 		Net:     "udp",
 		Handler: mux,
+		NotifyStartedFunc: func() { close(d.ready) },
 	}
 	return d.server.ListenAndServe()
 }
@@ -51,7 +59,8 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 	msg.Authoritative = true
 
 	for _, q := range r.Question {
-		if q.Qtype == dns.TypeA {
+		switch q.Qtype {
+		case dns.TypeA:
 			msg.Answer = append(msg.Answer, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   q.Name,
@@ -60,6 +69,16 @@ func (d *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 					Ttl:    60,
 				},
 				A: net.ParseIP("127.0.0.1"),
+			})
+		case dns.TypeAAAA:
+			msg.Answer = append(msg.Answer, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				AAAA: net.ParseIP("::1"),
 			})
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
@@ -79,22 +80,29 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// colimaCmd creates an exec.Command for the Colima binary with Lima on PATH.
+// colimaCmd creates an exec.Command for the Colima binary with Lima on PATH
+// and COLIMA_HOME set so all state lives under ~/.pv/.
 func colimaCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command(config.ColimaPath(), args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+config.LimaBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"COLIMA_HOME="+config.ColimaHomeDir(),
 	)
 	return cmd
 }
 
-// Start starts the Colima VM with the pv profile.
-func Start() error {
+// Start starts the Colima VM with the pv profile using the given resource config.
+func Start(vm config.VMConfig) error {
+	if err := checkVZCompat(); err != nil {
+		return err
+	}
+
+	vm = vm.WithDefaults()
 	cmd := colimaCmd(
 		"start", "--profile", "pv",
-		"--cpu", "2",
-		"--memory", "2",
-		"--disk", "60",
+		"--cpu", strconv.Itoa(vm.CPU),
+		"--memory", strconv.Itoa(vm.Memory),
+		"--disk", strconv.Itoa(vm.Disk),
 		"--vm-type", "vz",
 		"--mount-type", "virtiofs",
 	)
@@ -125,12 +133,42 @@ func IsRunning() bool {
 	return cmd.Run() == nil
 }
 
-// EnsureRunning starts Colima if it's not already running.
-func EnsureRunning() error {
+// EnsureRunning starts Colima if it's not already running. If Start fails
+// (e.g. the VM is in a broken state after sleep or macOS update), it attempts
+// automatic recovery by force-stopping, deleting, and restarting the VM.
+func EnsureRunning(vm config.VMConfig) error {
 	if IsRunning() {
 		return nil
 	}
-	return Start()
+
+	err := Start(vm)
+	if err == nil {
+		return nil
+	}
+
+	// VM may be in a broken state. Attempt recovery: force stop, delete, restart.
+	fmt.Fprintf(os.Stderr, "Warning: Colima start failed (%v), attempting VM recovery...\n", err)
+
+	stopErr := forceStop()
+	deleteErr := Delete()
+
+	if retryErr := Start(vm); retryErr != nil {
+		msg := fmt.Sprintf("cannot start Colima (recovery also failed): %v", retryErr)
+		if stopErr != nil {
+			msg += fmt.Sprintf("; force-stop error: %v", stopErr)
+		}
+		if deleteErr != nil {
+			msg += fmt.Sprintf("; delete error: %v", deleteErr)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+// forceStop force-stops the Colima VM without graceful shutdown.
+// Output is suppressed since this is called during automated recovery.
+func forceStop() error {
+	return colimaCmd("stop", "--profile", "pv", "--force").Run()
 }
 
 // IsInstalled checks if the Colima binary exists at the expected path.
