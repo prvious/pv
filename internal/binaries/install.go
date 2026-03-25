@@ -28,7 +28,7 @@ func InstallBinaryProgress(client *http.Client, b Binary, version string, progre
 
 	switch b.Name {
 	case "mago":
-		return installMago(client, url, b, progress)
+		return installMago(client, url, progress)
 	case "composer":
 		return installComposer(client, url, b, version, progress)
 	default:
@@ -36,7 +36,7 @@ func InstallBinaryProgress(client *http.Client, b Binary, version string, progre
 	}
 }
 
-func installMago(client *http.Client, url string, b Binary, progress ProgressFunc) error {
+func installMago(client *http.Client, url string, progress ProgressFunc) error {
 	internalBin := config.InternalBinDir()
 	archivePath := filepath.Join(internalBin, "mago.tar.gz")
 	destPath := filepath.Join(internalBin, "mago")
