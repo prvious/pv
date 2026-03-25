@@ -125,12 +125,37 @@ func IsRunning() bool {
 	return cmd.Run() == nil
 }
 
-// EnsureRunning starts Colima if it's not already running.
+// EnsureRunning starts Colima if it's not already running. If Start fails
+// (e.g. the VM is in a broken state after sleep or macOS update), it attempts
+// automatic recovery by force-stopping, deleting, and restarting the VM.
 func EnsureRunning() error {
 	if IsRunning() {
 		return nil
 	}
-	return Start()
+
+	err := Start()
+	if err == nil {
+		return nil
+	}
+
+	// VM may be in a broken state. Attempt recovery: force stop, delete, restart.
+	fmt.Fprintf(os.Stderr, "Warning: Colima start failed (%v), attempting VM recovery...\n", err)
+
+	_ = forceStop()
+	_ = Delete()
+
+	if retryErr := Start(); retryErr != nil {
+		return fmt.Errorf("cannot start Colima (recovery also failed): %w", retryErr)
+	}
+	return nil
+}
+
+// forceStop force-stops the Colima VM without graceful shutdown.
+func forceStop() error {
+	cmd := colimaCmd("stop", "--profile", "pv", "--force")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // IsInstalled checks if the Colima binary exists at the expected path.
