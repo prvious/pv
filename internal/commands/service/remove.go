@@ -5,7 +5,9 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -29,7 +31,24 @@ var removeCmd = &cobra.Command{
 		}
 
 		if err := ui.Step(fmt.Sprintf("Removing %s...", key), func() (string, error) {
-			// Docker SDK: stop + remove container.
+			svcName := extractServiceName(key)
+			version := extractVersion(key)
+			svcDef, lookupErr := services.Lookup(svcName)
+			if lookupErr != nil {
+				return "", lookupErr
+			}
+
+			engine, err := container.NewEngine(config.ColimaSocketPath())
+			if err != nil {
+				return "", fmt.Errorf("cannot connect to Docker: %w", err)
+			}
+			defer engine.Close()
+
+			containerName := svcDef.ContainerName(version)
+			_ = engine.Stop(cmd.Context(), containerName)
+			if err := engine.Remove(cmd.Context(), containerName); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %w", key, err)
+			}
 			return fmt.Sprintf("%s removed", key), nil
 		}); err != nil {
 			return err

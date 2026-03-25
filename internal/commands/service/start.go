@@ -6,6 +6,7 @@ import (
 
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -46,7 +47,22 @@ var startCmd = &cobra.Command{
 			}
 			for key := range svcs {
 				if err := ui.Step(fmt.Sprintf("Starting %s...", key), func() (string, error) {
-					// Docker SDK: find existing container, start it.
+					svcName := extractServiceName(key)
+					version := extractVersion(key)
+					svcDef, lookupErr := services.Lookup(svcName)
+					if lookupErr != nil {
+						return "", lookupErr
+					}
+
+					engine, err := container.NewEngine(config.ColimaSocketPath())
+					if err != nil {
+						return "", fmt.Errorf("cannot connect to Docker: %w", err)
+					}
+					defer engine.Close()
+
+					if err := engine.Start(cmd.Context(), svcDef.ContainerName(version)); err != nil {
+						return "", fmt.Errorf("cannot start %s: %w", key, err)
+					}
 					return fmt.Sprintf("%s started", key), nil
 				}); err != nil {
 					return err
@@ -66,7 +82,22 @@ var startCmd = &cobra.Command{
 			}
 
 			if err := ui.Step(fmt.Sprintf("Starting %s...", key), func() (string, error) {
-				// Docker SDK: find existing container, start it.
+				svcName := extractServiceName(key)
+				version := extractVersion(key)
+				svcDef, lookupErr := services.Lookup(svcName)
+				if lookupErr != nil {
+					return "", lookupErr
+				}
+
+				engine, err := container.NewEngine(config.ColimaSocketPath())
+				if err != nil {
+					return "", fmt.Errorf("cannot connect to Docker: %w", err)
+				}
+				defer engine.Close()
+
+				if err := engine.Start(cmd.Context(), svcDef.ContainerName(version)); err != nil {
+					return "", fmt.Errorf("cannot start %s: %w", key, err)
+				}
 				return fmt.Sprintf("%s started", key), nil
 			}); err != nil {
 				return err
