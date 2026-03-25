@@ -11,10 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	startBackground bool
-	startForeground bool
-)
+var startBackground bool
 
 var startCmd = &cobra.Command{
 	Use:     "start",
@@ -96,6 +93,6 @@ func startDaemon() error {
 
 func init() {
 	startCmd.Flags().BoolVar(&startBackground, "background", false, "Run as a background daemon via launchd")
-	startCmd.Flags().BoolVar(&startForeground, "foreground", false, "Run in the foreground (default)")
+	startCmd.Flags().Bool("foreground", false, "Run in the foreground (default, accepted for launchd plist compatibility)")
 	rootCmd.AddCommand(startCmd)
 }
