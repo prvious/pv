@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -23,19 +24,21 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
-		instance := reg.FindService(key)
+		instance, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		// Parse service name and version from key.
-		svcName := key
-		version := "latest"
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-			version = key[idx+1:]
-		}
+		svcName, version := services.ParseServiceKey(key)
 
 		svc, err := services.Lookup(svcName)
 		if err != nil {
@@ -43,8 +46,19 @@ var statusCmd = &cobra.Command{
 		}
 
 		status := "stopped"
-		if instance.ContainerID != "" {
-			status = "running"
+		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+		if engineErr != nil {
+			status = "unknown"
+			ui.Subtle(fmt.Sprintf("Cannot determine container status: %v", engineErr))
+		} else {
+			defer engine.Close()
+			running, runErr := engine.IsRunning(cmd.Context(), svc.ContainerName(version))
+			if runErr != nil {
+				status = "unknown"
+				ui.Subtle(fmt.Sprintf("Cannot check container status: %v", runErr))
+			} else if running {
+				status = "running"
+			}
 		}
 
 		dataDir := config.ServiceDataDir(svcName, version)

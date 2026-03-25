@@ -2,10 +2,13 @@ package services
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/prvious/pv/internal/container"
 )
+
+var safeIdentifier = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
 // WebRoute maps a subdomain under pv.{tld} to a local port.
 // For example, {Subdomain: "s3", Port: 9001} routes s3.pv.test → 127.0.0.1:9001.
@@ -49,9 +52,11 @@ func Available() []string {
 	return []string{"mail", "mysql", "postgres", "redis", "s3"}
 }
 
-// SanitizeProjectName converts a directory name to a database-safe name.
+// SanitizeProjectName converts a directory name to a database-safe identifier.
+// Only alphanumeric characters and underscores are kept; everything else is stripped.
 func SanitizeProjectName(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
+	name = strings.ReplaceAll(name, "-", "_")
+	return safeIdentifier.ReplaceAllString(name, "")
 }
 
 // ServiceKey returns the registry key for a service instance.
@@ -61,4 +66,13 @@ func ServiceKey(name, version string) string {
 		return name
 	}
 	return name + ":" + version
+}
+
+// ParseServiceKey splits a registry key into service name and version.
+// For "mysql:8.4" returns ("mysql", "8.4"). For "redis" returns ("redis", "latest").
+func ParseServiceKey(key string) (name, version string) {
+	if idx := strings.Index(key, ":"); idx > 0 {
+		return key[:idx], key[idx+1:]
+	}
+	return key, "latest"
 }

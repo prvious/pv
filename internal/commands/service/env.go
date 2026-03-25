@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -24,7 +23,10 @@ var envCmd = &cobra.Command{
 		}
 
 		// Determine project name from current directory.
-		cwd, _ := os.Getwd()
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return fmt.Errorf("cannot determine current directory: %w", cwdErr)
+		}
 		projectName := services.SanitizeProjectName(filepath.Base(cwd))
 
 		if len(args) == 0 {
@@ -39,10 +41,7 @@ var envCmd = &cobra.Command{
 
 			fmt.Fprintln(os.Stderr)
 			for key, instance := range svcs {
-				svcName := key
-				if idx := strings.Index(key, ":"); idx > 0 {
-					svcName = key[:idx]
-				}
+				svcName, _ := services.ParseServiceKey(key)
 				svc, err := services.Lookup(svcName)
 				if err != nil {
 					ui.Subtle(fmt.Sprintf("Skipping unknown service %q", svcName))
@@ -55,15 +54,20 @@ var envCmd = &cobra.Command{
 		}
 
 		key := args[0]
-		instance := reg.FindService(key)
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		instance, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		svcName := key
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-		}
+		svcName, _ := services.ParseServiceKey(key)
 		svc, err := services.Lookup(svcName)
 		if err != nil {
 			return err

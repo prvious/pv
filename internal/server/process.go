@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/packages"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/watcher"
 )
 
@@ -120,6 +123,36 @@ func Start(tld string) error {
 		}()
 
 		go handleWatcherEvents(projectWatcher, globalPHP)
+	}
+
+	// Recover service containers if Colima is running.
+	if colima.IsInstalled() && colima.IsRunning() {
+		if engine, engineErr := container.NewEngine(config.ColimaSocketPath()); engineErr == nil {
+			defer engine.Close()
+			for _, key := range colima.ServicesToRecover(reg) {
+				svcName, version := services.ParseServiceKey(key)
+				svc, lookupErr := services.Lookup(svcName)
+				if lookupErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: cannot recover service %s: %v\n", key, lookupErr)
+					continue
+				}
+				name := svc.ContainerName(version)
+				running, runErr := engine.IsRunning(context.Background(), name)
+				if runErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: cannot check status for %s: %v\n", name, runErr)
+					continue
+				}
+				if !running {
+					if err := engine.Start(context.Background(), name); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not recover container %s: %v\n", name, err)
+					} else {
+						fmt.Fprintf(os.Stderr, "Recovered service container %s\n", name)
+					}
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: cannot connect to Docker for service recovery: %v\n", engineErr)
+		}
 	}
 
 	// Start background package updater.

@@ -108,13 +108,19 @@ func (e *Engine) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 	// Build health check config.
 	var healthCheck *container.HealthConfig
 	hasHealth := len(opts.HealthCmd) > 0
+	healthInterval := 2 * time.Second
 	if hasHealth {
-		interval, _ := time.ParseDuration(opts.HealthInterval)
-		timeout, _ := time.ParseDuration(opts.HealthTimeout)
+		if d, err := time.ParseDuration(opts.HealthInterval); err == nil && d > 0 {
+			healthInterval = d
+		}
+		healthTimeout := 5 * time.Second
+		if d, err := time.ParseDuration(opts.HealthTimeout); err == nil && d > 0 {
+			healthTimeout = d
+		}
 		healthCheck = &container.HealthConfig{
 			Test:     opts.HealthCmd,
-			Interval: interval,
-			Timeout:  timeout,
+			Interval: healthInterval,
+			Timeout:  healthTimeout,
 			Retries:  opts.HealthRetries,
 		}
 	}
@@ -153,11 +159,7 @@ func (e *Engine) CreateAndStart(ctx context.Context, opts CreateOpts) (string, e
 		if retries <= 0 {
 			retries = 15
 		}
-		interval, _ := time.ParseDuration(opts.HealthInterval)
-		if interval <= 0 {
-			interval = 2 * time.Second
-		}
-		if err := e.waitHealthy(ctx, resp.ID, retries, interval); err != nil {
+		if err := e.waitHealthy(ctx, resp.ID, retries, healthInterval); err != nil {
 			return resp.ID, fmt.Errorf("container %s unhealthy: %w", opts.Name, err)
 		}
 	}
@@ -211,8 +213,8 @@ func (e *Engine) Exec(ctx context.Context, containerName string, cmd []string) e
 	}
 	defer resp.Close()
 
-	// Drain output.
-	if _, err := io.Copy(io.Discard, resp.Reader); err != nil {
+	// Drain multiplexed output (stdout+stderr headers require stdcopy).
+	if _, err := stdcopy.StdCopy(io.Discard, io.Discard, resp.Reader); err != nil {
 		return fmt.Errorf("exec drain in %s: %w", containerName, err)
 	}
 

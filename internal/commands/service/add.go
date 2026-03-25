@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -49,7 +48,11 @@ pv service:add postgres 16`,
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		if reg.FindService(key) != nil {
+		existing, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
+		if existing != nil {
 			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("%s is already added", ui.Accent.Bold(true).Render(svc.DisplayName()+" "+version)))
 			fmt.Fprintln(os.Stderr)
@@ -59,7 +62,12 @@ pv service:add postgres 16`,
 		fmt.Fprintln(os.Stderr)
 
 		opts := svc.CreateOpts(version)
-		var containerID string
+
+		// Create data directory before container creation (bind mounts require it to exist).
+		dataDir := config.ServiceDataDir(svcName, version)
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			return fmt.Errorf("cannot create data directory: %w", err)
+		}
 
 		// Ensure Colima is installed (lazy install on first service:add).
 		containerReady := false
@@ -78,40 +86,33 @@ pv service:add postgres 16`,
 			ui.Subtle(fmt.Sprintf("Container runtime unavailable: %v", err))
 			ui.Subtle("Service registered — container will start when runtime is available.")
 		} else {
+			engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+			if engineErr != nil {
+				return fmt.Errorf("cannot connect to Docker: %w", engineErr)
+			}
+			defer engine.Close()
+
 			// Pull image.
 			if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
-				engine, err := container.NewEngine(config.ColimaSocketPath())
-				if err != nil {
-					return "", fmt.Errorf("cannot connect to Docker: %w", err)
+				if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
+					return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
 				}
-				defer engine.Close()
-				_ = engine // Pull would happen via engine.PullImage()
 				return fmt.Sprintf("Pulled %s", opts.Image), nil
 			}); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Subtle(fmt.Sprintf("Image pull skipped: %v", err))
-				}
-			} else {
-				// Create and start container.
-				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
-					// Container creation and health check would happen here via Docker SDK.
-					containerID = "" // Would be set by engine.CreateAndStart()
-					port := svc.Port(version)
-					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
-				}); err != nil {
-					if !errors.Is(err, ui.ErrAlreadyPrinted) {
-						ui.Subtle(fmt.Sprintf("Container start skipped: %v", err))
-					}
-				} else {
-					containerReady = true
-				}
+				return err
 			}
-		}
 
-		// Create data directory.
-		dataDir := config.ServiceDataDir(svcName, version)
-		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			return fmt.Errorf("cannot create data directory: %w", err)
+			// Create and start container.
+			if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
+				if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
+					return "", err
+				}
+				port := svc.Port(version)
+				return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
+			}); err != nil {
+				return err
+			}
+			containerReady = true
 		}
 
 		// Update registry.
@@ -119,7 +120,6 @@ pv service:add postgres 16`,
 			Image:       opts.Image,
 			Port:        svc.Port(version),
 			ConsolePort: svc.ConsolePort(version),
-			ContainerID: containerID,
 		}
 		if err := reg.AddService(key, instance); err != nil {
 			return err

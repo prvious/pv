@@ -23,13 +23,18 @@ var logsCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
+		key, resolveErr := reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
-		if reg.FindService(key) == nil {
+		if svc, findErr := reg.FindService(key); findErr != nil {
+			return findErr
+		} else if svc == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		svcName := extractServiceName(key)
-		version := extractVersion(key)
+		svcName, version := services.ParseServiceKey(key)
 		svc, err := services.Lookup(svcName)
 		if err != nil {
 			return err

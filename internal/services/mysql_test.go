@@ -41,8 +41,8 @@ func TestMySQLContainerName(t *testing.T) {
 
 func TestMySQLDefaultVersion(t *testing.T) {
 	m := &MySQL{}
-	if got := m.DefaultVersion(); got != "latest" {
-		t.Errorf("DefaultVersion = %q, want %q", got, "latest")
+	if got := m.DefaultVersion(); got != "8.4" {
+		t.Errorf("DefaultVersion = %q, want %q", got, "8.4")
 	}
 }
 

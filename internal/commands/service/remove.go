@@ -24,15 +24,22 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
+		var resolveErr error
+		key, resolveErr = reg.ResolveServiceKey(key)
+		if resolveErr != nil {
+			return resolveErr
+		}
 
-		svc := reg.FindService(key)
+		svc, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
 		if svc == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
 		if err := ui.Step(fmt.Sprintf("Removing %s...", key), func() (string, error) {
-			svcName := extractServiceName(key)
-			version := extractVersion(key)
+			svcName, version := services.ParseServiceKey(key)
 			svcDef, lookupErr := services.Lookup(svcName)
 			if lookupErr != nil {
 				return "", lookupErr
@@ -45,7 +52,9 @@ var removeCmd = &cobra.Command{
 			defer engine.Close()
 
 			containerName := svcDef.ContainerName(version)
-			_ = engine.Stop(cmd.Context(), containerName)
+			if stopErr := engine.Stop(cmd.Context(), containerName); stopErr != nil {
+				ui.Subtle(fmt.Sprintf("Warning: graceful stop failed: %v", stopErr))
+			}
 			if err := engine.Remove(cmd.Context(), containerName); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %w", key, err)
 			}
@@ -55,7 +64,7 @@ var removeCmd = &cobra.Command{
 		}
 
 		// Apply fallbacks and unbind before removing from registry.
-		svcName := extractServiceName(key)
+		svcName, _ := services.ParseServiceKey(key)
 		applyFallbacksToLinkedProjects(reg, svcName)
 		reg.UnbindService(svcName)
 
@@ -72,7 +81,7 @@ var removeCmd = &cobra.Command{
 		}
 
 		// Determine data path for the message.
-		version := extractVersion(key)
+		_, version := services.ParseServiceKey(key)
 		dataDir := config.ServiceDataDir(svcName, version)
 
 		ui.Subtle(fmt.Sprintf("Data preserved at %s", dataDir))

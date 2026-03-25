@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -12,10 +13,12 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -598,17 +601,57 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 	}
 
 	// Check each registered service.
+	engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+	if engineErr == nil {
+		defer engine.Close()
+	} else {
+		checks = append(checks, check{
+			Name:    "Docker Engine connection",
+			Status:  false,
+			Message: fmt.Sprintf("cannot connect to Docker: %v", engineErr),
+			Fix:     "pv service:start",
+		})
+	}
+
 	for key, svc := range svcs {
-		if svc.ContainerID != "" {
+		svcName, version := services.ParseServiceKey(key)
+
+		status := "unknown"
+		if engine != nil {
+			svcDef, lookupErr := services.Lookup(svcName)
+			if lookupErr != nil {
+				status = "lookup_error"
+			} else {
+				running, runErr := engine.IsRunning(context.Background(), svcDef.ContainerName(version))
+				if runErr != nil {
+					status = "error"
+				} else if running {
+					status = "running"
+				} else {
+					status = "stopped"
+				}
+			}
+		}
+
+		if status == "running" {
 			checks = append(checks, check{
 				Name:   fmt.Sprintf("%s running on :%d", key, svc.Port),
 				Status: true,
 			})
 		} else {
+			msg := "not running"
+			switch status {
+			case "error":
+				msg = "cannot determine status"
+			case "unknown":
+				msg = "cannot check status (Docker unavailable)"
+			case "lookup_error":
+				msg = "unknown service type — registry may be out of date"
+			}
 			checks = append(checks, check{
 				Name:    key,
 				Status:  false,
-				Message: "not running",
+				Message: msg,
 				Fix:     fmt.Sprintf("pv service:start %s", key),
 			})
 		}

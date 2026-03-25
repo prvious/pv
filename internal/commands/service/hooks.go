@@ -3,7 +3,6 @@ package service
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/config"
@@ -12,20 +11,6 @@ import (
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 )
-
-func extractServiceName(key string) string {
-	if idx := strings.Index(key, ":"); idx > 0 {
-		return key[:idx]
-	}
-	return key
-}
-
-func extractVersion(key string) string {
-	if idx := strings.Index(key, ":"); idx > 0 {
-		return key[idx+1:]
-	}
-	return "latest"
-}
 
 // updateLinkedProjectsEnv updates .env for all linked Laravel projects
 // (including Octane) when a service is added or started.

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,7 +15,7 @@ type MySQL struct{}
 func (m *MySQL) Name() string        { return "mysql" }
 func (m *MySQL) DisplayName() string { return "MySQL" }
 
-func (m *MySQL) DefaultVersion() string { return "latest" }
+func (m *MySQL) DefaultVersion() string { return "8.4" }
 
 func (m *MySQL) ImageName(version string) string {
 	return "mysql:" + version
@@ -80,13 +81,11 @@ func (m *MySQL) EnvVars(projectName string, port int) map[string]string {
 	}
 }
 
-func (m *MySQL) CreateDatabase(engine *container.Engine, containerID, dbName string) error {
-	// Implemented via Docker exec in the container engine layer.
-	// The command: mysql -u root -e "CREATE DATABASE IF NOT EXISTS <dbName>"
-	_ = engine
-	_ = containerID
-	_ = dbName
-	return nil
+func (m *MySQL) CreateDatabase(engine *container.Engine, containerName, dbName string) error {
+	return engine.Exec(context.Background(), containerName, []string{
+		"mysql", "-u", "root", "-e",
+		fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName),
+	})
 }
 
 func (m *MySQL) HasDatabases() bool { return true }

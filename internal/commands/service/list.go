@@ -5,7 +5,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -30,17 +33,32 @@ var listCmd = &cobra.Command{
 
 		fmt.Fprintln(os.Stderr)
 
+		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+		if engineErr == nil {
+			defer engine.Close()
+		} else {
+			ui.Subtle(fmt.Sprintf("Cannot connect to Docker: %v", engineErr))
+		}
+
 		var rows [][]string
 		for key, svc := range svcs {
-			// Determine service name from key.
-			svcName := key
-			if idx := strings.Index(key, ":"); idx > 0 {
-				svcName = key[:idx]
-			}
+			svcName, version := services.ParseServiceKey(key)
 
 			status := "added"
-			if svc.ContainerID != "" {
-				status = "running"
+			if engine != nil {
+				svcDef, lookupErr := services.Lookup(svcName)
+				if lookupErr != nil {
+					ui.Subtle(fmt.Sprintf("Unknown service type %q — cannot check status", svcName))
+				} else {
+					running, runErr := engine.IsRunning(cmd.Context(), svcDef.ContainerName(version))
+					if runErr != nil {
+						status = "unknown"
+					} else if running {
+						status = "running"
+					}
+				}
+			} else {
+				status = "unknown"
 			}
 
 			portStr := fmt.Sprintf(":%d", svc.Port)
