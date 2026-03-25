@@ -75,11 +75,7 @@ func (s *GenerateKeyStep) ShouldRun(ctx *automation.Context) bool {
 }
 
 func (s *GenerateKeyStep) Run(ctx *automation.Context) (string, error) {
-	phpBin := "php"
-	if ctx.PHPVersion != "" {
-		phpBin = "php" + ctx.PHPVersion
-	}
-	if err := KeyGenerate(ctx.ProjectPath, phpBin); err != nil {
+	if err := KeyGenerate(ctx.ProjectPath, "php"); err != nil {
 		return "", fmt.Errorf("artisan key:generate: %w", err)
 	}
 	return "application key generated", nil
@@ -134,11 +130,7 @@ func (s *InstallOctaneStep) ShouldRun(ctx *automation.Context) bool {
 }
 
 func (s *InstallOctaneStep) Run(ctx *automation.Context) (string, error) {
-	phpBin := "php"
-	if ctx.PHPVersion != "" {
-		phpBin = "php" + ctx.PHPVersion
-	}
-	if err := OctaneInstall(ctx.ProjectPath, phpBin); err != nil {
+	if err := OctaneInstall(ctx.ProjectPath, "php"); err != nil {
 		return "", fmt.Errorf("artisan octane:install: %w", err)
 	}
 
@@ -301,11 +293,7 @@ func (s *RunMigrationsStep) ShouldRun(ctx *automation.Context) bool {
 }
 
 func (s *RunMigrationsStep) Run(ctx *automation.Context) (string, error) {
-	phpBin := "php"
-	if ctx.PHPVersion != "" {
-		phpBin = "php" + ctx.PHPVersion
-	}
-	out, err := Migrate(ctx.ProjectPath, phpBin)
+	out, err := Migrate(ctx.ProjectPath, "php")
 	if err != nil {
 		return "", fmt.Errorf("artisan migrate: %w", err)
 	}
