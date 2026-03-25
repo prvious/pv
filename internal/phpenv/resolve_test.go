@@ -16,23 +16,94 @@ func TestMatchConstraint(t *testing.T) {
 		constraint string
 		want       string
 	}{
+		// Caret constraints — always allow up to next major.
 		{"caret 8.2", "^8.2", "8.5"},
 		{"caret 8.3", "^8.3", "8.5"},
-		{"tilde 8.2", "~8.2", "8.5"},
-		{"tilde 8.4.0", "~8.4.0", "8.5"},
+		{"caret 8.2.0 (with patch)", "^8.2.0", "8.5"},
+		{"caret 8.3.1 (with patch)", "^8.3.1", "8.5"},
+		{"caret 8.4.99 (with patch)", "^8.4.99", "8.5"},
+
+		// Tilde without patch — same as caret (next major break).
+		{"tilde 8.2 (no patch)", "~8.2", "8.5"},
+		{"tilde 8.3 (no patch)", "~8.3", "8.5"},
+
+		// Tilde WITH patch — locks to minor version (the key fix).
+		{"tilde 8.2.0 locks to 8.2.x", "~8.2.0", "8.2"},
+		{"tilde 8.3.0 locks to 8.3.x", "~8.3.0", "8.3"},
+		{"tilde 8.4.0 locks to 8.4.x", "~8.4.0", "8.4"},
+		{"tilde 8.4.5 locks to 8.4.x", "~8.4.5", "8.4"},
+		{"tilde 8.5.0 locks to 8.5.x", "~8.5.0", "8.5"},
+		{"tilde 8.5.99 locks to 8.5.x", "~8.5.99", "8.5"},
+
+		// Range constraints.
 		{"gte 8.3", ">=8.3", "8.5"},
 		{"gte range", ">=8.2 <8.4", "8.3"},
 		{"gte range inclusive", ">=8.3 <8.5", "8.4"},
+		{"gte range tight", ">=8.4 <8.5", "8.4"},
+
+		// Wildcard.
 		{"wildcard", "8.3.*", "8.3"},
+
+		// Exact.
 		{"exact", "8.4", "8.4"},
 		{"exact with patch", "8.4.1", "8.4"},
+
+		// OR constraints.
 		{"or constraint", "8.2|8.4", "8.4"},
 		{"or with caret", "^8.2 || ^8.3", "8.5"},
+		{"or with tilde patch", "~8.2.0 || ~8.4.0", "8.4"},
+
+		// No match.
 		{"no match", ">=9.0", ""},
+		{"tilde no match", "~9.0.0", ""},
+		{"caret no match", "^9.0", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			got := matchConstraint(tt.constraint, installed)
+			if got != tt.want {
+				t.Errorf("matchConstraint(%q, %v) = %q, want %q", tt.constraint, installed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchConstraint_TildePatchBoundary(t *testing.T) {
+	// Focused test: with 8.3 and 8.4 installed, ~8.3.0 MUST pick 8.3 (not 8.4).
+	installed := []string{"8.3", "8.4"}
+
+	got := matchConstraint("~8.3.0", installed)
+	if got != "8.3" {
+		t.Errorf("~8.3.0 with [8.3, 8.4] installed = %q, want %q — tilde with patch must lock to minor", got, "8.3")
+	}
+
+	// But ^8.3.0 should pick 8.4.
+	got = matchConstraint("^8.3.0", installed)
+	if got != "8.4" {
+		t.Errorf("^8.3.0 with [8.3, 8.4] installed = %q, want %q — caret should allow minor bumps", got, "8.4")
+	}
+}
+
+func TestMatchConstraint_TildeVsCaretSameInput(t *testing.T) {
+	installed := []string{"8.2", "8.3", "8.4"}
+
+	// ~8.2.0 → only 8.2 (locked to minor)
+	// ^8.2.0 → 8.4 (allows up to 9.0)
+	// ~8.2   → 8.4 (no patch, same as caret)
+	// ^8.2   → 8.4 (same as always)
+	tests := []struct {
+		constraint string
+		want       string
+	}{
+		{"~8.2.0", "8.2"},
+		{"^8.2.0", "8.4"},
+		{"~8.2", "8.4"},
+		{"^8.2", "8.4"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.constraint, func(t *testing.T) {
 			got := matchConstraint(tt.constraint, installed)
 			if got != tt.want {
 				t.Errorf("matchConstraint(%q, %v) = %q, want %q", tt.constraint, installed, got, tt.want)

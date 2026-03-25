@@ -121,10 +121,11 @@ func resolveFromComposer(projectPath string) (string, error) {
 // matchConstraint returns the highest installed version that satisfies
 // a Composer-style PHP constraint. Returns "" if none match.
 //
-// Supported constraint formats:
-//   - ^8.2     → >=8.2, <9.0
-//   - ~8.2     → >=8.2, <9.0
-//   - ~8.2.0   → >=8.2, <8.3
+// Supported constraint formats (Composer semantics):
+//   - ^8.2     → >=8.2, <9.0  (caret: next major break)
+//   - ^8.2.0   → >=8.2, <9.0  (caret with patch: same as without)
+//   - ~8.2     → >=8.2, <9.0  (tilde on major.minor: next major break)
+//   - ~8.2.0   → >=8.2, <8.3  (tilde with patch: locks minor version)
 //   - >=8.2    → >=8.2
 //   - 8.2.*    → 8.2
 //   - >=8.2 <8.5 → >=8.2, <8.5
@@ -147,11 +148,12 @@ func matchConstraint(constraint string, installed []string) string {
 }
 
 var (
-	reCaretTilde = regexp.MustCompile(`^([~^])(\d+\.\d+)(?:\.\d+)?$`)
-	reGtEqLt     = regexp.MustCompile(`^>=\s*(\d+\.\d+)(?:\.\d+)?\s+<\s*(\d+\.\d+)`)
-	reGtEq       = regexp.MustCompile(`^>=\s*(\d+\.\d+)`)
-	reWildcard   = regexp.MustCompile(`^(\d+\.\d+)\.\*$`)
-	reExact      = regexp.MustCompile(`^(\d+\.\d+)(?:\.\d+)?$`)
+	reCaretTildePatch = regexp.MustCompile(`^([~^])(\d+)\.(\d+)\.\d+$`) // ~8.4.0 or ^8.4.0 (with patch)
+	reCaretTilde      = regexp.MustCompile(`^([~^])(\d+)\.(\d+)$`)      // ~8.4 or ^8.4 (no patch)
+	reGtEqLt          = regexp.MustCompile(`^>=\s*(\d+\.\d+)(?:\.\d+)?\s+<\s*(\d+\.\d+)`)
+	reGtEq            = regexp.MustCompile(`^>=\s*(\d+\.\d+)`)
+	reWildcard        = regexp.MustCompile(`^(\d+\.\d+)\.\*$`)
+	reExact           = regexp.MustCompile(`^(\d+\.\d+)(?:\.\d+)?$`)
 )
 
 func matchSingleConstraint(constraint string, installed []string) string {
@@ -162,10 +164,24 @@ func matchSingleConstraint(constraint string, installed []string) string {
 		return highestInRange(installed, m[1], m[2])
 	}
 
-	// ^8.2 or ~8.2 (caret/tilde on major.minor)
+	// ~8.4.0 or ^8.4.0 (caret/tilde with patch version)
+	if m := reCaretTildePatch.FindStringSubmatch(constraint); m != nil {
+		op, major, minor := m[1], m[2], m[3]
+		minV := major + "." + minor
+		if op == "~" {
+			// ~X.Y.Z → >=X.Y <X.(Y+1) — tilde with patch locks the minor version.
+			nextMinor := fmt.Sprintf("%s.%d", major, atoi(minor)+1)
+			return highestInRange(installed, minV, nextMinor)
+		}
+		// ^X.Y.Z → >=X.Y <(X+1).0 — caret always allows up to next major.
+		nextMajor := fmt.Sprintf("%d.0", atoi(major)+1)
+		return highestInRange(installed, minV, nextMajor)
+	}
+
+	// ^8.2 or ~8.2 (caret/tilde without patch — both allow up to next major)
 	if m := reCaretTilde.FindStringSubmatch(constraint); m != nil {
-		minV := m[2]
-		major := strings.Split(minV, ".")[0]
+		major, minor := m[2], m[3]
+		minV := major + "." + minor
 		nextMajor := fmt.Sprintf("%d.0", atoi(major)+1)
 		return highestInRange(installed, minV, nextMajor)
 	}
