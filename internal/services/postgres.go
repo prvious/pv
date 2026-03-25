@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -76,11 +77,11 @@ func (p *Postgres) EnvVars(projectName string, port int) map[string]string {
 	}
 }
 
-func (p *Postgres) CreateDatabase(engine *container.Engine, containerID, dbName string) error {
-	_ = engine
-	_ = containerID
-	_ = dbName
-	return nil
+func (p *Postgres) CreateDatabase(engine *container.Engine, containerName, dbName string) error {
+	return engine.Exec(context.Background(), containerName, []string{
+		"psql", "-U", "postgres", "-c",
+		fmt.Sprintf("CREATE DATABASE \"%s\"", dbName),
+	})
 }
 
 func (p *Postgres) HasDatabases() bool { return true }

@@ -2,12 +2,12 @@ package service
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
-	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -48,10 +48,6 @@ var logsCmd = &cobra.Command{
 			return fmt.Errorf("service %q is not running, start it first: pv service:start %s", key, key)
 		}
 
-		// Docker SDK: ContainerLogs with Follow=true
-		// This would stream logs to stdout.
-		ui.Subtle(fmt.Sprintf("Tailing logs for %s (container: %s)...", key, containerName))
-
-		return nil
+		return engine.Logs(cmd.Context(), containerName, os.Stdout)
 	},
 }
