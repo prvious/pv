@@ -354,7 +354,10 @@ func TestFindService(t *testing.T) {
 	r := &Registry{Services: make(map[string]*ServiceInstance)}
 	_ = r.AddService("redis", &ServiceInstance{Image: "redis:latest", Port: 6379})
 
-	svc := r.FindService("redis")
+	svc, err := r.FindService("redis")
+	if err != nil {
+		t.Fatalf("FindService(redis) error = %v", err)
+	}
 	if svc == nil {
 		t.Fatal("FindService() returned nil")
 	}
@@ -362,7 +365,11 @@ func TestFindService(t *testing.T) {
 		t.Errorf("Port = %d, want 6379", svc.Port)
 	}
 
-	if r.FindService("mysql") != nil {
+	svc, err = r.FindService("mysql")
+	if err != nil {
+		t.Fatalf("FindService(mysql) unexpected error = %v", err)
+	}
+	if svc != nil {
 		t.Error("FindService(mysql) should return nil")
 	}
 }
@@ -372,7 +379,10 @@ func TestFindService_FuzzyMatch(t *testing.T) {
 	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
 
 	// Fuzzy match by name prefix.
-	svc := r.FindService("mysql")
+	svc, err := r.FindService("mysql")
+	if err != nil {
+		t.Fatalf("FindService(mysql) error = %v", err)
+	}
 	if svc == nil {
 		t.Fatal("FindService(mysql) returned nil, want fuzzy match for mysql:8.4")
 	}
@@ -381,14 +391,32 @@ func TestFindService_FuzzyMatch(t *testing.T) {
 	}
 
 	// Exact match still works.
-	svc = r.FindService("mysql:8.4")
+	svc, err = r.FindService("mysql:8.4")
+	if err != nil {
+		t.Fatalf("FindService(mysql:8.4) error = %v", err)
+	}
 	if svc == nil {
 		t.Fatal("FindService(mysql:8.4) returned nil")
 	}
 
 	// No match returns nil.
-	if r.FindService("postgres") != nil {
+	svc, err = r.FindService("postgres")
+	if err != nil {
+		t.Fatalf("FindService(postgres) unexpected error = %v", err)
+	}
+	if svc != nil {
 		t.Error("FindService(postgres) should return nil")
+	}
+}
+
+func TestFindService_Ambiguous(t *testing.T) {
+	r := &Registry{Services: make(map[string]*ServiceInstance)}
+	_ = r.AddService("mysql:8.0", &ServiceInstance{Image: "mysql:8.0", Port: 33000})
+	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
+
+	_, err := r.FindService("mysql")
+	if err == nil {
+		t.Fatal("FindService(mysql) should return ambiguity error when multiple versions exist")
 	}
 }
 

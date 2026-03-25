@@ -36,17 +36,20 @@ var listCmd = &cobra.Command{
 		engine, engineErr := container.NewEngine(config.ColimaSocketPath())
 		if engineErr == nil {
 			defer engine.Close()
+		} else {
+			ui.Subtle(fmt.Sprintf("Cannot connect to Docker: %v", engineErr))
 		}
 
 		var rows [][]string
 		for key, svc := range svcs {
-			svcName := extractServiceName(key)
-			version := extractVersion(key)
+			svcName, version := services.ParseServiceKey(key)
 
 			status := "added"
 			if engine != nil {
 				svcDef, lookupErr := services.Lookup(svcName)
-				if lookupErr == nil {
+				if lookupErr != nil {
+					ui.Subtle(fmt.Sprintf("Unknown service type %q — cannot check status", svcName))
+				} else {
 					running, runErr := engine.IsRunning(cmd.Context(), svcDef.ContainerName(version))
 					if runErr != nil {
 						status = "unknown"

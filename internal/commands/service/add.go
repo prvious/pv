@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -49,7 +48,11 @@ pv service:add postgres 16`,
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		if reg.FindService(key) != nil {
+		existing, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
+		if existing != nil {
 			fmt.Fprintln(os.Stderr)
 			ui.Success(fmt.Sprintf("%s is already added", ui.Accent.Bold(true).Render(svc.DisplayName()+" "+version)))
 			fmt.Fprintln(os.Stderr)
@@ -85,37 +88,31 @@ pv service:add postgres 16`,
 		} else {
 			engine, engineErr := container.NewEngine(config.ColimaSocketPath())
 			if engineErr != nil {
-				ui.Fail(fmt.Sprintf("Cannot connect to Docker: %v", engineErr))
-			} else {
-				defer engine.Close()
-
-				// Pull image.
-				if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
-					if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
-						return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
-					}
-					return fmt.Sprintf("Pulled %s", opts.Image), nil
-				}); err != nil {
-					if !errors.Is(err, ui.ErrAlreadyPrinted) {
-						ui.Fail(fmt.Sprintf("Image pull failed: %v", err))
-					}
-				} else {
-					// Create and start container.
-					if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
-						if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
-							return "", err
-						}
-						port := svc.Port(version)
-						return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
-					}); err != nil {
-						if !errors.Is(err, ui.ErrAlreadyPrinted) {
-							ui.Fail(fmt.Sprintf("Container start failed: %v", err))
-						}
-					} else {
-						containerReady = true
-					}
-				}
+				return fmt.Errorf("cannot connect to Docker: %w", engineErr)
 			}
+			defer engine.Close()
+
+			// Pull image.
+			if err := ui.Step(fmt.Sprintf("Pulling %s...", opts.Image), func() (string, error) {
+				if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
+					return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
+				}
+				return fmt.Sprintf("Pulled %s", opts.Image), nil
+			}); err != nil {
+				return err
+			}
+
+			// Create and start container.
+			if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
+				if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
+					return "", err
+				}
+				port := svc.Port(version)
+				return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
+			}); err != nil {
+				return err
+			}
+			containerReady = true
 		}
 
 		// Update registry.

@@ -30,13 +30,15 @@ var statusCmd = &cobra.Command{
 			return resolveErr
 		}
 
-		instance := reg.FindService(key)
+		instance, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		svcName := extractServiceName(key)
-		version := extractVersion(key)
+		svcName, version := services.ParseServiceKey(key)
 
 		svc, err := services.Lookup(svcName)
 		if err != nil {

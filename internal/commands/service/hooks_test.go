@@ -10,32 +10,6 @@ import (
 	"github.com/prvious/pv/internal/services"
 )
 
-func TestExtractServiceName(t *testing.T) {
-	tests := []struct{ key, want string }{
-		{"mysql:8.0.32", "mysql"},
-		{"redis", "redis"},
-		{"postgres:16", "postgres"},
-	}
-	for _, tt := range tests {
-		if got := extractServiceName(tt.key); got != tt.want {
-			t.Errorf("extractServiceName(%q) = %q, want %q", tt.key, got, tt.want)
-		}
-	}
-}
-
-func TestExtractVersion(t *testing.T) {
-	tests := []struct{ key, want string }{
-		{"mysql:8.0.32", "8.0.32"},
-		{"redis", "latest"},
-		{"postgres:16", "16"},
-	}
-	for _, tt := range tests {
-		if got := extractVersion(tt.key); got != tt.want {
-			t.Errorf("extractVersion(%q) = %q, want %q", tt.key, got, tt.want)
-		}
-	}
-}
-
 func TestApplyFallbacksToLinkedProjects_Integration(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

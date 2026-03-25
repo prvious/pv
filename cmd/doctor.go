@@ -618,7 +618,10 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 
 		status := "unknown"
 		if engine != nil {
-			if svcDef, err := services.Lookup(svcName); err == nil {
+			svcDef, lookupErr := services.Lookup(svcName)
+			if lookupErr != nil {
+				status = "lookup_error"
+			} else {
 				running, runErr := engine.IsRunning(context.Background(), svcDef.ContainerName(version))
 				if runErr != nil {
 					status = "error"
@@ -637,10 +640,13 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 			})
 		} else {
 			msg := "not running"
-			if status == "error" {
+			switch status {
+			case "error":
 				msg = "cannot determine status"
-			} else if status == "unknown" {
+			case "unknown":
 				msg = "cannot check status (Docker unavailable)"
+			case "lookup_error":
+				msg = "unknown service type — registry may be out of date"
 			}
 			checks = append(checks, check{
 				Name:    key,

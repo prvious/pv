@@ -20,6 +20,7 @@ func TestPostgresPort(t *testing.T) {
 		{"17", 54017},
 		{"18-alpine", 54018},
 		{"16-bullseye", 54016},
+		{"alpine", 54000}, // purely non-numeric version falls back to base port
 	}
 	for _, tt := range tests {
 		got := p.Port(tt.version)

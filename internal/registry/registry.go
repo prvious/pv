@@ -126,9 +126,13 @@ func (r *Registry) RemoveService(key string) error {
 
 // FindService looks up a service by exact key first (e.g. "mysql:8.4"),
 // then falls back to matching by service name prefix (e.g. "mysql" matches "mysql:8.4").
-func (r *Registry) FindService(key string) *ServiceInstance {
-	resolved, _ := r.ResolveServiceKey(key)
-	return r.Services[resolved]
+// Returns an error if the key is ambiguous (matches multiple services).
+func (r *Registry) FindService(key string) (*ServiceInstance, error) {
+	resolved, err := r.ResolveServiceKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return r.Services[resolved], nil
 }
 
 // ResolveServiceKey returns the full registry key for a service, supporting

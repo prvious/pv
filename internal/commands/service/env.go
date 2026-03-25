@@ -41,7 +41,7 @@ var envCmd = &cobra.Command{
 
 			fmt.Fprintln(os.Stderr)
 			for key, instance := range svcs {
-				svcName := extractServiceName(key)
+				svcName, _ := services.ParseServiceKey(key)
 				svc, err := services.Lookup(svcName)
 				if err != nil {
 					ui.Subtle(fmt.Sprintf("Skipping unknown service %q", svcName))
@@ -59,12 +59,15 @@ var envCmd = &cobra.Command{
 		if resolveErr != nil {
 			return resolveErr
 		}
-		instance := reg.FindService(key)
+		instance, findErr := reg.FindService(key)
+		if findErr != nil {
+			return findErr
+		}
 		if instance == nil {
 			return fmt.Errorf("service %q not found", key)
 		}
 
-		svcName := extractServiceName(key)
+		svcName, _ := services.ParseServiceKey(key)
 		svc, err := services.Lookup(svcName)
 		if err != nil {
 			return err

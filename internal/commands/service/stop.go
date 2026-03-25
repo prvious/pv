@@ -35,8 +35,7 @@ var stopCmd = &cobra.Command{
 			}
 			for key := range svcs {
 				if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {
-					svcName := extractServiceName(key)
-					version := extractVersion(key)
+					svcName, version := services.ParseServiceKey(key)
 					svcDef, lookupErr := services.Lookup(svcName)
 					if lookupErr != nil {
 						return "", lookupErr
@@ -58,7 +57,8 @@ var stopCmd = &cobra.Command{
 			}
 			// Apply fallbacks for each stopped service.
 			for key := range reg.ListServices() {
-				applyFallbacksToLinkedProjects(reg, extractServiceName(key))
+				svcName, _ := services.ParseServiceKey(key)
+				applyFallbacksToLinkedProjects(reg, svcName)
 			}
 		} else {
 			key := args[0]
@@ -67,13 +67,14 @@ var stopCmd = &cobra.Command{
 			if resolveErr != nil {
 				return resolveErr
 			}
-			if reg.FindService(key) == nil {
+			if svc, findErr := reg.FindService(key); findErr != nil {
+				return findErr
+			} else if svc == nil {
 				return fmt.Errorf("service %q not found, run 'pv service:list' to see available services", key)
 			}
 
 			if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {
-				svcName := extractServiceName(key)
-				version := extractVersion(key)
+				svcName, version := services.ParseServiceKey(key)
 				svcDef, lookupErr := services.Lookup(svcName)
 				if lookupErr != nil {
 					return "", lookupErr
@@ -93,7 +94,8 @@ var stopCmd = &cobra.Command{
 				return err
 			}
 			// Apply fallbacks for the stopped service.
-			applyFallbacksToLinkedProjects(reg, extractServiceName(args[0]))
+			svcName, _ := services.ParseServiceKey(key)
+			applyFallbacksToLinkedProjects(reg, svcName)
 		}
 
 		fmt.Fprintln(os.Stderr)
