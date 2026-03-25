@@ -43,9 +43,10 @@ var updateCmd = &cobra.Command{
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("pv self-update failed: %v", err))
 				}
+				return ui.ErrAlreadyPrinted
 			}
 			if reexeced {
-				return nil // reached only if syscall.Exec failed (error already printed)
+				return nil // unreachable — syscall.Exec replaced the process
 			}
 		}
 
