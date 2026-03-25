@@ -14,7 +14,7 @@ type Postgres struct{}
 func (p *Postgres) Name() string        { return "postgres" }
 func (p *Postgres) DisplayName() string { return "PostgreSQL" }
 
-func (p *Postgres) DefaultVersion() string { return "latest" }
+func (p *Postgres) DefaultVersion() string { return "18-alpine" }
 
 func (p *Postgres) ImageName(version string) string {
 	return "postgres:" + version
