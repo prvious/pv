@@ -31,19 +31,21 @@ exec "$BINARY" "$@"
 `
 
 const colimaShimScript = `#!/bin/sh
-# pv Colima shim — ensures Lima (limactl) is on PATH.
+# pv Colima shim — ensures Lima (limactl) is on PATH and state stays under ~/.pv/.
 export PATH="%s:$PATH"
+export COLIMA_HOME="%s"
 exec "%s" "$@"
 `
 
 // writeColimaShim writes the Colima wrapper shim to ~/.pv/bin/colima.
 func writeColimaShim() error {
 	limaBinDir := config.LimaBinDir()
+	colimaHomeDir := config.ColimaHomeDir()
 	colimaPath := config.ColimaPath()
 	binDir := config.BinDir()
 
 	shimPath := filepath.Join(binDir, "colima")
-	content := fmt.Sprintf(colimaShimScript, limaBinDir, colimaPath)
+	content := fmt.Sprintf(colimaShimScript, limaBinDir, colimaHomeDir, colimaPath)
 	if err := os.WriteFile(shimPath, []byte(content), 0755); err != nil {
 		return fmt.Errorf("cannot write colima shim: %w", err)
 	}

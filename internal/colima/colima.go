@@ -80,11 +80,13 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// colimaCmd creates an exec.Command for the Colima binary with Lima on PATH.
+// colimaCmd creates an exec.Command for the Colima binary with Lima on PATH
+// and COLIMA_HOME set so all state lives under ~/.pv/.
 func colimaCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command(config.ColimaPath(), args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+config.LimaBinDir()+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"COLIMA_HOME="+config.ColimaHomeDir(),
 	)
 	return cmd
 }

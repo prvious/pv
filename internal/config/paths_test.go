@@ -352,8 +352,18 @@ func TestColimaSocketPath(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	got := ColimaSocketPath()
-	if !strings.HasSuffix(got, filepath.Join(".colima", "pv", "docker.sock")) {
-		t.Errorf("ColimaSocketPath() = %q, want suffix .colima/pv/docker.sock", got)
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "colima", "pv", "docker.sock")) {
+		t.Errorf("ColimaSocketPath() = %q, want suffix .pv/internal/colima/pv/docker.sock", got)
+	}
+}
+
+func TestColimaHomeDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := ColimaHomeDir()
+	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "colima")) {
+		t.Errorf("ColimaHomeDir() = %q, want suffix .pv/internal/colima", got)
 	}
 }
 
