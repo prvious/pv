@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -49,7 +52,22 @@ var stopCmd = &cobra.Command{
 			}
 
 			if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {
-				// Docker SDK: stop container.
+				svcName := extractServiceName(key)
+				version := extractVersion(key)
+				svcDef, lookupErr := services.Lookup(svcName)
+				if lookupErr != nil {
+					return "", lookupErr
+				}
+
+				engine, err := container.NewEngine(config.ColimaSocketPath())
+				if err != nil {
+					return "", fmt.Errorf("cannot connect to Docker: %w", err)
+				}
+				defer engine.Close()
+
+				if err := engine.Stop(cmd.Context(), svcDef.ContainerName(version)); err != nil {
+					return "", fmt.Errorf("cannot stop %s: %w", key, err)
+				}
 				return fmt.Sprintf("%s stopped", key), nil
 			}); err != nil {
 				return err

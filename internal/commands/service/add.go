@@ -84,7 +84,9 @@ pv service:add postgres 16`,
 					return "", fmt.Errorf("cannot connect to Docker: %w", err)
 				}
 				defer engine.Close()
-				_ = engine // Pull would happen via engine.PullImage()
+				if err := engine.Pull(cmd.Context(), opts.Image); err != nil {
+					return "", fmt.Errorf("cannot pull %s: %w", opts.Image, err)
+				}
 				return fmt.Sprintf("Pulled %s", opts.Image), nil
 			}); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
@@ -93,7 +95,14 @@ pv service:add postgres 16`,
 			} else {
 				// Create and start container.
 				if err := ui.Step(fmt.Sprintf("Starting %s %s...", svc.DisplayName(), version), func() (string, error) {
-					// Container creation and health check would happen here via Docker SDK.
+					engine, err := container.NewEngine(config.ColimaSocketPath())
+					if err != nil {
+						return "", fmt.Errorf("cannot connect to Docker: %w", err)
+					}
+					defer engine.Close()
+					if _, err := engine.CreateAndStart(cmd.Context(), opts); err != nil {
+						return "", err
+					}
 					port := svc.Port(version)
 					return fmt.Sprintf("%s %s running on :%d", svc.DisplayName(), version, port), nil
 				}); err != nil {

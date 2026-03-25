@@ -7,7 +7,9 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -38,9 +40,18 @@ var destroyCmd = &cobra.Command{
 			version = key[idx+1:]
 		}
 
-		// Stop + remove container.
+		// Stop + remove container + delete data.
 		if err := ui.Step(fmt.Sprintf("Destroying %s...", key), func() (string, error) {
-			// Docker SDK: stop + remove container.
+			svcDef, lookupErr := services.Lookup(svcName)
+			if lookupErr == nil {
+				engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+				if engineErr == nil {
+					defer engine.Close()
+					containerName := svcDef.ContainerName(version)
+					_ = engine.Stop(cmd.Context(), containerName)
+					_ = engine.Remove(cmd.Context(), containerName)
+				}
+			}
 
 			// Delete data directory.
 			dataDir := config.ServiceDataDir(svcName, version)
