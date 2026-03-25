@@ -60,6 +60,12 @@ pv service:add postgres 16`,
 
 		opts := svc.CreateOpts(version)
 
+		// Create data directory before container creation (bind mounts require it to exist).
+		dataDir := config.ServiceDataDir(svcName, version)
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			return fmt.Errorf("cannot create data directory: %w", err)
+		}
+
 		// Ensure Colima is installed (lazy install on first service:add).
 		containerReady := false
 		if !colima.IsInstalled() {
@@ -113,12 +119,6 @@ pv service:add postgres 16`,
 					containerReady = true
 				}
 			}
-		}
-
-		// Create data directory.
-		dataDir := config.ServiceDataDir(svcName, version)
-		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			return fmt.Errorf("cannot create data directory: %w", err)
 		}
 
 		// Update registry.
