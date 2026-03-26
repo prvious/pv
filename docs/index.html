@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pv - PHP dev servers, instantly</title>
+  <meta name="description" content="Local development server manager powered by FrankenPHP. No dnsmasq, no Docker, no config files. Link a project and it's live at https://project.test with HTTPS.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="pv - PHP dev servers, instantly">
+  <meta property="og:description" content="Local development server manager powered by FrankenPHP. Link a project and it's live at https://project.test with HTTPS.">
+  <meta property="og:url" content="https://prvious.github.io/pv/">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="pv - PHP dev servers, instantly">
+  <meta name="twitter:description" content="Local development server manager powered by FrankenPHP. Link a project and it's live at https://project.test with HTTPS.">
+
+  <!-- Theme -->
+  <meta name="theme-color" content="#155dfc">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ====================================================================
+       Navbar
+       ==================================================================== -->
+  <nav class="navbar">
+    <div class="navbar__inner">
+      <a href="#" class="navbar__logo">
+        <span class="navbar__logo-accent">[</span>pv<span class="navbar__logo-accent">]</span>
+      </a>
+      <a href="https://github.com/prvious/pv" target="_blank" rel="noopener noreferrer" class="navbar__github">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        Star on GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- ====================================================================
+       Hero
+       ==================================================================== -->
+  <header class="hero">
+    <!-- Blueprint grid background -->
+    <div class="hero__bg" aria-hidden="true"></div>
+    <!-- Bottom fade -->
+    <div class="hero__fade" aria-hidden="true"></div>
+
+    <div class="hero__content">
+      <!-- Badge -->
+      <div class="hero__badge">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        Powered by FrankenPHP
+      </div>
+
+      <!-- Headline -->
+      <h1 class="hero__title">
+        PHP dev servers,<br>
+        <span class="hero__title-accent">instantly.</span>
+      </h1>
+
+      <!-- Subheadline -->
+      <p class="hero__subtitle">
+        No dnsmasq. No Docker. No config files. Link a project and it's live at
+        <code>https://project.test</code> &mdash; HTTPS included.
+      </p>
+
+      <!-- CTAs -->
+      <div class="hero__ctas">
+        <a href="#install" class="btn btn--primary">
+          Get started
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </a>
+        <a href="https://github.com/prvious/pv" target="_blank" rel="noopener noreferrer" class="btn btn--secondary">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          View on GitHub
+        </a>
+      </div>
+
+      <!-- Animated Terminal -->
+      <div class="terminal">
+        <div class="terminal__header">
+          <span class="terminal__dot terminal__dot--red"></span>
+          <span class="terminal__dot terminal__dot--yellow"></span>
+          <span class="terminal__dot terminal__dot--green"></span>
+          <span class="terminal__title">zsh</span>
+        </div>
+        <div class="terminal__body" id="terminal-body">
+          <!-- JS drives this content -->
+          <span class="terminal__line terminal__line--prompt"></span>
+          <span class="terminal__cursor"></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ====================================================================
+       Problem / Solution
+       ==================================================================== -->
+  <section class="problem" id="problem">
+    <div class="problem__inner fade-in">
+      <div class="section-label">The problem</div>
+      <p class="problem__quote">
+        Running PHP projects locally shouldn't require juggling dnsmasq, Docker, and Traefik.
+      </p>
+      <p class="problem__answer">
+        <strong>pv</strong> replaces all of that with a single binary. Install it, link your project directory, and it's instantly available at a <code>.test</code> domain with HTTPS. No containers, no proxy chains, no config files to maintain.
+      </p>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       Features
+       ==================================================================== -->
+  <section class="features section--alt" id="features">
+    <div class="container text-center">
+      <div class="section-label">Features</div>
+      <h2 class="section-heading fade-in">Everything you need. Nothing you don't.</h2>
+      <p class="section-subheading fade-in">A complete local PHP environment in one tool.</p>
+    </div>
+    <div class="features__grid container">
+      <!-- Card 1 -->
+      <div class="feature-card fade-in">
+        <span class="feature-card__icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </span>
+        <h3 class="feature-card__title">One command setup</h3>
+        <p class="feature-card__desc">
+          <code>pv install</code> gets you FrankenPHP, PHP, Composer, and Mago &mdash; ready to serve PHP projects immediately.
+        </p>
+      </div>
+      <!-- Card 2 -->
+      <div class="feature-card fade-in">
+        <span class="feature-card__icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </span>
+        <h3 class="feature-card__title">HTTPS out of the box</h3>
+        <p class="feature-card__desc">
+          Every project gets an automatic <code>.test</code> domain with a trusted local certificate. Zero config.
+        </p>
+      </div>
+      <!-- Card 3 -->
+      <div class="feature-card fade-in">
+        <span class="feature-card__icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+        </span>
+        <h3 class="feature-card__title">Multi-version PHP</h3>
+        <p class="feature-card__desc">
+          Install PHP 8.2, 8.3, 8.4 side by side. Switch globally or per-project. No phpenv, no phpbrew.
+        </p>
+      </div>
+      <!-- Card 4 -->
+      <div class="feature-card fade-in">
+        <span class="feature-card__icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>
+        </span>
+        <h3 class="feature-card__title">Auto project detection</h3>
+        <p class="feature-card__desc">
+          <code>pv link</code> detects Laravel, Laravel Octane, and generic PHP automatically and generates the right server config.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       How It Works
+       ==================================================================== -->
+  <section class="steps section" id="how-it-works">
+    <div class="container text-center">
+      <div class="section-label">How it works</div>
+      <h2 class="section-heading fade-in">Up and running in three commands.</h2>
+      <p class="section-subheading fade-in">From zero to a live local site in under a minute.</p>
+    </div>
+
+    <div class="steps__list">
+      <!-- Step 1 -->
+      <div class="step fade-in">
+        <div class="step__number">1</div>
+        <div class="step__content">
+          <h3 class="step__title">Install</h3>
+          <p class="step__desc">Downloads pv and sets up FrankenPHP, PHP, Composer, and Mago.</p>
+          <div class="step__code">
+            <span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/prvious/pv/main/install.sh | bash
+          </div>
+        </div>
+      </div>
+      <!-- Step 2 -->
+      <div class="step fade-in">
+        <div class="step__number">2</div>
+        <div class="step__content">
+          <h3 class="step__title">Link your project</h3>
+          <p class="step__desc">Auto-detects your project type and sets up the server config.</p>
+          <div class="step__code">
+            <span class="prompt">$ </span>pv link ~/code/my-laravel-app
+          </div>
+        </div>
+      </div>
+      <!-- Step 3 -->
+      <div class="step fade-in">
+        <div class="step__number">3</div>
+        <div class="step__content">
+          <h3 class="step__title">Start</h3>
+          <p class="step__desc">Your app is now live at <code>https://my-laravel-app.test</code> with HTTPS.</p>
+          <div class="step__code">
+            <span class="prompt">$ </span>pv start
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       Install
+       ==================================================================== -->
+  <section class="install section--alt" id="install">
+    <div class="container text-center">
+      <div class="section-label">Get started</div>
+      <h2 class="section-heading fade-in">Install pv</h2>
+      <p class="section-subheading fade-in">One command. No dependencies.</p>
+    </div>
+
+    <div class="install__box container--narrow fade-in" style="margin-left:auto;margin-right:auto;">
+      <div class="install__command">
+        <span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/prvious/pv/main/install.sh | bash
+      </div>
+      <button class="install__copy" id="copy-btn" aria-label="Copy install command">
+        <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+      </button>
+    </div>
+
+    <p class="install__note">
+      Requires macOS. Source available on
+      <a href="https://github.com/prvious/pv" target="_blank" rel="noopener noreferrer">GitHub</a>.
+    </p>
+  </section>
+
+  <!-- ====================================================================
+       Footer
+       ==================================================================== -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="footer__left">
+        <span class="footer__logo">
+          <span class="footer__logo-accent">[</span>pv<span class="footer__logo-accent">]</span>
+        </span>
+        <span class="footer__tagline">Local PHP dev, simplified.</span>
+      </div>
+      <div class="footer__right">
+        <a href="https://github.com/prvious/pv" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <span>MIT License</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="script.js"></script>
+</body>
+</html>
