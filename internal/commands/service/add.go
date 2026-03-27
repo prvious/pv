@@ -137,7 +137,9 @@ pv service:add postgres 16`,
 			ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
 		}
 		if server.IsRunning() {
-			_ = server.SignalDaemon()
+			if err := server.SignalDaemon(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+			}
 		}
 
 		// Print connection details.

@@ -91,7 +91,9 @@ var destroyCmd = &cobra.Command{
 			ui.Subtle(fmt.Sprintf("Could not regenerate service site configs: %v", err))
 		}
 		if server.IsRunning() {
-			_ = server.SignalDaemon()
+			if err := server.SignalDaemon(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+			}
 		}
 
 		if len(projects) > 0 {
