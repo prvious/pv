@@ -60,7 +60,6 @@ const plistTmpl = `<?xml version="1.0" encoding="UTF-8"?>
     <array>
         <string>{{.PvBinaryPath}}</string>
         <string>start</string>
-        <string>--foreground</string>
     </array>
 
     <key>RunAtLoad</key>
