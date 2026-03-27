@@ -16,7 +16,6 @@ import (
 var (
 	logFollow bool
 	logLines  int
-	logError  bool
 	logDaemon bool
 )
 
@@ -35,10 +34,8 @@ pv log myapp -n 50`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logPath := config.CaddyLogPath()
-		if logError {
+		if logDaemon {
 			logPath = config.DaemonErrLogPath()
-		} else if logDaemon {
-			logPath = config.DaemonLogPath()
 		}
 		f, err := os.Open(logPath)
 		if err != nil {
@@ -143,7 +140,6 @@ func getInode(info os.FileInfo) uint64 {
 func init() {
 	logCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output")
 	logCmd.Flags().IntVarP(&logLines, "lines", "n", 50, "Number of lines to show")
-	logCmd.Flags().BoolVar(&logError, "error", false, "Show daemon stderr log")
-	logCmd.Flags().BoolVar(&logDaemon, "daemon", false, "Show daemon stdout log")
+	logCmd.Flags().BoolVar(&logDaemon, "daemon", false, "Show daemon log (watcher events, Colima boot, recovery)")
 	rootCmd.AddCommand(logCmd)
 }
