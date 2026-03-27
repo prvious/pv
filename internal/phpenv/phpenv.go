@@ -73,7 +73,10 @@ func EnsureInstalled(version string) error {
 		return nil
 	}
 	client := &http.Client{Timeout: 5 * time.Minute}
-	return InstallProgress(client, version, nil)
+	if err := InstallProgress(client, version, nil); err != nil {
+		return fmt.Errorf("install PHP %s: %w", version, err)
+	}
+	return nil
 }
 
 // SetGlobal updates the global PHP version in settings and repoints symlinks.
