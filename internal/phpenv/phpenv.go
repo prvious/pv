@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/prvious/pv/internal/config"
 )
@@ -71,7 +72,7 @@ func EnsureInstalled(version string) error {
 	if IsInstalled(version) {
 		return nil
 	}
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Minute}
 	return InstallProgress(client, version, nil)
 }
 
