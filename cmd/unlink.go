@@ -8,7 +8,6 @@ import (
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
@@ -53,7 +52,6 @@ pv unlink`,
 			return fmt.Errorf("project %q is not linked", name)
 		}
 		projectPath := project.Path
-		projectPHP := project.PHP
 
 		if err := reg.Remove(name); err != nil {
 			return err
@@ -91,28 +89,10 @@ pv unlink`,
 		fmt.Fprintln(os.Stderr)
 		ui.Success(fmt.Sprintf("Unlinked %s", ui.Accent.Bold(true).Render(domain)))
 
+		// Signal the daemon to reconcile — it will stop orphaned secondaries.
 		if server.IsRunning() {
-			// Check if unlinking this project orphans a secondary FrankenPHP
-			// (no remaining projects use its PHP version).
-			globalPHP := ""
-			if settings != nil {
-				globalPHP = settings.Defaults.PHP
-			}
-			hadSecondary := projectPHP != "" && projectPHP != globalPHP
-			versionOrphaned := hadSecondary && !caddy.ActiveVersions(reg.List(), globalPHP)[projectPHP]
-
-			if versionOrphaned && daemon.IsLoaded() {
-				// Daemon mode: full process restart so the relaunched server no longer spawns the unneeded secondary.
-				if err := daemon.Restart(); err != nil {
-					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
-				}
-			} else {
-				if err := server.ReconfigureServer(); err != nil {
-					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
-				}
-				if versionOrphaned {
-					ui.Subtle("Stop and restart the server to clean up unused PHP processes: pv stop && pv start")
-				}
+			if err := server.SignalDaemon(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
 			}
 		}
 

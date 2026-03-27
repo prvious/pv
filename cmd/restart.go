@@ -15,21 +15,20 @@ var restartCmd = &cobra.Command{
 	GroupID: "server",
 	Short:   "Restart or reload the pv server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Daemon mode — delegate to daemon:restart.
 		if daemon.IsLoaded() {
 			return daemoncmds.RunRestart()
 		}
 
-		// Foreground mode — reload config via admin API.
 		if !server.IsRunning() {
 			return fmt.Errorf("pv is not running")
 		}
 
-		return ui.Step("Reloading server configuration...", func() (string, error) {
-			if err := server.ReconfigureServer(); err != nil {
-				return "", fmt.Errorf("reconfigure failed: %w", err)
+		// Foreground mode — signal reconcile via SIGHUP.
+		return ui.Step("Reconciling server...", func() (string, error) {
+			if err := server.SignalDaemon(); err != nil {
+				return "", fmt.Errorf("cannot signal server: %w", err)
 			}
-			return "Configuration reloaded", nil
+			return "Server reconciled", nil
 		})
 	},
 }

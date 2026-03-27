@@ -8,7 +8,6 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/automation/steps"
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
@@ -140,20 +139,10 @@ pv link --name=myapp ~/Code/myapp`,
 		fmt.Fprintf(os.Stderr, "  %s   %s\n", ui.Muted.Render("PHP"), ui.Green.Render(ctx.PHPVersion))
 		fmt.Fprintln(os.Stderr)
 
-		// Reload/restart server if needed.
+		// Signal the daemon to reconcile FrankenPHP instances.
 		if server.IsRunning() {
-			needsRestart := phpVersion != "" && phpVersion != globalPHP
-			if needsRestart && daemon.IsLoaded() {
-				if err := daemon.Restart(); err != nil {
-					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
-				}
-			} else {
-				if err := server.ReconfigureServer(); err != nil {
-					ui.Fail(fmt.Sprintf("Could not reconfigure server: %v", err))
-				}
-				if needsRestart {
-					ui.Subtle("Stop and restart the server to serve this project: pv stop && pv start")
-				}
+			if err := server.SignalDaemon(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
 			}
 		}
 
