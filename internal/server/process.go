@@ -226,6 +226,24 @@ func IsRunning() bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
+// SignalDaemon sends SIGHUP to the running daemon process, triggering a
+// reconciliation of FrankenPHP instances. Safe to call when daemon is not
+// running (returns nil).
+func SignalDaemon() error {
+	pid, err := ReadPID()
+	if err != nil {
+		return nil // daemon not running
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		return nil // process doesn't exist
+	}
+	return proc.Signal(syscall.SIGHUP)
+}
+
 // ReadPID reads the PID from the PID file.
 func ReadPID() (int, error) {
 	data, err := os.ReadFile(config.PidFilePath())
