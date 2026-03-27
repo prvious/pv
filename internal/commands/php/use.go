@@ -46,17 +46,18 @@ pv php:use 8.3`,
 			ui.Success(fmt.Sprintf("Global PHP set to %s", ui.Green.Bold(true).Render(version)))
 		}
 
-		// If daemon is running, sync the plist and restart.
-		if oldV != version && daemon.IsLoaded() {
-			cfg := daemon.DefaultPlistConfig()
-			if err := daemon.SyncIfNeeded(cfg); err != nil {
-				ui.Fail(fmt.Sprintf("Cannot sync daemon plist: %v", err))
+		// The global PHP binary changed — daemon needs full restart.
+		if oldV != version && server.IsRunning() {
+			if daemon.IsLoaded() {
+				if err := daemon.Restart(); err != nil {
+					ui.Fail(fmt.Sprintf("Could not restart daemon: %v — run 'pv restart' manually", err))
+				} else {
+					ui.Success("Daemon restarted with new PHP version")
+				}
 			} else {
-				ui.Success("Daemon restarted with new PHP version")
+				ui.Subtle("Server is running in foreground — restart required.")
+				ui.Subtle("Run: pv stop && pv start")
 			}
-		} else if oldV != version && server.IsRunning() {
-			ui.Subtle("Server is running — restart required for changes to take effect.")
-			ui.Subtle("Run: pv restart")
 		}
 
 		return nil

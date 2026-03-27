@@ -9,6 +9,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -88,6 +89,11 @@ var destroyCmd = &cobra.Command{
 		// Regenerate Caddy configs for service consoles.
 		if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not regenerate service site configs: %v", err))
+		}
+		if server.IsRunning() {
+			if err := server.SignalDaemon(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+			}
 		}
 
 		if len(projects) > 0 {

@@ -25,6 +25,10 @@ import (
 // activeWatcher holds the file watcher for pv.yml changes in linked projects.
 var activeWatcher *watcher.Watcher
 
+// manager holds the ServerManager for FrankenPHP instances.
+// Set during Start(), used by the watcher and SIGHUP handler.
+var manager *ServerManager
+
 // Start is the supervisor entry point. It writes a PID file, starts the DNS
 // server, the main FrankenPHP, and any needed secondary FrankenPHP instances,
 // then blocks until an OS signal or child exit.
@@ -38,19 +42,18 @@ func Start(tld string) error {
 	}
 	defer removePID()
 
-	// Regenerate all caddy configs before starting.
 	settings, err := config.LoadSettings()
 	if err != nil {
 		return fmt.Errorf("cannot load settings: %w", err)
 	}
-	globalPHP := settings.Defaults.PHP
 
 	reg, err := registry.Load()
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
 
-	if err := caddy.GenerateAllConfigs(reg.List(), globalPHP); err != nil {
+	// Generate initial Caddyfiles so main FrankenPHP can start.
+	if err := caddy.GenerateAllConfigs(reg.List(), settings.Defaults.PHP); err != nil {
 		return fmt.Errorf("cannot generate caddy configs: %w", err)
 	}
 
@@ -86,25 +89,16 @@ func Start(tld string) error {
 	fmt.Fprintln(os.Stderr, "FrankenPHP started")
 	fmt.Fprintf(os.Stderr, "Serving .%s domains on https (port 443) and http (port 80)\n", tld)
 
-	// Start secondary FrankenPHP instances for non-global PHP versions.
-	activeVersions := caddy.ActiveVersions(reg.List(), globalPHP)
-	var secondaries []*FrankenPHP
-	for version := range activeVersions {
-		port := config.PortForVersion(version)
-		fmt.Fprintf(os.Stderr, "Starting FrankenPHP for PHP %s on port %d...\n", version, port)
-		fp, err := StartVersionFrankenPHP(version)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: cannot start FrankenPHP for PHP %s: %v\n", version, err)
-			continue
-		}
-		secondaries = append(secondaries, fp)
-		fmt.Fprintf(os.Stderr, "FrankenPHP (PHP %s) started on port %d\n", version, port)
-	}
+	// Create the server manager and reconcile secondary instances.
+	manager = NewServerManager(mainFP)
 	defer func() {
-		for _, fp := range secondaries {
-			fp.Stop()
-		}
+		manager.Shutdown()
+		manager = nil
 	}()
+
+	if err := manager.Reconcile(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: initial reconcile: %v\n", err)
+	}
 
 	// Start file watcher for pv.yml changes in linked projects.
 	projectWatcher, watcherErr := watcher.New()
@@ -122,7 +116,7 @@ func Start(tld string) error {
 			projectWatcher.Close()
 		}()
 
-		go handleWatcherEvents(projectWatcher, globalPHP)
+		go handleWatcherEvents(projectWatcher)
 	}
 
 	// Boot Colima and recover service containers in the background.
@@ -140,77 +134,50 @@ func Start(tld string) error {
 
 	// Wait for signals or child exit.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
 
-	return waitForEvent(sigCh, dnsErr, mainFP, secondaries)
+	return waitForEvent(sigCh, dnsErr, mainFP)
 }
 
-// waitForEvent blocks until a signal, DNS error, or any FrankenPHP process exits.
-func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP, secondaries []*FrankenPHP) error {
-	// Since Go doesn't support dynamic select, we merge secondary done channels
-	// into a single channel.
-	merged := make(chan string, 1) // version string of the exited secondary
-	done := make(chan struct{})
-	defer close(done)
-
-	// Watch secondaries.
-	for _, fp := range secondaries {
-		go func(f *FrankenPHP) {
-			select {
-			case err := <-f.Done():
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "FrankenPHP (PHP %s) exited: %v\n", f.Version(), err)
+// waitForEvent blocks until a shutdown signal, DNS error, or main FrankenPHP exit.
+// SIGHUP triggers a reconcile and continues the loop.
+func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP) error {
+	for {
+		select {
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP {
+				fmt.Fprintf(os.Stderr, "Received SIGHUP, reconciling...\n")
+				if manager != nil {
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								fmt.Fprintf(os.Stderr, "CRITICAL: reconcile panicked: %v\n", r)
+							}
+						}()
+						if err := manager.Reconcile(); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: reconcile failed: %v\n", err)
+						}
+					}()
 				}
-				select {
-				case merged <- f.Version():
-				case <-done:
-				}
-			case <-done:
+				continue
 			}
-		}(fp)
-	}
-
-	select {
-	case sig := <-sigCh:
-		fmt.Fprintf(os.Stderr, "\nReceived %s, shutting down...\n", sig)
-		return nil
-	case err := <-dnsErr:
-		if err != nil {
-			return fmt.Errorf("DNS server failed: %w", err)
+			fmt.Fprintf(os.Stderr, "\nReceived %s, shutting down...\n", sig)
+			return nil
+		case err := <-dnsErr:
+			if err != nil {
+				return fmt.Errorf("DNS server failed: %w", err)
+			}
+			return fmt.Errorf("DNS server exited unexpectedly")
+		case err := <-mainFP.Done():
+			if err != nil {
+				return fmt.Errorf("FrankenPHP exited unexpectedly: %w", err)
+			}
+			return fmt.Errorf("FrankenPHP exited unexpectedly")
 		}
-		return fmt.Errorf("DNS server exited unexpectedly")
-	case err := <-mainFP.Done():
-		if err != nil {
-			return fmt.Errorf("FrankenPHP exited unexpectedly: %w", err)
-		}
-		return fmt.Errorf("FrankenPHP exited unexpectedly")
-	case v := <-merged:
-		return fmt.Errorf("secondary FrankenPHP (PHP %s) exited unexpectedly", v)
 	}
 }
 
-// ReconfigureServer regenerates all caddy configs and reloads the main FrankenPHP via its admin API.
-// Called after pv link, pv unlink, pv restart (foreground mode), and watcher-triggered config changes.
-func ReconfigureServer() error {
-	settings, err := config.LoadSettings()
-	if err != nil {
-		return err
-	}
-
-	reg, err := registry.Load()
-	if err != nil {
-		return err
-	}
-
-	// Regenerate all site configs and Caddyfiles.
-	if err := caddy.GenerateAllConfigs(reg.List(), settings.Defaults.PHP); err != nil {
-		return err
-	}
-
-	// Reload the main FrankenPHP.
-	return Reload()
-}
 
 // IsRunning checks if a pv supervisor process is currently running.
 func IsRunning() bool {
@@ -224,6 +191,24 @@ func IsRunning() bool {
 	}
 	// Signal 0 checks if process exists without sending a signal.
 	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// SignalDaemon sends SIGHUP to the running daemon process, triggering a
+// reconciliation of FrankenPHP instances. Safe to call when daemon is not
+// running (returns nil).
+func SignalDaemon() error {
+	pid, err := ReadPID()
+	if err != nil {
+		return nil // daemon not running
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+	if proc.Signal(syscall.Signal(0)) != nil {
+		return nil // process doesn't exist
+	}
+	return proc.Signal(syscall.SIGHUP)
 }
 
 // ReadPID reads the PID from the PID file.
@@ -246,8 +231,8 @@ func removePID() {
 }
 
 // handleWatcherEvents processes pv.yml change events, re-resolves PHP versions,
-// updates the registry, and reconfigures the server when needed.
-func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
+// updates the registry, and triggers a reconcile to start/stop secondaries.
+func handleWatcherEvents(w *watcher.Watcher) {
 	for event := range w.Events() {
 		reg, err := registry.Load()
 		if err != nil {
@@ -258,6 +243,13 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 		if project == nil {
 			continue
 		}
+
+		settings, err := config.LoadSettings()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Watcher: cannot load settings: %v\n", err)
+			continue
+		}
+		globalPHP := settings.Defaults.PHP
 
 		var newPHP string
 		switch event.Type {
@@ -295,8 +287,10 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 				fmt.Fprintf(os.Stderr, "Watcher: cannot save registry: %v\n", err)
 				continue
 			}
-			if err := ReconfigureServer(); err != nil {
-				fmt.Fprintf(os.Stderr, "Watcher: cannot reconfigure server: %v\n", err)
+			if manager != nil {
+				if err := manager.Reconcile(); err != nil {
+					fmt.Fprintf(os.Stderr, "Watcher: reconcile failed: %v\n", err)
+				}
 			}
 		}
 	}
