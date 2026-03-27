@@ -1,6 +1,7 @@
 package colima
 
 import (
+	"errors"
 	"fmt"
 
 	internalcolima "github.com/prvious/pv/internal/colima"
@@ -25,7 +26,7 @@ var stopCmd = &cobra.Command{
 		// Stop all service containers first. Non-fatal — if Docker is
 		// unreachable the VM stop will still clean everything up.
 		if StopServicesFunc != nil {
-			if err := StopServicesFunc(); err != nil {
+			if err := StopServicesFunc(); err != nil && !errors.Is(err, ui.ErrAlreadyPrinted) {
 				ui.Fail(fmt.Sprintf("Could not stop services: %v", err))
 			}
 		}
