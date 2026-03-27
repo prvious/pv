@@ -8,6 +8,7 @@ func Register(parent *cobra.Command) {
 	parent.AddCommand(pathCmd)
 	parent.AddCommand(updateCmd)
 	parent.AddCommand(uninstallCmd)
+	parent.AddCommand(stopCmd)
 }
 
 func RunInstall() error {
@@ -20,4 +21,8 @@ func RunUpdate() error {
 
 func RunUninstall() error {
 	return uninstallCmd.RunE(uninstallCmd, nil)
+}
+
+func RunStop() error {
+	return stopCmd.RunE(stopCmd, nil)
 }
