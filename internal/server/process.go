@@ -149,9 +149,16 @@ func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP) e
 			if sig == syscall.SIGHUP {
 				fmt.Fprintf(os.Stderr, "Received SIGHUP, reconciling...\n")
 				if manager != nil {
-					if err := manager.Reconcile(); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: reconcile failed: %v\n", err)
-					}
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								fmt.Fprintf(os.Stderr, "CRITICAL: reconcile panicked: %v\n", r)
+							}
+						}()
+						if err := manager.Reconcile(); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: reconcile failed: %v\n", err)
+						}
+					}()
 				}
 				continue
 			}

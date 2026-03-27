@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/prvious/pv/internal/caddy"
@@ -63,6 +64,7 @@ func (m *ServerManager) Reconcile() error {
 	}
 
 	// Start missing or crashed secondaries.
+	var startErrors []string
 	for version := range needed {
 		fp, exists := m.secondaries[version]
 
@@ -85,6 +87,7 @@ func (m *ServerManager) Reconcile() error {
 			newFP, err := StartVersionFrankenPHP(version)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Reconcile: cannot start FrankenPHP for PHP %s: %v\n", version, err)
+				startErrors = append(startErrors, fmt.Sprintf("PHP %s: %v", version, err))
 				continue
 			}
 			m.secondaries[version] = newFP
@@ -96,6 +99,9 @@ func (m *ServerManager) Reconcile() error {
 		return fmt.Errorf("reconcile: reload main FrankenPHP: %w", err)
 	}
 
+	if len(startErrors) > 0 {
+		return fmt.Errorf("reconcile: %d secondary instance(s) failed: %s", len(startErrors), strings.Join(startErrors, "; "))
+	}
 	return nil
 }
 
