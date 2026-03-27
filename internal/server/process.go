@@ -125,34 +125,10 @@ func Start(tld string) error {
 		go handleWatcherEvents(projectWatcher, globalPHP)
 	}
 
-	// Recover service containers if Colima is running.
-	if colima.IsInstalled() && colima.IsRunning() {
-		if engine, engineErr := container.NewEngine(config.ColimaSocketPath()); engineErr == nil {
-			defer engine.Close()
-			for _, key := range colima.ServicesToRecover(reg) {
-				svcName, version := services.ParseServiceKey(key)
-				svc, lookupErr := services.Lookup(svcName)
-				if lookupErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: cannot recover service %s: %v\n", key, lookupErr)
-					continue
-				}
-				name := svc.ContainerName(version)
-				running, runErr := engine.IsRunning(context.Background(), name)
-				if runErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: cannot check status for %s: %v\n", name, runErr)
-					continue
-				}
-				if !running {
-					if err := engine.Start(context.Background(), name); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: could not recover container %s: %v\n", name, err)
-					} else {
-						fmt.Fprintf(os.Stderr, "Recovered service container %s\n", name)
-					}
-				}
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: cannot connect to Docker for service recovery: %v\n", engineErr)
-		}
+	// Boot Colima and recover service containers in the background.
+	// This avoids blocking DNS + FrankenPHP startup on the ~15s VM boot.
+	if colima.IsInstalled() && len(reg.ListServices()) > 0 {
+		go bootColimaAndRecover(settings.Defaults.VM, reg)
 	}
 
 	// Start background package updater.
@@ -323,6 +299,52 @@ func WatchProject(name, path string) {
 	if activeWatcher != nil {
 		if err := activeWatcher.Watch(name, path); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cannot watch %s for config changes: %v\n", name, err)
+		}
+	}
+}
+
+// bootColimaAndRecover ensures the Colima VM is running and then recovers
+// any stopped service containers. Runs in a background goroutine so it doesn't
+// block DNS + FrankenPHP startup. Retries once on failure before giving up.
+func bootColimaAndRecover(vm config.VMConfig, reg *registry.Registry) {
+	// Ensure Colima VM is running.
+	if err := colima.EnsureRunning(vm); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Colima start failed (%v), retrying in 10s...\n", err)
+		time.Sleep(10 * time.Second)
+		if err := colima.EnsureRunning(vm); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Colima failed after retry: %v\nServices are unavailable. Run 'pv service:start' to try again.\n", err)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Colima VM running\n")
+
+	// Recover service containers.
+	engine, engineErr := container.NewEngine(config.ColimaSocketPath())
+	if engineErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot connect to Docker for service recovery: %v\n", engineErr)
+		return
+	}
+	defer engine.Close()
+
+	for _, key := range colima.ServicesToRecover(reg) {
+		svcName, version := services.ParseServiceKey(key)
+		svc, lookupErr := services.Lookup(svcName)
+		if lookupErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot recover service %s: %v\n", key, lookupErr)
+			continue
+		}
+		name := svc.ContainerName(version)
+		running, runErr := engine.IsRunning(context.Background(), name)
+		if runErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cannot check status for %s: %v\n", name, runErr)
+			continue
+		}
+		if !running {
+			if err := engine.Start(context.Background(), name); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not recover container %s: %v\n", name, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Recovered service container %s\n", name)
+			}
 		}
 	}
 }
