@@ -17,3 +17,7 @@ func Register(parent *cobra.Command) {
 func RunAdd(args []string) error {
 	return addCmd.RunE(addCmd, args)
 }
+
+func RunStop() error {
+	return stopCmd.RunE(stopCmd, nil)
+}

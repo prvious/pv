@@ -11,7 +11,7 @@ func TestRegister_AllCommandsPresent(t *testing.T) {
 	root.AddGroup(&cobra.Group{ID: "colima", Title: "Colima"})
 	Register(root)
 
-	expected := []string{"colima:install", "colima:download", "colima:path", "colima:update", "colima:uninstall"}
+	expected := []string{"colima:install", "colima:download", "colima:path", "colima:update", "colima:uninstall", "colima:stop"}
 	for _, name := range expected {
 		cmd, _, err := root.Find([]string{name})
 		if err != nil || cmd.Name() != name {
