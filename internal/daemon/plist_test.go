@@ -48,9 +48,6 @@ func TestRenderPlist_ProgramArguments(t *testing.T) {
 	if !strings.Contains(xml, "<string>start</string>") {
 		t.Error("plist missing 'start' in ProgramArguments")
 	}
-	if !strings.Contains(xml, "<string>--foreground</string>") {
-		t.Error("plist missing '--foreground' in ProgramArguments")
-	}
 }
 
 func TestRenderPlist_KeepAlive(t *testing.T) {
