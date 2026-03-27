@@ -2,10 +2,12 @@ package phpenv
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/prvious/pv/internal/config"
 )
@@ -60,6 +62,21 @@ func FrankenPHPPath(version string) string {
 // PHPPath returns the path to the PHP CLI binary for a version.
 func PHPPath(version string) string {
 	return filepath.Join(config.PhpVersionDir(version), "php")
+}
+
+// EnsureInstalled checks if a PHP version is installed, and if not, downloads
+// and installs it. This is the single entry point for ensuring a PHP version
+// is available — used by the watcher, link automation, and anywhere that
+// needs a version to be ready before proceeding.
+func EnsureInstalled(version string) error {
+	if IsInstalled(version) {
+		return nil
+	}
+	client := &http.Client{Timeout: 5 * time.Minute}
+	if err := InstallProgress(client, version, nil); err != nil {
+		return fmt.Errorf("install PHP %s: %w", version, err)
+	}
+	return nil
 }
 
 // SetGlobal updates the global PHP version in settings and repoints symlinks.

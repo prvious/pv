@@ -274,6 +274,16 @@ func handleWatcherEvents(w *watcher.Watcher, globalPHP string) {
 		}
 
 		if newPHP != "" && newPHP != project.PHP {
+			// Ensure the version is installed before applying the change.
+			wasInstalled := phpenv.IsInstalled(newPHP)
+			if err := phpenv.EnsureInstalled(newPHP); err != nil {
+				fmt.Fprintf(os.Stderr, "Watcher: cannot install PHP %s: %v (keeping %s)\n", newPHP, err, project.PHP)
+				continue
+			}
+			if !wasInstalled {
+				fmt.Fprintf(os.Stderr, "Watcher: PHP %s installed\n", newPHP)
+			}
+
 			fmt.Fprintf(os.Stderr, "Watcher: %s PHP version changed %s -> %s\n", event.ProjectName, project.PHP, newPHP)
 			for i := range reg.Projects {
 				if reg.Projects[i].Name == event.ProjectName {
