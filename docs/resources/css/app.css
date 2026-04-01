@@ -1,0 +1,53 @@
+@import 'tailwindcss';
+
+@source '../views';
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+
+@theme {
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-heading: 'Oswald', ui-sans-serif, system-ui, sans-serif;
+
+    /* Background */
+    --color-background: #000000;
+    --color-card: #111111;
+    --color-elevated: #0A0A0A;
+    --color-placeholder: #3D3D3D;
+
+    /* Text */
+    --color-foreground: #FFFFFF;
+    --color-muted: #777777;
+    --color-on-accent: #000000;
+
+    /* Accents */
+    --color-accent: #2F80FF;
+    --color-accent-cyan: #4DA3FF;
+    --color-accent-orange: #FFD60A;
+    --color-accent-red: #FF4444;
+
+    /* Inactive */
+    --color-inactive: #3D3D3D;
+}
+
+@layer base {
+    html {
+        color-scheme: dark;
+        scroll-behavior: smooth;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased;
+    }
+
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-elevated, currentColor);
+    }
+
+    [x-cloak] {
+        display: none !important;
+    }
+}
