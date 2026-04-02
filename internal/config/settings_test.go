@@ -212,6 +212,9 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.SetAppURL != AutoOn {
 		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
 	}
+	if a.SetViteTLS != AutoOn {
+		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
+	}
 	if a.InstallOctane != AutoAsk {
 		t.Errorf("InstallOctane = %q, want %q", a.InstallOctane, AutoAsk)
 	}
@@ -304,6 +307,9 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 	if a.SetAppURL != AutoOn {
 		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
+	}
+	if a.SetViteTLS != AutoOn {
+		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
 	}
 	if a.InstallOctane != AutoAsk {
 		t.Errorf("InstallOctane = %q, want %q", a.InstallOctane, AutoAsk)

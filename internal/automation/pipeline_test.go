@@ -230,6 +230,7 @@ func TestLookupGate(t *testing.T) {
 		{"copy_env", a.CopyEnv},
 		{"generate_key", a.GenerateKey},
 		{"set_app_url", a.SetAppURL},
+		{"set_vite_tls", a.SetViteTLS},
 		{"install_octane", a.InstallOctane},
 		{"create_database", a.CreateDatabase},
 		{"run_migrations", a.RunMigrations},
