@@ -71,18 +71,16 @@ pv link --name=myapp ~/Code/myapp`,
 		globalPHP := settings.Defaults.PHP
 
 		// Check if project is already linked — if so, update in place.
-		var relink bool
-		var preservedServices *registry.ProjectServices
-		var preservedDatabases []string
-		if existing := reg.Find(name); existing != nil {
-			relink = true
-			preservedServices = existing.Services
-			preservedDatabases = existing.Databases
-
+		relink := reg.Find(name) != nil
+		if relink {
 			// Clean up old configs before pipeline regenerates them.
-			_ = caddy.RemoveSiteConfig(name)
+			if err := caddy.RemoveSiteConfig(name); err != nil {
+				return fmt.Errorf("cannot remove old site config: %w", err)
+			}
 			hostname := name + "." + settings.Defaults.TLD
-			_ = certs.RemoveSiteTLS(hostname)
+			if err := certs.RemoveSiteTLS(hostname); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not remove old TLS certs: %v", err))
+			}
 		}
 
 		projectType := detection.Detect(absPath)
@@ -93,15 +91,16 @@ pv link --name=myapp ~/Code/myapp`,
 		}
 
 		// Register or update project.
-		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
 		if relink {
-			project.Services = preservedServices
-			project.Databases = preservedDatabases
-			if err := reg.Update(project); err != nil {
+			if err := reg.UpdateWith(name, func(p *registry.Project) {
+				p.Path = absPath
+				p.Type = projectType
+				p.PHP = phpVersion
+			}); err != nil {
 				return err
 			}
 		} else {
-			if err := reg.Add(project); err != nil {
+			if err := reg.Add(registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}); err != nil {
 				return err
 			}
 		}

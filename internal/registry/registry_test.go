@@ -122,13 +122,16 @@ func TestRemove_Last(t *testing.T) {
 	}
 }
 
-func TestUpdate_Existing(t *testing.T) {
+func TestUpdateWith_Existing(t *testing.T) {
 	r := &Registry{}
 	_ = r.Add(Project{Name: "foo", Path: "/tmp/foo", Type: "php"})
 
-	err := r.Update(Project{Name: "foo", Path: "/tmp/foo2", Type: "laravel"})
+	err := r.UpdateWith("foo", func(p *Project) {
+		p.Path = "/tmp/foo2"
+		p.Type = "laravel"
+	})
 	if err != nil {
-		t.Fatalf("Update() error = %v", err)
+		t.Fatalf("UpdateWith() error = %v", err)
 	}
 	if len(r.Projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(r.Projects))
@@ -141,29 +144,59 @@ func TestUpdate_Existing(t *testing.T) {
 	}
 }
 
-func TestUpdate_NonExistent(t *testing.T) {
+func TestUpdateWith_NonExistent(t *testing.T) {
 	r := &Registry{}
-	err := r.Update(Project{Name: "foo", Path: "/tmp/foo"})
+	err := r.UpdateWith("foo", func(p *Project) {
+		p.Path = "/tmp/foo"
+	})
 	if err == nil {
 		t.Fatal("expected error for non-existent project, got nil")
 	}
 }
 
-func TestUpdate_PreservesOrder(t *testing.T) {
+func TestUpdateWith_PreservesOrder(t *testing.T) {
 	r := &Registry{}
 	_ = r.Add(Project{Name: "a", Path: "/tmp/a"})
 	_ = r.Add(Project{Name: "b", Path: "/tmp/b"})
 	_ = r.Add(Project{Name: "c", Path: "/tmp/c"})
 
-	err := r.Update(Project{Name: "b", Path: "/tmp/b2", Type: "laravel"})
+	err := r.UpdateWith("b", func(p *Project) {
+		p.Path = "/tmp/b2"
+		p.Type = "laravel"
+	})
 	if err != nil {
-		t.Fatalf("Update() error = %v", err)
+		t.Fatalf("UpdateWith() error = %v", err)
 	}
 	if r.Projects[0].Name != "a" || r.Projects[1].Name != "b" || r.Projects[2].Name != "c" {
 		t.Errorf("expected order [a b c], got [%s %s %s]", r.Projects[0].Name, r.Projects[1].Name, r.Projects[2].Name)
 	}
 	if r.Projects[1].Path != "/tmp/b2" {
 		t.Errorf("expected updated path, got %q", r.Projects[1].Path)
+	}
+}
+
+func TestUpdateWith_PreservesUntouchedFields(t *testing.T) {
+	r := &Registry{}
+	_ = r.Add(Project{
+		Name:      "foo",
+		Path:      "/tmp/foo",
+		Type:      "php",
+		Services:  &ProjectServices{MySQL: "mysql:8.0"},
+		Databases: []string{"foo_db"},
+	})
+
+	err := r.UpdateWith("foo", func(p *Project) {
+		p.Path = "/tmp/foo2"
+		p.Type = "laravel"
+	})
+	if err != nil {
+		t.Fatalf("UpdateWith() error = %v", err)
+	}
+	if r.Projects[0].Services == nil || r.Projects[0].Services.MySQL != "mysql:8.0" {
+		t.Errorf("expected Services preserved, got %v", r.Projects[0].Services)
+	}
+	if len(r.Projects[0].Databases) != 1 || r.Projects[0].Databases[0] != "foo_db" {
+		t.Errorf("expected Databases preserved, got %v", r.Projects[0].Databases)
 	}
 }
 

@@ -137,6 +137,9 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load registry after relink: %v", err)
 	}
+	if len(reg2.List()) != 1 {
+		t.Fatalf("expected 1 project after relink, got %d", len(reg2.List()))
+	}
 	p2 := reg2.Find("myapp")
 	if p2 == nil {
 		t.Fatal("expected project myapp in registry after relink")
@@ -146,6 +149,46 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	}
 	if len(p2.Databases) != 1 || p2.Databases[0] != "myapp" {
 		t.Errorf("expected databases preserved, got %v", p2.Databases)
+	}
+}
+
+func TestLink_RelinkUpdatesPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeDefaultSettings(t)
+
+	projDir1 := t.TempDir()
+	projDir2 := t.TempDir()
+
+	// First link to projDir1.
+	cmd1 := newLinkCmd()
+	cmd1.SetArgs([]string{"link", projDir1, "--name", "myapp"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first link error = %v", err)
+	}
+
+	// Re-link to projDir2.
+	cmd2 := newLinkCmd()
+	cmd2.SetArgs([]string{"link", projDir2, "--name", "myapp"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("re-link error = %v", err)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	if len(reg.List()) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(reg.List()))
+	}
+	p := reg.Find("myapp")
+	if p == nil {
+		t.Fatal("expected project myapp in registry")
+	}
+
+	absPath2, _ := filepath.Abs(projDir2)
+	if p.Path != absPath2 {
+		t.Errorf("path = %q, want %q", p.Path, absPath2)
 	}
 }
 
