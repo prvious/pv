@@ -7,6 +7,8 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/automation/steps"
+	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/laravel"
@@ -62,27 +64,46 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		if existing := reg.Find(name); existing != nil {
-			return fmt.Errorf("%s is already linked at %s\nTo re-link, run: pv unlink %s && pv link %s", name, existing.Path, name, path)
-		}
-
-		projectType := detection.Detect(absPath)
-
 		settings, err := config.LoadSettings()
 		if err != nil {
 			return fmt.Errorf("cannot load settings: %w", err)
 		}
 		globalPHP := settings.Defaults.PHP
 
+		// Check if project is already linked — if so, update in place.
+		var relink bool
+		var preservedServices *registry.ProjectServices
+		var preservedDatabases []string
+		if existing := reg.Find(name); existing != nil {
+			relink = true
+			preservedServices = existing.Services
+			preservedDatabases = existing.Databases
+
+			// Clean up old configs before pipeline regenerates them.
+			_ = caddy.RemoveSiteConfig(name)
+			hostname := name + "." + settings.Defaults.TLD
+			_ = certs.RemoveSiteTLS(hostname)
+		}
+
+		projectType := detection.Detect(absPath)
+
 		phpVersion := globalPHP
 		if v, err := phpenv.ResolveVersion(absPath); err == nil && v != "" {
 			phpVersion = v
 		}
 
-		// Register project.
+		// Register or update project.
 		project := registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}
-		if err := reg.Add(project); err != nil {
-			return err
+		if relink {
+			project.Services = preservedServices
+			project.Databases = preservedDatabases
+			if err := reg.Update(project); err != nil {
+				return err
+			}
+		} else {
+			if err := reg.Add(project); err != nil {
+				return err
+			}
 		}
 
 		// Build automation context.
@@ -129,10 +150,15 @@ pv link --name=myapp ~/Code/myapp`,
 			typeLabel = "unknown"
 		}
 
+		action := "Linked"
+		if relink {
+			action = "Relinked"
+		}
+
 		domain := "https://" + name + "." + settings.Defaults.TLD
 
 		fmt.Fprintln(os.Stderr)
-		ui.Success(fmt.Sprintf("Linked %s", ui.Accent.Bold(true).Render(domain)))
+		ui.Success(fmt.Sprintf("%s %s", action, ui.Accent.Bold(true).Render(domain)))
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Path"), absPath)
 		fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Type"), typeLabel)
