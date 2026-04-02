@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/services"
 )
 
@@ -108,6 +109,39 @@ func (s *SetAppURLStep) Run(ctx *automation.Context) (string, error) {
 		return "", fmt.Errorf("set APP_URL: %w", err)
 	}
 	return appURL, nil
+}
+
+// --- SetViteTLSStep ---
+
+// SetViteTLSStep sets VITE_DEV_SERVER_KEY and VITE_DEV_SERVER_CERT in .env
+// so laravel-vite-plugin can find the TLS certificate for the dev server.
+type SetViteTLSStep struct{}
+
+var _ automation.Step = (*SetViteTLSStep)(nil)
+
+func (s *SetViteTLSStep) Label() string  { return "Set Vite TLS" }
+func (s *SetViteTLSStep) Gate() string   { return "set_vite_tls" }
+func (s *SetViteTLSStep) Critical() bool { return false }
+
+func (s *SetViteTLSStep) ShouldRun(ctx *automation.Context) bool {
+	return isLaravel(ctx.ProjectType) && HasEnvFile(ctx.ProjectPath)
+}
+
+func (s *SetViteTLSStep) Run(ctx *automation.Context) (string, error) {
+	tld := ctx.TLD
+	if tld == "" {
+		tld = "test"
+	}
+	hostname := fmt.Sprintf("%s.%s", ctx.ProjectName, tld)
+	envPath := filepath.Join(ctx.ProjectPath, ".env")
+	vars := map[string]string{
+		"VITE_DEV_SERVER_CERT": certs.CertPath(hostname),
+		"VITE_DEV_SERVER_KEY":  certs.KeyPath(hostname),
+	}
+	if err := services.MergeDotEnv(envPath, "", vars); err != nil {
+		return "", fmt.Errorf("set Vite TLS: %w", err)
+	}
+	return hostname, nil
 }
 
 // --- InstallOctaneStep ---

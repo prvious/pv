@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -174,6 +175,75 @@ func TestSetAppURLStep_Run(t *testing.T) {
 	}
 	if env["APP_URL"] != "https://test-project.test" {
 		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], "https://test-project.test")
+	}
+}
+
+// --- SetViteTLSStep tests ---
+
+func TestSetViteTLSStep_ShouldRun_TrueForLaravel(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_URL=http://localhost"), 0644)
+
+	step := &SetViteTLSStep{}
+	ctx := &automation.Context{ProjectType: "laravel", ProjectPath: dir}
+	if !step.ShouldRun(ctx) {
+		t.Error("expected ShouldRun=true for laravel with .env")
+	}
+}
+
+func TestSetViteTLSStep_ShouldRun_FalseWhenNoEnv(t *testing.T) {
+	dir := t.TempDir()
+	step := &SetViteTLSStep{}
+	ctx := &automation.Context{ProjectType: "laravel", ProjectPath: dir}
+	if step.ShouldRun(ctx) {
+		t.Error("expected ShouldRun=false when no .env")
+	}
+}
+
+func TestSetViteTLSStep_ShouldRun_FalseForPHP(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte(""), 0644)
+	step := &SetViteTLSStep{}
+	ctx := &automation.Context{ProjectType: "php", ProjectPath: dir}
+	if step.ShouldRun(ctx) {
+		t.Error("expected ShouldRun=false for php")
+	}
+}
+
+func TestSetViteTLSStep_Run(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_URL=https://myapp.test\n"), 0644)
+
+	step := &SetViteTLSStep{}
+	ctx := &automation.Context{
+		ProjectPath: dir,
+		ProjectName: "myapp",
+		TLD:         "test",
+	}
+
+	result, err := step.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result == "" {
+		t.Error("expected non-empty result")
+	}
+
+	env, err := services.ReadDotEnv(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatalf("ReadDotEnv: %v", err)
+	}
+
+	certPath := certs.CertPath("myapp.test")
+	keyPath := certs.KeyPath("myapp.test")
+
+	if env["VITE_DEV_SERVER_CERT"] != certPath {
+		t.Errorf("VITE_DEV_SERVER_CERT = %q, want %q", env["VITE_DEV_SERVER_CERT"], certPath)
+	}
+	if env["VITE_DEV_SERVER_KEY"] != keyPath {
+		t.Errorf("VITE_DEV_SERVER_KEY = %q, want %q", env["VITE_DEV_SERVER_KEY"], keyPath)
 	}
 }
 
