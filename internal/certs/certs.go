@@ -34,7 +34,7 @@ func GenerateSiteCert(hostname, caCertPath, caKeyPath, certPath, keyPath string)
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject:      pkix.Name{CommonName: hostname},
-		DNSNames:     []string{hostname},
+		DNSNames:     []string{hostname, "*." + hostname},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(825 * 24 * time.Hour), // 825 days (macOS max for trusted TLS certs)
 		KeyUsage:     x509.KeyUsageDigitalSignature,

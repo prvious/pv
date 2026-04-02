@@ -84,8 +84,8 @@ func TestGenerateSiteCert(t *testing.T) {
 	if cert.Subject.CommonName != "myapp.test" {
 		t.Errorf("CommonName = %q, want %q", cert.Subject.CommonName, "myapp.test")
 	}
-	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "myapp.test" {
-		t.Errorf("DNSNames = %v, want [myapp.test]", cert.DNSNames)
+	if len(cert.DNSNames) != 2 || cert.DNSNames[0] != "myapp.test" || cert.DNSNames[1] != "*.myapp.test" {
+		t.Errorf("DNSNames = %v, want [myapp.test *.myapp.test]", cert.DNSNames)
 	}
 	if cert.NotAfter.Before(time.Now().Add(800 * 24 * time.Hour)) {
 		t.Error("cert expires too soon")
