@@ -236,9 +236,6 @@ var uninstallCmd = &cobra.Command{
 				ui.Subtle(fmt.Sprintf("Could not remove some Vite TLS certs: %v", err))
 			}
 		}
-		if err := certs.RemoveConfig(); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not remove Valet config: %v", err))
-		}
 
 		// Remove ~/.pv directory.
 		if err := ui.Step("Removing ~/.pv...", func() (string, error) {
