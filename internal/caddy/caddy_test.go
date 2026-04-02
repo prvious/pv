@@ -55,8 +55,8 @@ func TestGenerateSiteConfig_LaravelOctane(t *testing.T) {
 
 	content := readSiteConfig(t, "octane-app")
 
-	if !strings.Contains(content, "octane-app.test {") {
-		t.Error("expected domain octane-app.test")
+	if !strings.Contains(content, "octane-app.test, *.octane-app.test {") {
+		t.Error("expected domain octane-app.test with wildcard")
 	}
 	if !strings.Contains(content, "worker {") {
 		t.Error("expected worker block")
@@ -106,6 +106,23 @@ func TestOctaneTemplate_WatchesAutoload_VersionSpecific(t *testing.T) {
 	}
 }
 
+func TestVersionSiteConfig_HasWildcard(t *testing.T) {
+	scaffold(t)
+
+	projDir := t.TempDir()
+	p := registry.Project{Name: "ver-app", Path: projDir, Type: "laravel", PHP: "8.3"}
+
+	if err := GenerateSiteConfig(p, "8.4"); err != nil {
+		t.Fatalf("GenerateSiteConfig() error = %v", err)
+	}
+
+	content := readVersionSiteConfig(t, "8.3", "ver-app")
+
+	if !strings.Contains(content, "http://ver-app.test, http://*.ver-app.test {") {
+		t.Errorf("expected wildcard in version site config, got:\n%s", content)
+	}
+}
+
 func TestGenerateSiteConfig_Laravel(t *testing.T) {
 	scaffold(t)
 
@@ -118,8 +135,8 @@ func TestGenerateSiteConfig_Laravel(t *testing.T) {
 
 	content := readSiteConfig(t, "lara-app")
 
-	if !strings.Contains(content, "lara-app.test {") {
-		t.Error("expected domain lara-app.test")
+	if !strings.Contains(content, "lara-app.test, *.lara-app.test {") {
+		t.Error("expected domain lara-app.test with wildcard")
 	}
 	if !strings.Contains(content, "php_server") {
 		t.Error("expected php_server")
@@ -215,8 +232,8 @@ func TestGenerateSiteConfig_DomainName(t *testing.T) {
 
 	content := readSiteConfig(t, "my-app")
 
-	if !strings.Contains(content, "my-app.test {") {
-		t.Errorf("expected 'my-app.test {' in output, got:\n%s", content)
+	if !strings.Contains(content, "my-app.test, *.my-app.test {") {
+		t.Errorf("expected 'my-app.test, *.my-app.test {' in output, got:\n%s", content)
 	}
 }
 

@@ -23,7 +23,7 @@ const serviceConsoleTmpl = `{{.Subdomain}}.pv.{{.TLD}} {
 
 // --- Templates for the main process (direct serving) ---
 
-const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
+const laravelOctaneTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -40,7 +40,7 @@ const laravelOctaneTmpl = `{{.Name}}.{{.TLD}} {
 }
 `
 
-const laravelTmpl = `{{.Name}}.{{.TLD}} {
+const laravelTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -51,7 +51,7 @@ const laravelTmpl = `{{.Name}}.{{.TLD}} {
 }
 `
 
-const phpTmpl = `{{.Name}}.{{.TLD}} {
+const phpTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -62,7 +62,7 @@ const phpTmpl = `{{.Name}}.{{.TLD}} {
 }
 `
 
-const staticTmpl = `{{.Name}}.{{.TLD}} {
+const staticTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
     tls internal
     root * {{.RootPath}}
     file_server
@@ -71,7 +71,7 @@ const staticTmpl = `{{.Name}}.{{.TLD}} {
 
 // --- Template for reverse proxy (main process proxies to secondary) ---
 
-const proxyTmpl = `{{.Name}}.{{.TLD}} {
+const proxyTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
     tls internal
     reverse_proxy 127.0.0.1:{{.Port}}
 }
@@ -79,7 +79,7 @@ const proxyTmpl = `{{.Name}}.{{.TLD}} {
 
 // --- Templates for secondary FrankenPHP instances ---
 
-const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}} {
+const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -95,7 +95,7 @@ const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}} {
 }
 `
 
-const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}} {
+const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -105,7 +105,7 @@ const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}} {
 }
 `
 
-const versionPhpTmpl = `http://{{.Name}}.{{.TLD}} {
+const versionPhpTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
     root * {{.RootPath}}
     encode zstd gzip
 
