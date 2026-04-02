@@ -122,6 +122,51 @@ func TestRemove_Last(t *testing.T) {
 	}
 }
 
+func TestUpdate_Existing(t *testing.T) {
+	r := &Registry{}
+	_ = r.Add(Project{Name: "foo", Path: "/tmp/foo", Type: "php"})
+
+	err := r.Update(Project{Name: "foo", Path: "/tmp/foo2", Type: "laravel"})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(r.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(r.Projects))
+	}
+	if r.Projects[0].Path != "/tmp/foo2" {
+		t.Errorf("expected path %q, got %q", "/tmp/foo2", r.Projects[0].Path)
+	}
+	if r.Projects[0].Type != "laravel" {
+		t.Errorf("expected type %q, got %q", "laravel", r.Projects[0].Type)
+	}
+}
+
+func TestUpdate_NonExistent(t *testing.T) {
+	r := &Registry{}
+	err := r.Update(Project{Name: "foo", Path: "/tmp/foo"})
+	if err == nil {
+		t.Fatal("expected error for non-existent project, got nil")
+	}
+}
+
+func TestUpdate_PreservesOrder(t *testing.T) {
+	r := &Registry{}
+	_ = r.Add(Project{Name: "a", Path: "/tmp/a"})
+	_ = r.Add(Project{Name: "b", Path: "/tmp/b"})
+	_ = r.Add(Project{Name: "c", Path: "/tmp/c"})
+
+	err := r.Update(Project{Name: "b", Path: "/tmp/b2", Type: "laravel"})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if r.Projects[0].Name != "a" || r.Projects[1].Name != "b" || r.Projects[2].Name != "c" {
+		t.Errorf("expected order [a b c], got [%s %s %s]", r.Projects[0].Name, r.Projects[1].Name, r.Projects[2].Name)
+	}
+	if r.Projects[1].Path != "/tmp/b2" {
+		t.Errorf("expected updated path, got %q", r.Projects[1].Path)
+	}
+}
+
 func TestFind_Existing(t *testing.T) {
 	r := &Registry{}
 	_ = r.Add(Project{Name: "foo", Path: "/tmp/foo"})
