@@ -122,6 +122,8 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 		return a.GenerateKey
 	case "set_app_url":
 		return a.SetAppURL
+	case "set_vite_tls":
+		return a.SetViteTLS
 	case "install_octane":
 		return a.InstallOctane
 	case "create_database":
