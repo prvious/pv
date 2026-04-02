@@ -96,23 +96,99 @@ func TestLink_FileNotDir(t *testing.T) {
 	}
 }
 
-func TestLink_DuplicateName(t *testing.T) {
+func TestLink_RelinkPreservesServices(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	writeDefaultSettings(t)
 
 	projDir := t.TempDir()
 
+	// First link.
 	cmd1 := newLinkCmd()
-	cmd1.SetArgs([]string{"link", projDir, "--name", "dup"})
+	cmd1.SetArgs([]string{"link", projDir, "--name", "myapp"})
 	if err := cmd1.Execute(); err != nil {
 		t.Fatalf("first link error = %v", err)
 	}
 
-	projDir2 := t.TempDir()
+	// Manually add services to the registry entry to simulate bound services.
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	p := reg.Find("myapp")
+	if p == nil {
+		t.Fatal("expected project myapp in registry")
+	}
+	p.Services = &registry.ProjectServices{MySQL: "mysql:8.0"}
+	p.Databases = []string{"myapp"}
+	if err := reg.Save(); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	// Re-link the same project — should succeed, not error.
 	cmd2 := newLinkCmd()
-	cmd2.SetArgs([]string{"link", projDir2, "--name", "dup"})
-	if err := cmd2.Execute(); err == nil {
-		t.Fatal("expected error for duplicate name, got nil")
+	cmd2.SetArgs([]string{"link", projDir, "--name", "myapp"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("re-link should succeed, got error: %v", err)
+	}
+
+	// Verify services and databases were preserved.
+	reg2, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry after relink: %v", err)
+	}
+	if len(reg2.List()) != 1 {
+		t.Fatalf("expected 1 project after relink, got %d", len(reg2.List()))
+	}
+	p2 := reg2.Find("myapp")
+	if p2 == nil {
+		t.Fatal("expected project myapp in registry after relink")
+	}
+	if p2.Services == nil || p2.Services.MySQL != "mysql:8.0" {
+		t.Errorf("expected MySQL service preserved, got services=%v", p2.Services)
+	}
+	if len(p2.Databases) != 1 || p2.Databases[0] != "myapp" {
+		t.Errorf("expected databases preserved, got %v", p2.Databases)
+	}
+}
+
+func TestLink_RelinkUpdatesPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeDefaultSettings(t)
+
+	projDir1 := t.TempDir()
+	projDir2 := t.TempDir()
+
+	// First link to projDir1.
+	cmd1 := newLinkCmd()
+	cmd1.SetArgs([]string{"link", projDir1, "--name", "myapp"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first link error = %v", err)
+	}
+
+	// Re-link to projDir2.
+	cmd2 := newLinkCmd()
+	cmd2.SetArgs([]string{"link", projDir2, "--name", "myapp"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("re-link error = %v", err)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	if len(reg.List()) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(reg.List()))
+	}
+	p := reg.Find("myapp")
+	if p == nil {
+		t.Fatal("expected project myapp in registry")
+	}
+
+	absPath2, _ := filepath.Abs(projDir2)
+	if p.Path != absPath2 {
+		t.Errorf("path = %q, want %q", p.Path, absPath2)
 	}
 }
 

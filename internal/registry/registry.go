@@ -76,6 +76,16 @@ func (r *Registry) Add(p Project) error {
 	return nil
 }
 
+func (r *Registry) UpdateWith(name string, fn func(*Project)) error {
+	for i := range r.Projects {
+		if r.Projects[i].Name == name {
+			fn(&r.Projects[i])
+			return nil
+		}
+	}
+	return fmt.Errorf("project %q not found", name)
+}
+
 func (r *Registry) Remove(name string) error {
 	for i, p := range r.Projects {
 		if p.Name == name {
