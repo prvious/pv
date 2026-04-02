@@ -57,10 +57,6 @@ This ensures the Valet/Vite-compatible cert (used by `laravel-vite-plugin` for t
 - **TLS cert automation step** (`internal/automation/steps/generate_tls_cert.go`): Passes `hostname` as before; the SAN change is internal to `GenerateSiteCert`.
 - **Unlink/cleanup**: Same files to remove, no new artifacts.
 
-### Existing sites
-
-Sites linked before this change get wildcard routing on next `pv start` (daemon regenerates all Caddy configs via `GenerateAllConfigs`). Valet/Vite certs would need `pv unlink && pv link` to regenerate with the wildcard SAN — acceptable since the Valet cert only affects the Vite dev server, not browser TLS to the actual site (Caddy handles that).
-
 ### Testing
 
 - Update existing Caddy template tests to verify wildcard addresses appear in generated configs.
