@@ -31,10 +31,16 @@ func GenerateSiteTLS(hostname string) error {
 	caKeyPath := config.CAKeyPath()
 
 	if _, err := os.Stat(caCertPath); err != nil {
-		return fmt.Errorf("Caddy CA not found at %s (run pv start first to generate it)", caCertPath)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("Caddy CA not found at %s (run pv start first to generate it)", caCertPath)
+		}
+		return fmt.Errorf("cannot access Caddy CA at %s: %w", caCertPath, err)
 	}
 	if _, err := os.Stat(caKeyPath); err != nil {
-		return fmt.Errorf("Caddy CA key not found at %s", caKeyPath)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("Caddy CA key not found at %s", caKeyPath)
+		}
+		return fmt.Errorf("cannot access Caddy CA key at %s: %w", caKeyPath, err)
 	}
 
 	certsDir := CertsDir()

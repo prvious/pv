@@ -99,12 +99,16 @@ func TestRemoveLinkedCerts(t *testing.T) {
 	}
 
 	for _, name := range []string{"app1.test", "app2.test"} {
-		if _, err := os.Stat(filepath.Join(certsDir, name+".crt")); !os.IsNotExist(err) {
-			t.Errorf("%s.crt should be removed", name)
+		for _, ext := range []string{".crt", ".key"} {
+			if _, err := os.Stat(filepath.Join(certsDir, name+ext)); !os.IsNotExist(err) {
+				t.Errorf("%s%s should be removed", name, ext)
+			}
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(certsDir, "other.test.crt")); err != nil {
-		t.Error("other.test.crt should NOT be removed")
+	for _, ext := range []string{".crt", ".key"} {
+		if _, err := os.Stat(filepath.Join(certsDir, "other.test"+ext)); err != nil {
+			t.Errorf("other.test%s should NOT be removed", ext)
+		}
 	}
 }
