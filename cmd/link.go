@@ -136,6 +136,7 @@ pv link --name=myapp ~/Code/myapp`,
 			&steps.DetectServicesStep{},
 			&laravel.DetectServicesStep{},
 			&laravel.SetAppURLStep{},
+			&laravel.SetViteTLSStep{},
 			&laravel.CreateDatabaseStep{},
 			&laravel.RunMigrationsStep{},
 		}

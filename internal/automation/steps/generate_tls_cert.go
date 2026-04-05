@@ -22,9 +22,6 @@ func (s *GenerateTLSCertStep) ShouldRun(_ *automation.Context) bool {
 
 func (s *GenerateTLSCertStep) Run(ctx *automation.Context) (string, error) {
 	hostname := fmt.Sprintf("%s.%s", ctx.ProjectName, ctx.TLD)
-	if err := certs.EnsureValetConfig(ctx.TLD); err != nil {
-		return "", fmt.Errorf("TLS cert setup skipped: %w", err)
-	}
 	if err := certs.GenerateSiteTLS(hostname); err != nil {
 		return "", fmt.Errorf("TLS cert not generated for %s: %w", hostname, err)
 	}

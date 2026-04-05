@@ -58,6 +58,7 @@ type Automation struct {
 	CopyEnv           AutoMode `yaml:"copy_env,omitempty"`
 	GenerateKey       AutoMode `yaml:"generate_key,omitempty"`
 	SetAppURL         AutoMode `yaml:"set_app_url,omitempty"`
+	SetViteTLS        AutoMode `yaml:"set_vite_tls,omitempty"`
 	InstallOctane     AutoMode `yaml:"install_octane,omitempty"`
 	CreateDatabase    AutoMode `yaml:"create_database,omitempty"`
 	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
@@ -86,6 +87,7 @@ func DefaultAutomation() Automation {
 		CopyEnv:            AutoOn,
 		GenerateKey:        AutoOn,
 		SetAppURL:          AutoOn,
+		SetViteTLS:         AutoOn,
 		InstallOctane:      AutoAsk,
 		CreateDatabase:     AutoOn,
 		RunMigrations:      AutoAsk,
@@ -120,6 +122,9 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.SetAppURL) {
 		a.SetAppURL = d.SetAppURL
+	}
+	if !validAutoMode(a.SetViteTLS) {
+		a.SetViteTLS = d.SetViteTLS
 	}
 	if !validAutoMode(a.InstallOctane) {
 		a.InstallOctane = d.InstallOctane
