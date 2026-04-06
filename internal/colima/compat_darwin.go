@@ -1,9 +1,10 @@
+//go:build darwin
+
 package colima
 
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -12,13 +13,9 @@ import (
 const minMacOSMajor = 13 // Ventura, required for --vm-type vz and --mount-type virtiofs
 
 // checkVZCompat verifies the system meets the minimum macOS version for the
-// Virtualization framework (vz) backend. Returns nil on non-Darwin platforms
-// or if the version cannot be determined (fail open).
+// Virtualization framework (vz) backend. Returns nil if the version cannot be
+// determined (fail open).
 func checkVZCompat() error {
-	if runtime.GOOS != "darwin" {
-		return nil
-	}
-
 	ver, err := syscall.Sysctl("kern.osproductversion")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not detect macOS version for VZ compatibility check: %v\n", err)
