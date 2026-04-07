@@ -68,11 +68,21 @@ jobs:
         id: arch
         run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
 
+      - name: Cache spc downloads
+        uses: actions/cache@v4
+        with:
+          path: dist/static-php-cli/downloads
+          key: spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-${{ needs.resolve-version.outputs.ref }}
+          restore-keys: |
+            spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-
+
       - name: Build FrankenPHP with PHP ${{ matrix.php }}
         env:
           PHP_VERSION: ${{ matrix.php }}
           FRANKENPHP_VERSION: ${{ needs.resolve-version.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPC_OPT_DOWNLOAD_ARGS: "--ignore-cache-sources=php-src --retry 5 --prefer-pre-built"
+          CI: ""
         run: ./build-static.sh
 
       - name: Upload logs on failure
