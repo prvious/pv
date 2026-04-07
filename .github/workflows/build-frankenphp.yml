@@ -46,7 +46,7 @@ jobs:
       matrix:
         php: ["8.3", "8.4", "8.5"]
     name: PHP ${{ matrix.php }}
-    runs-on: macos-26
+    runs-on: macos-15
     permissions:
       contents: read
     env:
