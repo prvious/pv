@@ -168,5 +168,5 @@ func phpCLIURL(fullVersion string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported OS for PHP CLI: %s", runtime.GOOS)
 	}
-	return fmt.Sprintf("https://dl.static-php.dev/static-php-cli/common/php-%s-cli-%s-%s.tar.gz", fullVersion, osName, arch), nil
+	return fmt.Sprintf("https://dl.static-php.dev/static-php-cli/bulk/php-%s-cli-%s-%s.tar.gz", fullVersion, osName, arch), nil
 }
