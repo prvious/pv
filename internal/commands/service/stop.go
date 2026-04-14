@@ -7,6 +7,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -33,7 +34,12 @@ var stopCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr)
 				return nil
 			}
-			for key := range svcs {
+			for key, inst := range svcs {
+				if inst.Kind == "binary" {
+					// Binary services are managed by the daemon; nothing to do here.
+					// A subsequent SignalDaemon call will reconcile them.
+					continue
+				}
 				if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {
 					svcName, version := services.ParseServiceKey(key)
 					svcDef, lookupErr := services.Lookup(svcName)
@@ -61,6 +67,39 @@ var stopCmd = &cobra.Command{
 				applyFallbacksToLinkedProjects(reg, svcName)
 			}
 		} else {
+			// Dispatch on service kind. Binary services don't use the versioned-key
+			// machinery below; they flip a registry flag and let the daemon reconcile.
+			kind, binSvc, _, resErr := resolveKind(reg, args[0])
+			if resErr != nil {
+				return resErr
+			}
+			if kind == kindBinary {
+				name := binSvc.Name()
+				inst, ok := reg.Services[name]
+				if !ok {
+					return fmt.Errorf("%s not registered", name)
+				}
+				fls := false
+				inst.Enabled = &fls
+				if err := reg.Save(); err != nil {
+					return fmt.Errorf("cannot save registry: %w", err)
+				}
+				if server.IsRunning() {
+					if err := server.SignalDaemon(); err != nil {
+						// Registry updated but daemon didn't pick up the change.
+						// Don't print "reconciled" — the supervised process is
+						// still running.
+						ui.Fail(fmt.Sprintf("%s disabled in registry, but could not signal daemon: %v", binSvc.DisplayName(), err))
+						ui.Subtle("Run `pv restart` to stop the supervised process.")
+						return nil
+					}
+					ui.Success(fmt.Sprintf("%s disabled; daemon reconciled", binSvc.DisplayName()))
+				} else {
+					ui.Success(fmt.Sprintf("%s disabled", binSvc.DisplayName()))
+				}
+				return nil
+			}
+
 			key := args[0]
 			var resolveErr error
 			key, resolveErr = reg.ResolveServiceKey(key)

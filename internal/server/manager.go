@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/supervisor"
 )
 
 // ServerManager owns the main and secondary FrankenPHP instances.
@@ -18,13 +22,16 @@ type ServerManager struct {
 	mu          sync.Mutex
 	main        *FrankenPHP
 	secondaries map[string]*FrankenPHP // version -> instance
+	supervisor  *supervisor.Supervisor // binary services; may be nil in tests
 }
 
-// NewServerManager creates a manager with the given main FrankenPHP instance.
-func NewServerManager(main *FrankenPHP) *ServerManager {
+// NewServerManager creates a manager with the given main FrankenPHP instance
+// and an optional supervisor for native binary services.
+func NewServerManager(main *FrankenPHP, sup *supervisor.Supervisor) *ServerManager {
 	return &ServerManager{
 		main:        main,
 		secondaries: make(map[string]*FrankenPHP),
+		supervisor:  sup,
 	}
 }
 
@@ -99,8 +106,29 @@ func (m *ServerManager) Reconcile() error {
 		return fmt.Errorf("reconcile: reload main FrankenPHP: %w", err)
 	}
 
+	// Phase 2: binary services. Errors are logged and also folded into the
+	// return value so callers (service:add, etc.) can see that a binary
+	// failed to come up rather than getting a false "reconciled" signal.
+	binaryErr := m.reconcileBinaryServices(context.Background())
+	if binaryErr != nil {
+		fmt.Fprintf(os.Stderr, "Reconcile: %v\n", binaryErr)
+	}
+
+	// Phase 3: refresh daemon-status snapshot.
+	if err := writeDaemonStatus(m.supervisor); err != nil {
+		fmt.Fprintf(os.Stderr, "Reconcile: write daemon-status: %v\n", err)
+	}
+
+	// Combine secondary-instance and binary-service errors for the caller.
+	var parts []string
 	if len(startErrors) > 0 {
-		return fmt.Errorf("reconcile: %d secondary instance(s) failed: %s", len(startErrors), strings.Join(startErrors, "; "))
+		parts = append(parts, fmt.Sprintf("secondary instances: %s", strings.Join(startErrors, "; ")))
+	}
+	if binaryErr != nil {
+		parts = append(parts, fmt.Sprintf("binary services: %v", binaryErr))
+	}
+	if len(parts) > 0 {
+		return fmt.Errorf("reconcile failed: %s", strings.Join(parts, "; "))
 	}
 	return nil
 }
@@ -108,6 +136,10 @@ func (m *ServerManager) Reconcile() error {
 // Shutdown stops all secondary FrankenPHP instances.
 // The main instance is stopped separately via its own defer in Start().
 func (m *ServerManager) Shutdown() {
+	if m.supervisor != nil {
+		m.supervisor.StopAll(10 * time.Second)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -128,4 +160,67 @@ func (m *ServerManager) RunningVersions() []string {
 		versions = append(versions, v)
 	}
 	return versions
+}
+
+// reconcileBinaryServices brings supervisor state in line with the binary
+// entries in the registry. Enabled entries are started if not yet running;
+// disabled or removed entries are stopped.
+// Errors from individual services are collected and logged but do not abort
+// the overall reconcile.
+func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
+	if m.supervisor == nil {
+		return nil
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		return fmt.Errorf("reconcile binary: load registry: %w", err)
+	}
+
+	// Compute which binary services the registry wants running.
+	// Map key is the binary name (e.g. "rustfs"), not the service name ("s3"),
+	// because the supervisor keys by binary name.
+	needed := map[string]services.BinaryService{}
+	for name, svc := range services.AllBinary() {
+		entry := reg.Services[name]
+		if entry == nil || entry.Kind != "binary" {
+			continue
+		}
+		// nil Enabled means enabled (back-compat).
+		if entry.Enabled != nil && !*entry.Enabled {
+			continue
+		}
+		needed[svc.Binary().Name] = svc
+	}
+
+	// Stop supervised processes no longer needed.
+	for _, binName := range m.supervisor.SupervisedNames() {
+		if _, ok := needed[binName]; !ok {
+			if err := m.supervisor.Stop(binName, 10*time.Second); err != nil {
+				fmt.Fprintf(os.Stderr, "reconcile binary: stop %s: %v\n", binName, err)
+			}
+		}
+	}
+
+	// Start needed processes not currently supervised.
+	var startErrors []string
+	for binName, svc := range needed {
+		if m.supervisor.IsRunning(binName) {
+			continue
+		}
+		proc, err := buildSupervisorProcess(svc)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("%s: build: %v", binName, err))
+			continue
+		}
+		if err := m.supervisor.Start(ctx, proc); err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("%s: start: %v", binName, err))
+			continue
+		}
+	}
+
+	if len(startErrors) > 0 {
+		return fmt.Errorf("binary reconcile: %d service(s) failed: %s", len(startErrors), strings.Join(startErrors, "; "))
+	}
+	return nil
 }

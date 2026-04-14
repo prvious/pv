@@ -364,12 +364,16 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 			svcName = key[:idx]
 		}
 
-		svc, err := services.Lookup(svcName)
-		if err != nil {
+		var routes []services.WebRoute
+		if dockerSvc, err := services.Lookup(svcName); err == nil {
+			routes = dockerSvc.WebRoutes()
+		} else if binSvc, ok := services.LookupBinary(svcName); ok {
+			routes = binSvc.WebRoutes()
+		} else {
 			continue
 		}
 
-		for _, route := range svc.WebRoutes() {
+		for _, route := range routes {
 			var buf bytes.Buffer
 			if err := tmpl.Execute(&buf, serviceConsoleData{
 				Subdomain: route.Subdomain,

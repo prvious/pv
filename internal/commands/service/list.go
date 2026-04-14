@@ -8,6 +8,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -40,8 +41,44 @@ var listCmd = &cobra.Command{
 			ui.Subtle(fmt.Sprintf("Cannot connect to Docker: %v", engineErr))
 		}
 
+		snap, _ := server.ReadDaemonStatus()
 		var rows [][]string
 		for key, svc := range svcs {
+			if svc.Kind == "binary" {
+				binDef, ok := services.LookupBinary(key)
+				if !ok {
+					continue
+				}
+				enabled := true
+				if svc.Enabled != nil {
+					enabled = *svc.Enabled
+				}
+				running := false
+				if snap != nil {
+					if st, exists := snap.Supervised[binDef.Binary().Name]; exists {
+						running = st.Running
+					}
+				}
+				status := "stopped"
+				if running {
+					status = "running"
+				} else if !enabled {
+					status = "disabled"
+				}
+				portStr := fmt.Sprintf(":%d", svc.Port)
+				if svc.ConsolePort > 0 {
+					portStr += fmt.Sprintf(", :%d", svc.ConsolePort)
+				}
+				projects := reg.ProjectsUsingService(key)
+				projectStr := "-"
+				if len(projects) > 0 {
+					projectStr = strings.Join(projects, ", ")
+				}
+				rows = append(rows, []string{key, status, portStr, projectStr})
+				continue
+			}
+
+			// Docker branch.
 			svcName, version := services.ParseServiceKey(key)
 
 			status := "added"

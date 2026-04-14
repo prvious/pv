@@ -114,6 +114,35 @@ func TestFetchLatestVersion_GitHub(t *testing.T) {
 	}
 }
 
+func TestFetchLatestVersion_Rustfs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"tag_name":"1.0.0-alpha.93"}]`))
+	}))
+	defer srv.Close()
+
+	version, err := fetchLatestVersionFromURL(srv.Client(), "rustfs", srv.URL)
+	if err != nil {
+		t.Fatalf("fetchLatestVersionFromURL() error = %v", err)
+	}
+	if version != "1.0.0-alpha.93" {
+		t.Errorf("fetchLatestVersionFromURL() = %q, want %q", version, "1.0.0-alpha.93")
+	}
+}
+
+func TestFetchLatestVersion_Rustfs_EmptyArray_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	_, err := fetchLatestVersionFromURL(srv.Client(), "rustfs", srv.URL)
+	if err == nil {
+		t.Error("fetchLatestVersionFromURL() with empty array should return error, got nil")
+	}
+}
+
 // urlRewriteTransport redirects all requests to a test server URL.
 type urlRewriteTransport struct {
 	base    http.RoundTripper

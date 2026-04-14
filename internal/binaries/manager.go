@@ -36,6 +36,8 @@ func DownloadURL(b Binary, version string) (string, error) {
 		return magoURL(version)
 	case "composer":
 		return composerURL(), nil
+	case "rustfs":
+		return rustfsURL(version)
 	default:
 		return "", fmt.Errorf("unknown binary: %s", b.Name)
 	}
@@ -56,6 +58,8 @@ func LatestVersionURL(b Binary) string {
 	switch b.Name {
 	case "mago":
 		return "https://api.github.com/repos/carthage-software/mago/releases/latest"
+	case "rustfs":
+		return "https://api.github.com/repos/rustfs/rustfs/releases?per_page=1"
 	default:
 		return ""
 	}

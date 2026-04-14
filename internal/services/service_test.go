@@ -5,7 +5,8 @@ import (
 )
 
 func TestLookup_Valid(t *testing.T) {
-	for _, name := range []string{"mail", "mysql", "postgres", "redis", "s3"} {
+	// s3 is now a BinaryService (RustFS), not in the Docker registry.
+	for _, name := range []string{"mail", "mysql", "postgres", "redis"} {
 		svc, err := Lookup(name)
 		if err != nil {
 			t.Errorf("Lookup(%q) error = %v", name, err)
@@ -43,6 +44,7 @@ func TestServiceKey(t *testing.T) {
 
 func TestAvailable(t *testing.T) {
 	names := Available()
+	// 4 Docker services (mail, mysql, postgres, redis) + 1 binary service (s3 via RustFS).
 	if len(names) != 5 {
 		t.Errorf("Available() returned %d services, want 5", len(names))
 	}
