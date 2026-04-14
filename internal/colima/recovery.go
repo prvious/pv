@@ -1,17 +1,22 @@
 package colima
 
 import (
+	"sort"
+
 	"github.com/prvious/pv/internal/registry"
 )
 
-// RecoverServices checks all registered services and ensures their containers
-// are running. This is called on daemon start after Colima is verified running.
-// The actual Docker operations are performed by the caller since we don't import
-// the container package here to avoid circular dependencies.
+// ServicesToRecover returns the registry keys of docker-backed services that
+// the caller should ensure are running. Binary-backed services are handled
+// by the supervisor inside the daemon and must not be recovered here.
 func ServicesToRecover(reg *registry.Registry) []string {
 	var keys []string
-	for key := range reg.Services {
+	for key, inst := range reg.Services {
+		if inst.Kind == "binary" {
+			continue
+		}
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 	return keys
 }

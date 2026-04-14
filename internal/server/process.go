@@ -19,6 +19,7 @@ import (
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/supervisor"
 	"github.com/prvious/pv/internal/watcher"
 )
 
@@ -90,8 +91,8 @@ func Start(tld string) error {
 	fmt.Fprintf(os.Stderr, "Serving .%s domains on https (port 443) and http (port 80)\n", tld)
 
 	// Create the server manager and reconcile secondary instances.
-	// TODO(Task 9): pass a real supervisor once wired into Start().
-	manager = NewServerManager(mainFP, nil)
+	sup := supervisor.New()
+	manager = NewServerManager(mainFP, sup)
 	defer func() {
 		manager.Shutdown()
 		manager = nil
@@ -124,7 +125,13 @@ func Start(tld string) error {
 	// This avoids blocking DNS + FrankenPHP startup on the ~15s VM boot.
 	colimaCtx, colimaCancel := context.WithCancel(context.Background())
 	defer colimaCancel()
-	if colima.IsInstalled() && len(reg.ListServices()) > 0 {
+	dockerCount := 0
+	for _, inst := range reg.ListServices() {
+		if inst.Kind != "binary" {
+			dockerCount++
+		}
+	}
+	if colima.IsInstalled() && dockerCount > 0 {
 		go bootColimaAndRecover(colimaCtx, settings.Defaults.VM)
 	}
 
