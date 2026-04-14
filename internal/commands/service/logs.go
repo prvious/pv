@@ -2,7 +2,10 @@ package service
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
@@ -23,6 +26,41 @@ var logsCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
+
+		kind, binSvc, _, kindErr := resolveKind(reg, args[0])
+		if kindErr != nil {
+			return kindErr
+		}
+		if kind == kindBinary {
+			logPath := filepath.Join(config.PvDir(), "logs", binSvc.Binary().Name+".log")
+			f, err := os.Open(logPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("no log file yet (%s). Has the service run?", logPath)
+				}
+				return err
+			}
+			defer f.Close()
+			// Dump existing content.
+			if _, err := io.Copy(os.Stdout, f); err != nil {
+				return err
+			}
+			// Follow mode (like tail -f). Poll every 250ms for new data; exit on Ctrl-C.
+			for {
+				select {
+				case <-cmd.Context().Done():
+					return nil
+				case <-time.After(250 * time.Millisecond):
+				}
+				if _, err := io.Copy(os.Stdout, f); err != nil {
+					if err == io.EOF {
+						continue
+					}
+					return err
+				}
+			}
+		}
+
 		key, resolveErr := reg.ResolveServiceKey(key)
 		if resolveErr != nil {
 			return resolveErr
