@@ -1,9 +1,7 @@
 package phpenv
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"runtime"
@@ -15,6 +13,12 @@ import (
 const (
 	// releaseRepo is the GitHub repository hosting custom FrankenPHP + PHP CLI builds.
 	releaseRepo = "prvious/pv"
+
+	// artifactsTag is the fixed, non-versioned release that hosts all FrankenPHP
+	// and static PHP CLI binaries. It's rebuilt by the weekly cron / manual
+	// dispatch of build-frankenphp.yml and is independent of pv's own versioned
+	// releases, which only ship the pv binary itself.
+	artifactsTag = "artifacts"
 )
 
 // Install downloads and installs a PHP version (FrankenPHP + PHP CLI).
@@ -30,19 +34,13 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 		return fmt.Errorf("cannot create version directory: %w", err)
 	}
 
-	// 1. Find the latest FrankenPHP release tag from prvious/pv.
-	tag, err := latestReleaseTag(client)
-	if err != nil {
-		return fmt.Errorf("cannot find latest release: %w", err)
-	}
-
-	// 2. Download FrankenPHP binary for this PHP version.
+	// 1. Download FrankenPHP binary for this PHP version.
 	assetName, err := frankenphpAssetName(phpVersion)
 	if err != nil {
 		return err
 	}
 
-	fpURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", releaseRepo, tag, assetName)
+	fpURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", releaseRepo, artifactsTag, assetName)
 	fpDest := FrankenPHPPath(phpVersion)
 
 	if err := binaries.DownloadProgress(client, fpURL, fpDest, progress); err != nil {
@@ -52,9 +50,9 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 		return err
 	}
 
-	// 3. Download PHP CLI from the same release. Built alongside FrankenPHP
-	// so both binaries share an identical extension set.
-	phpURL, err := phpCLIURL(tag, phpVersion)
+	// 2. Download PHP CLI from the same artifacts release. Built alongside
+	// FrankenPHP so both binaries share an identical extension set.
+	phpURL, err := phpCLIURL(artifactsTag, phpVersion)
 	if err != nil {
 		return err
 	}
@@ -76,39 +74,6 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 	}
 
 	return nil
-}
-
-// latestReleaseTag fetches the latest release tag from the prvious/pv repo.
-func latestReleaseTag(client *http.Client) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", releaseRepo)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-	binaries.SetGitHubHeaders(req)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.Unmarshal(body, &release); err != nil {
-		return "", err
-	}
-	return release.TagName, nil
 }
 
 // frankenphpAssetName returns the release asset name for the current platform.
