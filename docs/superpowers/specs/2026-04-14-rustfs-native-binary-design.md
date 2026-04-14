@@ -22,7 +22,7 @@ This spec establishes RustFS as the first binary-backed service, and lays down t
 
 - Do **not** touch the Docker code path for mail / mysql / postgres / redis. They remain Docker-backed in this change.
 - Do **not** refactor the existing `Service` interface. It stays frozen; `BinaryService` is parallel.
-- Do **not** build cross-service IPC. Daemon auto-restart is the mechanism for picking up service state changes.
+- Do **not** build new CLI↔daemon IPC. `server.SignalDaemon()` (existing SIGHUP mechanism, see `docs/superpowers/specs/2026-03-27-server-reconcile-design.md`) is the channel for state changes.
 - Do **not** generate per-install credentials. Keep the existing hardcoded `rstfsadmin/rstfsadmin` for continuity.
 - Do **not** add log rotation, resource limits, or structured health probes beyond "process is alive and port responds once at startup."
 
@@ -38,7 +38,6 @@ This spec establishes RustFS as the first binary-backed service, and lays down t
 | `internal/supervisor/supervisor.go` | Child-process supervisor: spawn, ready-wait, crash-restart, graceful-stop |
 | `internal/supervisor/supervisor_test.go` | Unit tests using a `//go:build testhelper` tagged helper binary |
 | `internal/commands/service/dispatch.go` | Shared `resolveKind` helper used by every `service:*` command |
-| `internal/commands/service/restart.go` | `autoRestart(ctx)` helper — daemon-restart-if-running used by every binary-service mutation |
 | `scripts/e2e/s3-binary.sh` | New e2e phase that exercises the full binary flow |
 
 ### Modified files
@@ -48,11 +47,12 @@ This spec establishes RustFS as the first binary-backed service, and lays down t
 | `internal/services/service.go` | Narrow `registry` (Docker-only) to mail/mysql/postgres/redis; add `LookupDocker`, `Lookup(kind)`; `Available()` returns union |
 | `internal/binaries/manager.go` | Add `"rustfs":` cases in `DownloadURL` and `LatestVersionURL`. Do **not** add Rustfs to `Tools()` (it's a backing service, not a user-exposed tool) |
 | `internal/registry/registry.go` | `ServiceInstance` gains `Kind string` and `Enabled *bool` fields (both JSON `omitempty`; missing defaults preserve current Docker behavior) |
-| `internal/server/process.go` | `Start()` instantiates `supervisor.Supervisor`, spawns registered+enabled binary services, writes `daemon-status.json`, uses `defer sup.StopAll(10*time.Second)` |
-| `internal/commands/service/add.go` | Use `resolveKind`; binary path downloads + registers + `autoRestart` |
-| `internal/commands/service/start.go` | Binary path: set `Enabled=true`, `autoRestart` |
-| `internal/commands/service/stop.go` | Binary path: set `Enabled=false`, `autoRestart` |
-| `internal/commands/service/remove.go` | Binary path: unregister + delete binary + `autoRestart` |
+| `internal/server/manager.go` | `ServerManager` gains a `supervisor *supervisor.Supervisor` field. `Reconcile()` is extended with a binary-service reconcile phase (diff registry vs. supervisor state, start/stop as needed). `Shutdown()` calls `supervisor.StopAll(10 * time.Second)` |
+| `internal/server/process.go` | `Start()` instantiates the supervisor, hands it to `NewServerManager`, and writes `daemon-status.json` from the reconcile path. Existing SIGHUP handler unchanged — it calls `Reconcile()` which now also handles binary services |
+| `internal/commands/service/add.go` | Use `resolveKind`; binary path downloads + registers + `server.SignalDaemon()` |
+| `internal/commands/service/start.go` | Binary path: set `Enabled=true`, `server.SignalDaemon()` |
+| `internal/commands/service/stop.go` | Binary path: set `Enabled=false`, `server.SignalDaemon()` |
+| `internal/commands/service/remove.go` | Binary path: unregister + delete binary + `server.SignalDaemon()` |
 | `internal/commands/service/destroy.go` | Binary path: `remove` + delete `~/.pv/data/s3/` |
 | `internal/commands/service/status.go` | Read `~/.pv/daemon-status.json` for binary services; fall back to "registered, not running" if daemon down |
 | `internal/commands/service/list.go` | Merged table across Docker + binary services |
@@ -157,9 +157,83 @@ func (s *Supervisor) Pid(name string) int
 
 4. `StopAll(timeout)`: `Stop` every process in parallel; caller's `timeout` is per-process, not total.
 
+### `ServerManager` extension (existing type, new responsibility)
+
+`ServerManager` already owns the main + secondary FrankenPHP instances and exposes `Reconcile()` for SIGHUP-driven reconciliation (see `docs/superpowers/specs/2026-03-27-server-reconcile-design.md`). We extend it:
+
+```go
+type ServerManager struct {
+    mu          sync.Mutex
+    main        *FrankenPHP
+    secondaries map[string]*FrankenPHP
+    supervisor  *supervisor.Supervisor // NEW
+}
+```
+
+`Reconcile()` gains a second phase after the existing FrankenPHP phase:
+
+```go
+func (m *ServerManager) Reconcile() error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    // (existing) regenerate Caddyfiles, diff secondaries, reload main
+
+    // NEW: reconcile binary services
+    if err := m.reconcileBinaryServices(); err != nil {
+        // non-fatal — log and continue
+        fmt.Fprintf(os.Stderr, "Reconcile: binary service(s) failed: %v\n", err)
+    }
+
+    // NEW: write daemon-status.json reflecting supervisor state
+    writeDaemonStatus(m.supervisor)
+
+    return nil
+}
+
+func (m *ServerManager) reconcileBinaryServices() error {
+    reg, err := registry.Load()
+    if err != nil { return err }
+
+    needed := map[string]services.BinaryService{} // enabled + registered
+    for name, svc := range services.AllBinary() {
+        entry := reg.FindService(name)
+        if entry == nil || entry.Kind != "binary" { continue }
+        if entry.Enabled != nil && !*entry.Enabled { continue }
+        needed[name] = svc
+    }
+
+    // Stop supervised processes that are no longer needed.
+    for _, name := range m.supervisor.SupervisedNames() {
+        if _, ok := needed[name]; !ok {
+            m.supervisor.Stop(name, 10*time.Second)
+        }
+    }
+
+    // Start processes that are needed but not running.
+    for name, svc := range needed {
+        if m.supervisor.IsRunning(name) { continue }
+        proc, err := buildSupervisorProcess(svc)
+        if err != nil {
+            // collect error, continue with the rest
+            continue
+        }
+        if err := m.supervisor.Start(ctx, proc); err != nil {
+            // collect error, continue
+            continue
+        }
+    }
+    return nil
+}
+```
+
+`Shutdown()` gets one line added: `m.supervisor.StopAll(10 * time.Second)`.
+
+`SupervisedNames()` is a small new method on `Supervisor` returning the keys of its internal processes map — existing supervisor API from §3 wasn't quite enough.
+
 ### `daemon-status.json`
 
-Written by the daemon to `~/.pv/daemon-status.json` on startup and on every supervisor state change:
+Written by the daemon from `Reconcile()` — so every SIGHUP produces a fresh snapshot:
 
 ```json
 {
@@ -173,6 +247,7 @@ Written by the daemon to `~/.pv/daemon-status.json` on startup and on every supe
 
 - CLI-only readers. No locking.
 - Stale-detection: if `pid` isn't alive, treat file as stale, behave as if daemon is down.
+- On crash-budget exhaustion inside the supervisor, the supervisor marks the process as not running; next reconcile (the 5-in-60s cap is a background event, not a reconcile trigger) will reflect that in the JSON. For immediate freshness after a background event, we can add a callback from supervisor → ServerManager later; v1 keeps it pull-based for simplicity.
 
 ## Data Flow
 
@@ -181,30 +256,29 @@ Written by the daemon to `~/.pv/daemon-status.json` on startup and on every supe
 1. `resolveKind("s3")` returns `kindBinary`, `RustFS{}`, `nil`, `nil`.
 2. `binaries.Download(binaries.Rustfs, latest)` fetches `rustfs-{platform}-latest.zip`, extracts to `~/.pv/internal/bin/rustfs`, writes `~/.pv/internal/bin/rustfs.version`.
 3. `registry.Put("s3", ServiceInstance{Kind: "binary", Port: 9000, ConsolePort: 9001, Enabled: &trueVal})`.
-4. `autoRestart(ctx)` → daemon not running, prints "daemon not running — changes will apply on next `pv start`". No-op otherwise.
+4. `server.SignalDaemon()` is a no-op (PID file missing or stale). Print "daemon not running — changes will apply on next `pv start`".
 
 ### `pv start` (after above)
 
 1. Existing FrankenPHP startup runs.
-2. `sup := supervisor.New()`; `defer sup.StopAll(10 * time.Second)`.
-3. For each entry in `services.AllBinary()` that is registered and enabled:
-   - Translate `BinaryService` → `supervisor.Process` via `buildSupervisorProcess(svc)`.
-   - `sup.Start(ctx, proc)`. On failure: log via `ui.Fail`, continue (non-fatal).
-4. `writeDaemonStatus(sup)`.
-5. Existing signal-handling loop; on shutdown, `sup.StopAll(10 s)` via defer.
+2. `sup := supervisor.New()`; pass it to `NewServerManager(main, sup)`.
+3. `manager.Reconcile()` runs as part of boot (existing behavior). The new binary-service phase observes the registry entry for `s3`, sees nothing supervised yet, and calls `sup.Start(ctx, proc)`. On per-service failure: log and continue (non-fatal).
+4. `writeDaemonStatus(sup)` runs from inside `Reconcile()`.
+5. Existing signal-handling loop. On shutdown, `manager.Shutdown()` calls `sup.StopAll(10s)`.
 
 ### `pv service:stop s3` (daemon running)
 
 1. Load registry; find `s3` entry with `Kind == "binary"`.
 2. Set `Enabled = &falseVal`; save registry.
-3. `autoRestart(ctx)` → daemon restart. Post-restart, spawn loop skips `s3` because it's disabled. Result: `rustfs` is no longer supervised.
-4. Print "s3 disabled; daemon restarted — rustfs no longer supervised."
+3. `server.SignalDaemon()` → daemon receives SIGHUP → `Reconcile()` runs. Binary-service phase sees `s3` in `needed={}` (disabled), calls `supervisor.Stop("rustfs", 10s)`. FrankenPHP is untouched.
+4. Print "s3 disabled".
 
 ### `pv service:remove s3` (daemon running)
 
 1. Delete registry entry.
 2. Remove `~/.pv/internal/bin/rustfs` and `~/.pv/internal/bin/rustfs.version`.
-3. `autoRestart(ctx)` → daemon restart. Supervisor spawn loop skips (no registry entry). Data directory preserved.
+3. `server.SignalDaemon()` → `Reconcile()` → supervisor sees `s3` is no longer needed → `Stop("rustfs", 10s)`. Data directory preserved.
+4. Print "s3 unregistered, rustfs removed".
 
 ### `pv service:logs s3`
 
@@ -243,28 +317,34 @@ case kindDocker:
 
 | Command | Behavior |
 |---------|----------|
-| `service:add s3` | Download binary → register (`Kind=binary`, `Enabled=true`) → `autoRestart` |
-| `service:start s3` | Error if not registered. Else set `Enabled=true` → `autoRestart` |
-| `service:stop s3` | Error if not registered. Else set `Enabled=false` → `autoRestart` |
-| `service:remove s3` | Unregister → delete binary → `autoRestart` |
+| `service:add s3` | Download binary → register (`Kind=binary`, `Enabled=true`) → `server.SignalDaemon()` |
+| `service:start s3` | Error if not registered. Else set `Enabled=true` → `server.SignalDaemon()` |
+| `service:stop s3` | Error if not registered. Else set `Enabled=false` → `server.SignalDaemon()` |
+| `service:remove s3` | Unregister → delete binary → `server.SignalDaemon()` |
 | `service:destroy s3` | `remove` + delete `~/.pv/data/s3/` |
 | `service:status s3` | Read `daemon-status.json`; show registered, enabled, pid, restarts |
 | `service:list` | Merged table of all services (both kinds) |
 | `service:logs s3` | Tail `~/.pv/logs/rustfs.log` |
 
-### `autoRestart` helper
+### SignalDaemon usage
 
-```go
-func autoRestart(ctx context.Context) error {
-    if !daemon.IsRunning() {
-        ui.Subtle("daemon not running — changes will apply on next `pv start`")
-        return nil
-    }
-    return daemon.Restart(ctx) // existing restart path used by `pv restart`
-}
+Every binary-service mutation ends with `server.SignalDaemon()` (already exported from `internal/server/process.go`, already used by `cmd/link.go`, `cmd/unlink.go`, `cmd/restart.go`). If the daemon isn't running, `SignalDaemon` is a no-op — the mutation is persisted, and the state change takes effect on next `pv start`. If the daemon is running, SIGHUP triggers `Reconcile()` which adjusts supervisor state in place — **no FrankenPHP restart, no dropped connections**. This is strictly better than a full daemon restart for this use case.
+
+The CLI command prints a terse confirmation after `SignalDaemon()` returns:
+
+```
+$ pv service:stop s3
+✓ s3 disabled
 ```
 
-Called as the final step of every binary-service mutation. Trade-off users should be aware of (to be documented in command help): a binary `service:stop` triggers a brief FrankenPHP restart. Docker services do not pay this cost; only binary services do.
+When the daemon isn't running, the message is explicit:
+
+```
+$ pv service:add s3
+✓ Downloaded rustfs 1.0.0-alpha.93
+✓ Registered s3 (binary, enabled)
+  daemon not running — service will start on next `pv start`
+```
 
 ## `pv update` Integration
 
@@ -279,18 +359,28 @@ for name, svc := range services.AllBinary() {
 }
 ```
 
-`updateBinaryService` compares the installed version (read from `{binary}.version` sidecar) against `binaries.LatestVersion(svc.Binary())` and re-downloads if newer. If daemon is running and a new binary was written, print "run `pv restart` to run the new version." We do **not** auto-restart here — users running `pv update` may be updating several tools and prefer one restart at the end.
+`updateBinaryService` compares the installed version (read from `{binary}.version` sidecar) against `binaries.LatestVersion(svc.Binary())` and re-downloads if newer. Running supervisor instances keep the *old* binary open via their file descriptor (standard Unix behavior) — a plain `Reconcile()` won't swap the process because `IsRunning()` still reports true. To load the new binary the user runs either:
 
-## Non-fatal Startup Failure Policy
+- `pv service:stop s3 && pv service:start s3` — cycles just that supervised process, FrankenPHP untouched (preferred), or
+- `pv restart` — full daemon restart
 
-If a binary service fails to start during `pv start` (missing binary, port conflict, ReadyCheck timeout), the daemon:
+After the update loop finishes, `pv update` prints a single hint if any binaries were replaced:
 
-1. Logs the failure via `ui.Fail`.
-2. Continues starting any remaining binary services.
-3. Completes FrankenPHP startup.
-4. Reports the failure in `daemon-status.json` under that service's entry.
+```
+Updated binaries: rustfs. Run `pv service:stop s3 && pv service:start s3` (or `pv restart`) to load them.
+```
 
-Result: a user with a misconfigured `s3` still gets FrankenPHP and their projects; they fix `s3` in a follow-up. This matches the existing non-fatal philosophy elsewhere in the daemon.
+We do **not** auto-cycle here — users running `pv update` may be updating several things and prefer to sequence restarts themselves.
+
+## Non-fatal Reconcile Policy
+
+Whether it's boot-time reconcile or SIGHUP-driven reconcile, a failure to start or stop any single binary service (missing binary, port conflict, ReadyCheck timeout, SIGTERM ignored) does **not** abort reconciliation. The pattern:
+
+1. `reconcileBinaryServices()` collects per-service errors instead of returning on first failure.
+2. The outer `Reconcile()` logs collected errors via `fmt.Fprintf(os.Stderr, ...)` and returns nil so the FrankenPHP side of reconciliation isn't disrupted.
+3. `daemon-status.json` reflects the failure under that service's entry (next reconcile writes a fresh snapshot).
+
+This matches the existing behavior for FrankenPHP secondary failures (`startErrors` aggregation in `manager.go`). Result: a user with a misconfigured `s3` still gets FrankenPHP and their projects; they fix `s3` in a follow-up and `SignalDaemon()` to retry.
 
 ## Error Handling
 
@@ -312,7 +402,7 @@ Result: a user with a misconfigured `s3` still gets FrankenPHP and their project
 
 ## Edge Cases
 
-- **Upgrade while supervised.** New binary overwrites the on-disk file; running process keeps old binary via its open file descriptor. Take effect on next daemon restart.
+- **Upgrade while supervised.** New binary overwrites the on-disk file; running process keeps old binary via its open file descriptor. Take effect on `pv service:stop s3 && pv service:start s3` or full daemon restart.
 - **User manually kills rustfs process.** Supervisor detects as crash, restarts after 2 s. To actually stop: `pv service:stop s3`.
 - **Two `pv start` invocations in parallel.** Guarded by existing daemon PID-file singleton logic; inherited.
 - **Orphaned children (daemon SIGKILLed).** On next `pv start`, read previous `daemon-status.json`; for each supervised PID still alive, send SIGTERM before spawning fresh. One-time reconciliation at start.
@@ -324,7 +414,8 @@ Result: a user with a misconfigured `s3` still gets FrankenPHP and their project
 - `internal/binaries/rustfs_test.go`: URL + archive-name construction for every supported `(GOOS, GOARCH)`; error on unsupported pair.
 - `internal/services/rustfs_test.go`: `RustFS{}` method outputs for `Args`, `Env`, `EnvVars`, `WebRoutes`, `ReadyCheck`; `LookupBinary("s3")` finds it, `LookupBinary("mysql")` does not.
 - `internal/supervisor/supervisor_test.go`: uses a `//go:build testhelper` helper binary compiled into the test package. Cases: clean spawn + ready, ready-timeout, crash-restart within budget, crash-budget exhaustion, graceful stop with SIGTERM, SIGKILL fallback, parallel `StopAll`.
-- `internal/commands/service/*_test.go`: fresh cobra trees + `t.Setenv("HOME", t.TempDir())`. Verify each command mutates registry correctly and calls `autoRestart` as the final step.
+- `internal/commands/service/*_test.go`: fresh cobra trees + `t.Setenv("HOME", t.TempDir())`. Verify each command mutates registry correctly and calls `server.SignalDaemon()` as the final step (inject a test double via a package-level var so the test doesn't actually send signals).
+- `internal/server/manager_test.go`: extend existing tests. New cases: `Reconcile()` with an empty registry produces no supervisor calls; `Reconcile()` with a binary entry calls `supervisor.Start`; `Reconcile()` after `Enabled=false` calls `supervisor.Stop`; non-fatal behavior when `supervisor.Start` errors.
 - `internal/registry/registry_test.go`: `ServiceInstance` JSON round-trip with / without `Kind` and `Enabled`. Back-compat loading.
 
 ### Integration tests
@@ -369,7 +460,7 @@ These were assumptions that need ground-truth verification in the first task of 
 ## Deferred (explicit non-goals for this spec, listed for future reference)
 
 - Migration of mail / redis / mysql / postgres to binary services.
-- IPC channel between CLI and daemon (replaces `autoRestart` with targeted supervisor reconcile).
+- Richer CLI↔daemon IPC beyond SIGHUP (e.g. a Unix socket with typed responses so the CLI can confirm reconcile succeeded before returning).
 - HTTP-based `ReadyCheck` upgrade.
 - Log rotation / size caps in supervisor.
 - Per-install credential generation.
