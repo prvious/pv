@@ -49,12 +49,17 @@ func Lookup(name string) (Service, error) {
 }
 
 // Available returns the union of Docker and binary service names, sorted.
+// Deduplicates names that appear in both registries (e.g. "mail" during migration).
 func Available() []string {
-	names := make([]string, 0, len(registry)+len(binaryRegistry))
+	seen := make(map[string]struct{}, len(registry)+len(binaryRegistry))
 	for n := range registry {
-		names = append(names, n)
+		seen[n] = struct{}{}
 	}
 	for n := range binaryRegistry {
+		seen[n] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
 		names = append(names, n)
 	}
 	sort.Strings(names)
