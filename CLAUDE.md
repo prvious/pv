@@ -6,6 +6,20 @@ Instructions for working in this codebase. See `README.md` for architecture over
 
 `pv` is a local dev server manager powered by FrankenPHP. Go + cobra CLI. Manages PHP versions, serves projects under `.test` domains with HTTPS, runs containerized backing services via Colima/Docker.
 
+## This is a Go codebase — use Go
+
+**NEVER** reach for Python, Ruby, Node/JavaScript, Perl, or any other scripting language to achieve something that can be done in Go. This is a Go codebase; the only runtime dependency should be `go` itself.
+
+**In particular, this applies to:**
+
+- **Test helpers and fakes.** If a test needs a stand-in binary (e.g., something that binds a TCP port), write it as a small Go `main` under `internal/.../testdata/` and compile it with `go build` from the test. Do **not** shell out to `python3 -c '...'`, inline a Ruby one-liner, etc.
+- **Build / release automation.** Prefer Go programs or plain shell. Do not introduce scripting-language dependencies.
+- **One-off utilities, migration scripts, codegen.** Write them in Go.
+
+**Shell (`bash`) is acceptable** for genuine glue code — orchestrating external commands, wiring CI steps (`scripts/e2e/*.sh`). Anything doing real logic should be Go.
+
+**Why:** contributors must be able to build and test this repo with only `go` installed. A test or tool that silently depends on `python3` passes locally, passes on CI today, and breaks the moment a runner image or developer machine doesn't ship that interpreter. This has already bitten us once; don't repeat it.
+
 ## Build & test
 
 ```bash
