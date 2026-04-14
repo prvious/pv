@@ -53,7 +53,7 @@ This spec establishes RustFS as the first binary-backed service, and lays down t
 | `internal/commands/service/start.go` | Binary path: set `Enabled=true`, `server.SignalDaemon()` |
 | `internal/commands/service/stop.go` | Binary path: set `Enabled=false`, `server.SignalDaemon()` |
 | `internal/commands/service/remove.go` | Binary path: unregister + delete binary + `server.SignalDaemon()` |
-| `internal/commands/service/destroy.go` | Binary path: `remove` + delete `~/.pv/data/s3/` |
+| `internal/commands/service/destroy.go` | Binary path: `remove` + delete `config.ServiceDataDir("s3", "latest")` (resolves to `~/.pv/services/s3/latest/data`) |
 | `internal/commands/service/status.go` | Read `~/.pv/daemon-status.json` for binary services; fall back to "registered, not running" if daemon down |
 | `internal/commands/service/list.go` | Merged table across Docker + binary services |
 | `internal/commands/service/logs.go` | Binary path: tail `~/.pv/logs/rustfs.log` |
@@ -231,6 +231,18 @@ func (m *ServerManager) reconcileBinaryServices() error {
 
 `SupervisedNames()` is a small new method on `Supervisor` returning the keys of its internal processes map — existing supervisor API from §3 wasn't quite enough.
 
+`buildSupervisorProcess(svc BinaryService) (supervisor.Process, error)` is a helper in `internal/server/` that translates a `BinaryService` into a `supervisor.Process`. It resolves paths via `internal/config`:
+
+- `Binary`: `filepath.Join(config.InternalBinDir(), svc.Binary().Name)` → `~/.pv/internal/bin/rustfs`
+- `dataDir`: `config.ServiceDataDir(svc.Name(), "latest")` → `~/.pv/services/s3/latest/data`. Created with `os.MkdirAll(dataDir, 0o755)` before returning.
+- `LogFile`: `filepath.Join(config.PvDir(), "logs", svc.Binary().Name+".log")` → `~/.pv/logs/rustfs.log`. Parent directory created if missing.
+- `Args`: `svc.Args(dataDir)`
+- `Env`: `svc.Env()`
+- `Ready`: constructs a closure from `svc.ReadyCheck()` (TCP-dial or HTTP-GET per the type)
+- `ReadyTimeout`: from `svc.ReadyCheck().Timeout`
+
+This helper is the single place that translates between the `BinaryService` contract and `supervisor.Process` — no other code should construct a `Process` for a service directly.
+
 ### `daemon-status.json`
 
 Written by the daemon from `Reconcile()` — so every SIGHUP produces a fresh snapshot:
@@ -296,7 +308,7 @@ type ServiceInstance struct {
 }
 ```
 
-**Back-compat:** existing entries without `Kind` continue to be treated as Docker. If a pre-upgrade `s3` entry is found (`Kind == ""` but name is in `binaryRegistry`), the first `service:*` invocation silently rewrites it into a binary-shaped entry (`Kind="binary"`, `Enabled=&true`, `Image=""`). One-time migration.
+**Back-compat:** existing entries without `Kind` continue to be treated as Docker. **No auto-migration** is performed for a pre-existing Docker-shaped `s3` entry — if a user has one, running `service:add s3` errors out with "s3 already registered (as docker)". The documented remedy is `pv uninstall && pv setup`; pv is still young enough that this is acceptable, and auto-migration adds complexity we don't need to absorb here.
 
 ## Command Dispatch
 
@@ -321,7 +333,7 @@ case kindDocker:
 | `service:start s3` | Error if not registered. Else set `Enabled=true` → `server.SignalDaemon()` |
 | `service:stop s3` | Error if not registered. Else set `Enabled=false` → `server.SignalDaemon()` |
 | `service:remove s3` | Unregister → delete binary → `server.SignalDaemon()` |
-| `service:destroy s3` | `remove` + delete `~/.pv/data/s3/` |
+| `service:destroy s3` | `remove` + delete `config.ServiceDataDir("s3", "latest")` |
 | `service:status s3` | Read `daemon-status.json`; show registered, enabled, pid, restarts |
 | `service:list` | Merged table of all services (both kinds) |
 | `service:logs s3` | Tail `~/.pv/logs/rustfs.log` |
@@ -398,7 +410,7 @@ This matches the existing behavior for FrankenPHP secondary failures (`startErro
 | `service:start` on unregistered | Command | Error: "s3 not registered — run `pv service:add s3` first". |
 | `service:add` on already-registered | Command | Error: "s3 already registered — use `pv service:start s3` to enable". |
 | Stale `daemon-status.json` | CLI readers | PID check; if dead, ignore file. |
-| Old Docker `s3` registry entry pre-upgrade | Commands | Silent one-time rewrite to binary shape. |
+| Pre-existing Docker-shaped `s3` entry | `service:add s3` | Error: "s3 already registered (as docker). Run `pv uninstall && pv setup` to reset." No auto-migration. |
 
 ## Edge Cases
 
@@ -436,7 +448,9 @@ pv service:stop s3
 pv service:start s3
 # assert back
 pv service:destroy s3
-# assert gone + data dir removed
+# assert: registry no longer contains "s3"
+# assert: `~/.pv/internal/bin/rustfs` is gone
+# assert: `~/.pv/services/s3/latest/data` is gone
 pv stop
 ```
 
