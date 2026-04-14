@@ -2,7 +2,10 @@ package service
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
@@ -25,10 +28,49 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
-		var resolveErr error
-		key, resolveErr = reg.ResolveServiceKey(key)
+
+		kind, binSvc, _, resolveErr := resolveKind(reg, args[0])
 		if resolveErr != nil {
 			return resolveErr
+		}
+		if kind == kindBinary {
+			name := binSvc.Name()
+			if _, ok := reg.Services[name]; !ok {
+				return fmt.Errorf("%s not registered", name)
+			}
+			if err := reg.RemoveService(name); err != nil {
+				return err
+			}
+			if err := reg.Save(); err != nil {
+				return fmt.Errorf("cannot save registry: %w", err)
+			}
+			// Delete the binary.
+			binPath := filepath.Join(config.InternalBinDir(), binSvc.Binary().Name)
+			_ = os.Remove(binPath)
+			// Clear the tracked version so a future `service:add` redownloads.
+			if vs, vsErr := binaries.LoadVersions(); vsErr == nil {
+				vs.Set(binSvc.Binary().Name, "")
+				_ = vs.Save()
+			}
+
+			// Regenerate Caddy configs (remove s3.pv.test / s3-api.pv.test routes).
+			if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not regenerate service site config: %v", err))
+			}
+
+			if server.IsRunning() {
+				if err := server.SignalDaemon(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+				}
+			}
+			ui.Success(fmt.Sprintf("%s removed (data preserved)", binSvc.DisplayName()))
+			return nil
+		}
+
+		var resolveKeyErr error
+		key, resolveKeyErr = reg.ResolveServiceKey(key)
+		if resolveKeyErr != nil {
+			return resolveKeyErr
 		}
 
 		svc, findErr := reg.FindService(key)
