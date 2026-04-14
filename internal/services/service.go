@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/prvious/pv/internal/container"
@@ -37,19 +38,27 @@ var registry = map[string]Service{
 	"mysql":    &MySQL{},
 	"postgres": &Postgres{},
 	"redis":    &Redis{},
-	"s3":       &S3{},
 }
 
 func Lookup(name string) (Service, error) {
 	svc, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown service %q (available: mail, mysql, postgres, redis, s3)", name)
+		return nil, fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(Available(), ", "))
 	}
 	return svc, nil
 }
 
+// Available returns the union of Docker and binary service names, sorted.
 func Available() []string {
-	return []string{"mail", "mysql", "postgres", "redis", "s3"}
+	names := make([]string, 0, len(registry)+len(binaryRegistry))
+	for n := range registry {
+		names = append(names, n)
+	}
+	for n := range binaryRegistry {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // SanitizeProjectName converts a directory name to a database-safe identifier.
