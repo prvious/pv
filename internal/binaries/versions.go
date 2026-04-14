@@ -65,6 +65,14 @@ func FetchLatestVersion(client *http.Client, b Binary) (string, error) {
 		return "", fmt.Errorf("no version URL for %s", b.Name)
 	}
 
+	return fetchLatestVersionFromURL(client, b.Name, url)
+}
+
+// fetchLatestVersionFromURL fetches the latest release tag from the given URL.
+// When name is "rustfs", it expects the GitHub releases list endpoint (returns a
+// JSON array) and picks the first entry. All other binaries expect the single
+// /releases/latest object response.
+func fetchLatestVersionFromURL(client *http.Client, name, url string) (string, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
@@ -84,6 +92,19 @@ func FetchLatestVersion(client *http.Client, b Binary) (string, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
+	}
+
+	if name == "rustfs" {
+		var releases []struct {
+			TagName string `json:"tag_name"`
+		}
+		if err := json.Unmarshal(body, &releases); err != nil {
+			return "", fmt.Errorf("parse GitHub response: %w", err)
+		}
+		if len(releases) == 0 {
+			return "", fmt.Errorf("no releases found for rustfs")
+		}
+		return releases[0].TagName, nil
 	}
 
 	var release struct {
