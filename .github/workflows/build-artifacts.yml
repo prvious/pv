@@ -1,4 +1,4 @@
-name: Build FrankenPHP Binaries
+name: Build PHP Artifacts
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
     - cron: "0 0 * * 1"
 
 concurrency:
-  group: build-frankenphp
+  group: build-artifacts
   cancel-in-progress: true
 
 env:
@@ -216,24 +216,29 @@ jobs:
           done
           ls -la release/
 
-      - name: Upload to latest pv release
+      - name: Upload to artifacts release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Find the latest pv release (v* tag).
-          LATEST_TAG=$(gh release list --repo "${{ github.repository }}" --limit 10 \
-            --json tagName --jq '[.[] | select(.tagName | startswith("v"))][0].tagName')
+          # All FrankenPHP + PHP CLI binaries live in a single non-versioned
+          # "artifacts" release, independent of pv's own versioned (v*) releases.
+          # Create it on first run, then clobber on every rebuild.
+          TAG="artifacts"
 
-          if [ -z "$LATEST_TAG" ]; then
-            echo "::error::No pv release found. Create a release (e.g., v0.0.1) first."
-            exit 1
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Creating $TAG release"
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "PHP binaries (FrankenPHP + static PHP CLI)" \
+              --notes "Rolling release of FrankenPHP and static PHP CLI binaries, rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
+              --latest=false
           fi
 
-          echo "Uploading FrankenPHP + PHP CLI assets to $LATEST_TAG"
-          gh release upload "$LATEST_TAG" release/* \
+          echo "Uploading FrankenPHP + PHP CLI assets to $TAG"
+          gh release upload "$TAG" release/* \
             --repo "${{ github.repository }}" \
             --clobber
 
-          echo "Assets uploaded to $LATEST_TAG"
+          echo "Assets uploaded to $TAG"

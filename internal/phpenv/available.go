@@ -11,15 +11,10 @@ import (
 	"github.com/prvious/pv/internal/binaries"
 )
 
-// AvailableVersions fetches the PHP versions available in the latest
-// prvious/pv release by examining asset names.
+// AvailableVersions fetches the PHP versions available in the artifacts
+// release by examining asset names.
 func AvailableVersions(client *http.Client) ([]string, error) {
-	tag, err := latestReleaseTag(client)
-	if err != nil {
-		return nil, err
-	}
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", releaseRepo, tag)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", releaseRepo, artifactsTag)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
