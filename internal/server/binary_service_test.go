@@ -47,6 +47,75 @@ func TestBuildSupervisorProcess_RustFS(t *testing.T) {
 	if p.ReadyTimeout == 0 {
 		t.Error("ReadyTimeout must be non-zero")
 	}
+
+	// The full command line must include --console-enable. Without it, RustFS
+	// does not bind port 9001 even though --console-address is set — this is
+	// the exact regression we verified during Task 1. Assert it at the
+	// supervisor-process layer, not just at the service layer.
+	var sawConsoleEnable, sawConsoleAddress, sawAddress bool
+	for i, a := range p.Args {
+		switch a {
+		case "--console-enable":
+			sawConsoleEnable = true
+		case "--console-address":
+			if i+1 < len(p.Args) && p.Args[i+1] == ":9001" {
+				sawConsoleAddress = true
+			}
+		case "--address":
+			if i+1 < len(p.Args) && p.Args[i+1] == ":9000" {
+				sawAddress = true
+			}
+		}
+	}
+	if !sawConsoleEnable {
+		t.Errorf("Args missing --console-enable; got %v", p.Args)
+	}
+	if !sawConsoleAddress {
+		t.Errorf("Args missing --console-address :9001; got %v", p.Args)
+	}
+	if !sawAddress {
+		t.Errorf("Args missing --address :9000; got %v", p.Args)
+	}
+}
+
+func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
+	_, err := buildReadyFunc(services.ReadyCheck{})
+	if err == nil {
+		t.Fatal("expected error for zero-value ReadyCheck")
+	}
+	if !strings.Contains(err.Error(), "exactly one") {
+		t.Errorf("error should mention 'exactly one'; got %v", err)
+	}
+}
+
+func TestBuildReadyFunc_RejectsBothSet(t *testing.T) {
+	_, err := buildReadyFunc(services.ReadyCheck{
+		TCPPort:      9000,
+		HTTPEndpoint: "http://127.0.0.1:9000/health",
+	})
+	if err == nil {
+		t.Fatal("expected error when both TCPPort and HTTPEndpoint are set")
+	}
+}
+
+func TestBuildReadyFunc_TCPOnly(t *testing.T) {
+	fn, err := buildReadyFunc(services.ReadyCheck{TCPPort: 9000})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fn == nil {
+		t.Fatal("expected non-nil ready func")
+	}
+}
+
+func TestBuildReadyFunc_HTTPOnly(t *testing.T) {
+	fn, err := buildReadyFunc(services.ReadyCheck{HTTPEndpoint: "http://127.0.0.1:9000/health"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fn == nil {
+		t.Fatal("expected non-nil ready func")
+	}
 }
 
 func TestWriteDaemonStatus_RoundTrip(t *testing.T) {

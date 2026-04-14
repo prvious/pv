@@ -269,3 +269,47 @@ func TestUpdateProjectEnvForService_NoEnvFile(t *testing.T) {
 		t.Fatalf("UpdateProjectEnvForService should not error for missing .env: %v", err)
 	}
 }
+
+func TestUpdateProjectEnvForBinaryService(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, ok := services.LookupBinary("s3")
+	if !ok {
+		t.Fatal("s3 binary service not registered")
+	}
+	bound := &registry.ProjectServices{S3: true}
+
+	if err := UpdateProjectEnvForBinaryService(dir, "my-app", "s3", svc, bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForBinaryService: %v", err)
+	}
+
+	env, _ := services.ReadDotEnv(envPath)
+	// Connection vars from RustFS.EnvVars
+	if env["AWS_BUCKET"] != "my-app" {
+		t.Errorf("AWS_BUCKET = %q, want my-app", env["AWS_BUCKET"])
+	}
+	if env["AWS_ENDPOINT"] != "http://127.0.0.1:9000" {
+		t.Errorf("AWS_ENDPOINT = %q, want http://127.0.0.1:9000", env["AWS_ENDPOINT"])
+	}
+	// Smart var from SmartEnvVars — only added when project is bound to s3.
+	if env["FILESYSTEM_DISK"] != "s3" {
+		t.Errorf("FILESYSTEM_DISK = %q, want s3", env["FILESYSTEM_DISK"])
+	}
+}
+
+func TestUpdateProjectEnvForBinaryService_NoEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	svc, ok := services.LookupBinary("s3")
+	if !ok {
+		t.Fatal("s3 binary service not registered")
+	}
+	bound := &registry.ProjectServices{S3: true}
+
+	if err := UpdateProjectEnvForBinaryService(dir, "my-app", "s3", svc, bound); err != nil {
+		t.Fatalf("should not error for missing .env: %v", err)
+	}
+}

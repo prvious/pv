@@ -86,7 +86,12 @@ var stopCmd = &cobra.Command{
 				}
 				if server.IsRunning() {
 					if err := server.SignalDaemon(); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+						// Registry updated but daemon didn't pick up the change.
+						// Don't print "reconciled" — the supervised process is
+						// still running.
+						ui.Fail(fmt.Sprintf("%s disabled in registry, but could not signal daemon: %v", binSvc.DisplayName(), err))
+						ui.Subtle("Run `pv restart` to stop the supervised process.")
+						return nil
 					}
 					ui.Success(fmt.Sprintf("%s disabled; daemon reconciled", binSvc.DisplayName()))
 				} else {

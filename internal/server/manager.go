@@ -106,10 +106,12 @@ func (m *ServerManager) Reconcile() error {
 		return fmt.Errorf("reconcile: reload main FrankenPHP: %w", err)
 	}
 
-	// Phase 2: binary services.
-	if err := m.reconcileBinaryServices(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "Reconcile: %v\n", err)
-		// non-fatal — FrankenPHP-side reconcile results still returned below
+	// Phase 2: binary services. Errors are logged and also folded into the
+	// return value so callers (service:add, etc.) can see that a binary
+	// failed to come up rather than getting a false "reconciled" signal.
+	binaryErr := m.reconcileBinaryServices(context.Background())
+	if binaryErr != nil {
+		fmt.Fprintf(os.Stderr, "Reconcile: %v\n", binaryErr)
 	}
 
 	// Phase 3: refresh daemon-status snapshot.
@@ -117,8 +119,16 @@ func (m *ServerManager) Reconcile() error {
 		fmt.Fprintf(os.Stderr, "Reconcile: write daemon-status: %v\n", err)
 	}
 
+	// Combine secondary-instance and binary-service errors for the caller.
+	var parts []string
 	if len(startErrors) > 0 {
-		return fmt.Errorf("reconcile: %d secondary instance(s) failed: %s", len(startErrors), strings.Join(startErrors, "; "))
+		parts = append(parts, fmt.Sprintf("secondary instances: %s", strings.Join(startErrors, "; ")))
+	}
+	if binaryErr != nil {
+		parts = append(parts, fmt.Sprintf("binary services: %v", binaryErr))
+	}
+	if len(parts) > 0 {
+		return fmt.Errorf("reconcile failed: %s", strings.Join(parts, "; "))
 	}
 	return nil
 }

@@ -244,6 +244,11 @@ func addBinary(ctx context.Context, reg *registry.Registry, svc services.BinaryS
 		return fmt.Errorf("cannot save registry: %w", err)
 	}
 
+	// Update .env for linked Laravel projects — parity with the docker path
+	// (updateLinkedProjectsEnv at the end of addDocker). Without this the
+	// user adds s3 but linked projects never get AWS_* keys written.
+	updateLinkedProjectsEnvBinary(reg, name, svc)
+
 	// Regenerate Caddy configs for service consoles (*.pv.{tld}).
 	if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
 		ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))

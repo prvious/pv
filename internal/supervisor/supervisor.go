@@ -223,6 +223,19 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 			return
 		}
 		s.mu.Lock()
+		// Stop may have been called between the spawn above (outside the
+		// lock) and re-taking the lock here. If so, the freshly spawned
+		// process is unwanted — kill it, drop it on the floor, and release
+		// Stop's waiter via close(currentDone). Without this check, newM is
+		// installed into the map just as Stop deletes the entry, orphaning
+		// the live child with no supervisor and no kill path.
+		if m.stopped {
+			s.mu.Unlock()
+			_ = newM.cmd.Process.Kill()
+			_ = newM.cmd.Wait() // reap the zombie we just killed
+			close(currentDone)
+			return
+		}
 		newM.stopped = m.stopped
 		newM.cancel = m.cancel
 		newM.restarts = m.restarts

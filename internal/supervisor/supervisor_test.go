@@ -145,6 +145,77 @@ func TestSupervisor_TCPReadyCheck(t *testing.T) {
 	}
 }
 
+func TestSupervisor_RestartsCrashedProcess(t *testing.T) {
+	s := New()
+	// A process that writes its pid to a file and exits with non-zero.
+	// After crash the supervisor should respawn it — we detect respawn by
+	// observing a *different* pid appear in the file.
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := "echo $$ > " + pidFile + "; exit 1"
+	p := newTestProcess(t, "crasher", script)
+	p.Ready = func(ctx context.Context) error { return nil }
+	if err := s.Start(context.Background(), p); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop("crasher", 2*time.Second)
+
+	// Wait for the first pid, then for a different pid (proof of respawn).
+	firstPid := waitForPidFile(t, pidFile, 3*time.Second, "")
+	respawnDeadline := time.Now().Add(10 * time.Second) // 2s sleep between restarts
+	for time.Now().Before(respawnDeadline) {
+		nextPid := waitForPidFile(t, pidFile, 1*time.Second, firstPid)
+		if nextPid != "" && nextPid != firstPid {
+			return // success: respawn observed
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("process was not respawned within 10s; first pid=%s", firstPid)
+}
+
+func TestSupervisor_GivesUpAfterBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: exercises 5×2s restart budget")
+	}
+	s := New()
+	// Immediately-exiting process. Supervisor respawns, each crash records
+	// a restart timestamp; the 5th crash triggers budget exhaustion.
+	p := newTestProcess(t, "fast-crasher", "exit 1")
+	p.Ready = func(ctx context.Context) error { return nil }
+	if err := s.Start(context.Background(), p); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The budget is 5 restarts within 60s with a 2s sleep between each.
+	// After ~5 iterations (~10s) the supervisor should give up and delete
+	// the process from its tracking map.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.IsRunning("fast-crasher") && len(s.SupervisedNames()) == 0 {
+			return // success
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Errorf("supervisor did not give up within 15s; SupervisedNames=%v", s.SupervisedNames())
+}
+
+// waitForPidFile polls the file until it contains a pid that differs from
+// excluded (or any pid if excluded is ""). Returns empty string on timeout.
+func waitForPidFile(t *testing.T, path string, timeout time.Duration, excluded string) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid := strings.TrimSpace(string(data))
+			if pid != "" && pid != excluded {
+				return pid
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return ""
+}
+
 func TestSupervisor_LogFileIsWritten(t *testing.T) {
 	s := New()
 	p := newTestProcess(t, "logger", "echo hello-from-supervisor; sleep 30")

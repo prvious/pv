@@ -94,3 +94,22 @@ func UpdateProjectEnvForService(projectPath, projectName, serviceName string, sv
 	backupPath := envPath + ".pv-backup"
 	return services.MergeDotEnv(envPath, backupPath, allVars)
 }
+
+// UpdateProjectEnvForBinaryService mirrors UpdateProjectEnvForService for
+// services that run as native binaries (implementing services.BinaryService
+// rather than services.Service). The difference is the EnvVars signature:
+// binary services don't take a port argument because their port is fixed
+// at the struct level.
+func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName string, svc services.BinaryService, bound *registry.ProjectServices) error {
+	envPath := filepath.Join(projectPath, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil
+	}
+	allVars := svc.EnvVars(projectName)
+	smartVars := SmartEnvVars(bound)
+	for k, v := range smartVars {
+		allVars[k] = v
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, allVars)
+}

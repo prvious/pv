@@ -8,7 +8,10 @@ import (
 
 // ReadyCheck describes how a supervisor verifies that a binary service has
 // finished starting and is ready to accept requests. Exactly one of TCPPort
-// or HTTPEndpoint must be set.
+// or HTTPEndpoint must be set — a zero value or both-set configuration is
+// rejected by the supervisor wiring (see internal/server/binary_service.go)
+// so a misconfigured service fails loudly at start time instead of silently
+// skipping the probe.
 type ReadyCheck struct {
 	TCPPort      int           // probe 127.0.0.1:port until Dial succeeds
 	HTTPEndpoint string        // GET this URL, expect a 2xx response

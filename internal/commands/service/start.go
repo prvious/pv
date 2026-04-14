@@ -127,7 +127,12 @@ var startCmd = &cobra.Command{
 				}
 				if server.IsRunning() {
 					if err := server.SignalDaemon(); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+						// Registry is already updated but the running daemon did
+						// not pick it up. Don't claim "reconciled" — that would
+						// lie to the user about the supervisor state.
+						ui.Fail(fmt.Sprintf("%s enabled in registry, but could not signal daemon: %v", binSvc.DisplayName(), err))
+						ui.Subtle("Run `pv restart` to load the change.")
+						return nil
 					}
 					ui.Success(fmt.Sprintf("%s enabled; daemon reconciled", binSvc.DisplayName()))
 				} else {

@@ -50,7 +50,10 @@ func buildSupervisorProcess(svc services.BinaryService) (supervisor.Process, err
 	}
 
 	rc := svc.ReadyCheck()
-	ready := buildReadyFunc(rc)
+	ready, err := buildReadyFunc(rc)
+	if err != nil {
+		return supervisor.Process{}, fmt.Errorf("%s: %w", svc.Name(), err)
+	}
 
 	return supervisor.Process{
 		Name:         binaryName,
@@ -64,9 +67,17 @@ func buildSupervisorProcess(svc services.BinaryService) (supervisor.Process, err
 }
 
 // buildReadyFunc returns a ReadyFunc appropriate to the ReadyCheck variant.
-func buildReadyFunc(rc services.ReadyCheck) func(context.Context) error {
+// The ReadyCheck must specify exactly one of TCPPort or HTTPEndpoint — the
+// doc comment on the type promises this; we enforce it here rather than
+// silently treating a zero-value as "instantly ready" (which would let a
+// misconfigured BinaryService bypass the probe entirely).
+func buildReadyFunc(rc services.ReadyCheck) (func(context.Context) error, error) {
+	httpSet := rc.HTTPEndpoint != ""
+	tcpSet := rc.TCPPort > 0
 	switch {
-	case rc.HTTPEndpoint != "":
+	case httpSet && tcpSet:
+		return nil, fmt.Errorf("invalid ReadyCheck: both TCPPort and HTTPEndpoint set; specify exactly one")
+	case httpSet:
 		client := &http.Client{Timeout: 2 * time.Second}
 		url := rc.HTTPEndpoint
 		return func(ctx context.Context) error {
@@ -83,8 +94,8 @@ func buildReadyFunc(rc services.ReadyCheck) func(context.Context) error {
 				return nil
 			}
 			return fmt.Errorf("HTTP %s returned %d", url, resp.StatusCode)
-		}
-	case rc.TCPPort > 0:
+		}, nil
+	case tcpSet:
 		addr := fmt.Sprintf("127.0.0.1:%d", rc.TCPPort)
 		return func(ctx context.Context) error {
 			d := net.Dialer{Timeout: 500 * time.Millisecond}
@@ -94,10 +105,9 @@ func buildReadyFunc(rc services.ReadyCheck) func(context.Context) error {
 			}
 			c.Close()
 			return nil
-		}
+		}, nil
 	default:
-		// Degenerate case: no probe specified. Treat as instantly ready.
-		return func(context.Context) error { return nil }
+		return nil, fmt.Errorf("invalid ReadyCheck: must set exactly one of TCPPort or HTTPEndpoint")
 	}
 }
 

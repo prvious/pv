@@ -36,7 +36,12 @@ var destroyCmd = &cobra.Command{
 		}
 		if kind == kindBinary {
 			name := binSvc.Name()
-			_ = reg.RemoveService(name)
+			if _, ok := reg.Services[name]; !ok {
+				return fmt.Errorf("%s not registered", name)
+			}
+			if err := reg.RemoveService(name); err != nil {
+				return err
+			}
 			if err := reg.Save(); err != nil {
 				return fmt.Errorf("cannot save registry: %w", err)
 			}
