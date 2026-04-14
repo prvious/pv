@@ -90,7 +90,8 @@ func Start(tld string) error {
 	fmt.Fprintf(os.Stderr, "Serving .%s domains on https (port 443) and http (port 80)\n", tld)
 
 	// Create the server manager and reconcile secondary instances.
-	manager = NewServerManager(mainFP)
+	// TODO(Task 9): pass a real supervisor once wired into Start().
+	manager = NewServerManager(mainFP, nil)
 	defer func() {
 		manager.Shutdown()
 		manager = nil
@@ -177,7 +178,6 @@ func waitForEvent(sigCh chan os.Signal, dnsErr chan error, mainFP *FrankenPHP) e
 		}
 	}
 }
-
 
 // IsRunning checks if a pv supervisor process is currently running.
 func IsRunning() bool {
