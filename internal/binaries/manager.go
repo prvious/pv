@@ -38,6 +38,8 @@ func DownloadURL(b Binary, version string) (string, error) {
 		return composerURL(), nil
 	case "rustfs":
 		return rustfsURL(version)
+	case "mailpit":
+		return mailpitURL(version)
 	default:
 		return "", fmt.Errorf("unknown binary: %s", b.Name)
 	}
@@ -60,6 +62,8 @@ func LatestVersionURL(b Binary) string {
 		return "https://api.github.com/repos/carthage-software/mago/releases/latest"
 	case "rustfs":
 		return "https://api.github.com/repos/rustfs/rustfs/releases?per_page=1"
+	case "mailpit":
+		return "https://api.github.com/repos/axllent/mailpit/releases/latest"
 	default:
 		return ""
 	}
