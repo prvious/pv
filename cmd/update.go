@@ -9,13 +9,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/colima"
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
 	"github.com/prvious/pv/internal/packages"
+	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/selfupdate"
+	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -96,6 +100,46 @@ var updateCmd = &cobra.Command{
 					ui.Fail(fmt.Sprintf("%s update failed: %v", pkg.Name, err))
 				}
 				failures = append(failures, pkg.Name)
+			}
+		}
+
+		// Step 4: Update binary-service binaries.
+		reg, _ := registry.Load()
+		vs, _ := binaries.LoadVersions()
+
+		var binaryUpdated []string
+		for name, svc := range services.AllBinary() {
+			if _, registered := reg.Services[name]; !registered {
+				continue
+			}
+			latest, err := binaries.FetchLatestVersion(client, svc.Binary())
+			if err != nil {
+				ui.Subtle(fmt.Sprintf("Skipping %s: %v", svc.DisplayName(), err))
+				continue
+			}
+			if !binaries.NeedsUpdate(vs, svc.Binary(), latest) {
+				continue
+			}
+			current := vs.Get(svc.Binary().Name)
+			if err := ui.Step(fmt.Sprintf("Updating %s %s -> %s", svc.Binary().DisplayName, current, latest), func() (string, error) {
+				if err := binaries.InstallBinary(client, svc.Binary(), latest); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("Updated %s to %s", svc.Binary().DisplayName, latest), nil
+			}); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not update %s: %v", svc.DisplayName(), err))
+				continue
+			}
+			vs.Set(svc.Binary().Name, latest)
+			binaryUpdated = append(binaryUpdated, name)
+		}
+		if len(binaryUpdated) > 0 {
+			if err := vs.Save(); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not save versions state: %v", err))
+			}
+			if server.IsRunning() {
+				ui.Subtle(fmt.Sprintf("Updated binaries: %s. Run `pv service:stop %s && pv service:start %s` (or `pv restart`) to load them.",
+					strings.Join(binaryUpdated, ", "), binaryUpdated[0], binaryUpdated[0]))
 			}
 		}
 
