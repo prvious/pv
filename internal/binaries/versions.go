@@ -6,9 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
@@ -120,26 +117,4 @@ func SetGitHubHeaders(req *http.Request) {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-}
-
-// ParseFrankenPHPPhpVersion extracts the PHP version from `frankenphp version` output.
-// Example input: "FrankenPHP v1.11.3 PHP 8.5.3 Caddy/v2.9.1 h1:..."
-// Returns: "8.5.3"
-func ParseFrankenPHPPhpVersion(output string) (string, error) {
-	re := regexp.MustCompile(`PHP (\d+\.\d+\.\d+)`)
-	matches := re.FindStringSubmatch(output)
-	if len(matches) < 2 {
-		return "", fmt.Errorf("could not parse PHP version from FrankenPHP output: %s", output)
-	}
-	return matches[1], nil
-}
-
-// DetectPHPVersion runs `frankenphp version` and parses the embedded PHP version.
-func DetectPHPVersion(binDir string) (string, error) {
-	frankenphpPath := filepath.Join(binDir, "frankenphp")
-	out, err := exec.Command(frankenphpPath, "version").Output()
-	if err != nil {
-		return "", fmt.Errorf("run frankenphp version: %w", err)
-	}
-	return ParseFrankenPHPPhpVersion(string(out))
 }

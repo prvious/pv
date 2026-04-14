@@ -141,6 +141,10 @@ jobs:
 
   release:
     needs: [resolve-version, build]
+    # Only publish from main. Dispatching from a feature branch runs the build
+    # matrix as a test of the PHP/FrankenPHP binary builds without touching
+    # the published release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -157,17 +161,43 @@ jobs:
 
       - name: Prepare release assets
         run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          fp_dirs=(artifacts/frankenphp-mac-*)
+          php_dirs=(artifacts/php-mac-*)
+
+          # Never publish an incomplete release. Every FrankenPHP binary must
+          # ship with a matching PHP CLI tarball for the same arch+version.
+          if [ ${#fp_dirs[@]} -eq 0 ]; then
+            echo "::error::No FrankenPHP artifacts were downloaded"
+            exit 1
+          fi
+          if [ ${#php_dirs[@]} -eq 0 ]; then
+            echo "::error::No PHP CLI artifacts were downloaded"
+            exit 1
+          fi
+          if [ ${#fp_dirs[@]} -ne ${#php_dirs[@]} ]; then
+            echo "::error::Artifact count mismatch: ${#fp_dirs[@]} FrankenPHP vs ${#php_dirs[@]} PHP CLI"
+            exit 1
+          fi
+          for dir in "${fp_dirs[@]}"; do
+            suffix="${dir#artifacts/frankenphp-}"
+            if [ ! -d "artifacts/php-${suffix}" ]; then
+              echo "::error::Missing PHP CLI artifact for frankenphp-${suffix}"
+              exit 1
+            fi
+          done
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
-          for dir in artifacts/frankenphp-mac-*; do
-            [ -d "$dir" ] || continue
+          for dir in "${fp_dirs[@]}"; do
             name=$(basename "$dir")
             cp "$dir"/* "release/"
             chmod +x "release/${name}"
           done
           # PHP CLI tarballs: just copy as-is (no chmod needed).
-          for dir in artifacts/php-mac-*; do
-            [ -d "$dir" ] || continue
+          for dir in "${php_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
           ls -la release/

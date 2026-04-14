@@ -133,13 +133,17 @@ var platformNames = map[string]map[string]string{
 }
 
 func platformName() (string, error) {
-	archMap, ok := platformNames[runtime.GOOS]
+	return platformNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+func platformNameFor(goos, goarch string) (string, error) {
+	archMap, ok := platformNames[goos]
 	if !ok {
-		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return "", fmt.Errorf("unsupported OS: %s", goos)
 	}
-	name, ok := archMap[runtime.GOARCH]
+	name, ok := archMap[goarch]
 	if !ok {
-		return "", fmt.Errorf("unsupported architecture: %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("unsupported architecture: %s/%s", goos, goarch)
 	}
 	return name, nil
 }
