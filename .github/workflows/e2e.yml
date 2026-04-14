@@ -112,13 +112,18 @@ jobs:
         timeout-minutes: 2
         run: scripts/e2e/verify-final.sh
 
-      # ── Phase 20: Uninstall ───────────────────────────────────────
+      # ── Phase 20: S3 binary service lifecycle ──────────────────────
+      - name: E2E — S3 binary service lifecycle
+        timeout-minutes: 3
+        run: scripts/e2e/s3-binary.sh
+
+      # ── Phase 21: Uninstall ───────────────────────────────────────
       # TODO: frankenphp untrust hangs in CI (internal sudo prompt, no terminal)
       # - name: Test pv uninstall
       #   timeout-minutes: 1
       #   run: scripts/e2e/uninstall.sh
 
-      # ── Phase 21: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 22: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
