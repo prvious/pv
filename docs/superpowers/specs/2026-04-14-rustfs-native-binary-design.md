@@ -95,9 +95,10 @@ The existing `Service` (Docker) interface is unchanged.
 - `Name()`: `"s3"` (matches the user-facing service name)
 - `DisplayName()`: `"S3 Storage (RustFS)"`
 - `Binary()`: `binaries.Rustfs`
-- `Args(dataDir)`: `["server", dataDir, "--address", ":9000", "--console-address", ":9001"]`
-  - **VERIFY during implementation:** exact flag names by running `./rustfs server --help` on the downloaded binary.
-- `Env()`: `["RUSTFS_ROOT_USER=rstfsadmin", "RUSTFS_ROOT_PASSWORD=rstfsadmin"]`
+- `Args(dataDir)`: `["server", dataDir, "--address", ":9000", "--console-enable", "--console-address", ":9001"]`
+  - **Verified 2026-04-14** against `rustfs 1.0.0-alpha.93`. The positional `<VOLUMES>` is the data-dir. `--console-enable` is required to actually open port 9001; without it, the console UI never binds.
+- `Env()`: `["RUSTFS_ACCESS_KEY=rstfsadmin", "RUSTFS_SECRET_KEY=rstfsadmin"]`
+  - **Verified 2026-04-14**: the `RUSTFS_ROOT_USER` / `RUSTFS_ROOT_PASSWORD` names in earlier drafts are invalid; the real env vars are `RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY` (per `rustfs server --help`).
 - `Port()`: `9000`; `ConsolePort()`: `9001`
 - `WebRoutes()`: `[{s3 → 9001}, {s3-api → 9000}]` (unchanged from current Docker version)
 - `EnvVars(project)`: identical keys/values to the current Docker S3 so linked projects keep working
@@ -105,15 +106,14 @@ The existing `Service` (Docker) interface is unchanged.
 
 ### `binaries.Rustfs` (`internal/binaries/rustfs.go`)
 
-- Archive naming: `rustfs-{platform}-latest.zip`, where `{platform}` is:
-  - `darwin/arm64` → `macos-aarch64` (confirmed by user's curl)
-  - `darwin/amd64` → `macos-x86_64` (**VERIFY** on releases page)
-  - `linux/amd64` → `linux-x86_64` (**VERIFY**)
-  - `linux/arm64` → `linux-aarch64` (**VERIFY**)
+- Archive naming: `rustfs-{platform}-latest.zip`, where `{platform}` is (verified 2026-04-14 against alpha.93):
+  - `darwin/arm64` → `macos-aarch64`
+  - `darwin/amd64` → `macos-x86_64`
+  - `linux/amd64` → `linux-x86_64-gnu` (RustFS publishes `-gnu` and `-musl` variants on Linux; pv uses the glibc build)
+  - `linux/arm64` → `linux-aarch64-gnu`
 - Download URL pattern: `https://github.com/rustfs/rustfs/releases/download/{version}/rustfs-{platform}-latest.zip`
-- Latest version: `https://api.github.com/repos/rustfs/rustfs/releases/latest`
-- `NeedsExtract: true` — `.zip` archive, extract to `~/.pv/internal/bin/rustfs`
-- **VERIFY during implementation:** whether the `.zip` contains `rustfs` at the root or inside a subdirectory.
+- Latest version: `https://api.github.com/repos/rustfs/rustfs/releases?per_page=1` — the `/releases/latest` endpoint returns 404 because RustFS marks every release as a prerelease. `FetchLatestVersion` must special-case rustfs to parse an array response and take `[0].tag_name`.
+- `NeedsExtract: true` — `.zip` archive, extract to `~/.pv/internal/bin/rustfs`. The `rustfs` binary sits at the **root** of the zip (verified 2026-04-14).
 
 ### `supervisor` package (`internal/supervisor/`)
 
@@ -462,14 +462,13 @@ Added as a new phase in `.github/workflows/e2e.yml`.
 - RustFS on-disk format compatibility across upgrades. Documented limitation: "RustFS is alpha; major version bumps may require `pv service:destroy s3` + re-add."
 - Performance / load.
 
-## Verification Items (before implementation starts)
+## Verification Items (verified 2026-04-14 against alpha.93)
 
-These were assumptions that need ground-truth verification in the first task of the implementation plan:
-
-1. Asset names on RustFS releases for `macos-x86_64`, `linux-x86_64`, `linux-aarch64`. Only `macos-aarch64` is user-confirmed.
-2. Exact CLI flags for RustFS — does `./rustfs server --help` accept `--address :9000 --console-address :9001`, or is the syntax different?
-3. Archive contents — does the `.zip` have `rustfs` at the root or nested in a subdirectory?
-4. Whether RustFS exposes a usable health endpoint (e.g. `/minio/health/live`) — if yes, we can upgrade `ReadyCheck` from TCP to HTTP; if no, TCP is sufficient.
+1. Asset names on RustFS releases: confirmed. macOS uses `macos-{aarch64,x86_64}`; Linux uses `linux-{aarch64,x86_64}-{gnu,musl}`. pv ships the `-gnu` variant.
+2. CLI flags: confirmed. `rustfs server <VOLUMES>... [--address :9000] [--console-enable] [--console-address :9001]`. `<VOLUMES>` is a positional argument, and `--console-enable` is required to bind port 9001.
+3. Archive contents: the `rustfs` binary is at the root of the `.zip` (no subdirectory).
+4. Health endpoint: not investigated; `ReadyCheck` stays TCP-based per the original decision.
+5. Latest-version API: RustFS marks every release as prerelease, so `/releases/latest` 404s. `FetchLatestVersion` for rustfs uses `/releases?per_page=1` and parses `[0].tag_name` instead.
 
 ## Deferred (explicit non-goals for this spec, listed for future reference)
 
