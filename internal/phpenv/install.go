@@ -16,7 +16,7 @@ const (
 
 	// artifactsTag is the fixed, non-versioned release that hosts all FrankenPHP
 	// and static PHP CLI binaries. It's rebuilt by the weekly cron / manual
-	// dispatch of build-frankenphp.yml and is independent of pv's own versioned
+	// dispatch of build-artifacts.yml and is independent of pv's own versioned
 	// releases, which only ship the pv binary itself.
 	artifactsTag = "artifacts"
 )

@@ -1,4 +1,4 @@
-name: Build FrankenPHP Binaries
+name: Build PHP Artifacts
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
     - cron: "0 0 * * 1"
 
 concurrency:
-  group: build-frankenphp
+  group: build-artifacts
   cancel-in-progress: true
 
 env:
@@ -232,7 +232,7 @@ jobs:
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
               --title "PHP binaries (FrankenPHP + static PHP CLI)" \
-              --notes "Rolling release of FrankenPHP and static PHP CLI binaries, rebuilt weekly by build-frankenphp.yml. Not a versioned pv release." \
+              --notes "Rolling release of FrankenPHP and static PHP CLI binaries, rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
               --latest=false
           fi
 
