@@ -37,9 +37,9 @@ func (d *DNSServer) Start() error {
 	mux.HandleFunc(d.tld+".", d.handleQuery)
 
 	d.server = &dns.Server{
-		Addr:    d.Addr,
-		Net:     "udp",
-		Handler: mux,
+		Addr:              d.Addr,
+		Net:               "udp",
+		Handler:           mux,
 		NotifyStartedFunc: func() { close(d.ready) },
 	}
 	return d.server.ListenAndServe()

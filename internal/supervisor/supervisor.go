@@ -38,6 +38,10 @@ type managed struct {
 	cancel   context.CancelFunc // cancels the watcher goroutine
 	stopped  bool               // set true when Stop was called explicitly
 	restarts []time.Time        // rolling window of restart timestamps
+	// done is closed by the watcher goroutine when it returns (after
+	// cmd.Wait has finished). Stop awaits this instead of calling
+	// cmd.Wait itself — exec.Cmd.Wait is not safe for concurrent callers.
+	done chan struct{}
 }
 
 // Supervisor manages a set of child processes.
@@ -122,7 +126,7 @@ func (s *Supervisor) spawn(p Process) (*managed, error) {
 		}
 		return nil, fmt.Errorf("supervisor: spawn %s: %w", p.Name, err)
 	}
-	return &managed{proc: p, cmd: cmd}, nil
+	return &managed{proc: p, cmd: cmd, done: make(chan struct{})}, nil
 }
 
 // waitReady polls p.Ready every 250ms until success or timeout.
@@ -146,13 +150,29 @@ func (s *Supervisor) waitReady(ctx context.Context, p Process) error {
 	}
 }
 
-// watch blocks on cmd.Wait and handles crash restarts.
+// watch blocks on cmd.Wait and handles crash restarts. It is the sole caller
+// of cmd.Wait for a given cmd — Stop does not call Wait directly (exec.Cmd
+// does not support concurrent Wait callers); Stop awaits watch's exit via the
+// managed.done channel instead.
 func (s *Supervisor) watch(ctx context.Context, name string) {
+	// Capture the initial done channel so we can close it reliably even if
+	// the managed record is replaced via respawn — callers holding a
+	// reference to the original managed.done need to be unblocked when the
+	// original process exits.
+	s.mu.Lock()
+	initial, ok := s.processes[name]
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	currentDone := initial.done
+
 	for {
 		s.mu.Lock()
 		m, ok := s.processes[name]
 		s.mu.Unlock()
 		if !ok {
+			close(currentDone)
 			return
 		}
 
@@ -162,6 +182,7 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 		if m.stopped {
 			delete(s.processes, name)
 			s.mu.Unlock()
+			close(currentDone)
 			return
 		}
 
@@ -179,6 +200,7 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 			fmt.Fprintf(os.Stderr, "supervisor: %s exceeded restart budget (5/60s); giving up (last error: %v)\n", name, waitErr)
 			delete(s.processes, name)
 			s.mu.Unlock()
+			close(currentDone)
 			return
 		}
 		m.restarts = append(m.restarts, now)
@@ -187,6 +209,7 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 		// Pause briefly and respawn — no ready-wait on recovery.
 		select {
 		case <-ctx.Done():
+			close(currentDone)
 			return
 		case <-time.After(2 * time.Second):
 		}
@@ -196,6 +219,7 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 			s.mu.Lock()
 			delete(s.processes, name)
 			s.mu.Unlock()
+			close(currentDone)
 			return
 		}
 		s.mu.Lock()
@@ -204,11 +228,17 @@ func (s *Supervisor) watch(ctx context.Context, name string) {
 		newM.restarts = m.restarts
 		s.processes[name] = newM
 		s.mu.Unlock()
+		// Signal that the original cmd.Wait has completed; Stop callers
+		// holding the old done channel can proceed.
+		close(currentDone)
+		currentDone = newM.done
 	}
 }
 
 // Stop sends SIGTERM, waits up to timeout, then SIGKILL.
-// After Stop returns, IsRunning(name) is false.
+// After Stop returns, IsRunning(name) is false. Stop awaits the watcher
+// goroutine's exit (via managed.done) rather than calling cmd.Wait itself —
+// exec.Cmd.Wait is not safe to call from multiple goroutines.
 func (s *Supervisor) Stop(name string, timeout time.Duration) error {
 	s.mu.Lock()
 	m, ok := s.processes[name]
@@ -222,14 +252,12 @@ func (s *Supervisor) Stop(name string, timeout time.Duration) error {
 	}
 	pid := m.cmd.Process.Pid
 	cmd := m.cmd
+	done := m.done
 	s.mu.Unlock()
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("supervisor: SIGTERM %s (pid %d): %w", name, pid, err)
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
 
 	select {
 	case <-done:
