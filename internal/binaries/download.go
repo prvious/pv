@@ -2,6 +2,7 @@ package binaries
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -167,4 +168,45 @@ func ExtractTarGz(archivePath, destPath, binaryName string) error {
 // MakeExecutable sets file permissions to 0755.
 func MakeExecutable(path string) error {
 	return os.Chmod(path, 0755)
+}
+
+// ExtractZip extracts a single binary from a .zip archive at archivePath,
+// locating the file by basename and writing it to destPath with 0o755 mode.
+// Mirrors the semantics of ExtractTarGz for .zip archives.
+func ExtractZip(archivePath, destPath, binaryName string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("open zip %s: %w", archivePath, err)
+	}
+	defer r.Close()
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if filepath.Base(f.Name) != binaryName {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open %s in zip: %w", f.Name, err)
+		}
+		out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("create %s: %w", destPath, err)
+		}
+		_, copyErr := io.Copy(out, rc)
+		rc.Close()
+		out.Close()
+		if copyErr != nil {
+			return fmt.Errorf("copy %s: %w", f.Name, copyErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("binary %q not found in zip %s", binaryName, archivePath)
 }

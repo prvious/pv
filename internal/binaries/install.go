@@ -27,10 +27,12 @@ func InstallBinaryProgress(client *http.Client, b Binary, version string, progre
 	}
 
 	switch b.Name {
-	case "mago":
-		return installMago(client, url, progress)
 	case "composer":
 		return installComposer(client, url, b, version, progress)
+	case "mago":
+		return installMago(client, url, progress)
+	case "rustfs":
+		return installRustfs(client, url, progress)
 	default:
 		return fmt.Errorf("unknown binary: %s", b.Name)
 	}
@@ -49,6 +51,21 @@ func installMago(client *http.Client, url string, progress ProgressFunc) error {
 		return err
 	}
 
+	os.Remove(archivePath)
+	return MakeExecutable(destPath)
+}
+
+func installRustfs(client *http.Client, url string, progress ProgressFunc) error {
+	internalBin := config.InternalBinDir()
+	archivePath := filepath.Join(internalBin, "rustfs.zip")
+	destPath := filepath.Join(internalBin, "rustfs")
+
+	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
+		return err
+	}
+	if err := ExtractZip(archivePath, destPath, "rustfs"); err != nil {
+		return err
+	}
 	os.Remove(archivePath)
 	return MakeExecutable(destPath)
 }
