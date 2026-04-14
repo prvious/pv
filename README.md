@@ -120,7 +120,7 @@ pv service:remove mysql
 pv service:destroy mysql
 ```
 
-Available services: MySQL, PostgreSQL, Redis, Mail (Mailpit), S3 (MinIO).
+Available services: MySQL, PostgreSQL, Redis, Mail (Mailpit), S3 (Rustfs).
 
 ### Daemon mode
 
