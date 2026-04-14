@@ -68,6 +68,20 @@ jobs:
         id: arch
         run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
 
+      # Clone static-php-cli BEFORE restoring the downloads cache. The cache
+      # restores dist/static-php-cli/downloads/, which creates a parent
+      # dist/static-php-cli/ directory without src/. build-static.sh checks
+      # for static-php-cli/src to decide whether to clone; without this
+      # pre-clone, the cache-created directory wins and its fallback
+      # `git clone ... static-php-cli` fails with "destination path already
+      # exists". Pre-cloning ensures src/ is present, so build-static.sh
+      # takes the `cd static-php-cli/ && git pull` branch instead.
+      - name: Pre-clone static-php-cli
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          git clone --depth 1 https://github.com/crazywhalecc/static-php-cli dist/static-php-cli
+
       - name: Cache spc downloads
         uses: actions/cache@v4
         with:
