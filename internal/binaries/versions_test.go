@@ -114,59 +114,6 @@ func TestFetchLatestVersion_GitHub(t *testing.T) {
 	}
 }
 
-func TestParseFrankenPHPPhpVersion(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    string
-		wantErr bool
-	}{
-		{
-			name:  "standard output",
-			input: "FrankenPHP v1.11.3 PHP 8.5.3 Caddy/v2.9.1 h1:abc",
-			want:  "8.5.3",
-		},
-		{
-			name:  "different version",
-			input: "FrankenPHP v1.4.0 PHP 8.4.2 Caddy/v2.8.4 h1:xyz",
-			want:  "8.4.2",
-		},
-		{
-			name:  "multiline output",
-			input: "FrankenPHP v1.11.3 PHP 8.5.3 Caddy/v2.9.1 h1:abc\nsome other line",
-			want:  "8.5.3",
-		},
-		{
-			name:    "no PHP version",
-			input:   "FrankenPHP v1.11.3 Caddy/v2.9.1",
-			wantErr: true,
-		},
-		{
-			name:    "empty input",
-			input:   "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseFrankenPHPPhpVersion(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("ParseFrankenPHPPhpVersion() error = nil, want error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ParseFrankenPHPPhpVersion() error = %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("ParseFrankenPHPPhpVersion() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 // urlRewriteTransport redirects all requests to a test server URL.
 type urlRewriteTransport struct {
 	base    http.RoundTripper

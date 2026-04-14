@@ -68,6 +68,20 @@ jobs:
         id: arch
         run: echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
 
+      # Clone static-php-cli BEFORE restoring the downloads cache. The cache
+      # restores dist/static-php-cli/downloads/, which creates a parent
+      # dist/static-php-cli/ directory without src/. build-static.sh checks
+      # for static-php-cli/src to decide whether to clone; without this
+      # pre-clone, the cache-created directory wins and its fallback
+      # `git clone ... static-php-cli` fails with "destination path already
+      # exists". Pre-cloning ensures src/ is present, so build-static.sh
+      # takes the `cd static-php-cli/ && git pull` branch instead.
+      - name: Pre-clone static-php-cli
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          git clone --depth 1 https://github.com/crazywhalecc/static-php-cli dist/static-php-cli
+
       - name: Cache spc downloads
         uses: actions/cache@v4
         with:
@@ -82,6 +96,9 @@ jobs:
           FRANKENPHP_VERSION: ${{ needs.resolve-version.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SPC_OPT_DOWNLOAD_ARGS: "--ignore-cache-sources=php-src --retry 5 --prefer-pre-built"
+          # Also build the standalone PHP CLI so it shares the exact same
+          # extension set as the FrankenPHP binary.
+          SPC_OPT_BUILD_ARGS: "--build-cli"
           CI: ""
           # xlswriter removed: its bundled minizip uses K&R function definitions
           # that C23 rejects (autoconf 2.73 enables -std=gnu23 by default).
@@ -116,8 +133,32 @@ jobs:
           path: dist/frankenphp-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}
           compression-level: 0
 
+      - name: Package PHP CLI
+        run: |
+          set -euo pipefail
+          ARCH="${{ steps.arch.outputs.arch }}"
+          PHP_BIN="dist/static-php-cli/buildroot/bin/php"
+          chmod +x "$PHP_BIN"
+          "$PHP_BIN" -v
+          "$PHP_BIN" -m
+          mkdir -p dist/cli-staging
+          cp "$PHP_BIN" dist/cli-staging/php
+          tar -C dist/cli-staging -czf "dist/php-mac-${ARCH}-php${{ matrix.php }}.tar.gz" php
+          rm -rf dist/cli-staging
+
+      - name: Upload PHP CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}
+          path: dist/php-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}.tar.gz
+          compression-level: 0
+
   release:
     needs: [resolve-version, build]
+    # Only publish from main. Dispatching from a feature branch runs the build
+    # matrix as a test of the PHP/FrankenPHP binary builds without touching
+    # the published release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,13 +168,51 @@ jobs:
           pattern: frankenphp-mac-*
           path: artifacts
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: php-mac-*
+          path: artifacts
+
       - name: Prepare release assets
         run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          fp_dirs=(artifacts/frankenphp-mac-*)
+          php_dirs=(artifacts/php-mac-*)
+
+          # Never publish an incomplete release. Every FrankenPHP binary must
+          # ship with a matching PHP CLI tarball for the same arch+version.
+          if [ ${#fp_dirs[@]} -eq 0 ]; then
+            echo "::error::No FrankenPHP artifacts were downloaded"
+            exit 1
+          fi
+          if [ ${#php_dirs[@]} -eq 0 ]; then
+            echo "::error::No PHP CLI artifacts were downloaded"
+            exit 1
+          fi
+          if [ ${#fp_dirs[@]} -ne ${#php_dirs[@]} ]; then
+            echo "::error::Artifact count mismatch: ${#fp_dirs[@]} FrankenPHP vs ${#php_dirs[@]} PHP CLI"
+            exit 1
+          fi
+          for dir in "${fp_dirs[@]}"; do
+            suffix="${dir#artifacts/frankenphp-}"
+            if [ ! -d "artifacts/php-${suffix}" ]; then
+              echo "::error::Missing PHP CLI artifact for frankenphp-${suffix}"
+              exit 1
+            fi
+          done
+
           mkdir -p release
-          for dir in artifacts/frankenphp-mac-*; do
+          # FrankenPHP binaries: artifact dir name matches the binary name.
+          for dir in "${fp_dirs[@]}"; do
             name=$(basename "$dir")
             cp "$dir"/* "release/"
             chmod +x "release/${name}"
+          done
+          # PHP CLI tarballs: just copy as-is (no chmod needed).
+          for dir in "${php_dirs[@]}"; do
+            cp "$dir"/* "release/"
           done
           ls -la release/
 
@@ -152,9 +231,9 @@ jobs:
             exit 1
           fi
 
-          echo "Uploading FrankenPHP assets to $LATEST_TAG"
+          echo "Uploading FrankenPHP + PHP CLI assets to $LATEST_TAG"
           gh release upload "$LATEST_TAG" release/* \
             --repo "${{ github.repository }}" \
             --clobber
 
-          echo "FrankenPHP assets uploaded to $LATEST_TAG"
+          echo "Assets uploaded to $LATEST_TAG"
