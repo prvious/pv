@@ -26,7 +26,7 @@ var (
 // compiledFakeBinary compiles testdata/fakebinary/main.go once per test run
 // and returns the absolute path to the resulting executable. The binary
 // binds a TCP port on 127.0.0.1 and sleeps — matching what the RustFS
-// supervisor expects for its TCP ready-check, without needing python3.
+// supervisor expects for its TCP ready-check.
 func compiledFakeBinary(t *testing.T) string {
 	t.Helper()
 	fakeBinaryPathOnce.Do(func() {
