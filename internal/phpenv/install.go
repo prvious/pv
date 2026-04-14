@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// releaseRepo is the GitHub repository hosting custom FrankenPHP builds.
+	// releaseRepo is the GitHub repository hosting custom FrankenPHP + PHP CLI builds.
 	releaseRepo = "prvious/pv"
 )
 
@@ -52,14 +52,9 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 		return err
 	}
 
-	// 3. Detect the full PHP version from the binary.
-	fullVersion, err := binaries.DetectPHPVersion(versionDir)
-	if err != nil {
-		fullVersion = phpVersion + ".0"
-	}
-
-	// 4. Download PHP CLI from static-php.dev.
-	phpURL, err := phpCLIURL(fullVersion)
+	// 3. Download PHP CLI from the same release. Built alongside FrankenPHP
+	// so both binaries share an identical extension set.
+	phpURL, err := phpCLIURL(tag, phpVersion)
 	if err != nil {
 		return err
 	}
@@ -138,35 +133,27 @@ var platformNames = map[string]map[string]string{
 }
 
 func platformName() (string, error) {
-	archMap, ok := platformNames[runtime.GOOS]
+	return platformNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+func platformNameFor(goos, goarch string) (string, error) {
+	archMap, ok := platformNames[goos]
 	if !ok {
-		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return "", fmt.Errorf("unsupported OS: %s", goos)
 	}
-	name, ok := archMap[runtime.GOARCH]
+	name, ok := archMap[goarch]
 	if !ok {
-		return "", fmt.Errorf("unsupported architecture: %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("unsupported architecture: %s/%s", goos, goarch)
 	}
 	return name, nil
 }
 
-var phpArchNames = map[string]string{
-	"arm64": "aarch64",
-	"amd64": "x86_64",
-}
-
-var phpOSNames = map[string]string{
-	"darwin": "macos",
-	"linux":  "linux",
-}
-
-func phpCLIURL(fullVersion string) (string, error) {
-	arch, ok := phpArchNames[runtime.GOARCH]
-	if !ok {
-		return "", fmt.Errorf("unsupported architecture for PHP CLI: %s", runtime.GOARCH)
+// phpCLIURL returns the release asset URL for the static PHP CLI tarball.
+// Format: php-{platform}-php{version}.tar.gz (containing a `php` binary).
+func phpCLIURL(tag, phpVersion string) (string, error) {
+	platform, err := platformName()
+	if err != nil {
+		return "", err
 	}
-	osName, ok := phpOSNames[runtime.GOOS]
-	if !ok {
-		return "", fmt.Errorf("unsupported OS for PHP CLI: %s", runtime.GOOS)
-	}
-	return fmt.Sprintf("https://dl.static-php.dev/static-php-cli/common/php-%s-cli-%s-%s.tar.gz", fullVersion, osName, arch), nil
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/php-%s-php%s.tar.gz", releaseRepo, tag, platform, phpVersion), nil
 }
