@@ -66,13 +66,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		// Service options.
-		var svcOpts []selectOption
-		for _, name := range services.Available() {
-			svc, _ := services.Lookup(name)
-			if svc != nil {
-				svcOpts = append(svcOpts, selectOption{label: svc.DisplayName(), value: name})
-			}
-		}
+		svcOpts := buildServiceOptions()
 
 		// Load settings, falling back to defaults on error.
 		settings, err := config.LoadSettings()
@@ -249,11 +243,20 @@ var setupCmd = &cobra.Command{
 		if len(selectedServices) > 0 {
 			fmt.Fprintln(os.Stderr)
 			for _, name := range selectedServices {
-				svc, _ := services.Lookup(name)
-				if svc == nil {
+				kind, _, docSvc, lookupErr := services.LookupAny(name)
+				if lookupErr != nil {
+					ui.Fail(fmt.Sprintf("Service %s: %v", name, lookupErr))
 					continue
 				}
-				svcArgs := []string{name, svc.DefaultVersion()}
+				var svcArgs []string
+				switch kind {
+				case services.KindBinary:
+					// Binary services are unversioned; service:add ignores any
+					// explicit version (verified in Task 1).
+					svcArgs = []string{name}
+				case services.KindDocker:
+					svcArgs = []string{name, docSvc.DefaultVersion()}
+				}
 				if err := service.RunAdd(svcArgs); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
@@ -270,4 +273,30 @@ var setupCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(setupCmd)
+}
+
+// buildServiceOptions returns the wizard's service multi-select options.
+// Both Docker and binary services are listed using their DisplayName so that
+// binary-only services (mail, s3) are visible in the picker.
+func buildServiceOptions() []selectOption {
+	names := services.Available()
+	out := make([]selectOption, 0, len(names))
+	for _, name := range names {
+		kind, binSvc, docSvc, err := services.LookupAny(name)
+		if err != nil {
+			// Available() is the union of both registries; LookupAny over
+			// the same names should never miss. If it does, skip silently
+			// rather than break the wizard.
+			continue
+		}
+		var label string
+		switch kind {
+		case services.KindBinary:
+			label = binSvc.DisplayName()
+		case services.KindDocker:
+			label = docSvc.DisplayName()
+		}
+		out = append(out, selectOption{label: label, value: name})
+	}
+	return out
 }
