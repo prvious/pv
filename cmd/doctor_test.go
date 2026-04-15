@@ -160,4 +160,12 @@ func TestDoctor_SkipsBinaryServices(t *testing.T) {
 	if strings.Contains(output, "registry may be out of date") {
 		t.Errorf("doctor output should not contain \"registry may be out of date\" for binary service; got:\n%s", output)
 	}
+	// The three asserts above only fire when Docker is reachable (the
+	// lookup_error branch is gated behind engine != nil). In a Docker-less
+	// test env, pre-fix code would still surface mail as a failing check
+	// whose Fix line reads "pv service:start mail". This positive assertion
+	// catches the regression in either environment.
+	if strings.Contains(output, "pv service:start mail") {
+		t.Errorf("doctor output should not suggest restarting binary service mail; got:\n%s", output)
+	}
 }
