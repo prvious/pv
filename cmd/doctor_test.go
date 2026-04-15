@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
@@ -102,4 +103,61 @@ func TestDoctor_WithValidProject(t *testing.T) {
 	cmd := newDoctorCmd()
 	cmd.SetArgs([]string{"doctor"})
 	_ = cmd.Execute()
+}
+
+// TestDoctor_SkipsBinaryServices verifies that registering a binary service
+// does NOT add a "lookup_error" / "unknown service type" entry to doctor's
+// output. Binary services have their own observability and are intentionally
+// skipped by the doctor's Docker-container check.
+func TestDoctor_SkipsBinaryServices(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	// Register a binary service in the registry on disk.
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("registry.Load() error = %v", err)
+	}
+	tru := true
+	reg.Services["mail"] = &registry.ServiceInstance{
+		Kind:    "binary",
+		Port:    1025,
+		Enabled: &tru,
+	}
+	if err := reg.Save(); err != nil {
+		t.Fatalf("reg.Save() error = %v", err)
+	}
+
+	// Capture stderr output from doctor.
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("os.Pipe() error = %v", pipeErr)
+	}
+	prevStderr := os.Stderr
+	os.Stderr = w
+
+	cmd := newDoctorCmd()
+	cmd.SetArgs([]string{"doctor"})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = prevStderr
+
+	buf := make([]byte, 64*1024)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if strings.Contains(output, "lookup_error") {
+		t.Errorf("doctor output should not contain \"lookup_error\" for binary service; got:\n%s", output)
+	}
+	if strings.Contains(output, "unknown service type") {
+		t.Errorf("doctor output should not contain \"unknown service type\" for binary service; got:\n%s", output)
+	}
+	if strings.Contains(output, "registry may be out of date") {
+		t.Errorf("doctor output should not contain \"registry may be out of date\" for binary service; got:\n%s", output)
+	}
 }
