@@ -117,13 +117,18 @@ jobs:
         timeout-minutes: 3
         run: scripts/e2e/s3-binary.sh
 
-      # ── Phase 21: Uninstall ───────────────────────────────────────
+      # ── Phase 21: Mail binary service lifecycle ────────────────────
+      - name: E2E — Mail binary service lifecycle
+        timeout-minutes: 3
+        run: scripts/e2e/mail-binary.sh
+
+      # ── Phase 22: Uninstall ───────────────────────────────────────
       # TODO: frankenphp untrust hangs in CI (internal sudo prompt, no terminal)
       # - name: Test pv uninstall
       #   timeout-minutes: 1
       #   run: scripts/e2e/uninstall.sh
 
-      # ── Phase 22: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 23: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
