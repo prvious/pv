@@ -47,10 +47,17 @@ var destroyCmd = &cobra.Command{
 			}
 
 			binPath := filepath.Join(config.InternalBinDir(), binSvc.Binary().Name)
-			_ = os.Remove(binPath)
-			if vs, vsErr := binaries.LoadVersions(); vsErr == nil {
+			if err := os.Remove(binPath); err != nil && !os.IsNotExist(err) {
+				ui.Subtle(fmt.Sprintf("Could not remove %s: %v (file left behind)", binPath, err))
+			}
+			// Clear the tracked version so a future service:add redownloads.
+			if vs, vsErr := binaries.LoadVersions(); vsErr != nil {
+				ui.Subtle(fmt.Sprintf("Could not load versions file: %v (manifest may be stale)", vsErr))
+			} else {
 				vs.Set(binSvc.Binary().Name, "")
-				_ = vs.Save()
+				if err := vs.Save(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not save versions file: %v", err))
+				}
 			}
 
 			dataDir := config.ServiceDataDir(name, "latest")
@@ -62,7 +69,9 @@ var destroyCmd = &cobra.Command{
 				ui.Subtle(fmt.Sprintf("Could not regenerate service site config: %v", err))
 			}
 			if server.IsRunning() {
-				_ = server.SignalDaemon()
+				if err := server.SignalDaemon(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+				}
 			}
 			ui.Success(fmt.Sprintf("%s destroyed (binary + data gone)", binSvc.DisplayName()))
 			return nil
