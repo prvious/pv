@@ -34,7 +34,6 @@ type Service interface {
 }
 
 var registry = map[string]Service{
-	"mail":     &Mail{},
 	"mysql":    &MySQL{},
 	"postgres": &Postgres{},
 	"redis":    &Redis{},
