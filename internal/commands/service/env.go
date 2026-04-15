@@ -42,12 +42,11 @@ var envCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr)
 			for key, instance := range svcs {
 				svcName, _ := services.ParseServiceKey(key)
-				svc, err := services.Lookup(svcName)
+				envVars, err := envVarsFor(svcName, projectName, instance.Port)
 				if err != nil {
 					ui.Subtle(fmt.Sprintf("Skipping unknown service %q", svcName))
 					continue
 				}
-				envVars := svc.EnvVars(projectName, instance.Port)
 				printEnvVars(key, envVars)
 			}
 			return nil
@@ -68,17 +67,38 @@ var envCmd = &cobra.Command{
 		}
 
 		svcName, _ := services.ParseServiceKey(key)
-		svc, err := services.Lookup(svcName)
+		envVars, err := envVarsFor(svcName, projectName, instance.Port)
 		if err != nil {
 			return err
 		}
 
-		envVars := svc.EnvVars(projectName, instance.Port)
 		fmt.Fprintln(os.Stderr)
 		printEnvVars(key, envVars)
 
 		return nil
 	},
+}
+
+// envVarsFor resolves a service name across both registries and returns the
+// .env keys/values it injects into a linked project. Used by both the
+// all-services and single-service code paths in envCmd so the per-kind
+// dispatch lives in one place.
+//
+// Binary services have EnvVars(projectName) — port is fixed by the binary
+// itself. Docker services have EnvVars(projectName, port) — port comes from
+// the registry.ServiceInstance.
+func envVarsFor(svcName, projectName string, port int) (map[string]string, error) {
+	kind, binSvc, docSvc, err := services.LookupAny(svcName)
+	if err != nil {
+		return nil, err
+	}
+	switch kind {
+	case services.KindBinary:
+		return binSvc.EnvVars(projectName), nil
+	case services.KindDocker:
+		return docSvc.EnvVars(projectName, port), nil
+	}
+	return nil, fmt.Errorf("unexpected kind %v for %q", kind, svcName)
 }
 
 func printEnvVars(key string, envVars map[string]string) {

@@ -616,6 +616,16 @@ func runServiceChecks(reg *registry.Registry) sectionResult {
 	for key, svc := range svcs {
 		svcName, version := services.ParseServiceKey(key)
 
+		// Skip binary services: they have no Docker container to probe.
+		// Binary supervision health is reported via `pv service:list` and
+		// `pv service:status`, which read the daemon's status snapshot
+		// directly. Including them here would couple doctor to the daemon's
+		// internal status format and produce misleading "lookup_error"
+		// output for healthy services (mail, s3).
+		if kind, _, _, _ := services.LookupAny(svcName); kind == services.KindBinary {
+			continue
+		}
+
 		status := "unknown"
 		if engine != nil {
 			svcDef, lookupErr := services.Lookup(svcName)

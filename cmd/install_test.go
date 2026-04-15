@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -157,6 +158,42 @@ func TestParseWith_ServiceNoVersion(t *testing.T) {
 	}
 	if spec.services[0].name != "redis" || spec.services[0].version != "" {
 		t.Errorf("service = %+v, want redis with empty version", spec.services[0])
+	}
+}
+
+func TestParseWith_BinaryServiceS3(t *testing.T) {
+	spec, err := parseWith("service[s3]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(spec.services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(spec.services))
+	}
+	if spec.services[0].name != "s3" {
+		t.Errorf("service[0].name = %q, want s3", spec.services[0].name)
+	}
+}
+
+func TestParseWith_BinaryServiceMail(t *testing.T) {
+	spec, err := parseWith("service[mail]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(spec.services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(spec.services))
+	}
+	if spec.services[0].name != "mail" {
+		t.Errorf("service[0].name = %q, want mail", spec.services[0].name)
+	}
+}
+
+func TestParseWith_UnknownServiceMongodb(t *testing.T) {
+	_, err := parseWith("service[mongodb]")
+	if err == nil {
+		t.Fatal("expected error for unknown service")
+	}
+	if !strings.Contains(err.Error(), `unknown service "mongodb"`) {
+		t.Errorf("error %q missing expected text", err)
 	}
 }
 

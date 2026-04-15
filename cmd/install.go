@@ -58,7 +58,7 @@ func parseWith(raw string) (withSpec, error) {
 			if len(parts) > 1 {
 				s.version = parts[1]
 			}
-			if _, err := services.Lookup(s.name); err != nil {
+			if k, _, _, _ := services.LookupAny(s.name); k == services.KindUnknown {
 				return spec, fmt.Errorf("unknown service %q in --with (available: %s)", s.name, strings.Join(services.Available(), ", "))
 			}
 			spec.services = append(spec.services, s)
