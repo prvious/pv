@@ -46,11 +46,17 @@ var removeCmd = &cobra.Command{
 			}
 			// Delete the binary.
 			binPath := filepath.Join(config.InternalBinDir(), binSvc.Binary().Name)
-			_ = os.Remove(binPath)
+			if err := os.Remove(binPath); err != nil && !os.IsNotExist(err) {
+				ui.Subtle(fmt.Sprintf("Could not remove %s: %v (file left behind)", binPath, err))
+			}
 			// Clear the tracked version so a future `service:add` redownloads.
-			if vs, vsErr := binaries.LoadVersions(); vsErr == nil {
+			if vs, vsErr := binaries.LoadVersions(); vsErr != nil {
+				ui.Subtle(fmt.Sprintf("Could not load versions file: %v (manifest may be stale)", vsErr))
+			} else {
 				vs.Set(binSvc.Binary().Name, "")
-				_ = vs.Save()
+				if err := vs.Save(); err != nil {
+					ui.Subtle(fmt.Sprintf("Could not save versions file: %v", err))
+				}
 			}
 
 			// Regenerate Caddy configs (remove s3.pv.test / s3-api.pv.test routes).

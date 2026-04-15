@@ -63,8 +63,6 @@ func TestMailpit_EnvVars_Golden(t *testing.T) {
 func TestMailpit_Args_UsesDataDir(t *testing.T) {
 	m := &Mailpit{}
 	args := m.Args("/tmp/mailpit-data")
-	// The arg list must mention the provided dataDir somewhere (the flag
-	// name might be --database or --data depending on Task 1 verification).
 	found := false
 	for _, a := range args {
 		if a == "/tmp/mailpit-data" || a == "/tmp/mailpit-data/mailpit.db" {
@@ -74,6 +72,33 @@ func TestMailpit_Args_UsesDataDir(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Args() did not include the data dir; got %v", args)
+	}
+}
+
+// TestMailpit_Args_PinsBindAddresses locks the --smtp / --listen values to
+// :1025 and :8025 so a future edit to one side (Args or Port/ConsolePort) can
+// not silently drift the other. Port/Args agreement is load-bearing: the
+// EnvVars golden map pins MAIL_PORT=1025 against the SMTP flag, and the Caddy
+// WebRoute for mail.pv.{tld} points at 8025 from the --listen flag.
+func TestMailpit_Args_PinsBindAddresses(t *testing.T) {
+	m := &Mailpit{}
+	args := m.Args("/tmp/mailpit-data")
+	want := map[string]string{
+		"--smtp":     ":1025",
+		"--listen":   ":8025",
+		"--database": "/tmp/mailpit-data/mailpit.db",
+	}
+	for flag, value := range want {
+		found := false
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == flag && args[i+1] == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Args() missing %q %q; got %v", flag, value, args)
+		}
 	}
 }
 
