@@ -79,6 +79,58 @@ func TestBuildSupervisorProcess_RustFS(t *testing.T) {
 	}
 }
 
+func TestBuildSupervisorProcess_Mailpit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	svc := &services.Mailpit{}
+	p, err := buildSupervisorProcess(svc)
+	if err != nil {
+		t.Fatalf("buildSupervisorProcess: %v", err)
+	}
+	// Binary name is "mailpit", not service name "mail".
+	if p.Name != "mailpit" {
+		t.Errorf("Name = %q, want mailpit (binary name, not service name)", p.Name)
+	}
+	if !strings.HasSuffix(p.Binary, "/internal/bin/mailpit") {
+		t.Errorf("Binary = %q; should end with /internal/bin/mailpit", p.Binary)
+	}
+	if !strings.HasSuffix(p.LogFile, "/mailpit.log") {
+		t.Errorf("LogFile = %q; expected .../mailpit.log", p.LogFile)
+	}
+	if p.ReadyTimeout != 30*time.Second {
+		t.Errorf("ReadyTimeout = %v, want 30s", p.ReadyTimeout)
+	}
+	if p.Ready == nil {
+		t.Error("Ready closure must be set")
+	}
+	// Verify Mailpit-specific args: --smtp :1025, --listen :8025, --database <dataDir>/mailpit.db
+	var sawSMTP, sawListen, sawDatabase bool
+	for i := 0; i < len(p.Args)-1; i++ {
+		switch p.Args[i] {
+		case "--smtp":
+			if p.Args[i+1] == ":1025" {
+				sawSMTP = true
+			}
+		case "--listen":
+			if p.Args[i+1] == ":8025" {
+				sawListen = true
+			}
+		case "--database":
+			if strings.HasSuffix(p.Args[i+1], "/mailpit.db") {
+				sawDatabase = true
+			}
+		}
+	}
+	if !sawSMTP {
+		t.Errorf("Args missing --smtp :1025; got %v", p.Args)
+	}
+	if !sawListen {
+		t.Errorf("Args missing --listen :8025; got %v", p.Args)
+	}
+	if !sawDatabase {
+		t.Errorf("Args missing --database .../mailpit.db; got %v", p.Args)
+	}
+}
+
 func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
 	// Zero-value ReadyCheck has neither tcpPort nor httpEndpoint set.
 	// The "both set" case is now unconstructable from outside the services
