@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/supervisor"
@@ -79,6 +80,9 @@ func TestBuildSupervisorProcess_RustFS(t *testing.T) {
 }
 
 func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
+	// Zero-value ReadyCheck has neither tcpPort nor httpEndpoint set.
+	// The "both set" case is now unconstructable from outside the services
+	// package (fields are unexported) — the type system prevents it.
 	_, err := buildReadyFunc(services.ReadyCheck{})
 	if err == nil {
 		t.Fatal("expected error for zero-value ReadyCheck")
@@ -88,18 +92,8 @@ func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
 	}
 }
 
-func TestBuildReadyFunc_RejectsBothSet(t *testing.T) {
-	_, err := buildReadyFunc(services.ReadyCheck{
-		TCPPort:      9000,
-		HTTPEndpoint: "http://127.0.0.1:9000/health",
-	})
-	if err == nil {
-		t.Fatal("expected error when both TCPPort and HTTPEndpoint are set")
-	}
-}
-
 func TestBuildReadyFunc_TCPOnly(t *testing.T) {
-	fn, err := buildReadyFunc(services.ReadyCheck{TCPPort: 9000})
+	fn, err := buildReadyFunc(services.TCPReady(9000, 30*time.Second))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +103,7 @@ func TestBuildReadyFunc_TCPOnly(t *testing.T) {
 }
 
 func TestBuildReadyFunc_HTTPOnly(t *testing.T) {
-	fn, err := buildReadyFunc(services.ReadyCheck{HTTPEndpoint: "http://127.0.0.1:9000/health"})
+	fn, err := buildReadyFunc(services.HTTPReady("http://127.0.0.1:9000/health", 30*time.Second))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

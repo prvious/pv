@@ -72,14 +72,14 @@ func buildSupervisorProcess(svc services.BinaryService) (supervisor.Process, err
 // silently treating a zero-value as "instantly ready" (which would let a
 // misconfigured BinaryService bypass the probe entirely).
 func buildReadyFunc(rc services.ReadyCheck) (func(context.Context) error, error) {
-	httpSet := rc.HTTPEndpoint != ""
-	tcpSet := rc.TCPPort > 0
+	httpSet := rc.HTTPEndpoint() != ""
+	tcpSet := rc.TCPPort() > 0
 	switch {
 	case httpSet && tcpSet:
 		return nil, fmt.Errorf("invalid ReadyCheck: both TCPPort and HTTPEndpoint set; specify exactly one")
 	case httpSet:
 		client := &http.Client{Timeout: 2 * time.Second}
-		url := rc.HTTPEndpoint
+		url := rc.HTTPEndpoint()
 		return func(ctx context.Context) error {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if err != nil {
@@ -96,7 +96,7 @@ func buildReadyFunc(rc services.ReadyCheck) (func(context.Context) error, error)
 			return fmt.Errorf("HTTP %s returned %d", url, resp.StatusCode)
 		}, nil
 	case tcpSet:
-		addr := fmt.Sprintf("127.0.0.1:%d", rc.TCPPort)
+		addr := fmt.Sprintf("127.0.0.1:%d", rc.TCPPort())
 		return func(ctx context.Context) error {
 			d := net.Dialer{Timeout: 500 * time.Millisecond}
 			c, err := d.DialContext(ctx, "tcp", addr)

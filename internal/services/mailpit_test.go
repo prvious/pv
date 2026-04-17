@@ -105,11 +105,11 @@ func TestMailpit_Args_PinsBindAddresses(t *testing.T) {
 func TestMailpit_ReadyCheck_HTTPLivez(t *testing.T) {
 	m := &Mailpit{}
 	rc := m.ReadyCheck()
-	if rc.HTTPEndpoint == "" {
+	if rc.HTTPEndpoint() == "" {
 		t.Error("ReadyCheck.HTTPEndpoint must be set (Mailpit uses HTTP probe, not TCP)")
 	}
-	if rc.TCPPort != 0 {
-		t.Errorf("ReadyCheck.TCPPort = %d, want 0", rc.TCPPort)
+	if rc.TCPPort() != 0 {
+		t.Errorf("ReadyCheck.TCPPort = %d, want 0", rc.TCPPort())
 	}
 	if rc.Timeout == 0 {
 		t.Error("ReadyCheck.Timeout must be non-zero")
