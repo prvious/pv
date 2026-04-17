@@ -10,6 +10,7 @@ START_PID=$!
 sleep 3
 
 cleanup() {
+  pv unlink e2e-mail-env >/dev/null 2>&1 || true
   kill "$START_PID" 2>/dev/null || true
   pv stop >/dev/null 2>&1 || true
   rm -rf "${ENVTEST_DIR:-}" 2>/dev/null || true
