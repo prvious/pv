@@ -69,6 +69,13 @@ var removeCmd = &cobra.Command{
 					ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
 				}
 			}
+			// Apply env fallbacks and unbind from linked projects — the binary
+			// is permanently gone. Mirrors the Docker path at remove.go:115-118.
+			applyFallbacksToLinkedProjects(reg, name)
+			reg.UnbindService(name)
+			if err := reg.Save(); err != nil {
+				return fmt.Errorf("cannot save registry: %w", err)
+			}
 			ui.Success(fmt.Sprintf("%s removed (data preserved)", binSvc.DisplayName()))
 			return nil
 		}
