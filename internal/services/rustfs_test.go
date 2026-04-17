@@ -125,11 +125,11 @@ func TestRustFS_Env_UsesAccessSecretKeys(t *testing.T) {
 func TestRustFS_ReadyCheck_TCP9000(t *testing.T) {
 	r := &RustFS{}
 	rc := r.ReadyCheck()
-	if rc.TCPPort != 9000 {
-		t.Errorf("ReadyCheck.TCPPort = %d, want 9000", rc.TCPPort)
+	if rc.TCPPort() != 9000 {
+		t.Errorf("ReadyCheck.TCPPort = %d, want 9000", rc.TCPPort())
 	}
-	if rc.HTTPEndpoint != "" {
-		t.Errorf("ReadyCheck.HTTPEndpoint = %q, want empty (TCP probe)", rc.HTTPEndpoint)
+	if rc.HTTPEndpoint() != "" {
+		t.Errorf("ReadyCheck.HTTPEndpoint = %q, want empty (TCP probe)", rc.HTTPEndpoint())
 	}
 	if rc.Timeout == 0 {
 		t.Error("ReadyCheck.Timeout must be non-zero")

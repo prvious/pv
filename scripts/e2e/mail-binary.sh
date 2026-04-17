@@ -10,10 +10,20 @@ START_PID=$!
 sleep 3
 
 cleanup() {
+  pv unlink e2e-mail-env >/dev/null 2>&1 || true
   kill "$START_PID" 2>/dev/null || true
   pv stop >/dev/null 2>&1 || true
+  rm -rf "${ENVTEST_DIR:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Create a minimal linked Laravel project so we can assert .env injection.
+ENVTEST_DIR=$(mktemp -d)
+echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
+mkdir -p "$ENVTEST_DIR/public"
+echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
+echo "MAIL_MAILER=log" > "$ENVTEST_DIR/.env"
+pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> service:add mail"
 pv service:add mail || { echo "FAIL: pv service:add mail failed"; exit 1; }
@@ -42,6 +52,15 @@ echo "OK: /livez reachable on port 8025"
 echo "==> Verify SMTP port 1025 is reachable"
 nc -z 127.0.0.1 1025 || { echo "FAIL: SMTP port 1025 not reachable after service:add"; exit 1; }
 echo "OK: SMTP port 1025 reachable"
+
+echo "==> Verify linked project .env got MAIL_MAILER=smtp"
+grep -q "MAIL_MAILER=smtp" "$ENVTEST_DIR/.env" || {
+    echo "FAIL: linked project .env should have MAIL_MAILER=smtp after service:add mail";
+    echo "  actual .env contents:";
+    cat "$ENVTEST_DIR/.env";
+    exit 1;
+}
+echo "OK: linked project .env has MAIL_MAILER=smtp"
 
 echo "==> service:stop mail"
 pv service:stop mail

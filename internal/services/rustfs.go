@@ -57,10 +57,7 @@ func (r *RustFS) EnvVars(projectName string) map[string]string {
 }
 
 func (r *RustFS) ReadyCheck() ReadyCheck {
-	return ReadyCheck{
-		TCPPort: 9000,
-		Timeout: 30 * time.Second,
-	}
+	return TCPReady(9000, 30*time.Second)
 }
 
 func init() {

@@ -53,10 +53,7 @@ func (m *Mailpit) EnvVars(_ string) map[string]string {
 // ReadyCheck uses Mailpit's documented /livez endpoint, which returns 200 once
 // both the SMTP and HTTP servers are listening.
 func (m *Mailpit) ReadyCheck() ReadyCheck {
-	return ReadyCheck{
-		HTTPEndpoint: "http://127.0.0.1:8025/livez",
-		Timeout:      30 * time.Second,
-	}
+	return HTTPReady("http://127.0.0.1:8025/livez", 30*time.Second)
 }
 
 // Self-registers on import; see binaryRegistry in binary.go for the pattern.

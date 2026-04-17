@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/supervisor"
@@ -78,7 +79,62 @@ func TestBuildSupervisorProcess_RustFS(t *testing.T) {
 	}
 }
 
+func TestBuildSupervisorProcess_Mailpit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	svc := &services.Mailpit{}
+	p, err := buildSupervisorProcess(svc)
+	if err != nil {
+		t.Fatalf("buildSupervisorProcess: %v", err)
+	}
+	// Binary name is "mailpit", not service name "mail".
+	if p.Name != "mailpit" {
+		t.Errorf("Name = %q, want mailpit (binary name, not service name)", p.Name)
+	}
+	if !strings.HasSuffix(p.Binary, "/internal/bin/mailpit") {
+		t.Errorf("Binary = %q; should end with /internal/bin/mailpit", p.Binary)
+	}
+	if !strings.HasSuffix(p.LogFile, "/mailpit.log") {
+		t.Errorf("LogFile = %q; expected .../mailpit.log", p.LogFile)
+	}
+	if p.ReadyTimeout != 30*time.Second {
+		t.Errorf("ReadyTimeout = %v, want 30s", p.ReadyTimeout)
+	}
+	if p.Ready == nil {
+		t.Error("Ready closure must be set")
+	}
+	// Verify Mailpit-specific args: --smtp :1025, --listen :8025, --database <dataDir>/mailpit.db
+	var sawSMTP, sawListen, sawDatabase bool
+	for i := 0; i < len(p.Args)-1; i++ {
+		switch p.Args[i] {
+		case "--smtp":
+			if p.Args[i+1] == ":1025" {
+				sawSMTP = true
+			}
+		case "--listen":
+			if p.Args[i+1] == ":8025" {
+				sawListen = true
+			}
+		case "--database":
+			if strings.HasSuffix(p.Args[i+1], "/mailpit.db") {
+				sawDatabase = true
+			}
+		}
+	}
+	if !sawSMTP {
+		t.Errorf("Args missing --smtp :1025; got %v", p.Args)
+	}
+	if !sawListen {
+		t.Errorf("Args missing --listen :8025; got %v", p.Args)
+	}
+	if !sawDatabase {
+		t.Errorf("Args missing --database .../mailpit.db; got %v", p.Args)
+	}
+}
+
 func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
+	// Zero-value ReadyCheck has neither tcpPort nor httpEndpoint set.
+	// The "both set" case is now unconstructable from outside the services
+	// package (fields are unexported) — the type system prevents it.
 	_, err := buildReadyFunc(services.ReadyCheck{})
 	if err == nil {
 		t.Fatal("expected error for zero-value ReadyCheck")
@@ -88,18 +144,8 @@ func TestBuildReadyFunc_RejectsZeroValue(t *testing.T) {
 	}
 }
 
-func TestBuildReadyFunc_RejectsBothSet(t *testing.T) {
-	_, err := buildReadyFunc(services.ReadyCheck{
-		TCPPort:      9000,
-		HTTPEndpoint: "http://127.0.0.1:9000/health",
-	})
-	if err == nil {
-		t.Fatal("expected error when both TCPPort and HTTPEndpoint are set")
-	}
-}
-
 func TestBuildReadyFunc_TCPOnly(t *testing.T) {
-	fn, err := buildReadyFunc(services.ReadyCheck{TCPPort: 9000})
+	fn, err := buildReadyFunc(services.TCPReady(9000, 30*time.Second))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +155,7 @@ func TestBuildReadyFunc_TCPOnly(t *testing.T) {
 }
 
 func TestBuildReadyFunc_HTTPOnly(t *testing.T) {
-	fn, err := buildReadyFunc(services.ReadyCheck{HTTPEndpoint: "http://127.0.0.1:9000/health"})
+	fn, err := buildReadyFunc(services.HTTPReady("http://127.0.0.1:9000/health", 30*time.Second))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
