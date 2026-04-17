@@ -62,7 +62,10 @@ var stopCmd = &cobra.Command{
 				}
 			}
 			// Apply fallbacks for each stopped service.
-			for key := range reg.ListServices() {
+			for key, inst := range reg.ListServices() {
+				if inst.Kind == "binary" {
+					continue // binary services were not stopped above; no fallback needed.
+				}
 				svcName, _ := services.ParseServiceKey(key)
 				applyFallbacksToLinkedProjects(reg, svcName)
 			}
