@@ -71,10 +71,10 @@ func TestApplyFallbacksToLinkedProjects_Mail(t *testing.T) {
 	}
 }
 
-// TestStopAllFallbackLoop_SkipsBinaryServices simulates the stop-all fallback
-// loop from stop.go:64-68 and verifies that binary services are skipped while
-// Docker services still get fallbacks applied.
-func TestStopAllFallbackLoop_SkipsBinaryServices(t *testing.T) {
+// TestApplyStopAllFallbacks verifies the extracted production function that
+// stop.go calls in the no-args path. Docker services get fallbacks; binary
+// services are skipped (they were not stopped).
+func TestApplyStopAllFallbacks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	// Two linked projects: one using redis (Docker), one using mail (binary).
@@ -103,14 +103,8 @@ func TestStopAllFallbackLoop_SkipsBinaryServices(t *testing.T) {
 	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
 	defer func() { automation.ConfirmFunc = origConfirm }()
 
-	// Simulate the stop-all fallback loop (same logic as stop.go:64-68).
-	for key, inst := range reg.ListServices() {
-		if inst.Kind == "binary" {
-			continue
-		}
-		svcName, _ := services.ParseServiceKey(key)
-		applyFallbacksToLinkedProjects(reg, svcName)
-	}
+	// Call the production function — same code stop.go uses.
+	applyStopAllFallbacks(reg)
 
 	// Docker service (redis) should have fallback applied.
 	redisEnv, _ := services.ReadDotEnv(filepath.Join(redisProjectDir, ".env"))
