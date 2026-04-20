@@ -244,6 +244,13 @@ func addBinary(ctx context.Context, reg *registry.Registry, svc services.BinaryS
 		return fmt.Errorf("cannot save registry: %w", err)
 	}
 
+	// Projects linked before this service was added won't be in ProjectsUsingService;
+	// bind them now so updateLinkedProjectsEnvBinary can find them.
+	bindBinaryServiceToAllProjects(reg, name)
+	if err := reg.Save(); err != nil {
+		return fmt.Errorf("cannot save registry after binding service: %w", err)
+	}
+
 	// Update .env for linked Laravel projects — parity with the docker path
 	// (updateLinkedProjectsEnv at the end of addDocker). Without this the
 	// user adds s3 but linked projects never get AWS_* keys written.

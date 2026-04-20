@@ -163,6 +163,62 @@ func TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject(t *testing.T) {
 	}
 }
 
+func TestBindBinaryServiceToAllProjects_Mail(t *testing.T) {
+	reg := &registry.Registry{
+		Projects: []registry.Project{
+			{Name: "app-no-services", Path: "/tmp/a", Type: "laravel"},
+			{Name: "app-services-unset", Path: "/tmp/b", Type: "laravel",
+				Services: &registry.ProjectServices{Redis: true}},
+			{Name: "app-octane", Path: "/tmp/c", Type: "laravel-octane"},
+			{Name: "app-other", Path: "/tmp/d", Type: "static"},
+			{Name: "app-already", Path: "/tmp/e", Type: "laravel",
+				Services: &registry.ProjectServices{Mail: true}},
+		},
+	}
+
+	bindBinaryServiceToAllProjects(reg, "mail")
+
+	for _, tc := range []struct {
+		name    string
+		wantMail bool
+	}{
+		{"app-no-services", true},
+		{"app-services-unset", true},
+		{"app-octane", true},
+		{"app-other", false},
+		{"app-already", true},
+	} {
+		p := reg.Find(tc.name)
+		if p == nil {
+			t.Fatalf("project %q not found", tc.name)
+		}
+		gotMail := p.Services != nil && p.Services.Mail
+		if gotMail != tc.wantMail {
+			t.Errorf("project %q: Mail = %v, want %v", tc.name, gotMail, tc.wantMail)
+		}
+	}
+}
+
+func TestBindBinaryServiceToAllProjects_S3(t *testing.T) {
+	reg := &registry.Registry{
+		Projects: []registry.Project{
+			{Name: "app-laravel", Path: "/tmp/a", Type: "laravel"},
+			{Name: "app-static", Path: "/tmp/b", Type: "static"},
+		},
+	}
+
+	bindBinaryServiceToAllProjects(reg, "s3")
+
+	laravelApp := reg.Find("app-laravel")
+	if laravelApp == nil || !laravelApp.Services.S3 {
+		t.Error("app-laravel: S3 should be true after bindBinaryServiceToAllProjects")
+	}
+	staticApp := reg.Find("app-static")
+	if staticApp != nil && staticApp.Services != nil && staticApp.Services.S3 {
+		t.Error("app-static: S3 should not be set for non-Laravel projects")
+	}
+}
+
 func TestUnbindService_ClearsMailBinding(t *testing.T) {
 	reg := &registry.Registry{
 		Projects: []registry.Project{
