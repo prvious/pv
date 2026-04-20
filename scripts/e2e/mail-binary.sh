@@ -23,7 +23,7 @@ echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/co
 mkdir -p "$ENVTEST_DIR/public"
 echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
 echo "MAIL_MAILER=log" > "$ENVTEST_DIR/.env"
-pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
+sudo -E pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> service:add mail"
 sudo -E pv service:add mail || { echo "FAIL: pv service:add mail failed"; exit 1; }
