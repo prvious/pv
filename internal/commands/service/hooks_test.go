@@ -120,6 +120,49 @@ func TestApplyStopAllFallbacks(t *testing.T) {
 	}
 }
 
+// TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject verifies that when a
+// service is added/started, only projects linked to that service have their
+// .env updated — not unrelated projects that happen to be in the registry.
+func TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	mysqlProjectDir := t.TempDir()
+	os.WriteFile(filepath.Join(mysqlProjectDir, ".env"),
+		[]byte("DB_CONNECTION=sqlite\n"), 0644)
+
+	postgresProjectDir := t.TempDir()
+	os.WriteFile(filepath.Join(postgresProjectDir, ".env"),
+		[]byte("DB_CONNECTION=sqlite\n"), 0644)
+
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{
+			"mysql@8.4": {Image: "mysql:8.4", Port: 33000},
+		},
+		Projects: []registry.Project{
+			{Name: "mysql-app", Path: mysqlProjectDir, Type: "laravel",
+				Services: &registry.ProjectServices{MySQL: "8.4"}},
+			{Name: "postgres-app", Path: postgresProjectDir, Type: "laravel",
+				Services: &registry.ProjectServices{Postgres: "17"}},
+		},
+	}
+
+	origConfirm := automation.ConfirmFunc
+	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
+	defer func() { automation.ConfirmFunc = origConfirm }()
+
+	updateLinkedProjectsEnv(reg, "mysql", &services.MySQL{}, "8.4")
+
+	mysqlEnv, _ := services.ReadDotEnv(filepath.Join(mysqlProjectDir, ".env"))
+	if mysqlEnv["DB_CONNECTION"] != "mysql" {
+		t.Errorf("mysql-app DB_CONNECTION = %q, want mysql", mysqlEnv["DB_CONNECTION"])
+	}
+
+	postgresEnv, _ := services.ReadDotEnv(filepath.Join(postgresProjectDir, ".env"))
+	if postgresEnv["DB_CONNECTION"] != "sqlite" {
+		t.Errorf("postgres-app DB_CONNECTION = %q, want sqlite (should not have changed)", postgresEnv["DB_CONNECTION"])
+	}
+}
+
 func TestUnbindService_ClearsMailBinding(t *testing.T) {
 	reg := &registry.Registry{
 		Projects: []registry.Project{
