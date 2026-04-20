@@ -123,6 +123,20 @@ func updateLinkedProjectsEnvBinary(reg *registry.Registry, svcName string, svc s
 	}
 }
 
+// applyStopAllFallbacks applies env fallbacks for every Docker service in the
+// registry. Binary services are skipped because the stop-all command does not
+// stop them (they're managed by the daemon). Called from the no-args
+// service:stop path after stopping all Docker containers.
+func applyStopAllFallbacks(reg *registry.Registry) {
+	for key, inst := range reg.ListServices() {
+		if inst.Kind == "binary" {
+			continue // binary services were not stopped; no fallback needed.
+		}
+		svcName, _ := services.ParseServiceKey(key)
+		applyFallbacksToLinkedProjects(reg, svcName)
+	}
+}
+
 // applyFallbacksToLinkedProjects applies safe env fallbacks when a service
 // is stopped or removed.
 func applyFallbacksToLinkedProjects(reg *registry.Registry, svcName string) {

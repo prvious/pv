@@ -73,6 +73,13 @@ var destroyCmd = &cobra.Command{
 					ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
 				}
 			}
+			// Apply env fallbacks and unbind from linked projects — the binary
+			// is permanently gone. Mirrors the Docker path pattern.
+			applyFallbacksToLinkedProjects(reg, name)
+			reg.UnbindService(name)
+			if err := reg.Save(); err != nil {
+				return fmt.Errorf("cannot save registry: %w", err)
+			}
 			ui.Success(fmt.Sprintf("%s destroyed (binary + data gone)", binSvc.DisplayName()))
 			return nil
 		}
@@ -125,7 +132,8 @@ var destroyCmd = &cobra.Command{
 			return err
 		}
 
-		// Unbind from all projects.
+		// Apply fallbacks and unbind from all projects.
+		applyFallbacksToLinkedProjects(reg, svcName)
 		projects := reg.ProjectsUsingService(svcName)
 		reg.UnbindService(svcName)
 

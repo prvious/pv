@@ -61,11 +61,9 @@ var stopCmd = &cobra.Command{
 					return err
 				}
 			}
-			// Apply fallbacks for each stopped service.
-			for key := range reg.ListServices() {
-				svcName, _ := services.ParseServiceKey(key)
-				applyFallbacksToLinkedProjects(reg, svcName)
-			}
+			// Apply fallbacks for each stopped Docker service. Binary services
+			// are skipped by applyStopAllFallbacks because they were not stopped.
+			applyStopAllFallbacks(reg)
 		} else {
 			// Dispatch on service kind. Binary services don't use the versioned-key
 			// machinery below; they flip a registry flag and let the daemon reconcile.
