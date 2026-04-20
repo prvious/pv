@@ -4,15 +4,15 @@ source "$(dirname "$0")/helpers.sh"
 
 echo "==> Phase: Mail binary service (Mailpit) lifecycle"
 
-# Start pv in the background so we have a live daemon for service: commands.
-pv start >/tmp/pv-mail-e2e.log 2>&1 &
+# e2e tests use foreground mode with sudo (previous phases leave root-owned
+# config dirs; only root can clean and regenerate them).
+sudo -E pv start >/tmp/pv-mail-e2e.log 2>&1 &
 START_PID=$!
-sleep 3
+sleep 8
 
 cleanup() {
-  pv unlink e2e-mail-env >/dev/null 2>&1 || true
-  kill "$START_PID" 2>/dev/null || true
-  pv stop >/dev/null 2>&1 || true
+  sudo -E pv unlink e2e-mail-env >/dev/null 2>&1 || true
+  sudo -E pv stop >/dev/null 2>&1 || true
   rm -rf "${ENVTEST_DIR:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -26,7 +26,7 @@ echo "MAIL_MAILER=log" > "$ENVTEST_DIR/.env"
 pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> service:add mail"
-pv service:add mail || { echo "FAIL: pv service:add mail failed"; exit 1; }
+sudo -E pv service:add mail || { echo "FAIL: pv service:add mail failed"; exit 1; }
 
 echo "==> Verify mailpit binary exists"
 test -x "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not installed"; exit 1; }
@@ -63,7 +63,7 @@ grep -q "MAIL_MAILER=smtp" "$ENVTEST_DIR/.env" || {
 echo "OK: linked project .env has MAIL_MAILER=smtp"
 
 echo "==> service:stop mail"
-pv service:stop mail
+sudo -E pv service:stop mail
 sleep 2
 if curl -fsS http://127.0.0.1:8025/livez 2>/dev/null; then
     echo "FAIL: /livez still answering after service:stop"
@@ -72,7 +72,7 @@ fi
 echo "OK: /livez silent after service:stop"
 
 echo "==> service:start mail"
-pv service:start mail
+sudo -E pv service:start mail
 for i in $(seq 1 20); do
     if curl -fsS http://127.0.0.1:8025/livez 2>/dev/null; then break; fi
     sleep 1
@@ -81,13 +81,13 @@ curl -fsS http://127.0.0.1:8025/livez || { echo "FAIL: /livez not reachable afte
 echo "OK: /livez reachable after service:start"
 
 echo "==> service:destroy mail"
-pv service:destroy mail
+sudo -E pv service:destroy mail
 test ! -f "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not deleted after destroy"; exit 1; }
 test ! -d "$HOME/.pv/services/mail/latest/data" || { echo "FAIL: data dir not deleted after destroy"; exit 1; }
 echo "OK: binary and data removed"
 
 echo "==> pv stop"
-pv stop || true
+sudo -E pv stop || true
 trap - EXIT
 
 echo "OK: Mail binary service lifecycle passed"
