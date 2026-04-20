@@ -33,10 +33,13 @@ test -x "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not ins
 echo "OK: mailpit binary at ~/.pv/internal/bin/mailpit"
 
 echo "==> Verify daemon-status.json lists mailpit"
-test -f "$HOME/.pv/daemon-status.json" || { echo "FAIL: daemon-status.json missing"; exit 1; }
-grep -q '"mailpit"' "$HOME/.pv/daemon-status.json" || {
+for i in $(seq 1 20); do
+    if grep -q '"mailpit"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    sleep 1
+done
+grep -q '"mailpit"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain mailpit entry";
-    cat "$HOME/.pv/daemon-status.json";
+    cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;
 }
 echo "OK: daemon-status.json advertises mailpit"

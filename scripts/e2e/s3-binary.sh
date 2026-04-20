@@ -23,10 +23,13 @@ test -x "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not insta
 echo "OK: rustfs binary at ~/.pv/internal/bin/rustfs"
 
 echo "==> Verify daemon-status.json lists rustfs"
-test -f "$HOME/.pv/daemon-status.json" || { echo "FAIL: daemon-status.json missing"; exit 1; }
-grep -q '"rustfs"' "$HOME/.pv/daemon-status.json" || {
+for i in $(seq 1 20); do
+    if grep -q '"rustfs"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    sleep 1
+done
+grep -q '"rustfs"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain rustfs entry";
-    cat "$HOME/.pv/daemon-status.json";
+    cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;
 }
 echo "OK: daemon-status.json advertises rustfs"
