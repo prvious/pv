@@ -4,6 +4,8 @@ source "$(dirname "$0")/helpers.sh"
 
 # Disable daemon if auto-enabled during install — e2e tests use foreground mode with sudo.
 pv daemon:disable 2>/dev/null || true
+# pv install starts the daemon immediately; stop it so the PID file is gone before we start fresh.
+sudo -E pv stop >/dev/null 2>&1 || true
 sleep 1
 
 sudo -E pv start &
