@@ -12,8 +12,8 @@ import (
 	"github.com/prvious/pv/internal/ui"
 )
 
-// updateLinkedProjectsEnv updates .env for all linked Laravel projects
-// (including Octane) when a service is added or started.
+// updateLinkedProjectsEnv updates .env for Laravel projects linked to the
+// given service (including Octane) when a service is added or started.
 func updateLinkedProjectsEnv(reg *registry.Registry, svcName string, svc services.Service, version string) {
 	settings, err := config.LoadSettings()
 	if err != nil {
@@ -24,10 +24,12 @@ func updateLinkedProjectsEnv(reg *registry.Registry, svcName string, svc service
 		return
 	}
 
+	linkedNames := reg.ProjectsUsingService(svcName)
 	var laravelProjects []registry.Project
-	for _, p := range reg.List() {
-		if p.Type == "laravel" || p.Type == "laravel-octane" {
-			laravelProjects = append(laravelProjects, p)
+	for _, name := range linkedNames {
+		p := reg.Find(name)
+		if p != nil && (p.Type == "laravel" || p.Type == "laravel-octane") {
+			laravelProjects = append(laravelProjects, *p)
 		}
 	}
 	if len(laravelProjects) == 0 {
@@ -81,10 +83,12 @@ func updateLinkedProjectsEnvBinary(reg *registry.Registry, svcName string, svc s
 		return
 	}
 
+	linkedNames := reg.ProjectsUsingService(svcName)
 	var laravelProjects []registry.Project
-	for _, p := range reg.List() {
-		if p.Type == "laravel" || p.Type == "laravel-octane" {
-			laravelProjects = append(laravelProjects, p)
+	for _, name := range linkedNames {
+		p := reg.Find(name)
+		if p != nil && (p.Type == "laravel" || p.Type == "laravel-octane") {
+			laravelProjects = append(laravelProjects, *p)
 		}
 	}
 	if len(laravelProjects) == 0 {
