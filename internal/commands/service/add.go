@@ -246,7 +246,9 @@ func addBinary(ctx context.Context, reg *registry.Registry, svc services.BinaryS
 
 	// Projects linked before this service was added won't be in ProjectsUsingService;
 	// bind them now so updateLinkedProjectsEnvBinary can find them.
-	bindBinaryServiceToAllProjects(reg, name)
+	if err := bindBinaryServiceToAllProjects(reg, name); err != nil {
+		return fmt.Errorf("cannot bind service to projects: %w", err)
+	}
 	if err := reg.Save(); err != nil {
 		return fmt.Errorf("cannot save registry after binding service: %w", err)
 	}
