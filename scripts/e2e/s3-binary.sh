@@ -11,9 +11,21 @@ START_PID=$!
 sleep 8
 
 cleanup() {
+  sudo -E pv unlink e2e-s3-env >/dev/null 2>&1 || true
   sudo -E pv stop >/dev/null 2>&1 || true
+  rm -rf "${ENVTEST_DIR:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Create a minimal linked Laravel project BEFORE service:add so we exercise
+# the retroactive-bind path (issue #69): projects linked before a binary
+# service existed must still get their .env keys written.
+ENVTEST_DIR=$(mktemp -d)
+echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
+mkdir -p "$ENVTEST_DIR/public"
+echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
+echo "FILESYSTEM_DISK=local" > "$ENVTEST_DIR/.env"
+sudo -E pv link "$ENVTEST_DIR" --name e2e-s3-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> service:add s3"
 sudo -E pv service:add s3 || { echo "FAIL: pv service:add s3 failed"; exit 1; }
@@ -41,6 +53,15 @@ for i in $(seq 1 20); do
 done
 nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after service:add"; exit 1; }
 echo "OK: port 9000 reachable"
+
+echo "==> Verify linked project .env got AWS_ENDPOINT"
+grep -q "AWS_ENDPOINT=http://127.0.0.1:9000" "$ENVTEST_DIR/.env" || {
+    echo "FAIL: linked project .env should have AWS_ENDPOINT after service:add s3";
+    echo "  actual .env contents:";
+    cat "$ENVTEST_DIR/.env";
+    exit 1;
+}
+echo "OK: linked project .env has AWS_ENDPOINT"
 
 echo "==> service:stop s3"
 sudo -E pv service:stop s3

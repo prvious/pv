@@ -127,6 +127,35 @@ func updateLinkedProjectsEnvBinary(reg *registry.Registry, svcName string, svc s
 	}
 }
 
+// bindBinaryServiceToAllProjects sets the per-project Services flag for svcName
+// on every Laravel project so updateLinkedProjectsEnvBinary can find projects
+// that were linked before the service existed. Returns an error for unknown
+// svcName so new binary services can't silently skip this step — the set of
+// cases here must stay in lockstep with registry.ProjectServices fields.
+func bindBinaryServiceToAllProjects(reg *registry.Registry, svcName string) error {
+	switch svcName {
+	case "mail", "s3":
+	default:
+		return fmt.Errorf("bindBinaryServiceToAllProjects: unknown binary service %q (add a case here and a field on ProjectServices)", svcName)
+	}
+	for i := range reg.Projects {
+		p := &reg.Projects[i]
+		if p.Type != "laravel" && p.Type != "laravel-octane" {
+			continue
+		}
+		if p.Services == nil {
+			p.Services = &registry.ProjectServices{}
+		}
+		switch svcName {
+		case "mail":
+			p.Services.Mail = true
+		case "s3":
+			p.Services.S3 = true
+		}
+	}
+	return nil
+}
+
 // applyStopAllFallbacks applies env fallbacks for every Docker service in the
 // registry. Binary services are skipped because the stop-all command does not
 // stop them (they're managed by the daemon). Called from the no-args
