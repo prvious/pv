@@ -170,7 +170,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ALL=$(gh api 'repos/theseus-rs/postgresql-binaries/releases?per_page=100' --paginate --jq '.[].tag_name')
+          ALL=$(gh api 'repos/theseus-rs/postgresql-binaries/releases?per_page=100' --paginate --jq '.[] | select(.prerelease==false) | .tag_name')
           VER=$(echo "$ALL" | grep "^${{ matrix.pg }}\." | sort -V | tail -1)
           if [ -z "$VER" ]; then
             echo "::error::No ${{ matrix.pg }}.x release on theseus-rs"
@@ -200,6 +200,7 @@ jobs:
       - name: Patch install_names to relative paths
         run: |
           set -euo pipefail
+          shopt -s nullglob
           # Rewrite LC_ID_DYLIB on bundled openssl (their own identity)
           install_name_tool -id "@executable_path/../lib/libssl.3.dylib"   "$STAGING/lib/libssl.3.dylib"
           install_name_tool -id "@executable_path/../lib/libcrypto.3.dylib" "$STAGING/lib/libcrypto.3.dylib"
@@ -228,6 +229,7 @@ jobs:
       - name: Ad-hoc codesign all Mach-O files
         run: |
           set -euo pipefail
+          shopt -s nullglob
           for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
             [ -L "$f" ] && continue
             [ -f "$f" ] || continue
