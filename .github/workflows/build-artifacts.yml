@@ -355,9 +355,10 @@ jobs:
             fi
           done
 
-          # Postgres bundles: expect both 17 and 18.
+          # Postgres bundles: expect one per major in postgres.strategy.matrix.pg.
+          # Keep this count in sync with that matrix when adding/removing majors.
           pg_dirs=(artifacts/postgres-mac-arm64-*)
-          if [ ${#pg_dirs[@]} -lt 2 ]; then
+          if [ ${#pg_dirs[@]} -ne 2 ]; then
             echo "::error::Expected 2 postgres bundles (17 + 18), found ${#pg_dirs[@]}"
             exit 1
           fi
