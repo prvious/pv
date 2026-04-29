@@ -60,7 +60,7 @@ in CI before publishing.
 | Patching | `install_name_tool -change` every Mach-O reference of `/opt/homebrew/opt/openssl@3/lib/lib{ssl,crypto}.3.dylib` → `@executable_path/../lib/lib{ssl,crypto}.3.dylib`; rewrite `LC_ID_DYLIB` on bundled openssl; rewrite libssl's internal libcrypto reference (Homebrew Cellar path) | Standard relocatable-bundle pattern |
 | Codesigning | Ad-hoc `codesign --force --sign -` over every Mach-O after patching | `install_name_tool` invalidates the signature; ad-hoc satisfies macOS Gatekeeper for non-Apple-Developer distribution |
 | Smoke test | In CI: `initdb` + start `postgres` + `psql SELECT version()` + clean teardown | Catches runtime breakage before publishing |
-| Strip | Drop only `share/postgresql/doc/`. Keep `bin/`, `lib/`, `share/`, `include/` in full | Enable third-party extension compilation |
+| Strip | Drop only `share/doc/`. Keep `bin/`, `lib/`, `share/`, `include/` in full | Enable third-party extension compilation |
 | Asset naming | Major-only: `postgres-mac-arm64-17.tar.gz` | Mirrors PHP (`php-mac-arm64-php8.4.tar.gz`) |
 | Release tag | Same `artifacts` release that already hosts FrankenPHP + PHP CLI | Single rolling release |
 | Trigger | Always rebundle on every cron/dispatch run; `gh release upload --clobber` | Mirrors FrankenPHP workflow |
@@ -207,7 +207,7 @@ postgres:
         wait $PG_PID 2>/dev/null || true
 
     - name: Strip docs
-      run: rm -rf "$STAGING/share/postgresql/doc"
+      run: rm -rf "$STAGING/share/doc"
 
     - name: Structural sanity checks
       run: |
@@ -220,7 +220,7 @@ postgres:
         test -f "$STAGING/bin/pg_config"
         test -f "$STAGING/lib/libssl.3.dylib"
         test -f "$STAGING/lib/libcrypto.3.dylib"
-        test -d "$STAGING/share/postgresql/extension"
+        test -d "$STAGING/share/extension"
         test -d "$STAGING/include"
         echo "Structural sanity checks passed."
 

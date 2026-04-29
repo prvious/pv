@@ -182,7 +182,7 @@ Use Edit to insert this block immediately before `  release:`. The new content g
           wait $PG_PID 2>/dev/null || true
 
       - name: Strip docs
-        run: rm -rf "$STAGING/share/postgresql/doc"
+        run: rm -rf "$STAGING/share/doc"
 
       - name: Structural sanity checks
         run: |
@@ -195,7 +195,7 @@ Use Edit to insert this block immediately before `  release:`. The new content g
           test -f "$STAGING/bin/pg_config"
           test -f "$STAGING/lib/libssl.3.dylib"
           test -f "$STAGING/lib/libcrypto.3.dylib"
-          test -d "$STAGING/share/postgresql/extension"
+          test -d "$STAGING/share/extension"
           test -d "$STAGING/include"
           echo "Structural sanity checks passed."
 
