@@ -164,6 +164,9 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout pv (for scripts/test-postgres-bundle.sh)
+        uses: actions/checkout@v4
+
       - name: Resolve latest patch version from theseus-rs
         id: resolve
         env:
@@ -201,29 +204,38 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Rewrite LC_ID_DYLIB on bundled openssl (their own identity)
-          install_name_tool -id "@executable_path/../lib/libssl.3.dylib"   "$STAGING/lib/libssl.3.dylib"
-          install_name_tool -id "@executable_path/../lib/libcrypto.3.dylib" "$STAGING/lib/libcrypto.3.dylib"
-          # libssl carries a hardcoded reference to libcrypto via Homebrew Cellar version path.
-          # Discover it from otool -L rather than reconstructing the path.
-          CRYPTO_REF=$(otool -L "$STAGING/lib/libssl.3.dylib" | awk '/libcrypto\.3\.dylib/ && !/@executable_path/ {print $1; exit}')
-          if [ -n "$CRYPTO_REF" ]; then
-            install_name_tool -change "$CRYPTO_REF" "@executable_path/../lib/libcrypto.3.dylib" "$STAGING/lib/libssl.3.dylib"
-          fi
-          # Walk every Mach-O in bin/ and lib/, rewrite the two openssl paths.
+          # Walk every Mach-O in bin/ and lib/. For each:
+          #   - If it's a dylib whose LC_ID_DYLIB points at a build-host path
+          #     (Homebrew or theseus's CI workspace), rewrite it to
+          #     @executable_path/../lib/<basename>.
+          #   - For every LC_LOAD_DYLIB pointing at a build-host path, rewrite
+          #     to @executable_path/../lib/<basename>.
+          # Build-host path patterns seen in theseus-rs's macOS arm64 bundles:
+          #   /opt/homebrew/...                          (Homebrew openssl, Cellar paths)
+          #   /Users/runner/work/postgresql-binaries/... (theseus's CI workspace)
           for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
             [ -L "$f" ] && continue
             [ -f "$f" ] || continue
-            if file -b "$f" | grep -q '^Mach-O'; then
-              install_name_tool -change \
-                "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib" \
-                "@executable_path/../lib/libssl.3.dylib" \
-                "$f" 2>/dev/null || true
-              install_name_tool -change \
-                "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib" \
-                "@executable_path/../lib/libcrypto.3.dylib" \
-                "$f" 2>/dev/null || true
+            if ! file -b "$f" | grep -q '^Mach-O'; then continue; fi
+
+            # Fix LC_ID_DYLIB on dylibs whose identity is a build-host path.
+            if [[ "$f" == *.dylib ]]; then
+              own=$(otool -D "$f" | tail -n +2)
+              case "$own" in
+                /opt/homebrew/*|/Users/runner/*)
+                  install_name_tool -id "@executable_path/../lib/$(basename "$own")" "$f"
+                  ;;
+              esac
             fi
+
+            # Fix LC_LOAD_DYLIB entries pointing at build-host paths.
+            otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r ref; do
+              case "$ref" in
+                /opt/homebrew/*|/Users/runner/*)
+                  install_name_tool -change "$ref" "@executable_path/../lib/$(basename "$ref")" "$f" 2>/dev/null || true
+                  ;;
+              esac
+            done
           done
 
       - name: Ad-hoc codesign all Mach-O files
@@ -238,39 +250,30 @@ jobs:
             fi
           done
 
-      - name: Verify deps reference no Homebrew paths
+      - name: Verify no build-host paths remain in any binary
         run: |
           set -euo pipefail
-          echo "postgres dependencies:"
-          otool -L "$STAGING/bin/postgres"
-          if otool -L "$STAGING/bin/postgres" | grep -E '/opt/homebrew' ; then
-            echo "::error::postgres still references Homebrew paths after patching"
-            exit 1
-          fi
-
-      - name: Smoke test (initdb + start + psql + stop)
-        run: |
-          set -euo pipefail
-          DATA_DIR="$RUNNER_TEMP/pgdata"
-          rm -rf "$DATA_DIR"
-          "$STAGING/bin/initdb" -D "$DATA_DIR" -U postgres --auth=trust >/dev/null
-          PORT=54199
-          "$STAGING/bin/postgres" -D "$DATA_DIR" -p "$PORT" -k "$DATA_DIR" >"$RUNNER_TEMP/pg.log" 2>&1 &
-          PG_PID=$!
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if "$STAGING/bin/pg_isready" -h 127.0.0.1 -p "$PORT" >/dev/null 2>&1; then break; fi
-            sleep 1
+          shopt -s nullglob
+          LEAKS=0
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if ! file -b "$f" | grep -q '^Mach-O'; then continue; fi
+            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|Users/runner)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::Build-host path leak in $(basename "$f"):"
+              echo "$bad"
+              LEAKS=$((LEAKS+1))
+            fi
           done
-          if ! "$STAGING/bin/pg_isready" -h 127.0.0.1 -p "$PORT"; then
-            echo "::error::pg_isready failed; server log:"
-            cat "$RUNNER_TEMP/pg.log"
-            kill $PG_PID 2>/dev/null || true
+          if [ "$LEAKS" -ne 0 ]; then
+            echo "::error::$LEAKS file(s) still reference build-host paths after patching"
             exit 1
           fi
-          VER_OUT=$("$STAGING/bin/psql" -h 127.0.0.1 -p "$PORT" -U postgres -tAc "SELECT version();")
-          echo "Server reported: $VER_OUT"
-          kill $PG_PID
-          wait $PG_PID 2>/dev/null || true
+          echo "All Mach-O files reference only relative or system paths."
+
+      - name: Integration test (initdb + extensions + pgbench + amcheck + dump roundtrip)
+        run: bash scripts/test-postgres-bundle.sh "$STAGING"
 
       - name: Strip docs
         run: rm -rf "$STAGING/share/doc"
