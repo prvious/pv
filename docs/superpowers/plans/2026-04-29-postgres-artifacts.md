@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `postgres` job to `.github/workflows/build-artifacts.yml` that mirrors zonkyio's PostgreSQL bundles (PG 17 + 18, macOS arm64) from Maven Central into the existing rolling `artifacts` release on `prvious/pv`.
+**Goal:** Add a `postgres` job to `.github/workflows/build-artifacts.yml` that mirrors theseus-rs's PostgreSQL bundles (PG 17 + 18, macOS arm64), patches Homebrew-pinned openssl `install_name`s to relative `@executable_path` references, runs an in-CI smoke test, and publishes the corrected bundles to the existing rolling `artifacts` release on `prvious/pv`.
 
-**Architecture:** Single workflow file, single rolling release. The new `postgres` job runs in parallel with the existing `build` job on `ubuntu-latest`, downloads the JAR from Maven, unwraps it (zip → xz tarball), strips docs, packs as `postgres-mac-arm64-{17,18}.tar.gz`, and hands off to the existing `release` job. The `release` job is extended to also wait on `postgres`, download the new workflow artifacts, validate them, and stage them for the existing `gh release upload --clobber` step.
+**Architecture:** Single workflow file, single rolling release. The new `postgres` job runs in parallel with the existing `build` job on `macos-15` (required because `install_name_tool` and `codesign` are darwin-only). Steps: download from theseus-rs, bundle Homebrew openssl into the staging tree, patch `install_name`s on every Mach-O binary/dylib, ad-hoc codesign, verify no Homebrew paths remain, smoke-test (initdb + start + psql query), strip docs, repack, upload.
 
-**Tech Stack:** GitHub Actions YAML, bash, `curl`, `unzip`, `tar` (with xz support, available on `ubuntu-latest`), `gh` CLI.
+**Tech Stack:** GitHub Actions YAML, bash, `gh api` (for theseus-rs release listing), `curl`, `tar`, `install_name_tool`, `codesign`, `otool`.
 
 **Spec:** `docs/superpowers/specs/2026-04-29-postgres-artifacts-design.md`
 
@@ -18,84 +18,30 @@ Single file modified — no new files.
 
 | File | Change | Responsibility |
 |---|---|---|
-| `.github/workflows/build-artifacts.yml` | Modify | Add `postgres` matrix job; extend `release` job to consume postgres workflow artifacts |
+| `.github/workflows/build-artifacts.yml` | Modify | Add `postgres` matrix job (macos-15) + extend `release` job to consume postgres workflow artifacts |
 
-The existing `resolve-version` and `build` jobs stay untouched. The `postgres` job is independent of them and runs in parallel. The `release` job's existing PHP/FrankenPHP logic stays intact; we only append postgres handling.
-
----
-
-## Task 1: Pre-flight — verify Maven version resolution works
-
-**Files:** none (local sanity check before touching the workflow)
-
-This is a quick local check to confirm the Maven Central metadata URL and the version-grep one-liner produce sane results. If this fails, the workflow would fail too — better to catch it now.
-
-- [ ] **Step 1: Run the resolution one-liner for PG 17**
-
-```bash
-curl -fsSL "https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-darwin-arm64v8/maven-metadata.xml" \
-  | grep -oE '<version>[^<]+' \
-  | sed 's/<version>//' \
-  | grep "^17\." \
-  | sort -V \
-  | tail -1
-```
-
-Expected: a single line like `17.6.0` (the actual patch version may differ — anything in the form `17.X.Y` is correct).
-
-- [ ] **Step 2: Run the resolution one-liner for PG 18**
-
-```bash
-curl -fsSL "https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-darwin-arm64v8/maven-metadata.xml" \
-  | grep -oE '<version>[^<]+' \
-  | sed 's/<version>//' \
-  | grep "^18\." \
-  | sort -V \
-  | tail -1
-```
-
-Expected: `18.X.Y` (e.g. `18.3.0`).
-
-- [ ] **Step 3: Verify the JAR URL pattern downloads**
-
-Use the version from Step 2:
-
-```bash
-VER="18.3.0"  # substitute the version from Step 2
-curl -fsSI "https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-darwin-arm64v8/${VER}/embedded-postgres-binaries-darwin-arm64v8-${VER}.jar" | head -1
-```
-
-Expected: `HTTP/2 200` (or `HTTP/1.1 200 OK`). Confirms the URL pattern is correct and the asset exists.
-
-If any of these three steps return empty / 404 / unexpected output, **stop and re-investigate** — the workflow will inherit the same problem.
+The existing `resolve-version` and `build` jobs stay untouched. The `postgres` job runs in parallel with them. The `release` job's existing PHP/FrankenPHP logic stays intact; we only append postgres handling.
 
 ---
 
-## Task 2: Create a feature branch for the work
+## Task 1: Pre-flight verification (already done)
 
-**Files:** none
+Verified locally before plan execution:
 
-- [ ] **Step 1: Verify git is clean**
+- ✅ theseus-rs publishes both PG 17.9.0 and PG 18.3.0 with `aarch64-apple-darwin` assets.
+- ✅ Both archives ship 37 binaries (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_dump`, `pg_restore`, `pg_config`, `pg_isready`, `createdb`, etc.) and an `include/` directory.
+- ✅ Both archives' `bin/postgres` references `/opt/homebrew/opt/openssl@3/lib/lib{ssl,crypto}.3.dylib` and otherwise only `/usr/lib/*` system libs.
+- ✅ End-to-end pipeline verified locally (download → bundle Homebrew openssl → `install_name_tool` patching → ad-hoc codesign → `initdb` → start postgres → `psql SELECT version()` → teardown) for both PG 17.9.0 and PG 18.3.0.
 
-```bash
-git status
-```
+No further pre-flight needed.
 
-Expected: `nothing to commit, working tree clean`. If not clean, stash or commit unrelated changes first.
+---
 
-- [ ] **Step 2: Create and switch to the feature branch**
+## Task 2: Feature branch (already done)
 
-```bash
-git checkout -b feat/postgres-artifacts
-```
-
-- [ ] **Step 3: Confirm branch**
-
-```bash
-git branch --show-current
-```
-
-Expected: `feat/postgres-artifacts`.
+Branch `feat/postgres-artifacts` already exists and is checked out. The
+prior bad commit (zonkyio-based postgres job) has been reset; the branch
+is currently at `23efcea` (parent of main's plan/spec commits).
 
 ---
 
@@ -104,7 +50,7 @@ Expected: `feat/postgres-artifacts`.
 **Files:**
 - Modify: `.github/workflows/build-artifacts.yml`
 
-Insert a new top-level job named `postgres` between the existing `build` job (ends at line 155) and the existing `release` job (starts at line 157). The new job has no `needs:` and runs in parallel with `build`.
+Insert a new top-level job named `postgres` between the existing `build` job (ends around line 155) and the existing `release` job (starts around line 157). The new job has no `needs:` and runs in parallel with `build`.
 
 - [ ] **Step 1: Read the file to confirm the insertion point**
 
@@ -112,11 +58,11 @@ Insert a new top-level job named `postgres` between the existing `build` job (en
 sed -n '150,165p' .github/workflows/build-artifacts.yml
 ```
 
-Expected: shows the tail of the `build` job's `Upload PHP CLI` step (around line 150–155) and the start of the `release` job at line 157. The insertion point is the blank line between them.
+Expected: shows the tail of the `build` job's `Upload PHP CLI` step and the start of the `release` job. The insertion point is the blank line between them.
 
 - [ ] **Step 2: Insert the `postgres` job**
 
-Use Edit to insert this block immediately before `  release:` at line 157. The new content goes between the existing `build` job and `release` job.
+Use Edit to insert this block immediately before `  release:`. The new content goes between the existing `build` job and `release` job, indented at 2 spaces for the job key (matching the `build` and `release` siblings).
 
 ```yaml
   postgres:
@@ -125,55 +71,136 @@ Use Edit to insert this block immediately before `  release:` at line 157. The n
       matrix:
         pg: ["17", "18"]
     name: PostgreSQL ${{ matrix.pg }}
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     permissions:
       contents: read
     steps:
-      - name: Resolve latest patch version from Maven
+      - name: Resolve latest patch version from theseus-rs
         id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          META_URL="https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-darwin-arm64v8/maven-metadata.xml"
-          ALL=$(curl -fsSL "$META_URL" | grep -oE '<version>[^<]+' | sed 's/<version>//')
+          ALL=$(gh api 'repos/theseus-rs/postgresql-binaries/releases?per_page=100' --paginate --jq '.[].tag_name')
           VER=$(echo "$ALL" | grep "^${{ matrix.pg }}\." | sort -V | tail -1)
           if [ -z "$VER" ]; then
-            echo "::error::No ${{ matrix.pg }}.x version found on Maven Central"
+            echo "::error::No ${{ matrix.pg }}.x release on theseus-rs"
             exit 1
           fi
-          echo "Resolved PG ${{ matrix.pg }}.x → $VER"
+          echo "Resolved PG ${{ matrix.pg }} → $VER"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-      - name: Download and unwrap JAR
+      - name: Download and extract theseus-rs bundle
         run: |
           set -euo pipefail
           VER="${{ steps.resolve.outputs.version }}"
-          JAR_URL="https://repo1.maven.org/maven2/io/zonky/test/postgres/embedded-postgres-binaries-darwin-arm64v8/${VER}/embedded-postgres-binaries-darwin-arm64v8-${VER}.jar"
-          curl -fsSL -o pg.jar "$JAR_URL"
-          mkdir -p unpacked staging
-          unzip -q pg.jar -d unpacked
-          tar -xJf unpacked/postgres-darwin-arm_64.txz -C staging
+          URL="https://github.com/theseus-rs/postgresql-binaries/releases/download/${VER}/postgresql-${VER}-aarch64-apple-darwin.tar.gz"
+          curl -fsSL -o pg.tar.gz "$URL"
+          mkdir extracted
+          tar -xzf pg.tar.gz -C extracted
+          STAGING=$(ls -d extracted/postgresql-*-aarch64-apple-darwin)
+          echo "STAGING=$STAGING" >> "$GITHUB_ENV"
+
+      - name: Bundle Homebrew openssl into staging
+        run: |
+          set -euo pipefail
+          cp /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib   "$STAGING/lib/"
+          cp /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib "$STAGING/lib/"
+          chmod 755 "$STAGING/lib/libssl.3.dylib" "$STAGING/lib/libcrypto.3.dylib"
+
+      - name: Patch install_names to relative paths
+        run: |
+          set -euo pipefail
+          # Rewrite LC_ID_DYLIB on bundled openssl (their own identity)
+          install_name_tool -id "@executable_path/../lib/libssl.3.dylib"   "$STAGING/lib/libssl.3.dylib"
+          install_name_tool -id "@executable_path/../lib/libcrypto.3.dylib" "$STAGING/lib/libcrypto.3.dylib"
+          # libssl carries a hardcoded reference to libcrypto via Homebrew Cellar version path.
+          # Discover it from otool -L rather than reconstructing the path.
+          CRYPTO_REF=$(otool -L "$STAGING/lib/libssl.3.dylib" | awk '/libcrypto\.3\.dylib/ && !/@executable_path/ {print $1; exit}')
+          if [ -n "$CRYPTO_REF" ]; then
+            install_name_tool -change "$CRYPTO_REF" "@executable_path/../lib/libcrypto.3.dylib" "$STAGING/lib/libssl.3.dylib"
+          fi
+          # Walk every Mach-O in bin/ and lib/, rewrite the two openssl paths.
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if file -b "$f" | grep -q '^Mach-O'; then
+              install_name_tool -change \
+                "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib" \
+                "@executable_path/../lib/libssl.3.dylib" \
+                "$f" 2>/dev/null || true
+              install_name_tool -change \
+                "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib" \
+                "@executable_path/../lib/libcrypto.3.dylib" \
+                "$f" 2>/dev/null || true
+            fi
+          done
+
+      - name: Ad-hoc codesign all Mach-O files
+        run: |
+          set -euo pipefail
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if file -b "$f" | grep -q '^Mach-O'; then
+              codesign --force --sign - "$f"
+            fi
+          done
+
+      - name: Verify deps reference no Homebrew paths
+        run: |
+          set -euo pipefail
+          echo "postgres dependencies:"
+          otool -L "$STAGING/bin/postgres"
+          if otool -L "$STAGING/bin/postgres" | grep -E '/opt/homebrew' ; then
+            echo "::error::postgres still references Homebrew paths after patching"
+            exit 1
+          fi
+
+      - name: Smoke test (initdb + start + psql + stop)
+        run: |
+          set -euo pipefail
+          DATA_DIR="$RUNNER_TEMP/pgdata"
+          rm -rf "$DATA_DIR"
+          "$STAGING/bin/initdb" -D "$DATA_DIR" -U postgres --auth=trust >/dev/null
+          PORT=54199
+          "$STAGING/bin/postgres" -D "$DATA_DIR" -p "$PORT" -k "$DATA_DIR" >"$RUNNER_TEMP/pg.log" 2>&1 &
+          PG_PID=$!
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if "$STAGING/bin/pg_isready" -h 127.0.0.1 -p "$PORT" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if ! "$STAGING/bin/pg_isready" -h 127.0.0.1 -p "$PORT"; then
+            echo "::error::pg_isready failed; server log:"
+            cat "$RUNNER_TEMP/pg.log"
+            kill $PG_PID 2>/dev/null || true
+            exit 1
+          fi
+          VER_OUT=$("$STAGING/bin/psql" -h 127.0.0.1 -p "$PORT" -U postgres -tAc "SELECT version();")
+          echo "Server reported: $VER_OUT"
+          kill $PG_PID
+          wait $PG_PID 2>/dev/null || true
 
       - name: Strip docs
-        run: rm -rf staging/share/postgresql/doc
+        run: rm -rf "$STAGING/share/postgresql/doc"
 
       - name: Structural sanity checks
         run: |
           set -euo pipefail
-          test -f staging/bin/postgres
-          test -f staging/bin/initdb
-          test -f staging/bin/psql
-          test -f staging/bin/pg_ctl
-          test -f staging/bin/pg_dump
-          test -f staging/bin/pg_config
-          test -f staging/lib/libssl.3.dylib
-          test -f staging/lib/libcrypto.3.dylib
-          test -f staging/lib/libicuuc.77.1.dylib
-          test -d staging/share/postgresql/extension
-          test -d staging/include
+          test -f "$STAGING/bin/postgres"
+          test -f "$STAGING/bin/initdb"
+          test -f "$STAGING/bin/pg_ctl"
+          test -f "$STAGING/bin/psql"
+          test -f "$STAGING/bin/pg_dump"
+          test -f "$STAGING/bin/pg_config"
+          test -f "$STAGING/lib/libssl.3.dylib"
+          test -f "$STAGING/lib/libcrypto.3.dylib"
+          test -d "$STAGING/share/postgresql/extension"
+          test -d "$STAGING/include"
           echo "Structural sanity checks passed."
 
       - name: Repack
-        run: tar -czf "postgres-mac-arm64-${{ matrix.pg }}.tar.gz" -C staging bin lib share include
+        run: tar -czf "postgres-mac-arm64-${{ matrix.pg }}.tar.gz" -C "$STAGING" bin lib share include
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -208,13 +235,11 @@ Expected: four lines listing the four top-level jobs in order:
   release:
 ```
 
-If `postgres:` is missing or in the wrong position, fix the insertion.
-
 - [ ] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/build-artifacts.yml
-git commit -m "ci: add postgres job mirroring zonkyio bundles for PG 17/18"
+git commit -m "ci: add postgres job mirroring theseus-rs bundles for PG 17/18"
 ```
 
 ---
@@ -246,13 +271,12 @@ Change it to:
 ```
 
 Edit:
-
 - old_string: `    needs: [resolve-version, build]`
 - new_string: `    needs: [resolve-version, build, postgres]`
 
 - [ ] **Step 2: Add `download-artifact` step for postgres**
 
-Add this step in the `release` job's `steps:` block, **immediately after** the existing `download-artifact` step that downloads `php-mac-*` (currently lines 172–175). Insert before the `Prepare release assets` step.
+Add this step in the `release` job's `steps:` block, **immediately after** the existing `download-artifact` step that downloads `php-mac-*`. Insert before the `Prepare release assets` step.
 
 The existing block to find and anchor on:
 
@@ -283,7 +307,7 @@ Replace with:
 
 - [ ] **Step 3: Extend `Prepare release assets` with postgres validation + staging**
 
-Inside the existing `Prepare release assets` step's `run:` block, find the validation block that ends with the FrankenPHP↔PHP-CLI matching check, and add postgres validation + staging.
+Inside the existing `Prepare release assets` step's `run:` block, find the validation block that ends with the FrankenPHP↔PHP-CLI matching check, and add postgres validation.
 
 Find this anchor (existing code):
 
@@ -320,7 +344,7 @@ Replace with:
           mkdir -p release
 ```
 
-Then add postgres staging at the end of the `mkdir -p release` block. Find this anchor (existing code):
+Then add postgres staging at the end of the staging loops. Find this anchor (existing code):
 
 ```bash
           # PHP CLI tarballs: just copy as-is (no chmod needed).
@@ -370,7 +394,7 @@ Expected:
 grep -n 'pg_dirs' .github/workflows/build-artifacts.yml
 ```
 
-Expected: 3 lines — one for the array assignment, one for the count check, one for the staging loop.
+Expected: 3 lines — array assignment, count check, staging loop.
 
 - [ ] **Step 7: Commit**
 
@@ -406,7 +430,7 @@ Expected: `✓ Created workflow_dispatch event for build-artifacts.yml at feat/p
 - [ ] **Step 3: Watch the workflow**
 
 ```bash
-sleep 5  # let GitHub register the dispatch
+sleep 5
 gh run list --workflow=build-artifacts.yml --branch=feat/postgres-artifacts --limit 1
 ```
 
@@ -416,12 +440,12 @@ Note the run ID, then:
 gh run watch <RUN_ID>
 ```
 
-Expected: `build` matrix and `postgres` matrix both complete successfully. `release` is skipped (gated on `refs/heads/main`).
+Expected: `build` matrix and `postgres` matrix both complete successfully. `release` is skipped.
 
-If `postgres` fails: inspect logs with `gh run view <RUN_ID> --log-failed` and iterate. Common failure modes:
-- Maven URL changed → fix URL in workflow.
-- zonkyio published a malformed bundle → sanity check `test -f` fails → check the latest version manually with `tar -tJf unpacked/postgres-darwin-arm_64.txz`.
-- YAML indentation issue → re-validate locally with `python3 -c "import yaml; …"`.
+If `postgres` fails: inspect with `gh run view <RUN_ID> --log-failed`. Common failure modes:
+- theseus-rs API/release URL changed → fix URL.
+- Homebrew openssl path on `macos-15` runner changed → adjust `cp` source path.
+- Smoke test fails: `psql` returned non-zero or unexpected output → check the server log printed by the workflow.
 
 - [ ] **Step 4: Inspect the workflow artifacts**
 
@@ -430,18 +454,30 @@ gh run download <RUN_ID> --name postgres-mac-arm64-17
 gh run download <RUN_ID> --name postgres-mac-arm64-18
 ls -lh postgres-mac-arm64-*.tar.gz
 tar -tzf postgres-mac-arm64-17.tar.gz | head -20
-tar -tzf postgres-mac-arm64-17.tar.gz | grep -E 'bin/postgres$|lib/libssl' | head
+tar -tzf postgres-mac-arm64-17.tar.gz | grep -E 'bin/postgres$|bin/psql$|bin/pg_dump$|bin/pg_config$|lib/libssl|include' | head
 ```
 
 Expected:
-- File sizes ~30–35 MB each.
+- File sizes ~10-15 MB compressed each.
 - `tar -tzf` shows `bin/`, `lib/`, `share/`, `include/` at the root (flat structure).
-- `bin/postgres` and `lib/libssl.3.dylib` are present.
+- All key binaries (`postgres`, `psql`, `pg_dump`, `pg_config`) present.
+- `include/` directory present.
 
-- [ ] **Step 5: Clean up downloaded test artifacts**
+- [ ] **Step 5: Verify dependencies on a downloaded bundle**
+
+```bash
+mkdir /tmp/pg-verify && cd /tmp/pg-verify && tar -xzf "$OLDPWD/postgres-mac-arm64-18.tar.gz"
+otool -L bin/postgres
+cd "$OLDPWD"
+```
+
+Expected: every line should reference either `@executable_path/...` or `/usr/lib/...` — NO `/opt/homebrew/...` paths.
+
+- [ ] **Step 6: Clean up downloaded test artifacts**
 
 ```bash
 rm -f postgres-mac-arm64-17.tar.gz postgres-mac-arm64-18.tar.gz
+rm -rf /tmp/pg-verify
 ```
 
 ---
@@ -455,18 +491,22 @@ rm -f postgres-mac-arm64-17.tar.gz postgres-mac-arm64-18.tar.gz
 ```bash
 gh pr create --title "ci: add postgres artifacts pipeline (PG 17/18, macOS arm64)" --body "$(cat <<'EOF'
 ## Summary
-- Adds a new `postgres` job to `build-artifacts.yml` that mirrors zonkyio's PostgreSQL bundles (PG 17 + 18, macOS arm64) from Maven Central
-- Bundles are stripped of docs and repacked as `postgres-mac-arm64-{17,18}.tar.gz`
+- Adds a new `postgres` job to `build-artifacts.yml` that mirrors theseus-rs's PostgreSQL bundles (PG 17 + 18, macOS arm64) from GitHub Releases
+- Patches Homebrew-pinned openssl `install_name`s to relative `@executable_path/../lib/...` references so bundles run on Macs without Homebrew openssl@3 installed
+- Bundles `libssl.3.dylib` + `libcrypto.3.dylib` from the runner's Homebrew openssl@3 into the archive's `lib/`
+- Ad-hoc codesigns every Mach-O after patching to satisfy macOS Gatekeeper
+- In-CI smoke test: `initdb` + start postgres + `psql SELECT version()` + clean teardown — catches runtime breakage before publishing
 - Released to the existing rolling `artifacts` tag on `prvious/pv` alongside FrankenPHP + PHP CLI assets
-- Weekly cron + manual dispatch, mirrors existing FrankenPHP pipeline shape
+- Weekly cron + manual dispatch, parallel to existing FrankenPHP build
 
 Spec: `docs/superpowers/specs/2026-04-29-postgres-artifacts-design.md`
 
 ## Test plan
-- [x] Local Maven resolution one-liner returns valid versions for both PG 17 and 18
+- [x] Local end-to-end pipeline verified for both PG 17.9.0 and PG 18.3.0 (download → patch → codesign → initdb → postgres → psql roundtrip)
 - [x] YAML validates with `python3 -c "import yaml; yaml.safe_load(...)"`
 - [x] Feature-branch workflow dispatch: `build` and `postgres` jobs both succeed; `release` correctly skipped
-- [x] Workflow artifacts inspected: ~30–35 MB tarballs, flat root, `bin/postgres` + `lib/libssl.3.dylib` present
+- [x] Workflow artifacts inspected: ~10-15 MB tarballs, flat root, all 37 binaries present, `include/` present
+- [x] `otool -L bin/postgres` on downloaded bundle shows no `/opt/homebrew/*` references
 - [ ] After merge: first scheduled (or dispatched) run from `main` publishes `postgres-mac-arm64-17.tar.gz` and `postgres-mac-arm64-18.tar.gz` to the `artifacts` release
 EOF
 )"
@@ -500,7 +540,7 @@ gh run list --workflow=build-artifacts.yml --branch=main --limit 1
 gh run watch <RUN_ID>
 ```
 
-Expected: all three build-side jobs (`resolve-version`, `build`, `postgres`) succeed, then `release` runs and uploads.
+Expected: all four build-side jobs (`resolve-version`, `build`, `postgres`) succeed, then `release` runs and uploads.
 
 - [ ] **Step 3: Verify assets are live**
 
@@ -523,6 +563,6 @@ tar -tzf /tmp/pg17-live.tar.gz | head -10
 rm /tmp/pg17-live.tar.gz
 ```
 
-Expected: ~30–35 MB, flat root with `bin/`, `lib/`, `share/`, `include/`.
+Expected: ~10-15 MB, flat root with `bin/`, `lib/`, `share/`, `include/`.
 
-If everything verifies, the artifacts pipeline is live and the weekly cron will keep it fresh from here on. The pv-side consumer code (downloader, `internal/postgresenv/`, shims, daemon integration) is the next plan.
+If everything verifies, the artifacts pipeline is live and the weekly cron will keep it fresh from here on.
