@@ -301,7 +301,7 @@ jobs:
           compression-level: 0
 
   release:
-    needs: [resolve-version, build]
+    needs: [resolve-version, build, postgres]
     # Only publish from main. Dispatching from a feature branch runs the build
     # matrix as a test of the PHP/FrankenPHP binary builds without touching
     # the published release.
@@ -318,6 +318,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: php-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: postgres-mac-arm64-*
           path: artifacts
 
       - name: Prepare release assets
@@ -350,6 +355,13 @@ jobs:
             fi
           done
 
+          # Postgres bundles: expect both 17 and 18.
+          pg_dirs=(artifacts/postgres-mac-arm64-*)
+          if [ ${#pg_dirs[@]} -lt 2 ]; then
+            echo "::error::Expected 2 postgres bundles (17 + 18), found ${#pg_dirs[@]}"
+            exit 1
+          fi
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
           for dir in "${fp_dirs[@]}"; do
@@ -359,6 +371,10 @@ jobs:
           done
           # PHP CLI tarballs: just copy as-is (no chmod needed).
           for dir in "${php_dirs[@]}"; do
+            cp "$dir"/* "release/"
+          done
+          # Postgres tarballs: copy as-is (no chmod needed).
+          for dir in "${pg_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
           ls -la release/
