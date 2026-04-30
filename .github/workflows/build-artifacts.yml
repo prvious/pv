@@ -401,7 +401,7 @@ jobs:
           compression-level: 0
 
   release:
-    needs: [frankenphp, postgres]
+    needs: [frankenphp, postgres, mysql]
     # Only publish from main. Dispatching from a feature branch runs the build
     # matrix as a test of the PHP/FrankenPHP binary builds without touching
     # the published release.
@@ -423,6 +423,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: postgres-mac-arm64-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mysql-mac-arm64-*
           path: artifacts
 
       - name: Prepare release assets
@@ -463,6 +468,14 @@ jobs:
             exit 1
           fi
 
+          # MySQL bundles: expect one per major in mysql.strategy.matrix.include.
+          # Keep this count in sync with that matrix when adding/removing majors.
+          mysql_dirs=(artifacts/mysql-mac-arm64-*)
+          if [ ${#mysql_dirs[@]} -ne 3 ]; then
+            echo "::error::Expected 3 mysql bundles (8.0 + 8.4 + 9.7), found ${#mysql_dirs[@]}"
+            exit 1
+          fi
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
           for dir in "${fp_dirs[@]}"; do
@@ -476,6 +489,10 @@ jobs:
           done
           # Postgres tarballs: copy as-is (no chmod needed).
           for dir in "${pg_dirs[@]}"; do
+            cp "$dir"/* "release/"
+          done
+          # MySQL tarballs: copy as-is (no chmod needed).
+          for dir in "${mysql_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
           ls -la release/
