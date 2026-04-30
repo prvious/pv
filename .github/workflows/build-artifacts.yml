@@ -1,12 +1,7 @@
-name: Build PHP Artifacts
+name: Build artifacts
 
 on:
   workflow_dispatch:
-    inputs:
-      frankenphp_ref:
-        description: "FrankenPHP git ref (tag/branch/SHA). Leave empty for latest release."
-        required: false
-        default: ""
   schedule:
     - cron: "0 0 * * 1"
 
@@ -18,44 +13,28 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
-  resolve-version:
-    runs-on: ubuntu-latest
-    outputs:
-      ref: ${{ steps.resolve.outputs.ref }}
-      version: ${{ steps.resolve.outputs.version }}
-    steps:
-      - name: Resolve FrankenPHP version
-        id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          INPUT_REF="${{ inputs.frankenphp_ref }}"
-          if [ -n "$INPUT_REF" ]; then
-            echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
-            echo "version=${INPUT_REF}" >> "$GITHUB_OUTPUT"
-          else
-            TAG=$(gh api repos/php/frankenphp/releases/latest --jq '.tag_name')
-            echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG}" >> "$GITHUB_OUTPUT"
-          fi
-
-  build:
-    needs: resolve-version
+  frankenphp:
     strategy:
       fail-fast: false
       matrix:
         php: ["8.3", "8.4", "8.5"]
-    name: PHP ${{ matrix.php }}
+    name: FrankenPHP + PHP ${{ matrix.php }}
     runs-on: macos-15
     permissions:
       contents: read
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
+      - name: Resolve latest FrankenPHP release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "ref=$(gh api repos/php/frankenphp/releases/latest --jq '.tag_name')" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           repository: php/frankenphp
-          ref: ${{ needs.resolve-version.outputs.ref }}
+          ref: ${{ steps.resolve.outputs.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -86,14 +65,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist/static-php-cli/downloads
-          key: spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-${{ needs.resolve-version.outputs.ref }}
+          key: spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-${{ steps.resolve.outputs.ref }}
           restore-keys: |
             spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-
 
       - name: Build FrankenPHP with PHP ${{ matrix.php }}
         env:
           PHP_VERSION: ${{ matrix.php }}
-          FRANKENPHP_VERSION: ${{ needs.resolve-version.outputs.version }}
+          FRANKENPHP_VERSION: ${{ steps.resolve.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SPC_OPT_DOWNLOAD_ARGS: "--ignore-cache-sources=php-src --retry 5 --prefer-pre-built"
           # Also build the standalone PHP CLI so it shares the exact same
@@ -304,7 +283,7 @@ jobs:
           compression-level: 0
 
   release:
-    needs: [resolve-version, build, postgres]
+    needs: [frankenphp, postgres]
     # Only publish from main. Dispatching from a feature branch runs the build
     # matrix as a test of the PHP/FrankenPHP binary builds without touching
     # the published release.
