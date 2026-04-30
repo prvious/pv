@@ -115,7 +115,11 @@ echo "  ✓ Fulltext MATCH (ICU)"
 # 5. mysqldump → restore roundtrip
 echo "== 5. mysqldump → restore roundtrip =="
 DUMP_FILE="$WORK_DIR/dump.sql"
-"$MYSQL_PREFIX/bin/mysqldump" --socket="$SOCK" -u root --databases pv_test > "$DUMP_FILE"
+# --set-gtid-purged=OFF: skip the "SET @@GLOBAL.gtid_purged = ...;" preamble.
+# Restoring it into the same server (where GTID_EXECUTED is already non-empty)
+# fails on MySQL 9.x with ER_CANT_SET_GTID_PURGED_DUE_TO_OVERLAP.
+"$MYSQL_PREFIX/bin/mysqldump" --socket="$SOCK" -u root --set-gtid-purged=OFF \
+    --databases pv_test > "$DUMP_FILE"
 DUMP_SIZE=$(wc -c < "$DUMP_FILE" | tr -d ' ')
 
 "${MYSQL[@]}" -e "CREATE DATABASE pv_test_restored;"
