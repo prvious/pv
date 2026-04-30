@@ -512,12 +512,12 @@ jobs:
             echo "Creating $TAG release"
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
-              --title "PHP binaries (FrankenPHP + static PHP CLI)" \
-              --notes "Rolling release of FrankenPHP and static PHP CLI binaries, rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
+              --title "pv binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL)" \
+              --notes "Rolling release of binaries used by pv: FrankenPHP, static PHP CLI, PostgreSQL, and MySQL. Rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
               --latest=false
           fi
 
-          echo "Uploading FrankenPHP + PHP CLI assets to $TAG"
+          echo "Uploading all binaries to $TAG"
           gh release upload "$TAG" release/* \
             --repo "${{ github.repository }}" \
             --clobber
