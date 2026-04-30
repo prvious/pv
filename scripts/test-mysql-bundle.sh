@@ -60,7 +60,7 @@ echo "== 2. start mysqld =="
 "$MYSQL_PREFIX/bin/mysqld" \
     --datadir="$DATA_DIR" --basedir="$MYSQL_PREFIX" \
     --port="$PORT" --socket="$SOCK" --pid-file="$RUN_DIR/m.pid" \
-    --mysqlx=OFF --innodb-buffer-pool-size=64M --innodb-log-file-size=24M \
+    --mysqlx=OFF --innodb-buffer-pool-size=64M \
     >"$WORK_DIR/mysqld.log" 2>&1 &
 MYSQL_PID=$!
 
