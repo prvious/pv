@@ -1,12 +1,7 @@
-name: Build PHP Artifacts
+name: Build artifacts
 
 on:
   workflow_dispatch:
-    inputs:
-      frankenphp_ref:
-        description: "FrankenPHP git ref (tag/branch/SHA). Leave empty for latest release."
-        required: false
-        default: ""
   schedule:
     - cron: "0 0 * * 1"
 
@@ -18,44 +13,28 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
-  resolve-version:
-    runs-on: ubuntu-latest
-    outputs:
-      ref: ${{ steps.resolve.outputs.ref }}
-      version: ${{ steps.resolve.outputs.version }}
-    steps:
-      - name: Resolve FrankenPHP version
-        id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          INPUT_REF="${{ inputs.frankenphp_ref }}"
-          if [ -n "$INPUT_REF" ]; then
-            echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
-            echo "version=${INPUT_REF}" >> "$GITHUB_OUTPUT"
-          else
-            TAG=$(gh api repos/php/frankenphp/releases/latest --jq '.tag_name')
-            echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
-            echo "version=${TAG}" >> "$GITHUB_OUTPUT"
-          fi
-
-  build:
-    needs: resolve-version
+  frankenphp:
     strategy:
       fail-fast: false
       matrix:
         php: ["8.3", "8.4", "8.5"]
-    name: PHP ${{ matrix.php }}
+    name: FrankenPHP + PHP ${{ matrix.php }}
     runs-on: macos-15
     permissions:
       contents: read
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
+      - name: Resolve latest FrankenPHP release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "ref=$(gh api repos/php/frankenphp/releases/latest --jq '.tag_name')" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           repository: php/frankenphp
-          ref: ${{ needs.resolve-version.outputs.ref }}
+          ref: ${{ steps.resolve.outputs.ref }}
 
       - uses: actions/setup-go@v5
         with:
@@ -86,14 +65,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist/static-php-cli/downloads
-          key: spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-${{ needs.resolve-version.outputs.ref }}
+          key: spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-${{ steps.resolve.outputs.ref }}
           restore-keys: |
             spc-downloads-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}-
 
       - name: Build FrankenPHP with PHP ${{ matrix.php }}
         env:
           PHP_VERSION: ${{ matrix.php }}
-          FRANKENPHP_VERSION: ${{ needs.resolve-version.outputs.version }}
+          FRANKENPHP_VERSION: ${{ steps.resolve.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SPC_OPT_DOWNLOAD_ARGS: "--ignore-cache-sources=php-src --retry 5 --prefer-pre-built"
           # Also build the standalone PHP CLI so it shares the exact same
@@ -154,8 +133,157 @@ jobs:
           path: dist/php-mac-${{ steps.arch.outputs.arch }}-php${{ matrix.php }}.tar.gz
           compression-level: 0
 
+  postgres:
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["17", "18"]
+    name: PostgreSQL ${{ matrix.pg }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-postgres-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Resolve latest patch version from theseus-rs
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ALL=$(gh api 'repos/theseus-rs/postgresql-binaries/releases?per_page=100' --paginate --jq '.[] | select(.prerelease==false) | .tag_name')
+          VER=$(echo "$ALL" | grep "^${{ matrix.pg }}\." | sort -V | tail -1)
+          if [ -z "$VER" ]; then
+            echo "::error::No ${{ matrix.pg }}.x release on theseus-rs"
+            exit 1
+          fi
+          echo "Resolved PG ${{ matrix.pg }} → $VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Download and extract theseus-rs bundle
+        run: |
+          set -euo pipefail
+          VER="${{ steps.resolve.outputs.version }}"
+          URL="https://github.com/theseus-rs/postgresql-binaries/releases/download/${VER}/postgresql-${VER}-aarch64-apple-darwin.tar.gz"
+          curl -fsSL -o pg.tar.gz "$URL"
+          mkdir extracted
+          tar -xzf pg.tar.gz -C extracted
+          STAGING=$(ls -d extracted/postgresql-*-aarch64-apple-darwin)
+          echo "STAGING=$STAGING" >> "$GITHUB_ENV"
+
+      - name: Bundle Homebrew openssl into staging
+        run: |
+          set -euo pipefail
+          cp /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib   "$STAGING/lib/"
+          cp /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib "$STAGING/lib/"
+          chmod 755 "$STAGING/lib/libssl.3.dylib" "$STAGING/lib/libcrypto.3.dylib"
+
+      - name: Patch install_names to relative paths
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Walk every Mach-O in bin/ and lib/. For each:
+          #   - If it's a dylib whose LC_ID_DYLIB points at a build-host path
+          #     (Homebrew or theseus's CI workspace), rewrite it to
+          #     @executable_path/../lib/<basename>.
+          #   - For every LC_LOAD_DYLIB pointing at a build-host path, rewrite
+          #     to @executable_path/../lib/<basename>.
+          # Build-host path patterns seen in theseus-rs's macOS arm64 bundles:
+          #   /opt/homebrew/...                          (Homebrew openssl, Cellar paths)
+          #   /Users/runner/work/postgresql-binaries/... (theseus's CI workspace)
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if ! file -b "$f" | grep -q '^Mach-O'; then continue; fi
+
+            # Fix LC_ID_DYLIB on dylibs whose identity is a build-host path.
+            if [[ "$f" == *.dylib ]]; then
+              own=$(otool -D "$f" | tail -n +2)
+              case "$own" in
+                /opt/homebrew/*|/Users/runner/*)
+                  install_name_tool -id "@executable_path/../lib/$(basename "$own")" "$f"
+                  ;;
+              esac
+            fi
+
+            # Fix LC_LOAD_DYLIB entries pointing at build-host paths.
+            otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r ref; do
+              case "$ref" in
+                /opt/homebrew/*|/Users/runner/*)
+                  install_name_tool -change "$ref" "@executable_path/../lib/$(basename "$ref")" "$f" 2>/dev/null || true
+                  ;;
+              esac
+            done
+          done
+
+      - name: Ad-hoc codesign all Mach-O files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if file -b "$f" | grep -q '^Mach-O'; then
+              codesign --force --sign - "$f"
+            fi
+          done
+
+      - name: Verify no build-host paths remain in any binary
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          LEAKS=0
+          for f in "$STAGING/bin/"* "$STAGING/lib/"*.dylib; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if ! file -b "$f" | grep -q '^Mach-O'; then continue; fi
+            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^/(opt/homebrew|Users/runner)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::Build-host path leak in $(basename "$f"):"
+              echo "$bad"
+              LEAKS=$((LEAKS+1))
+            fi
+          done
+          if [ "$LEAKS" -ne 0 ]; then
+            echo "::error::$LEAKS file(s) still reference build-host paths after patching"
+            exit 1
+          fi
+          echo "All Mach-O files reference only relative or system paths."
+
+      - name: Integration test (initdb + extensions + pgbench + amcheck + dump roundtrip)
+        run: bash scripts/test-postgres-bundle.sh "$STAGING"
+
+      - name: Strip docs
+        run: rm -rf "$STAGING/share/doc"
+
+      - name: Structural sanity checks
+        run: |
+          set -euo pipefail
+          test -f "$STAGING/bin/postgres"
+          test -f "$STAGING/bin/initdb"
+          test -f "$STAGING/bin/pg_ctl"
+          test -f "$STAGING/bin/psql"
+          test -f "$STAGING/bin/pg_dump"
+          test -f "$STAGING/bin/pg_config"
+          test -f "$STAGING/lib/libssl.3.dylib"
+          test -f "$STAGING/lib/libcrypto.3.dylib"
+          test -d "$STAGING/share/extension"
+          test -d "$STAGING/include"
+          echo "Structural sanity checks passed."
+
+      - name: Repack
+        run: tar -czf "postgres-mac-arm64-${{ matrix.pg }}.tar.gz" -C "$STAGING" bin lib share include
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-mac-arm64-${{ matrix.pg }}
+          path: postgres-mac-arm64-${{ matrix.pg }}.tar.gz
+          compression-level: 0
+
   release:
-    needs: [resolve-version, build]
+    needs: [frankenphp, postgres]
     # Only publish from main. Dispatching from a feature branch runs the build
     # matrix as a test of the PHP/FrankenPHP binary builds without touching
     # the published release.
@@ -172,6 +300,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: php-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: postgres-mac-arm64-*
           path: artifacts
 
       - name: Prepare release assets
@@ -204,6 +337,14 @@ jobs:
             fi
           done
 
+          # Postgres bundles: expect one per major in postgres.strategy.matrix.pg.
+          # Keep this count in sync with that matrix when adding/removing majors.
+          pg_dirs=(artifacts/postgres-mac-arm64-*)
+          if [ ${#pg_dirs[@]} -ne 2 ]; then
+            echo "::error::Expected 2 postgres bundles (17 + 18), found ${#pg_dirs[@]}"
+            exit 1
+          fi
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
           for dir in "${fp_dirs[@]}"; do
@@ -213,6 +354,10 @@ jobs:
           done
           # PHP CLI tarballs: just copy as-is (no chmod needed).
           for dir in "${php_dirs[@]}"; do
+            cp "$dir"/* "release/"
+          done
+          # Postgres tarballs: copy as-is (no chmod needed).
+          for dir in "${pg_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
           ls -la release/
