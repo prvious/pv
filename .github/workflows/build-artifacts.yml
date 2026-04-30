@@ -282,6 +282,124 @@ jobs:
           path: postgres-mac-arm64-${{ matrix.pg }}.tar.gz
           compression-level: 0
 
+  mysql:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - major: "8.0"
+            version: "8.0.43"
+            path: "archives/mysql-8.0"
+          - major: "8.4"
+            version: "8.4.9"
+            path: "Downloads/MySQL-8.4"
+          - major: "9.7"
+            version: "9.7.0"
+            path: "Downloads/MySQL-9.7"
+    name: MySQL ${{ matrix.major }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-mysql-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Download Oracle tarball
+        run: |
+          set -euo pipefail
+          URL="https://cdn.mysql.com/${{ matrix.path }}/mysql-${{ matrix.version }}-macos15-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL -o mysql.tar.gz "$URL"
+          ls -lh mysql.tar.gz
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir extracted
+          tar -xzf mysql.tar.gz -C extracted
+          STAGING=$(ls -d extracted/mysql-*-macos15-arm64)
+          echo "STAGING=$STAGING" >> "$GITHUB_ENV"
+
+      - name: Strip
+        run: |
+          set -euo pipefail
+          # Drop debug build (~201M), mecab Japanese FTS dictionaries (~119M),
+          # debug plugin variants (~18M), non-English locales (~10M), and
+          # everything irrelevant at runtime.
+          rm -f  "$STAGING/bin/mysqld-debug"
+          rm -rf "$STAGING/lib/mecab"
+          rm -rf "$STAGING/lib/plugin/debug"
+          rm -rf "$STAGING/lib/pkgconfig"
+          rm -rf "$STAGING/docs" "$STAGING/man" "$STAGING/support-files" "$STAGING/include"
+          # Keep share/english + share/charsets (mandatory at runtime); drop other locales.
+          find "$STAGING/share" -mindepth 1 -maxdepth 1 -type d \
+            ! -name english ! -name charsets -exec rm -rf {} +
+
+      - name: Defensive install_name fixup on libfido2
+        run: |
+          set -euo pipefail
+          # libfido2's LC_ID_DYLIB ships with /usr/local/mysql/lib/libfido2.1.dylib
+          # — cosmetic; nothing in the bundle links via that path. We rewrite it
+          # so the verify step below can be strict about /usr/local/mysql refs.
+          FIDO=$(ls "$STAGING"/lib/libfido2.*.dylib 2>/dev/null | head -1 || true)
+          if [ -n "$FIDO" ]; then
+            install_name_tool -id "@loader_path/libfido2.1.dylib" "$FIDO"
+            echo "Fixed up $FIDO"
+          else
+            echo "No libfido2 dylib found (unexpected — research showed this should be present)"
+            exit 1
+          fi
+
+      - name: Verify no build-host paths
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          LEAKS=0
+          # Walk every Mach-O recursively under bin/ and lib/ (plugins live in lib/plugin/).
+          while IFS= read -r f; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            if ! file -b "$f" | grep -q '^Mach-O'; then continue; fi
+            bad=$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' \
+                  | grep -E '^/(opt/homebrew|Users/runner|usr/local/mysql)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::Host path leak in $(basename "$f"):"
+              echo "$bad"
+              LEAKS=$((LEAKS+1))
+            fi
+          done < <(find "$STAGING/bin" "$STAGING/lib" -type f)
+          if [ "$LEAKS" -ne 0 ]; then
+            echo "::error::$LEAKS file(s) reference build-host paths"
+            exit 1
+          fi
+          echo "All Mach-O files reference only @loader_path / system paths."
+
+      - name: Smoke test
+        run: bash scripts/test-mysql-bundle.sh "$STAGING"
+
+      - name: Structural sanity checks
+        run: |
+          set -euo pipefail
+          test -x "$STAGING/bin/mysqld"
+          test -x "$STAGING/bin/mysql"
+          test -x "$STAGING/bin/mysqladmin"
+          test -x "$STAGING/bin/mysqldump"
+          test -f "$STAGING/lib/libssl.3.dylib"
+          test -f "$STAGING/lib/libcrypto.3.dylib"
+          test -d "$STAGING/share/english"
+          test -d "$STAGING/share/charsets"
+          echo "Structural sanity checks passed."
+
+      - name: Repack
+        run: tar -czf "mysql-mac-arm64-${{ matrix.major }}.tar.gz" -C "$STAGING" .
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-mac-arm64-${{ matrix.major }}
+          path: mysql-mac-arm64-${{ matrix.major }}.tar.gz
+          compression-level: 0
+
   release:
     needs: [frankenphp, postgres]
     # Only publish from main. Dispatching from a feature branch runs the build
