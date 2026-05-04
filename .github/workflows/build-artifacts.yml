@@ -2,6 +2,19 @@ name: Build artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_frankenphp:
+        description: "Skip the FrankenPHP build matrix (3 PHP versions, ~30 min each)"
+        type: boolean
+        default: false
+      skip_postgres:
+        description: "Skip the PostgreSQL bundle matrix (PG 17 + 18)"
+        type: boolean
+        default: false
+      skip_mysql:
+        description: "Skip the MySQL bundle matrix (8.0 + 8.4 + 9.7)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 0 * * 1"
 
@@ -14,6 +27,7 @@ env:
 
 jobs:
   frankenphp:
+    if: ${{ inputs.skip_frankenphp != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -134,6 +148,7 @@ jobs:
           compression-level: 0
 
   postgres:
+    if: ${{ inputs.skip_postgres != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -283,6 +298,7 @@ jobs:
           compression-level: 0
 
   mysql:
+    if: ${{ inputs.skip_mysql != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -402,10 +418,10 @@ jobs:
 
   release:
     needs: [frankenphp, postgres, mysql]
-    # Only publish from main. Dispatching from a feature branch runs the build
-    # matrix as a test of the PHP/FrankenPHP binary builds without touching
-    # the published release.
-    if: github.ref == 'refs/heads/main'
+    # Only publish from main, and only when every build family ran. A skipped
+    # build job reports as "success" to its dependents, so without these extra
+    # clauses a dispatch with skip_* flags would publish a half-baked release.
+    if: ${{ github.ref == 'refs/heads/main' && inputs.skip_frankenphp != true && inputs.skip_postgres != true && inputs.skip_mysql != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
