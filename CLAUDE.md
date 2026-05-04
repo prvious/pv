@@ -151,6 +151,33 @@ The CLI uses a layered Charm stack:
 - **Registry**: in-memory + explicit save. `Load()` → mutate → `Save()`.
 - **E2E tests**: live in `scripts/e2e/`, run on GitHub Actions (macOS). Source `scripts/e2e/helpers.sh`. Use these for anything needing real binaries, network, DNS, or HTTPS. Add new phases to `.github/workflows/e2e.yml`.
 
+## CI workflows
+
+### Dispatching `build-artifacts.yml` manually
+
+A full dispatch runs the FrankenPHP matrix (3 PHP versions, ~30 min each), Postgres (17 + 18), and MySQL (8.0 + 8.4 + 9.7). That's ~90 min of macOS runner time per push and almost always more than the change under test needs.
+
+**Always pass `skip_*` flags scoped to the change.** Infer from context — don't run families unrelated to the work:
+
+| Working on… | Dispatch with |
+|---|---|
+| MySQL artifacts / `mysql:` job / `scripts/test-mysql-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true` |
+| Postgres artifacts / `postgres:` job / `scripts/test-postgres-bundle.sh` | `-f skip_frankenphp=true -f skip_mysql=true` |
+| FrankenPHP build / `static-php-cli` extensions | `-f skip_postgres=true -f skip_mysql=true` |
+| Release-job wiring / artifacts upload logic | run the family that produces the artifacts in question; skip the others |
+| Truly cross-cutting (e.g. concurrency-group changes) | no skips — needs the full matrix |
+
+If the affected family is ambiguous from the diff, ask before dispatching. Never dispatch with no skip flags "just to be safe" — that's the failure mode this convention exists to prevent.
+
+Example:
+
+```bash
+gh workflow run build-artifacts.yml --ref <branch> \
+  -f skip_frankenphp=true -f skip_postgres=true
+```
+
+The `release` job is gated on all three skip flags being false, so a partial dispatch never publishes a half-baked release.
+
 ## Multi-version PHP
 
 - Main FrankenPHP serves on :443/:80, proxies non-global versions via `reverse_proxy`.
