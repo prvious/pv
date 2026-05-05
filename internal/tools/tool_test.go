@@ -218,6 +218,43 @@ func TestMustGet(t *testing.T) {
 	MustGet("nonexistent")
 }
 
+func TestPhpShim_ExportsPhpEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Expose(Get("php")); err != nil {
+		t.Fatalf("Expose(php) error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(config.BinDir(), "php"))
+	if err != nil {
+		t.Fatalf("read shim: %v", err)
+	}
+	got := string(content)
+
+	if !strings.Contains(got, `export PHPRC="$PV_PHP_DIR/$VERSION/etc"`) {
+		t.Errorf("php shim missing PHPRC export; content:\n%s", got)
+	}
+	if !strings.Contains(got, `export PHP_INI_SCAN_DIR="$PV_PHP_DIR/$VERSION/conf.d"`) {
+		t.Errorf("php shim missing PHP_INI_SCAN_DIR export; content:\n%s", got)
+	}
+
+	// The exec line must remain the last meaningful instruction so env
+	// vars are inherited by the real binary.
+	execIdx := strings.Index(got, `exec "$BINARY" "$@"`)
+	if execIdx == -1 {
+		t.Fatal("php shim missing exec line")
+	}
+	phprcIdx := strings.Index(got, "export PHPRC=")
+	scanIdx := strings.Index(got, "export PHP_INI_SCAN_DIR=")
+	if phprcIdx > execIdx || scanIdx > execIdx {
+		t.Error("php shim exports must precede exec")
+	}
+}
+
 func TestRegistryIntegrity(t *testing.T) {
 	for name, tool := range registry {
 		if tool.Name != name {
