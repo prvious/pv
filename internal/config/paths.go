@@ -110,7 +110,7 @@ func PhpTmpDir(version string) string {
 }
 
 // PhpEnv returns env vars that point a PHP/FrankenPHP process at the
-// per-version php.ini and conf.d. Caller must pass a non-empty version.
+// per-version php.ini and conf.d.
 func PhpEnv(version string) []string {
 	return []string{
 		"PHPRC=" + PhpEtcDir(version),
