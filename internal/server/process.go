@@ -48,6 +48,18 @@ func Start(tld string) error {
 		return fmt.Errorf("cannot load settings: %w", err)
 	}
 
+	// Backfill per-version ini layout for any installed PHP versions that
+	// predate this feature. EnsureIniLayout is idempotent and cheap.
+	// Failure is logged but non-fatal — a broken ini layout shouldn't block
+	// the daemon from starting; the affected version just won't load its ini.
+	if installed, err := phpenv.InstalledVersions(); err == nil {
+		for _, v := range installed {
+			if err := phpenv.EnsureIniLayout(v); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: ini layout backfill for PHP %s failed: %v\n", v, err)
+			}
+		}
+	}
+
 	reg, err := registry.Load()
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
