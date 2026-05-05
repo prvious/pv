@@ -1,9 +1,11 @@
 package phpenv
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/prvious/pv/internal/binaries"
@@ -67,13 +69,28 @@ func InstallProgress(client *http.Client, phpVersion string, progress binaries.P
 	if err := binaries.ExtractTarGz(phpArchive, phpDest, "php"); err != nil {
 		return fmt.Errorf("extract PHP CLI: %w", err)
 	}
+
+	// Extract the upstream php.ini-development template if present.
+	// Older artifacts (built before the per-version ini work) don't bundle
+	// it; tolerate that — EnsureIniLayout handles a missing source gracefully.
+	iniDevDest := filepath.Join(config.PhpEtcDir(phpVersion), "php.ini-development")
+	if err := os.MkdirAll(filepath.Dir(iniDevDest), 0755); err != nil {
+		return fmt.Errorf("create etc dir: %w", err)
+	}
+	if err := binaries.ExtractTarGz(phpArchive, iniDevDest, "php.ini-development"); err != nil {
+		if !errors.Is(err, binaries.ErrEntryNotFound) {
+			return fmt.Errorf("extract php.ini-development: %w", err)
+		}
+		// Older artifact — silently continue; EnsureIniLayout will skip the copy.
+	}
+
 	os.Remove(phpArchive)
 
 	if err := binaries.MakeExecutable(phpDest); err != nil {
 		return err
 	}
 
-	return nil
+	return EnsureIniLayout(phpVersion)
 }
 
 // frankenphpAssetName returns the release asset name for the current platform.
