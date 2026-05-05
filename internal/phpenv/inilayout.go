@@ -83,8 +83,8 @@ func writePvIni(version string) error {
 date.timezone = UTC
 
 session.save_path = %q
-sys_temp_dir     = %q
-upload_tmp_dir   = %q
+sys_temp_dir = %q
+upload_tmp_dir = %q
 `,
 		config.PhpSessionDir(version),
 		config.PhpTmpDir(version),

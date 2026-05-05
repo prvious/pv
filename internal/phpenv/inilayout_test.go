@@ -1,6 +1,7 @@
 package phpenv
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,8 +156,70 @@ func TestEnsureIniLayout_Idempotent(t *testing.T) {
 	if err := EnsureIniLayout("8.4"); err != nil {
 		t.Fatalf("first EnsureIniLayout error = %v", err)
 	}
+	iniPath := filepath.Join(config.PhpEtcDir("8.4"), "php.ini")
+	pvIniPath := filepath.Join(config.PhpConfDDir("8.4"), "00-pv.ini")
+	iniAfter1, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvIniAfter1, err := os.ReadFile(pvIniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if err := EnsureIniLayout("8.4"); err != nil {
 		t.Fatalf("second EnsureIniLayout error = %v", err)
+	}
+	iniAfter2, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvIniAfter2, err := os.ReadFile(pvIniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(iniAfter1, iniAfter2) {
+		t.Errorf("php.ini content changed across calls; first:\n%s\nsecond:\n%s", iniAfter1, iniAfter2)
+	}
+	if !bytes.Equal(pvIniAfter1, pvIniAfter2) {
+		t.Errorf("00-pv.ini content changed across calls; first:\n%s\nsecond:\n%s", pvIniAfter1, pvIniAfter2)
+	}
+}
+
+func TestEnsureIniLayout_VersionThreaded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	seedIniDevelopment(t, "8.3")
+	seedIniDevelopment(t, "8.4")
+
+	if err := EnsureIniLayout("8.3"); err != nil {
+		t.Fatalf("EnsureIniLayout(8.3) error = %v", err)
+	}
+	if err := EnsureIniLayout("8.4"); err != nil {
+		t.Fatalf("EnsureIniLayout(8.4) error = %v", err)
+	}
+
+	pv83, err := os.ReadFile(filepath.Join(config.PhpConfDDir("8.3"), "00-pv.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv84, err := os.ReadFile(filepath.Join(config.PhpConfDDir("8.4"), "00-pv.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(pv83), config.PhpSessionDir("8.3")) {
+		t.Errorf("8.3's 00-pv.ini missing its own session dir; got:\n%s", pv83)
+	}
+	if strings.Contains(string(pv83), config.PhpSessionDir("8.4")) {
+		t.Errorf("8.3's 00-pv.ini contains 8.4's session dir; got:\n%s", pv83)
+	}
+	if !strings.Contains(string(pv84), config.PhpSessionDir("8.4")) {
+		t.Errorf("8.4's 00-pv.ini missing its own session dir; got:\n%s", pv84)
 	}
 }
 
