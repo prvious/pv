@@ -27,6 +27,8 @@ if [ ! -x "$BINARY" ]; then
     exit 1
 fi
 
+export PHPRC="$PV_PHP_DIR/$VERSION/etc"
+export PHP_INI_SCAN_DIR="$PV_PHP_DIR/$VERSION/conf.d"
 exec "$BINARY" "$@"
 `
 

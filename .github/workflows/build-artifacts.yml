@@ -132,13 +132,22 @@ jobs:
           set -euo pipefail
           ARCH="${{ steps.arch.outputs.arch }}"
           PHP_BIN="dist/static-php-cli/buildroot/bin/php"
+          INI_DEV="dist/static-php-cli/source/php-src/php.ini-development"
           chmod +x "$PHP_BIN"
           "$PHP_BIN" -v
           "$PHP_BIN" -m
+          test -f "$INI_DEV" || { echo "::error::missing $INI_DEV — php-src layout may have changed"; exit 1; }
           mkdir -p dist/cli-staging
           cp "$PHP_BIN" dist/cli-staging/php
-          tar -C dist/cli-staging -czf "dist/php-mac-${ARCH}-php${{ matrix.php }}.tar.gz" php
-          rm -rf dist/cli-staging
+          cp "$INI_DEV" dist/cli-staging/php.ini-development
+          tar -C dist/cli-staging -czf "dist/php-mac-${ARCH}-php${{ matrix.php }}.tar.gz" php php.ini-development
+
+          # Sanity: verify both files extract back out cleanly.
+          mkdir -p dist/cli-verify
+          tar -C dist/cli-verify -xzf "dist/php-mac-${ARCH}-php${{ matrix.php }}.tar.gz"
+          test -x dist/cli-verify/php
+          test -s dist/cli-verify/php.ini-development
+          rm -rf dist/cli-staging dist/cli-verify
 
       - name: Upload PHP CLI
         uses: actions/upload-artifact@v4

@@ -402,3 +402,66 @@ func TestEnsureDirs_CreatesPackagesDir(t *testing.T) {
 		t.Error("EnsureDirs() did not create PackagesDir()")
 	}
 }
+
+func TestPhpEtcDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpEtcDir("8.4")
+	want := filepath.Join(home, ".pv", "php", "8.4", "etc")
+	if got != want {
+		t.Errorf("PhpEtcDir(\"8.4\") = %q, want %q", got, want)
+	}
+}
+
+func TestPhpConfDDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpConfDDir("8.4")
+	want := filepath.Join(home, ".pv", "php", "8.4", "conf.d")
+	if got != want {
+		t.Errorf("PhpConfDDir(\"8.4\") = %q, want %q", got, want)
+	}
+}
+
+func TestPhpSessionDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpSessionDir("8.4")
+	want := filepath.Join(home, ".pv", "data", "sessions", "8.4")
+	if got != want {
+		t.Errorf("PhpSessionDir(\"8.4\") = %q, want %q", got, want)
+	}
+}
+
+func TestPhpTmpDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpTmpDir("8.4")
+	want := filepath.Join(home, ".pv", "data", "tmp", "8.4")
+	if got != want {
+		t.Errorf("PhpTmpDir(\"8.4\") = %q, want %q", got, want)
+	}
+}
+
+func TestPhpEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := PhpEnv("8.4")
+	wantPHPRC := "PHPRC=" + filepath.Join(home, ".pv", "php", "8.4", "etc")
+	wantScan := "PHP_INI_SCAN_DIR=" + filepath.Join(home, ".pv", "php", "8.4", "conf.d")
+
+	if len(got) != 2 {
+		t.Fatalf("PhpEnv() returned %d entries, want 2", len(got))
+	}
+	if got[0] != wantPHPRC {
+		t.Errorf("PhpEnv()[0] = %q, want %q", got[0], wantPHPRC)
+	}
+	if got[1] != wantScan {
+		t.Errorf("PhpEnv()[1] = %q, want %q", got[1], wantScan)
+	}
+}

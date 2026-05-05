@@ -93,6 +93,31 @@ func PhpVersionDir(version string) string {
 	return filepath.Join(PhpDir(), version)
 }
 
+func PhpEtcDir(version string) string {
+	return filepath.Join(PhpVersionDir(version), "etc")
+}
+
+func PhpConfDDir(version string) string {
+	return filepath.Join(PhpVersionDir(version), "conf.d")
+}
+
+func PhpSessionDir(version string) string {
+	return filepath.Join(DataDir(), "sessions", version)
+}
+
+func PhpTmpDir(version string) string {
+	return filepath.Join(DataDir(), "tmp", version)
+}
+
+// PhpEnv returns env vars that point a PHP/FrankenPHP process at the
+// per-version php.ini and conf.d.
+func PhpEnv(version string) []string {
+	return []string{
+		"PHPRC=" + PhpEtcDir(version),
+		"PHP_INI_SCAN_DIR=" + PhpConfDDir(version),
+	}
+}
+
 func VersionSitesDir(version string) string {
 	return filepath.Join(ConfigDir(), "sites-"+version)
 }

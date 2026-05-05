@@ -70,7 +70,9 @@ func PHPPath(version string) string {
 // needs a version to be ready before proceeding.
 func EnsureInstalled(version string) error {
 	if IsInstalled(version) {
-		return nil
+		// Backfill the ini layout for installs that predate this feature.
+		// EnsureIniLayout is idempotent — cheap to call on every check.
+		return EnsureIniLayout(version)
 	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	if err := InstallProgress(client, version, nil); err != nil {

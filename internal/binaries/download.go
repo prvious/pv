@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+// ErrEntryNotFound is returned by ExtractTarGz when the requested entry
+// is not present in the archive. Callers can use errors.Is to tolerate
+// optional entries (e.g. files added in newer artifact builds).
+var ErrEntryNotFound = errors.New("entry not found in archive")
 
 // ProgressFunc is called during download with bytes written so far and total size.
 // total may be -1 if Content-Length is not available.
@@ -162,7 +168,7 @@ func ExtractTarGz(archivePath, destPath, binaryName string) error {
 		}
 	}
 
-	return fmt.Errorf("binary %q not found in archive", binaryName)
+	return fmt.Errorf("%q: %w", binaryName, ErrEntryNotFound)
 }
 
 // MakeExecutable sets file permissions to 0755.

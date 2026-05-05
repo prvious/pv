@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,8 +175,8 @@ func TestExtractTarGz_BinaryNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing binary, got nil")
 	}
-	if !strings.Contains(err.Error(), "not found in archive") {
-		t.Errorf("error = %q, want to contain 'not found in archive'", err.Error())
+	if !errors.Is(err, ErrEntryNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, ErrEntryNotFound)", err)
 	}
 }
 
@@ -195,5 +196,64 @@ func TestMakeExecutable(t *testing.T) {
 	}
 	if info.Mode().Perm()&0111 == 0 {
 		t.Errorf("file mode = %v, want execute bits set", info.Mode())
+	}
+}
+
+// makeTarGz writes a single-file tarball at archivePath containing entry
+// `entryName` with the given content. Used to keep tests hermetic.
+func makeTarGz(t *testing.T, archivePath, entryName, content string) {
+	t.Helper()
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	hdr := &tar.Header{Name: entryName, Mode: 0644, Size: int64(len(content)), Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExtractTarGz_EntryNotFound(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "a.tar.gz")
+	makeTarGz(t, archive, "php", "binary content")
+
+	err := ExtractTarGz(archive, filepath.Join(dir, "out"), "php.ini-development")
+	if err == nil {
+		t.Fatal("ExtractTarGz returned nil for missing entry, want error")
+	}
+	if !errors.Is(err, ErrEntryNotFound) {
+		t.Errorf("ExtractTarGz error = %v, want errors.Is(err, ErrEntryNotFound)", err)
+	}
+}
+
+func TestExtractTarGz_EntryFound(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "a.tar.gz")
+	makeTarGz(t, archive, "php", "hello")
+
+	dest := filepath.Join(dir, "out")
+	if err := ExtractTarGz(archive, dest, "php"); err != nil {
+		t.Fatalf("ExtractTarGz error = %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("extracted content = %q, want %q", string(got), "hello")
 	}
 }
