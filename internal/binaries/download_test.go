@@ -175,8 +175,8 @@ func TestExtractTarGz_BinaryNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing binary, got nil")
 	}
-	if !strings.Contains(err.Error(), "not found in archive") {
-		t.Errorf("error = %q, want to contain 'not found in archive'", err.Error())
+	if !errors.Is(err, ErrEntryNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, ErrEntryNotFound)", err)
 	}
 }
 
