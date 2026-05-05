@@ -52,11 +52,13 @@ func Start(tld string) error {
 	// predate this feature. EnsureIniLayout is idempotent and cheap.
 	// Failure is logged but non-fatal — a broken ini layout shouldn't block
 	// the daemon from starting; the affected version just won't load its ini.
-	if installed, err := phpenv.InstalledVersions(); err == nil {
-		for _, v := range installed {
-			if err := phpenv.EnsureIniLayout(v); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: ini layout backfill for PHP %s failed: %v\n", v, err)
-			}
+	installed, listErr := phpenv.InstalledVersions()
+	if listErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: cannot enumerate installed PHP versions for ini backfill: %v\n", listErr)
+	}
+	for _, v := range installed {
+		if err := phpenv.EnsureIniLayout(v); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: ini layout backfill for PHP %s failed: %v\n", v, err)
 		}
 	}
 
