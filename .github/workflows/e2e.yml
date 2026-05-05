@@ -39,6 +39,11 @@ jobs:
         timeout-minutes: 1
         run: scripts/e2e/verify-install.sh
 
+      # ── Phase 3.5: PHP ini layout ──────────────────────────────────
+      - name: Verify per-version php.ini layout and overrides
+        timeout-minutes: 1
+        run: scripts/e2e/php-ini.sh
+
       # ── Phase 4: Test pv env ─────────────────────────────────────────
       - name: Test pv env PATH setup
         timeout-minutes: 1
