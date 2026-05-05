@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/phpenv"
 )
 
 // FrankenPHP manages a FrankenPHP child process.
@@ -20,15 +21,33 @@ type FrankenPHP struct {
 	version string // PHP version this instance serves ("" = main/global)
 }
 
+// frankenphpEnv builds the env slice for a FrankenPHP child process.
+// It always includes os.Environ + config.CaddyEnv. When version is
+// non-empty, it also appends config.PhpEnv(version) so PHP loads the
+// per-version php.ini and conf.d.
+func frankenphpEnv(version string) []string {
+	env := append(os.Environ(), config.CaddyEnv()...)
+	if version != "" {
+		env = append(env, config.PhpEnv(version)...)
+	}
+	return env
+}
+
 // StartFrankenPHP spawns the main FrankenPHP instance using the global binary.
 // It uses the main Caddyfile and caddy.log.
 func StartFrankenPHP() (*FrankenPHP, error) {
+	// Resolve the global PHP version so the main FrankenPHP loads the
+	// matching per-version php.ini. If unset (fresh install), pass empty
+	// and let the binary fall back to its built-in defaults — other
+	// startup paths already error on missing global PHP.
+	globalVer, _ := phpenv.GlobalVersion()
+
 	return startFrankenPHPInstance(
 		filepath.Join(config.BinDir(), "frankenphp"),
 		config.CaddyfilePath(),
 		config.CaddyStderrPath(),
 		"http://localhost:2019/config/",
-		"",
+		globalVer,
 	)
 }
 
@@ -50,7 +69,7 @@ func startFrankenPHPInstance(fpPath, caddyfile, logPath, healthURL, version stri
 	}
 
 	cmd := exec.Command(fpPath, "run", "--config", caddyfile, "--adapter", "caddyfile")
-	cmd.Env = append(os.Environ(), config.CaddyEnv()...)
+	cmd.Env = frankenphpEnv(version)
 	cmd.Stdout = nil
 	cmd.Stderr = logFile
 
