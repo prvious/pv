@@ -2,6 +2,7 @@ package server
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,16 +17,16 @@ func TestFrankenphpEnv_VersionedSetsPhpEnv(t *testing.T) {
 	wantPHPRC := "PHPRC=" + filepath.Join(home, ".pv", "php", "8.4", "etc")
 	wantScan := "PHP_INI_SCAN_DIR=" + filepath.Join(home, ".pv", "php", "8.4", "conf.d")
 
-	if !contains(got, wantPHPRC) {
+	if !slices.Contains(got, wantPHPRC) {
 		t.Errorf("frankenphpEnv(\"8.4\") missing %q; got: %v", wantPHPRC, got)
 	}
-	if !contains(got, wantScan) {
+	if !slices.Contains(got, wantScan) {
 		t.Errorf("frankenphpEnv(\"8.4\") missing %q; got: %v", wantScan, got)
 	}
 
 	// Should also still include CaddyEnv entries (XDG_DATA_HOME etc.).
 	for _, want := range config.CaddyEnv() {
-		if !contains(got, want) {
+		if !slices.Contains(got, want) {
 			t.Errorf("frankenphpEnv missing CaddyEnv entry %q", want)
 		}
 	}
@@ -42,13 +43,4 @@ func TestFrankenphpEnv_EmptyVersionOmitsPhpEnv(t *testing.T) {
 			t.Errorf("frankenphpEnv(\"\") leaked PHP env var: %q", e)
 		}
 	}
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
