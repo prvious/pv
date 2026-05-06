@@ -4,6 +4,11 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 # shellcheck source=helpers.sh
 source "$SCRIPT_DIR/helpers.sh"
 
+# Each GHA step is a fresh shell; ~/.pv/bin isn't on PATH unless we export it.
+# Mirror what verify-install.sh does so the `php -r ...` invocations below
+# resolve via the shim.
+eval "$(pv env)"
+
 PHP_VERSION="${PHP_VERSION:-8.4}"
 ETC_DIR="$HOME/.pv/php/$PHP_VERSION/etc"
 CONFD_DIR="$HOME/.pv/php/$PHP_VERSION/conf.d"
