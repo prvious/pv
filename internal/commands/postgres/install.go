@@ -28,8 +28,14 @@ pv postgres:install 17`,
 			major = args[0]
 		}
 
-		// If already on disk, just (re)mark wanted=running and signal daemon.
+		// If already on disk, refresh runtime state (conf overrides, hba,
+		// socket dir) idempotently and mark wanted=running. This guards
+		// against an /tmp socket dir reaped between boots and keeps
+		// pv-managed conf in sync if the defaults changed across releases.
 		if pg.IsInstalled(major) {
+			if err := pg.EnsureRuntime(major); err != nil {
+				return err
+			}
 			if err := pg.SetWanted(major, "running"); err != nil {
 				return err
 			}

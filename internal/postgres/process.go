@@ -25,6 +25,13 @@ func BuildSupervisorProcess(major string) (supervisor.Process, error) {
 	if err != nil {
 		return supervisor.Process{}, err
 	}
+	// /tmp can be reaped between boots, so the socket dir referenced by
+	// postgresql.conf may not exist when the supervisor respawns. Recreate
+	// it on every build — postgres won't auto-create it and FATALs out
+	// otherwise ("could not create lock file: No such file or directory").
+	if err := os.MkdirAll(socketDir(major), 0o755); err != nil {
+		return supervisor.Process{}, fmt.Errorf("create socket dir: %w", err)
+	}
 	binary := filepath.Join(config.PostgresBinDir(major), "postgres")
 	return supervisor.Process{
 		Name:         "postgres-" + major,
@@ -34,6 +41,12 @@ func BuildSupervisorProcess(major string) (supervisor.Process, error) {
 		Ready:        tcpReady(port),
 		ReadyTimeout: 30 * time.Second,
 	}, nil
+}
+
+// socketDir returns the /tmp directory used as unix_socket_directories
+// for a postgres major. Must match what conf.go writes to postgresql.conf.
+func socketDir(major string) string {
+	return "/tmp/pv-postgres-" + major
 }
 
 func tcpReady(port int) func(context.Context) error {

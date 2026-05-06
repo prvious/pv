@@ -56,10 +56,7 @@ func InstallProgress(client *http.Client, major string, progress binaries.Progre
 	if err := RunInitdb(major); err != nil {
 		return err
 	}
-	if err := WriteOverrides(major); err != nil {
-		return err
-	}
-	if err := RewriteHBA(major); err != nil {
+	if err := EnsureRuntime(major); err != nil {
 		return err
 	}
 
@@ -72,6 +69,23 @@ func InstallProgress(client *http.Client, major string, progress binaries.Progre
 	}
 
 	return SetWanted(major, "running")
+}
+
+// EnsureRuntime is the idempotent post-extract setup: refreshes
+// postgresql.conf overrides, rewrites pg_hba.conf, and creates the /tmp
+// socket dir. Safe to call repeatedly; called by Install on first install,
+// and by the install command's idempotent short-circuit on re-install.
+func EnsureRuntime(major string) error {
+	if err := WriteOverrides(major); err != nil {
+		return err
+	}
+	if err := RewriteHBA(major); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(socketDir(major), 0o755); err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+	return nil
 }
 
 // resolvePostgresURL allows tests to redirect the download via env var.
