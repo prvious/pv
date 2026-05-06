@@ -69,14 +69,18 @@ SEEN_ON_18=$("$HOME/.pv/postgres/18/bin/psql" -h 127.0.0.1 -p 54018 -U postgres 
 [ "$SEEN_ON_18" = "1" ] || { echo "FAIL: e2e_pg18_only not visible on PG 18"; exit 1; }
 echo "OK: cross-major isolation confirmed"
 
-echo "==> Verify linked project got DB_PORT for the highest-installed major (18 → 54018)"
-grep -q "DB_PORT=54018" "$ENVTEST_DIR/.env" || {
-    echo "FAIL: linked project .env should have DB_PORT=54018";
+echo "==> Verify linked project got DB_PORT for the first-installed major (17 → 54017)"
+# Retroactive bind on postgres:install is conservative: it binds to the
+# just-installed major if the project has no postgres binding yet, and
+# skips projects already bound. We installed 17 first, so the project
+# binds to 17 and stays there even after installing 18.
+grep -q "DB_PORT=54017" "$ENVTEST_DIR/.env" || {
+    echo "FAIL: linked project .env should have DB_PORT=54017";
     echo "  actual .env contents:";
     cat "$ENVTEST_DIR/.env";
     exit 1;
 }
-echo "OK: linked project .env has DB_PORT=54018"
+echo "OK: linked project .env has DB_PORT=54017"
 
 echo "==> postgres:stop 17 — only PG 18 should still serve"
 sudo -E pv postgres:stop 17
