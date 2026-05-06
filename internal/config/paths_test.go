@@ -465,3 +465,39 @@ func TestPhpEnv(t *testing.T) {
 		t.Errorf("PhpEnv()[1] = %q, want %q", got[1], wantScan)
 	}
 }
+
+func TestPostgresDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := PostgresDir()
+	want := "/home/test/.pv/postgres"
+	if got != want {
+		t.Errorf("PostgresDir = %q, want %q", got, want)
+	}
+}
+
+func TestPostgresVersionDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := PostgresVersionDir("17")
+	want := "/home/test/.pv/postgres/17"
+	if got != want {
+		t.Errorf("PostgresVersionDir = %q, want %q", got, want)
+	}
+}
+
+func TestPostgresBinDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := PostgresBinDir("17")
+	want := "/home/test/.pv/postgres/17/bin"
+	if got != want {
+		t.Errorf("PostgresBinDir = %q, want %q", got, want)
+	}
+}
+
+func TestPostgresLogPath(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := PostgresLogPath("17")
+	want := "/home/test/.pv/logs/postgres-17.log"
+	if got != want {
+		t.Errorf("PostgresLogPath = %q, want %q", got, want)
+	}
+}

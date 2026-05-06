@@ -211,6 +211,22 @@ func ColimaSocketPath() string {
 	return filepath.Join(ColimaHomeDir(), "pv", "docker.sock")
 }
 
+func PostgresDir() string {
+	return filepath.Join(PvDir(), "postgres")
+}
+
+func PostgresVersionDir(major string) string {
+	return filepath.Join(PostgresDir(), major)
+}
+
+func PostgresBinDir(major string) string {
+	return filepath.Join(PostgresVersionDir(major), "bin")
+}
+
+func PostgresLogPath(major string) string {
+	return filepath.Join(LogsDir(), "postgres-"+major+".log")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),
