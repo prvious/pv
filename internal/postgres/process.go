@@ -38,6 +38,7 @@ func BuildSupervisorProcess(major string) (supervisor.Process, error) {
 		Binary:       binary,
 		Args:         []string{"-D", dataDir},
 		LogFile:      config.PostgresLogPath(major),
+		SysProcAttr:  dropSysProcAttr(),
 		Ready:        tcpReady(port),
 		ReadyTimeout: 30 * time.Second,
 	}, nil

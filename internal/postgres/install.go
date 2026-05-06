@@ -51,6 +51,11 @@ func InstallProgress(client *http.Client, major string, progress binaries.Progre
 			os.RemoveAll(stagingDir)
 			return fmt.Errorf("rename staging: %w", err)
 		}
+		// When pv runs as root, hand the binary tree to the SUDO_USER so
+		// the dropped postgres process can read its own dylibs/share files.
+		if err := chownToTarget(versionDir); err != nil {
+			return fmt.Errorf("chown postgres tree: %w", err)
+		}
 	}
 
 	if err := RunInitdb(major); err != nil {
@@ -84,6 +89,11 @@ func EnsureRuntime(major string) error {
 	}
 	if err := os.MkdirAll(socketDir(major), 0o755); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
+	}
+	// Postgres runs as SUDO_USER (dropped privileges) when pv is root and
+	// must be able to write its lock file into the socket dir.
+	if err := chownToTarget(socketDir(major)); err != nil {
+		return fmt.Errorf("chown socket dir: %w", err)
 	}
 	return nil
 }

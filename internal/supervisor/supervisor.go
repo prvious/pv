@@ -26,6 +26,11 @@ type Process struct {
 	WorkingDir string
 	LogFile    string // absolute path; stdout+stderr appended here
 
+	// SysProcAttr, if non-nil, is applied to the spawned cmd. Used by
+	// services that must drop privileges when pv is run via sudo
+	// (e.g. postgres, which refuses to run as root).
+	SysProcAttr *syscall.SysProcAttr
+
 	// Ready returns nil when the process is serving requests.
 	Ready        func(ctx context.Context) error
 	ReadyTimeout time.Duration
@@ -115,6 +120,7 @@ func (s *Supervisor) spawn(p Process) (*managed, error) {
 	cmd := exec.Command(p.Binary, p.Args...)
 	cmd.Env = append(os.Environ(), p.Env...)
 	cmd.Dir = p.WorkingDir
+	cmd.SysProcAttr = p.SysProcAttr
 	if logFile != nil {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
