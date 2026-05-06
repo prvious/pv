@@ -734,3 +734,28 @@ func TestServiceInstance_JSON_EmptyFields_Omitted(t *testing.T) {
 		t.Errorf("expected enabled to be omitted when nil; got %s", s)
 	}
 }
+
+func TestUnbindPostgresMajor(t *testing.T) {
+	r := &Registry{
+		Services: map[string]*ServiceInstance{},
+		Projects: []Project{
+			{Name: "a", Services: &ProjectServices{Postgres: "17"}},
+			{Name: "b", Services: &ProjectServices{Postgres: "18"}},
+			{Name: "c", Services: &ProjectServices{Postgres: "17"}},
+			{Name: "d", Services: nil},
+		},
+	}
+	r.UnbindPostgresMajor("17")
+	cases := map[string]string{"a": "", "b": "18", "c": ""}
+	for name, want := range cases {
+		got := ""
+		for _, p := range r.Projects {
+			if p.Name == name && p.Services != nil {
+				got = p.Services.Postgres
+			}
+		}
+		if got != want {
+			t.Errorf("project %s.Postgres = %q, want %q", name, got, want)
+		}
+	}
+}

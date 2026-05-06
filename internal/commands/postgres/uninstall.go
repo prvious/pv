@@ -60,12 +60,7 @@ var uninstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// TODO: replace with reg.UnbindPostgresMajor(major) once registry helper lands.
-		for i := range reg.Projects {
-			if reg.Projects[i].Services != nil && reg.Projects[i].Services.Postgres == major {
-				reg.Projects[i].Services.Postgres = ""
-			}
-		}
+		reg.UnbindPostgresMajor(major)
 		if err := reg.Save(); err != nil {
 			return err
 		}
