@@ -3,8 +3,11 @@ package postgres
 import (
 	"fmt"
 
+	"github.com/prvious/pv/internal/laravel"
 	pg "github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -39,6 +42,9 @@ pv postgres:install 17`,
 			if err := pg.SetWanted(major, "running"); err != nil {
 				return err
 			}
+			if err := bindLinkedProjectsToPostgres(major); err != nil {
+				ui.Subtle(fmt.Sprintf("Could not retroactively bind linked projects: %v", err))
+			}
 			ui.Success(fmt.Sprintf("PostgreSQL %s already installed — marked as wanted running.", major))
 			return signalDaemon()
 		}
@@ -47,9 +53,60 @@ pv postgres:install 17`,
 		if err := downloadCmd.RunE(downloadCmd, []string{major}); err != nil {
 			return err
 		}
+		if err := bindLinkedProjectsToPostgres(major); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not retroactively bind linked projects: %v", err))
+		}
 		ui.Success(fmt.Sprintf("PostgreSQL %s installed.", major))
 		return signalDaemon()
 	},
+}
+
+// bindLinkedProjectsToPostgres walks linked projects and binds any
+// pgsql-using project to the just-installed major if it has no postgres
+// binding yet. Mirrors bindBinaryServiceToAllProjects + the env-write
+// hook that service:add does for mail/s3 — the retroactive-bind path for
+// projects linked before postgres existed.
+//
+// Bind condition: project is Laravel-shaped AND its .env has
+// DB_CONNECTION=pgsql AND Services.Postgres is empty. Projects already
+// bound to a different major are left alone.
+func bindLinkedProjectsToPostgres(major string) error {
+	reg, err := registry.Load()
+	if err != nil {
+		return fmt.Errorf("load registry: %w", err)
+	}
+	changed := false
+	for i := range reg.Projects {
+		p := &reg.Projects[i]
+		if p.Type != "laravel" && p.Type != "laravel-octane" {
+			continue
+		}
+		if p.Services != nil && p.Services.Postgres != "" {
+			continue // already bound (to this or another major)
+		}
+		envPath := p.Path + "/.env"
+		envVars, err := services.ReadDotEnv(envPath)
+		if err != nil {
+			continue // no .env or unreadable; skip silently
+		}
+		if envVars["DB_CONNECTION"] != "pgsql" {
+			continue
+		}
+		if p.Services == nil {
+			p.Services = &registry.ProjectServices{}
+		}
+		p.Services.Postgres = major
+		changed = true
+		if err := laravel.UpdateProjectEnvForPostgres(p.Path, p.Name, major, p.Services); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not write postgres env vars for %s: %v", p.Name, err))
+		}
+	}
+	if changed {
+		if err := reg.Save(); err != nil {
+			return fmt.Errorf("save registry: %w", err)
+		}
+	}
+	return nil
 }
 
 func signalDaemon() error {
