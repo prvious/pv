@@ -138,6 +138,10 @@ func VersionsPath() string {
 	return filepath.Join(DataDir(), "versions.json")
 }
 
+func StatePath() string {
+	return filepath.Join(DataDir(), "state.json")
+}
+
 func SettingsPath() string {
 	return filepath.Join(PvDir(), "pv.yml")
 }
