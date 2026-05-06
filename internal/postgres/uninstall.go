@@ -2,16 +2,21 @@ package postgres
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 )
 
-// Uninstall removes all on-disk state for a major: data dir, binary tree,
-// log file, state entry, version-tracking entry. Missing major is a no-op.
-// Caller must stop the supervised process before calling.
+// Uninstall removes all on-disk state for a major: per-major services
+// tree (which contains data/), binary tree, log file, state entry,
+// version-tracking entry. Missing major is a no-op. Caller must stop
+// the supervised process before calling.
 func Uninstall(major string) error {
-	if err := os.RemoveAll(config.ServiceDataDir("postgres", major)); err != nil {
+	// ServiceDataDir returns ~/.pv/services/postgres/<major>/data — wipe
+	// the whole per-major dir, not just data, so we don't leave an empty
+	// parent behind.
+	if err := os.RemoveAll(filepath.Dir(config.ServiceDataDir("postgres", major))); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(config.PostgresVersionDir(major)); err != nil {
