@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 )
@@ -112,4 +113,25 @@ func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName stri
 	}
 	backupPath := envPath + ".pv-backup"
 	return services.MergeDotEnv(envPath, backupPath, allVars)
+}
+
+// UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForService and
+// UpdateProjectEnvForBinaryService for the postgres native-binary case.
+// postgres has its own EnvVars signature (projectName, major) — it doesn't
+// satisfy services.Service or services.BinaryService.
+func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *registry.ProjectServices) error {
+	envPath := filepath.Join(projectPath, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil
+	}
+	pgVars, err := postgres.EnvVars(projectName, major)
+	if err != nil {
+		return err
+	}
+	smartVars := SmartEnvVars(bound)
+	for k, v := range smartVars {
+		pgVars[k] = v
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, pgVars)
 }

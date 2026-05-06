@@ -3,6 +3,7 @@ package laravel
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/registry"
@@ -311,5 +312,27 @@ func TestUpdateProjectEnvForBinaryService_NoEnvFile(t *testing.T) {
 
 	if err := UpdateProjectEnvForBinaryService(dir, "my-app", "s3", svc, bound); err != nil {
 		t.Fatalf("should not error for missing .env: %v", err)
+	}
+}
+
+func TestUpdateProjectEnvForPostgres(t *testing.T) {
+	tmp := t.TempDir()
+	envPath := filepath.Join(tmp, ".env")
+	if err := os.WriteFile(envPath, []byte("# initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bound := &registry.ProjectServices{Postgres: "17"}
+	if err := UpdateProjectEnvForPostgres(tmp, "my_app", "17", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForPostgres: %v", err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{"DB_CONNECTION=pgsql", "DB_PORT=54017", "DB_DATABASE=my_app"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in .env:\n%s", want, body)
+		}
 	}
 }
