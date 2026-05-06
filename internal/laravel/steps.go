@@ -7,6 +7,7 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/certs"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/services"
 )
 
@@ -302,6 +303,13 @@ func (s *CreateDatabaseStep) Run(ctx *automation.Context) (string, error) {
 			proj.Databases = append(proj.Databases, dbName)
 		}
 		break
+	}
+
+	proj := ctx.Registry.Find(ctx.ProjectName)
+	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
+		if err := postgres.CreateDatabase(proj.Services.Postgres, dbName); err != nil {
+			return "", fmt.Errorf("create postgres db: %w", err)
+		}
 	}
 
 	ctx.DBCreated = true
