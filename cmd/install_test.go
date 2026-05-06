@@ -119,7 +119,7 @@ func TestParseWith_Services(t *testing.T) {
 }
 
 func TestParseWith_Full(t *testing.T) {
-	spec, err := parseWith("php:8.3,mago,service[redis:7],service[postgres:15]")
+	spec, err := parseWith("php:8.3,mago,service[redis:7],service[mysql:8.0]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
