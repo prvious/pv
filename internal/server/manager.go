@@ -10,6 +10,7 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/supervisor"
@@ -162,11 +163,13 @@ func (m *ServerManager) RunningVersions() []string {
 	return versions
 }
 
-// reconcileBinaryServices brings supervisor state in line with the binary
-// entries in the registry. Enabled entries are started if not yet running;
-// disabled or removed entries are stopped.
-// Errors from individual services are collected and logged but do not abort
-// the overall reconcile.
+// reconcileBinaryServices brings supervisor state in line with the wanted
+// set computed from two sources:
+//  1. registry: single-version services (rustfs, mailpit) marked Kind=binary
+//     and Enabled.
+//  2. internal/postgres: multi-version, on-disk + state.json driven.
+//
+// The diff/start/stop loop is shared across both sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	if m.supervisor == nil {
 		return nil
@@ -177,44 +180,57 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		return fmt.Errorf("reconcile binary: load registry: %w", err)
 	}
 
-	// Compute which binary services the registry wants running.
-	// Map key is the binary name (e.g. "rustfs"), not the service name ("s3"),
-	// because the supervisor keys by binary name.
-	needed := map[string]services.BinaryService{}
+	// wanted: supervisorKey -> buildable supervisor.Process.
+	wanted := map[string]supervisor.Process{}
+	var startErrors []string
+
+	// Source 1 — single-version binary services.
 	for name, svc := range services.AllBinary() {
 		entry := reg.Services[name]
 		if entry == nil || entry.Kind != "binary" {
 			continue
 		}
-		// nil Enabled means enabled (back-compat).
 		if entry.Enabled != nil && !*entry.Enabled {
-			continue
-		}
-		needed[svc.Binary().Name] = svc
-	}
-
-	// Stop supervised processes no longer needed.
-	for _, binName := range m.supervisor.SupervisedNames() {
-		if _, ok := needed[binName]; !ok {
-			if err := m.supervisor.Stop(binName, 10*time.Second); err != nil {
-				fmt.Fprintf(os.Stderr, "reconcile binary: stop %s: %v\n", binName, err)
-			}
-		}
-	}
-
-	// Start needed processes not currently supervised.
-	var startErrors []string
-	for binName, svc := range needed {
-		if m.supervisor.IsRunning(binName) {
 			continue
 		}
 		proc, err := buildSupervisorProcess(svc)
 		if err != nil {
-			startErrors = append(startErrors, fmt.Sprintf("%s: build: %v", binName, err))
+			startErrors = append(startErrors, fmt.Sprintf("%s: build: %v", name, err))
+			continue
+		}
+		wanted[svc.Binary().Name] = proc
+	}
+
+	// Source 2 — postgres, multi-version.
+	pgMajors, err := postgres.WantedMajors()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reconcile binary: postgres.WantedMajors: %v\n", err)
+	}
+	for _, major := range pgMajors {
+		proc, err := postgres.BuildSupervisorProcess(major)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("postgres-%s: build: %v", major, err))
+			continue
+		}
+		wanted["postgres-"+major] = proc
+	}
+
+	// Diff: stop unneeded.
+	for _, supKey := range m.supervisor.SupervisedNames() {
+		if _, ok := wanted[supKey]; !ok {
+			if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {
+				fmt.Fprintf(os.Stderr, "reconcile binary: stop %s: %v\n", supKey, err)
+			}
+		}
+	}
+
+	// Diff: start needed.
+	for supKey, proc := range wanted {
+		if m.supervisor.IsRunning(supKey) {
 			continue
 		}
 		if err := m.supervisor.Start(ctx, proc); err != nil {
-			startErrors = append(startErrors, fmt.Sprintf("%s: start: %v", binName, err))
+			startErrors = append(startErrors, fmt.Sprintf("%s: start: %v", supKey, err))
 			continue
 		}
 	}
