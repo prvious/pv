@@ -171,6 +171,79 @@ func ExtractTarGz(archivePath, destPath, binaryName string) error {
 	return fmt.Errorf("%q: %w", binaryName, ErrEntryNotFound)
 }
 
+// ExtractTarGzAll extracts the entire archive into destDir, preserving
+// directory structure and file modes. Refuses to extract entries that
+// escape destDir (defense against path-traversal in archive entry names).
+func ExtractTarGzAll(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip open failed: %w", err)
+	}
+	defer gz.Close()
+
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	absDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar read failed: %w", err)
+		}
+
+		target := filepath.Join(destDir, hdr.Name)
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(absTarget, absDest+string(os.PathSeparator)) && absTarget != absDest {
+			return fmt.Errorf("tar entry escapes dest: %s", hdr.Name)
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)&0o777); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			os.Remove(target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // MakeExecutable sets file permissions to 0755.
 func MakeExecutable(path string) error {
 	return os.Chmod(path, 0755)
