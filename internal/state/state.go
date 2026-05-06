@@ -52,7 +52,9 @@ func Save(s State) error {
 		return fmt.Errorf("state: write tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		if rmErr := os.Remove(tmp); rmErr != nil && !os.IsNotExist(rmErr) {
+			fmt.Fprintf(os.Stderr, "state: cleanup tmp after rename failure: %v\n", rmErr)
+		}
 		return fmt.Errorf("state: rename: %w", err)
 	}
 	return nil
