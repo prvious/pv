@@ -49,3 +49,12 @@ func RunUpdate(args []string) error {
 func RunUninstall(args []string) error {
 	return uninstallCmd.RunE(uninstallCmd, args)
 }
+
+// UninstallForce removes a postgres major without a confirmation prompt.
+// Used by the pv uninstall orchestrator which has already obtained consent.
+func UninstallForce(major string) error {
+	prev := uninstallForce
+	uninstallForce = true
+	defer func() { uninstallForce = prev }()
+	return uninstallCmd.RunE(uninstallCmd, []string{major})
+}
