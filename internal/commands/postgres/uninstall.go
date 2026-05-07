@@ -42,13 +42,20 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Mark stopped + signal daemon to bring the process down.
-		if err := pg.SetWanted(major, "stopped"); err != nil {
+		// Mark stopped + signal daemon to bring the process down. We must
+		// verify the process actually stopped before doing destructive
+		// on-disk operations — postgres doing a WAL flush would still be
+		// writing if we proceeded after a fixed sleep.
+		if err := pg.SetWanted(major, pg.WantedStopped); err != nil {
 			return err
 		}
 		if server.IsRunning() {
-			_ = server.SignalDaemon()
-			time.Sleep(2 * time.Second)
+			if err := server.SignalDaemon(); err != nil {
+				return fmt.Errorf("signal daemon: %w", err)
+			}
+			if err := pg.WaitStopped(major, 30*time.Second); err != nil {
+				return fmt.Errorf("waiting for postgres %s to stop: %w", major, err)
+			}
 		}
 
 		if err := pg.Uninstall(major); err != nil {

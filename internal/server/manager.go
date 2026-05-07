@@ -202,9 +202,9 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	}
 
 	// Source 2 — postgres, multi-version.
-	pgMajors, err := postgres.WantedMajors()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reconcile binary: postgres.WantedMajors: %v\n", err)
+	pgMajors, pgErr := postgres.WantedMajors()
+	if pgErr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile binary: postgres.WantedMajors: %v\n", pgErr)
 	}
 	for _, major := range pgMajors {
 		proc, err := postgres.BuildSupervisorProcess(major)
@@ -215,12 +215,18 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		wanted["postgres-"+major] = proc
 	}
 
-	// Diff: stop unneeded.
+	// Diff: stop unneeded. If the postgres source failed, skip postgres-
+	// prefixed keys — a transient state.json read error shouldn't kill
+	// running postgres processes (the wanted set is incomplete, not empty).
 	for _, supKey := range m.supervisor.SupervisedNames() {
-		if _, ok := wanted[supKey]; !ok {
-			if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {
-				fmt.Fprintf(os.Stderr, "reconcile binary: stop %s: %v\n", supKey, err)
-			}
+		if _, ok := wanted[supKey]; ok {
+			continue
+		}
+		if pgErr != nil && strings.HasPrefix(supKey, "postgres-") {
+			continue
+		}
+		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "reconcile binary: stop %s: %v\n", supKey, err)
 		}
 	}
 

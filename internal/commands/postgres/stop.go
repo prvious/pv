@@ -19,7 +19,7 @@ var stopCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := pg.SetWanted(major, "stopped"); err != nil {
+		if err := pg.SetWanted(major, pg.WantedStopped); err != nil {
 			return err
 		}
 		ui.Success(fmt.Sprintf("PostgreSQL %s marked stopped.", major))

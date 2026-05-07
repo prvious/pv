@@ -73,7 +73,7 @@ func InstallProgress(client *http.Client, major string, progress binaries.Progre
 		}
 	}
 
-	return SetWanted(major, "running")
+	return SetWanted(major, WantedRunning)
 }
 
 // EnsureRuntime is the idempotent post-extract setup: refreshes

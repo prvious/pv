@@ -257,3 +257,100 @@ func TestExtractTarGz_EntryFound(t *testing.T) {
 		t.Errorf("extracted content = %q, want %q", string(got), "hello")
 	}
 }
+
+// makeTarGzWithEntries writes a tar.gz at archivePath containing arbitrary
+// file or symlink entries. Used to exercise ExtractTarGzAll's path-traversal
+// defenses.
+func makeTarGzWithEntries(t *testing.T, archivePath string, entries []tarEntry) {
+	t.Helper()
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Name:     e.name,
+			Mode:     0o644,
+			Typeflag: e.typ,
+			Linkname: e.link,
+			Size:     int64(len(e.body)),
+		}
+		if e.typ == tar.TypeSymlink {
+			hdr.Size = 0
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if e.typ == tar.TypeReg {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type tarEntry struct {
+	name string
+	typ  byte
+	body string
+	link string
+}
+
+func TestExtractTarGzAll_RejectsPathTraversalEntry(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "evil.tar.gz")
+	makeTarGzWithEntries(t, archive, []tarEntry{
+		{name: "../escape.txt", typ: tar.TypeReg, body: "pwned"},
+	})
+	dest := filepath.Join(dir, "out")
+	err := ExtractTarGzAll(archive, dest)
+	if err == nil {
+		t.Fatal("expected error for entry with .. in path")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "escape.txt")); statErr == nil {
+		t.Error("file escaped destDir via .. in entry name")
+	}
+}
+
+func TestExtractTarGzAll_RejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "evil.tar.gz")
+	makeTarGzWithEntries(t, archive, []tarEntry{
+		// Symlink whose target points outside destDir.
+		{name: "innocent", typ: tar.TypeSymlink, link: "../../etc/passwd"},
+	})
+	dest := filepath.Join(dir, "out")
+	err := ExtractTarGzAll(archive, dest)
+	if err == nil {
+		t.Fatal("expected error for symlink pointing outside destDir")
+	}
+}
+
+func TestExtractTarGzAll_AcceptsRelativeSymlinkInsideDest(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "good.tar.gz")
+	makeTarGzWithEntries(t, archive, []tarEntry{
+		{name: "real.txt", typ: tar.TypeReg, body: "hi"},
+		{name: "link", typ: tar.TypeSymlink, link: "real.txt"},
+	})
+	dest := filepath.Join(dir, "out")
+	if err := ExtractTarGzAll(archive, dest); err != nil {
+		t.Fatalf("ExtractTarGzAll: %v", err)
+	}
+	got, err := os.Readlink(filepath.Join(dest, "link"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if got != "real.txt" {
+		t.Errorf("symlink target = %q, want real.txt", got)
+	}
+}

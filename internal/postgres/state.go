@@ -2,11 +2,21 @@ package postgres
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 
 	"github.com/prvious/pv/internal/state"
 )
 
 const stateKey = "postgres"
+
+// Wanted-state values for MajorState.Wanted. Bare strings would let typos
+// silently persist (and be silently read as "not running"), so callers go
+// through SetWanted which validates against this set.
+const (
+	WantedRunning = "running"
+	WantedStopped = "stopped"
+)
 
 // MajorState is the per-major sub-record of postgres state.
 type MajorState struct {
@@ -30,6 +40,7 @@ func LoadState() (State, error) {
 	}
 	var s State
 	if err := json.Unmarshal(raw, &s); err != nil {
+		fmt.Fprintf(os.Stderr, "postgres: state slice corrupt (%v); treating as empty\n", err)
 		return State{Majors: map[string]MajorState{}}, nil
 	}
 	if s.Majors == nil {
@@ -56,7 +67,13 @@ func SaveState(s State) error {
 }
 
 // SetWanted updates the wanted-state for one major and persists.
+// Rejects values outside the WantedRunning/WantedStopped set so a typo
+// can't silently persist garbage that WantedMajors will later read as
+// "not running" (and stop the process).
 func SetWanted(major, wanted string) error {
+	if wanted != WantedRunning && wanted != WantedStopped {
+		return fmt.Errorf("postgres: invalid wanted state %q (want %q or %q)", wanted, WantedRunning, WantedStopped)
+	}
 	s, err := LoadState()
 	if err != nil {
 		return err

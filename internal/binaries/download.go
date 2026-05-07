@@ -235,6 +235,18 @@ func ExtractTarGzAll(archivePath, destDir string) error {
 				return err
 			}
 		case tar.TypeSymlink:
+			// Resolve the symlink's target path relative to the symlink's
+			// parent directory, then verify it stays inside destDir.
+			// Without this check, a tarball can use a symlink to escape
+			// the destination — the file-path traversal check earlier
+			// only catches direct entry paths, not symlink indirection.
+			linkAbs, err := filepath.Abs(filepath.Join(filepath.Dir(target), hdr.Linkname))
+			if err != nil {
+				return err
+			}
+			if !strings.HasPrefix(linkAbs, absDest+string(os.PathSeparator)) && linkAbs != absDest {
+				return fmt.Errorf("tar symlink target escapes dest: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			os.Remove(target)
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return err

@@ -39,7 +39,7 @@ pv postgres:install 17`,
 			if err := pg.EnsureRuntime(major); err != nil {
 				return err
 			}
-			if err := pg.SetWanted(major, "running"); err != nil {
+			if err := pg.SetWanted(major, pg.WantedRunning); err != nil {
 				return err
 			}
 			if err := bindLinkedProjectsToPostgres(major); err != nil {

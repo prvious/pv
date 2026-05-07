@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"fmt"
-	"os"
 
 	pg "github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/server"
@@ -41,11 +40,11 @@ var statusCmd = &cobra.Command{
 			supKey := "postgres-" + major
 			if status != nil {
 				if s, ok := status.Supervised[supKey]; ok && s.Running {
-					fmt.Fprintf(os.Stderr, "postgres %s: running on :%d (pid %d)\n", major, port, s.PID)
+					ui.Success(fmt.Sprintf("postgres %s: running on :%d (pid %d)", major, port, s.PID))
 					continue
 				}
 			}
-			fmt.Fprintf(os.Stderr, "postgres %s: stopped\n", major)
+			ui.Subtle(fmt.Sprintf("postgres %s: stopped", major))
 		}
 		return nil
 	},

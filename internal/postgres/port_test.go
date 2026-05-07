@@ -30,4 +30,10 @@ func TestPortFor_Invalid(t *testing.T) {
 	if _, err := PortFor("18-alpine"); err == nil {
 		t.Error("PortFor non-numeric should error")
 	}
+	if _, err := PortFor("99999"); err == nil {
+		t.Error("PortFor out-of-range should error (would overflow TCP port range)")
+	}
+	if _, err := PortFor("1000"); err == nil {
+		t.Error("PortFor major > 999 should error")
+	}
 }

@@ -47,7 +47,9 @@ func UpdateProgress(client *http.Client, major string, progress binaries.Progres
 	}
 	os.Remove(archive)
 
-	// Atomic swap.
+	// Two-phase swap (NOT atomic — two os.Rename calls). If the second
+	// rename fails we attempt a best-effort restore; if THAT also fails
+	// the user is in a half-broken state and must know about it.
 	oldDir := versionDir + ".old"
 	os.RemoveAll(oldDir)
 	if err := os.Rename(versionDir, oldDir); err != nil {
@@ -55,7 +57,10 @@ func UpdateProgress(client *http.Client, major string, progress binaries.Progres
 		return fmt.Errorf("rename old: %w", err)
 	}
 	if err := os.Rename(stagingDir, versionDir); err != nil {
-		os.Rename(oldDir, versionDir) // best-effort restore
+		if rollbackErr := os.Rename(oldDir, versionDir); rollbackErr != nil {
+			return fmt.Errorf("rename new failed (%w); rollback also failed (%v); postgres %s install dir is broken — manually mv %s %s",
+				err, rollbackErr, major, oldDir, versionDir)
+		}
 		return fmt.Errorf("rename new: %w", err)
 	}
 	os.RemoveAll(oldDir)
@@ -74,5 +79,5 @@ func UpdateProgress(client *http.Client, major string, progress binaries.Progres
 		}
 	}
 
-	return SetWanted(major, "running")
+	return SetWanted(major, WantedRunning)
 }

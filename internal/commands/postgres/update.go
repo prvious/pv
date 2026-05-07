@@ -22,13 +22,18 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("postgres %s is not installed", major)
 		}
 
-		// Stop running process before swap.
-		if err := pg.SetWanted(major, "stopped"); err != nil {
+		// Stop running process before swap; verify shutdown before the
+		// atomic-rename phase touches the binary tree.
+		if err := pg.SetWanted(major, pg.WantedStopped); err != nil {
 			return err
 		}
 		if server.IsRunning() {
-			_ = server.SignalDaemon()
-			time.Sleep(2 * time.Second)
+			if err := server.SignalDaemon(); err != nil {
+				return fmt.Errorf("signal daemon: %w", err)
+			}
+			if err := pg.WaitStopped(major, 30*time.Second); err != nil {
+				return fmt.Errorf("waiting for postgres %s to stop: %w", major, err)
+			}
 		}
 
 		client := &http.Client{Timeout: 5 * time.Minute}

@@ -19,7 +19,7 @@ var startCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := pg.SetWanted(major, "running"); err != nil {
+		if err := pg.SetWanted(major, pg.WantedRunning); err != nil {
 			return err
 		}
 		ui.Success(fmt.Sprintf("PostgreSQL %s marked running.", major))

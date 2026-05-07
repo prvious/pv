@@ -25,7 +25,7 @@ func WantedMajors() ([]string, error) {
 	}
 	var out []string
 	for major, ms := range st.Majors {
-		if ms.Wanted != "running" {
+		if ms.Wanted != WantedRunning {
 			continue
 		}
 		if _, ok := installedSet[major]; !ok {

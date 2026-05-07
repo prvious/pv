@@ -20,14 +20,18 @@ var restartCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := pg.SetWanted(major, "stopped"); err != nil {
+		if err := pg.SetWanted(major, pg.WantedStopped); err != nil {
 			return err
 		}
 		if server.IsRunning() {
-			_ = server.SignalDaemon()
-			time.Sleep(2 * time.Second)
+			if err := server.SignalDaemon(); err != nil {
+				return fmt.Errorf("signal daemon: %w", err)
+			}
+			if err := pg.WaitStopped(major, 30*time.Second); err != nil {
+				return fmt.Errorf("waiting for postgres %s to stop: %w", major, err)
+			}
 		}
-		if err := pg.SetWanted(major, "running"); err != nil {
+		if err := pg.SetWanted(major, pg.WantedRunning); err != nil {
 			return err
 		}
 		if server.IsRunning() {

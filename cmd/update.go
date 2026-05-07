@@ -87,11 +87,16 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Update each installed postgres major. Each fetches the latest rolling
-		// artifact and atomically swaps in the new binary tree.
+		// artifact and atomically swaps in the new binary tree. Failures are
+		// surfaced via ui.Fail and counted in the failures list — same shape
+		// as PHP / Mago / Composer / Colima above.
 		if majors, err := pg.InstalledMajors(); err == nil {
 			for _, major := range majors {
 				if err := postgresCmds.RunUpdate([]string{major}); err != nil {
-					ui.Subtle(fmt.Sprintf("postgres %s update failed: %v", major, err))
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("PostgreSQL %s update failed: %v", major, err))
+					}
+					failures = append(failures, "PostgreSQL "+major)
 				}
 			}
 		}
