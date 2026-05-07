@@ -53,11 +53,21 @@ func (vs *VersionState) Set(name, version string) {
 	vs.Versions[name] = version
 }
 
+// rustfsPinnedVersion pins the RustFS download. The upstream release
+// 1.0.0-beta.2 was tagged with zero assets attached, breaking the
+// "fetch latest tag → download by URL pattern" flow. Pin to the last
+// known-good release until upstream uploads assets again or our
+// resolver grows asset-presence filtering.
+const rustfsPinnedVersion = "1.0.0-beta.1"
+
 // FetchLatestVersion queries GitHub API for the latest release tag.
 // For Composer, it returns "latest" (always re-downloaded).
 func FetchLatestVersion(client *http.Client, b Binary) (string, error) {
 	if b.Name == "composer" {
 		return "latest", nil
+	}
+	if b.Name == "rustfs" {
+		return rustfsPinnedVersion, nil
 	}
 
 	url := LatestVersionURL(b)
