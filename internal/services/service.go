@@ -34,9 +34,8 @@ type Service interface {
 }
 
 var registry = map[string]Service{
-	"mysql":    &MySQL{},
-	"postgres": &Postgres{},
-	"redis":    &Redis{},
+	"mysql": &MySQL{},
+	"redis": &Redis{},
 }
 
 func Lookup(name string) (Service, error) {

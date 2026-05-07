@@ -127,13 +127,18 @@ jobs:
         timeout-minutes: 3
         run: scripts/e2e/mail-binary.sh
 
-      # ── Phase 22: Uninstall ───────────────────────────────────────
+      # ── Phase 22: PostgreSQL native-binary lifecycle ───────────────
+      - name: E2E — PostgreSQL native-binary lifecycle
+        timeout-minutes: 5
+        run: scripts/e2e/postgres-binary.sh
+
+      # ── Phase 23: Uninstall ───────────────────────────────────────
       # TODO: frankenphp untrust hangs in CI (internal sudo prompt, no terminal)
       # - name: Test pv uninstall
       #   timeout-minutes: 1
       #   run: scripts/e2e/uninstall.sh
 
-      # ── Phase 23: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 24: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh

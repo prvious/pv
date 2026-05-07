@@ -138,6 +138,10 @@ func VersionsPath() string {
 	return filepath.Join(DataDir(), "versions.json")
 }
 
+func StatePath() string {
+	return filepath.Join(DataDir(), "state.json")
+}
+
 func SettingsPath() string {
 	return filepath.Join(PvDir(), "pv.yml")
 }
@@ -205,6 +209,22 @@ func LimaBinDir() string {
 
 func ColimaSocketPath() string {
 	return filepath.Join(ColimaHomeDir(), "pv", "docker.sock")
+}
+
+func PostgresDir() string {
+	return filepath.Join(PvDir(), "postgres")
+}
+
+func PostgresVersionDir(major string) string {
+	return filepath.Join(PostgresDir(), major)
+}
+
+func PostgresBinDir(major string) string {
+	return filepath.Join(PostgresVersionDir(major), "bin")
+}
+
+func PostgresLogPath(major string) string {
+	return filepath.Join(LogsDir(), "postgres-"+major+".log")
 }
 
 func EnsureDirs() error {

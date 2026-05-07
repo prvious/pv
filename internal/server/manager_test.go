@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/supervisor"
 )
@@ -142,4 +143,45 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	if sup.IsRunning("rustfs") {
 		t.Error("expected rustfs stopped after disabling via reconcile")
 	}
+}
+
+func TestReconcileBinaryServices_StartsWantedPostgres(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	bin := config.PostgresBinDir("17")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(bin, "postgres"),
+		filepath.Join("..", "..", "internal", "postgres", "testdata", "fake-postgres-server.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake postgres: %v\n%s", err, out)
+	}
+	dataDir := config.ServiceDataDir("postgres", "17")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dataDir, "PG_VERSION"), []byte("17"), 0o644)
+	os.WriteFile(filepath.Join(dataDir, "postgresql.conf"), []byte("# placeholder\n"), 0o644)
+	if err := postgres.WriteOverrides("17"); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgres.SetWanted("17", "running"); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatalf("reconcileBinaryServices: %v", err)
+	}
+
+	if !sup.IsRunning("postgres-17") {
+		t.Error("expected postgres-17 to be supervised after reconcile")
+	}
+	_ = sup.StopAll(2 * time.Second)
 }

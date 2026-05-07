@@ -16,8 +16,10 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
+	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
+	pg "github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
@@ -207,6 +209,20 @@ var uninstallCmd = &cobra.Command{
 				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
 			}
 		}
+
+		// Postgres uninstall (per installed major). Removes data dirs, binaries,
+		// state. User has already consented to a full pv uninstall.
+		if majors, err := pg.InstalledMajors(); err == nil {
+			for _, major := range majors {
+				if err := postgresCmds.UninstallForce(major); err != nil {
+					hadFailures = true
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("postgres %s uninstall failed: %v", major, err))
+					}
+				}
+			}
+		}
+
 		if err := php.RunUninstall(); err != nil {
 			hadFailures = true
 			if !errors.Is(err, ui.ErrAlreadyPrinted) {

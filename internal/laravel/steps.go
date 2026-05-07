@@ -7,7 +7,9 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/certs"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/ui"
 )
 
 // isLaravel returns true if the project type is Laravel or Laravel with Octane.
@@ -252,6 +254,12 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	if err := services.MergeDotEnv(envPath, "", vars); err != nil {
 		return "", fmt.Errorf("merge service env: %w", err)
 	}
+	proj = ctx.Registry.Find(ctx.ProjectName)
+	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
+		if err := UpdateProjectEnvForPostgres(ctx.ProjectPath, ctx.ProjectName, proj.Services.Postgres, proj.Services); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not write postgres env vars: %v", err))
+		}
+	}
 	return fmt.Sprintf("set %d service env vars", len(vars)), nil
 }
 
@@ -302,6 +310,13 @@ func (s *CreateDatabaseStep) Run(ctx *automation.Context) (string, error) {
 			proj.Databases = append(proj.Databases, dbName)
 		}
 		break
+	}
+
+	proj := ctx.Registry.Find(ctx.ProjectName)
+	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
+		if err := postgres.CreateDatabase(proj.Services.Postgres, dbName); err != nil {
+			return "", fmt.Errorf("create postgres db: %w", err)
+		}
 	}
 
 	ctx.DBCreated = true

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -36,6 +37,19 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	var bound int
 	dbName := services.SanitizeProjectName(ctx.ProjectName)
 
+	// Postgres takes a separate path: it's a native binary, not a docker service.
+	if envVars["DB_CONNECTION"] == "pgsql" {
+		majors, err := postgres.InstalledMajors()
+		if err == nil && len(majors) > 0 {
+			// Prefer the highest installed major.
+			major := majors[len(majors)-1]
+			bindProjectPostgres(ctx.Registry, ctx.ProjectName, major)
+			bound++
+		} else {
+			ui.Subtle("postgres detected but not installed. Run: pv postgres:install")
+		}
+	}
+
 	type probe struct {
 		match  bool
 		name   string
@@ -44,7 +58,6 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 
 	probes := []probe{
 		{envVars["DB_CONNECTION"] == "mysql", "mysql", "pv service:add mysql"},
-		{envVars["DB_CONNECTION"] == "pgsql", "postgres", "pv service:add postgres"},
 		{envVars["REDIS_HOST"] != "", "redis", "pv service:add redis"},
 		{
 			func() bool {
@@ -120,8 +133,6 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 		switch svcType {
 		case "mysql":
 			reg.Projects[i].Services.MySQL = version
-		case "postgres":
-			reg.Projects[i].Services.Postgres = version
 		case "redis":
 			reg.Projects[i].Services.Redis = true
 		case "mail":
@@ -130,5 +141,18 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 			reg.Projects[i].Services.S3 = true
 		}
 		break
+	}
+}
+
+func bindProjectPostgres(reg *registry.Registry, projectName, major string) {
+	for i := range reg.Projects {
+		if reg.Projects[i].Name != projectName {
+			continue
+		}
+		if reg.Projects[i].Services == nil {
+			reg.Projects[i].Services = &registry.ProjectServices{}
+		}
+		reg.Projects[i].Services.Postgres = major
+		return
 	}
 }

@@ -233,6 +233,21 @@ func (r *Registry) UnbindService(serviceName string) {
 	}
 }
 
+// UnbindPostgresMajor clears Services.Postgres on every project bound to
+// the given major. Projects bound to other majors are unaffected.
+// Tighter than UnbindService("postgres") — that would clear all bindings
+// regardless of major.
+func (r *Registry) UnbindPostgresMajor(major string) {
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		if r.Projects[i].Services.Postgres == major {
+			r.Projects[i].Services.Postgres = ""
+		}
+	}
+}
+
 // GroupByPHP groups projects by their PHP version.
 // Projects with an empty PHP field are grouped under the given defaultVersion.
 func (r *Registry) GroupByPHP(defaultVersion string) map[string][]Project {

@@ -15,7 +15,9 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
+	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	"github.com/prvious/pv/internal/packages"
+	pg "github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/server"
@@ -81,6 +83,21 @@ var updateCmd = &cobra.Command{
 					ui.Fail(fmt.Sprintf("Colima update failed: %v", err))
 				}
 				failures = append(failures, "Colima")
+			}
+		}
+
+		// Update each installed postgres major. Each fetches the latest rolling
+		// artifact and atomically swaps in the new binary tree. Failures are
+		// surfaced via ui.Fail and counted in the failures list — same shape
+		// as PHP / Mago / Composer / Colima above.
+		if majors, err := pg.InstalledMajors(); err == nil {
+			for _, major := range majors {
+				if err := postgresCmds.RunUpdate([]string{major}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("PostgreSQL %s update failed: %v", major, err))
+					}
+					failures = append(failures, "PostgreSQL "+major)
+				}
 			}
 		}
 
