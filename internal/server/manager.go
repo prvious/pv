@@ -10,6 +10,7 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -164,12 +165,13 @@ func (m *ServerManager) RunningVersions() []string {
 }
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
-// set computed from two sources:
+// set computed from three sources:
 //  1. registry: single-version services (rustfs, mailpit) marked Kind=binary
 //     and Enabled.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
+//  3. internal/mysql:    multi-version, on-disk + state.json driven.
 //
-// The diff/start/stop loop is shared across both sources.
+// The diff/start/stop loop is shared across all three sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	if m.supervisor == nil {
 		return nil
@@ -215,14 +217,32 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		wanted["postgres-"+major] = proc
 	}
 
+	// Source 3 — mysql, multi-version.
+	myVersions, myErr := mysql.WantedVersions()
+	if myErr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile binary: mysql.WantedVersions: %v\n", myErr)
+	}
+	for _, version := range myVersions {
+		proc, err := mysql.BuildSupervisorProcess(version)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("mysql-%s: build: %v", version, err))
+			continue
+		}
+		wanted["mysql-"+version] = proc
+	}
+
 	// Diff: stop unneeded. If the postgres source failed, skip postgres-
 	// prefixed keys — a transient state.json read error shouldn't kill
 	// running postgres processes (the wanted set is incomplete, not empty).
+	// Same transient-error guard for mysql.
 	for _, supKey := range m.supervisor.SupervisedNames() {
 		if _, ok := wanted[supKey]; ok {
 			continue
 		}
 		if pgErr != nil && strings.HasPrefix(supKey, "postgres-") {
+			continue
+		}
+		if myErr != nil && strings.HasPrefix(supKey, "mysql-") {
 			continue
 		}
 		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {
