@@ -759,3 +759,33 @@ func TestUnbindPostgresMajor(t *testing.T) {
 		}
 	}
 }
+
+func TestUnbindMysqlVersion(t *testing.T) {
+	r := &Registry{
+		Services: map[string]*ServiceInstance{},
+		Projects: []Project{
+			{Name: "a", Services: &ProjectServices{MySQL: "8.4"}},
+			{Name: "b", Services: &ProjectServices{MySQL: "9.7"}},
+			{Name: "c", Services: &ProjectServices{MySQL: "8.4"}},
+			{Name: "d", Services: nil},
+		},
+	}
+	r.UnbindMysqlVersion("8.4")
+	cases := map[string]string{"a": "", "b": "9.7", "c": ""}
+	for name, want := range cases {
+		got := ""
+		for _, p := range r.Projects {
+			if p.Name == name && p.Services != nil {
+				got = p.Services.MySQL
+			}
+		}
+		if got != want {
+			t.Errorf("project %s.MySQL = %q, want %q", name, got, want)
+		}
+	}
+	for _, p := range r.Projects {
+		if p.Name == "d" && p.Services != nil {
+			t.Errorf("project d.Services should remain nil, got %+v", p.Services)
+		}
+	}
+}
