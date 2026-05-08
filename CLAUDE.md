@@ -172,7 +172,7 @@ A full dispatch runs the FrankenPHP matrix (3 PHP versions, ~30 min each), Postg
 
 If the affected family is ambiguous from the diff, ask before dispatching. Never dispatch with no skip flags "just to be safe" — that's the failure mode this convention exists to prevent.
 
-Example:
+Example (MySQL-only dispatch):
 
 ```bash
 gh workflow run build-artifacts.yml --ref <branch> \

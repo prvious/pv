@@ -59,6 +59,10 @@ for i in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:$HTTP_PORT/livez" >/dev/null 2>&1; then
         break
     fi
+    if ! kill -0 "$MAILPIT_PID" 2>/dev/null; then
+        echo "::error::mailpit process exited prematurely"
+        exit 1
+    fi
     sleep 1
 done
 

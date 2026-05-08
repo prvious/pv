@@ -46,7 +46,7 @@ trap cleanup EXIT
 
 # 1. version
 echo "== 1. rustfs version =="
-RUSTFS_VER=$("$RUSTFS" --version 2>&1 || true)
+RUSTFS_VER=$("$RUSTFS" --version 2>&1)
 echo "  $RUSTFS_VER"
 
 # 2. start rustfs
@@ -55,15 +55,19 @@ mkdir -p "$WORK_DIR/data"
 RUSTFS_ACCESS_KEY="$ACCESS_KEY" \
 RUSTFS_SECRET_KEY="$SECRET_KEY" \
 "$RUSTFS" server "$WORK_DIR/data" \
-    --address ":$API_PORT" \
+    --address "127.0.0.1:$API_PORT" \
     --console-enable \
-    --console-address ":$CONSOLE_PORT" \
+    --console-address "127.0.0.1:$CONSOLE_PORT" \
     >"$WORK_DIR/rustfs.log" 2>&1 &
 RUSTFS_PID=$!
 
 for i in $(seq 1 30); do
     if nc -z 127.0.0.1 "$API_PORT" 2>/dev/null; then
         break
+    fi
+    if ! kill -0 "$RUSTFS_PID" 2>/dev/null; then
+        echo "::error::rustfs process exited prematurely"
+        exit 1
     fi
     sleep 1
 done

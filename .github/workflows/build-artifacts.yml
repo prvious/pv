@@ -752,8 +752,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # All FrankenPHP + PHP CLI binaries live in a single non-versioned
-          # "artifacts" release, independent of pv's own versioned (v*) releases.
+          # All built binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL, Mailpit,
+          # RustFS, Redis) live in a single non-versioned "artifacts" release,
+          # independent of pv's own versioned (v*) releases.
           # Create it on first run, then clobber on every rebuild.
           TAG="artifacts"
 
