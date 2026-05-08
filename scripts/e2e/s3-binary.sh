@@ -81,9 +81,12 @@ done
 nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after rustfs:start"; exit 1; }
 echo "OK: port 9000 reachable after rustfs:start"
 
-echo "==> Verify s3:* alias dispatches to rustfs (s3:status)"
-sudo -E pv s3:status 2>&1 | grep -qi "rustfs" || {
-    echo "FAIL: s3:status alias should resolve to rustfs"
+echo "==> Verify s3:* alias is callable (s3:status)"
+# Pointer-equality of RunE between alias and canonical is unit-tested in
+# internal/commands/rustfs/register_test.go. This smoke just proves the
+# built binary exposes the alias and can dispatch it without erroring.
+sudo -E pv s3:status >/dev/null 2>&1 || {
+    echo "FAIL: s3:status alias did not exit cleanly"
     exit 1
 }
 echo "OK: s3:* alias works"

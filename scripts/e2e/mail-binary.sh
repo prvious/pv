@@ -83,9 +83,12 @@ done
 curl -fsS http://127.0.0.1:8025/livez || { echo "FAIL: /livez not reachable after mailpit:start"; exit 1; }
 echo "OK: /livez reachable after mailpit:start"
 
-echo "==> Verify mail:* alias dispatches to mailpit (mail:status)"
-sudo -E pv mail:status 2>&1 | grep -qi "mailpit" || {
-    echo "FAIL: mail:status alias should resolve to mailpit"
+echo "==> Verify mail:* alias is callable (mail:status)"
+# Pointer-equality of RunE between alias and canonical is unit-tested in
+# internal/commands/mailpit/register_test.go. This smoke just proves the
+# built binary exposes the alias and can dispatch it without erroring.
+sudo -E pv mail:status >/dev/null 2>&1 || {
+    echo "FAIL: mail:status alias did not exit cleanly"
     exit 1
 }
 echo "OK: mail:* alias works"
