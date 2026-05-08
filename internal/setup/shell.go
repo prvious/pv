@@ -39,4 +39,3 @@ func PathExportLine(shell string) string {
 		return `export PATH="$HOME/.pv/bin:$HOME/.pv/composer/vendor/bin:$PATH"`
 	}
 }
-

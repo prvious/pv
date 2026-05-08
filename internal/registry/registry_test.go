@@ -183,7 +183,7 @@ func TestUpdateWith_PreservesUntouchedFields(t *testing.T) {
 		Name:      "foo",
 		Path:      "/tmp/foo",
 		Type:      "php",
-		Services:  &ProjectServices{MySQL: "mysql:8.0"},
+		Services:  &ProjectServices{MySQL: "8.4"},
 		Databases: []string{"foo_db"},
 	})
 
@@ -194,7 +194,7 @@ func TestUpdateWith_PreservesUntouchedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateWith() error = %v", err)
 	}
-	if r.Projects[0].Services == nil || r.Projects[0].Services.MySQL != "mysql:8.0" {
+	if r.Projects[0].Services == nil || r.Projects[0].Services.MySQL != "8.4" {
 		t.Errorf("expected Services preserved, got %v", r.Projects[0].Services)
 	}
 	if len(r.Projects[0].Databases) != 1 || r.Projects[0].Databases[0] != "foo_db" {
@@ -555,8 +555,8 @@ func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.0.32", Redis: true}},
-			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.0.32"}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: true}},
+			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 			{Name: "app3", Path: "/c"},
 		},
 	}
@@ -581,8 +581,8 @@ func TestUnbindService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.0.32"}},
-			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.0.32"}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4"}},
+			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 		},
 	}
 	r.UnbindService("mysql")
