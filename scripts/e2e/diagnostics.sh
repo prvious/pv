@@ -69,3 +69,44 @@ echo "==> colima status"
 echo ""
 echo "==> pv service:list"
 pv service:list 2>&1 || echo "(pv service:list failed)"
+echo ""
+echo "==> state.json"
+cat ~/.pv/data/state.json 2>/dev/null || echo "(no state.json)"
+echo ""
+echo "==> daemon-status.json"
+cat ~/.pv/daemon-status.json 2>/dev/null || echo "(no daemon-status.json)"
+echo ""
+echo "==> mysql logs"
+for f in ~/.pv/logs/mysql-*.log; do
+  [ -e "$f" ] || continue
+  echo "--- $f ---"
+  tail -100 "$f" 2>/dev/null || echo "(unreadable)"
+done
+echo ""
+echo "==> postgres logs"
+for f in ~/.pv/logs/postgres-*.log; do
+  [ -e "$f" ] || continue
+  echo "--- $f ---"
+  tail -100 "$f" 2>/dev/null || echo "(unreadable)"
+done
+echo ""
+echo "==> /tmp pv e2e logs"
+for f in /tmp/pv-mysql-e2e.log /tmp/pv-postgres-e2e.log /tmp/pv-mail-e2e.log /tmp/pv-s3-e2e.log; do
+  [ -e "$f" ] || continue
+  echo "--- $f ---"
+  tail -100 "$f" 2>/dev/null || echo "(unreadable)"
+done
+echo ""
+echo "==> mysql data dirs"
+ls -la ~/.pv/data/mysql/ 2>/dev/null || echo "(no mysql data dir)"
+for d in ~/.pv/data/mysql/*/; do
+  [ -d "$d" ] || continue
+  echo "--- contents of $d ---"
+  ls -la "$d" 2>/dev/null | head -20
+done
+echo ""
+echo "==> mysql binary trees"
+ls -la ~/.pv/mysql/ 2>/dev/null || echo "(no mysql binary dir)"
+echo ""
+echo "==> /tmp pv-mysql sockets/pids"
+ls -la /tmp/pv-mysql-* 2>/dev/null || echo "(no /tmp/pv-mysql files)"

@@ -44,6 +44,12 @@ func BuildSupervisorProcess(version string) (supervisor.Process, error) {
 // pv cares about is here. --mysqlx=OFF disables the X Protocol port
 // (default 33060) so two majors don't collide on it; --skip-name-resolve
 // avoids reverse-DNS waits on a loopback connection.
+//
+// We deliberately do NOT pass --log-error: the supervisor opens
+// MysqlLogPath as the parent (running as root) and inherits the fd to
+// the child, which sidesteps the ownership problem of the dropped
+// mysqld process trying to open a root-owned log file itself. mysqld's
+// stderr is captured via that inherited fd.
 func buildMysqldArgs(version, dataDir string, port int) []string {
 	basedir := config.MysqlVersionDir(version)
 	return []string{
@@ -53,7 +59,6 @@ func buildMysqldArgs(version, dataDir string, port int) []string {
 		"--bind-address=127.0.0.1",
 		"--socket=/tmp/pv-mysql-" + version + ".sock",
 		"--pid-file=/tmp/pv-mysql-" + version + ".pid",
-		"--log-error=" + config.MysqlLogPath(version),
 		"--mysqlx=OFF",
 		"--skip-name-resolve",
 	}

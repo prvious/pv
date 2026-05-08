@@ -42,7 +42,6 @@ func TestBuildSupervisorProcess_HappyPath(t *testing.T) {
 		"--bind-address=127.0.0.1",
 		"--socket=/tmp/pv-mysql-8.4.sock",
 		"--pid-file=/tmp/pv-mysql-8.4.pid",
-		"--log-error=" + config.MysqlLogPath("8.4"),
 		"--mysqlx=OFF",
 		"--skip-name-resolve",
 	}
