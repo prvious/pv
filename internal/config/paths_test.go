@@ -501,3 +501,58 @@ func TestPostgresLogPath(t *testing.T) {
 		t.Errorf("PostgresLogPath = %q, want %q", got, want)
 	}
 }
+
+func TestMysqlDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := MysqlDir()
+	want := "/home/test/.pv/mysql"
+	if got != want {
+		t.Errorf("MysqlDir = %q, want %q", got, want)
+	}
+}
+
+func TestMysqlVersionDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := MysqlVersionDir("8.4")
+	want := "/home/test/.pv/mysql/8.4"
+	if got != want {
+		t.Errorf("MysqlVersionDir = %q, want %q", got, want)
+	}
+}
+
+func TestMysqlBinDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := MysqlBinDir("8.4")
+	want := "/home/test/.pv/mysql/8.4/bin"
+	if got != want {
+		t.Errorf("MysqlBinDir = %q, want %q", got, want)
+	}
+}
+
+func TestMysqlDataDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := MysqlDataDir("8.4")
+	want := "/home/test/.pv/data/mysql/8.4"
+	if got != want {
+		t.Errorf("MysqlDataDir = %q, want %q", got, want)
+	}
+}
+
+func TestMysqlLogPath(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := MysqlLogPath("8.4")
+	want := "/home/test/.pv/logs/mysql-8.4.log"
+	if got != want {
+		t.Errorf("MysqlLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDirs_CreatesMysqlDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	if _, err := os.Stat(MysqlDir()); err != nil {
+		t.Errorf("MysqlDir not created: %v", err)
+	}
+}
