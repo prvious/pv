@@ -62,13 +62,13 @@ RUSTFS_SECRET_KEY="$SECRET_KEY" \
 RUSTFS_PID=$!
 
 for i in $(seq 1 30); do
-    if curl -sf "http://127.0.0.1:$API_PORT/minio/health/live" >/dev/null 2>&1; then
+    if nc -z 127.0.0.1 "$API_PORT" 2>/dev/null; then
         break
     fi
     sleep 1
 done
 
-if ! curl -sf "http://127.0.0.1:$API_PORT/minio/health/live" >/dev/null 2>&1; then
+if ! nc -z 127.0.0.1 "$API_PORT" 2>/dev/null; then
     echo "::error::rustfs did not become ready within 30s"
     exit 1
 fi
