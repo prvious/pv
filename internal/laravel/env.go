@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -134,4 +135,25 @@ func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *
 	}
 	backupPath := envPath + ".pv-backup"
 	return services.MergeDotEnv(envPath, backupPath, pgVars)
+}
+
+// UpdateProjectEnvForMysql mirrors UpdateProjectEnvForService and
+// UpdateProjectEnvForPostgres for the mysql native-binary case.
+// mysql has its own EnvVars signature (projectName, version) — it doesn't
+// satisfy services.Service or services.BinaryService.
+func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *registry.ProjectServices) error {
+	envPath := filepath.Join(projectPath, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil
+	}
+	myVars, err := mysql.EnvVars(projectName, version)
+	if err != nil {
+		return err
+	}
+	smartVars := SmartEnvVars(bound)
+	for k, v := range smartVars {
+		myVars[k] = v
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, myVars)
 }
