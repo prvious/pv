@@ -522,6 +522,18 @@ func TestCreateDatabaseStep_ShouldRun_TrueWithMySQL(t *testing.T) {
 }
 
 func TestCreateDatabaseStep_Run(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Stage a fake `mysql` client so CreateDatabase can shell out without
+	// the real binary present.
+	binDir := config.MysqlBinDir("8.0")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "mysql"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	dir := t.TempDir()
 	ctx := testCtx(dir)
 	reg := &registry.Registry{

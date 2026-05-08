@@ -7,6 +7,7 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/certs"
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -316,6 +317,11 @@ func (s *CreateDatabaseStep) Run(ctx *automation.Context) (string, error) {
 	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
 		if err := postgres.CreateDatabase(proj.Services.Postgres, dbName); err != nil {
 			return "", fmt.Errorf("create postgres db: %w", err)
+		}
+	}
+	if proj != nil && proj.Services != nil && proj.Services.MySQL != "" {
+		if err := mysql.CreateDatabase(proj.Services.MySQL, dbName); err != nil {
+			return "", fmt.Errorf("create mysql db: %w", err)
 		}
 	}
 
