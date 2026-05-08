@@ -22,9 +22,9 @@ func TestLookupAny_BinaryService(t *testing.T) {
 }
 
 func TestLookupAny_DockerService(t *testing.T) {
-	kind, binSvc, docSvc, err := LookupAny("mysql")
+	kind, binSvc, docSvc, err := LookupAny("redis")
 	if err != nil {
-		t.Fatalf("LookupAny(\"mysql\") error = %v", err)
+		t.Fatalf("LookupAny(\"redis\") error = %v", err)
 	}
 	if kind != KindDocker {
 		t.Errorf("kind = %v, want KindDocker", kind)
@@ -78,7 +78,7 @@ func TestLookupAny_BinaryWinsOnCollision(t *testing.T) {
 	})
 
 	binaryRegistry[key] = &Mailpit{} // any BinaryService will do
-	registry[key] = &MySQL{}         // any Service will do
+	registry[key] = &Redis{}         // any Service will do
 
 	kind, binSvc, docSvc, err := LookupAny(key)
 	if err != nil {

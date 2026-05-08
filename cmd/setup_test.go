@@ -10,9 +10,10 @@ func TestBuildServiceOptions_IncludesBothKinds(t *testing.T) {
 		t.Fatal("buildServiceOptions() returned empty; want at least one option")
 	}
 
-	// Pin specific names from each registry. mysql and redis are Docker; mail and s3 are binary.
-	// postgres is now a native binary service managed outside this registry.
-	want := []string{"mysql", "redis", "mail", "s3"}
+	// Pin specific names from each registry. redis is the only remaining Docker service;
+	// mail and s3 are binary. postgres and mysql are now native binary services
+	// managed outside this registry.
+	want := []string{"redis", "mail", "s3"}
 	for _, name := range want {
 		found := false
 		for _, opt := range opts {

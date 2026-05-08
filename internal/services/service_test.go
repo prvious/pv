@@ -6,8 +6,8 @@ import (
 
 func TestLookup_Valid(t *testing.T) {
 	// s3 and mail are now BinaryServices, not in the Docker registry.
-	// postgres is now a native binary service, not a Docker service.
-	for _, name := range []string{"mysql", "redis"} {
+	// postgres and mysql are now native binary services, not Docker services.
+	for _, name := range []string{"redis"} {
 		svc, err := Lookup(name)
 		if err != nil {
 			t.Errorf("Lookup(%q) error = %v", name, err)
@@ -45,9 +45,9 @@ func TestServiceKey(t *testing.T) {
 
 func TestAvailable(t *testing.T) {
 	names := Available()
-	// 2 Docker services (mysql, redis) + 2 binary services (s3, mail).
-	if len(names) != 4 {
-		t.Errorf("Available() returned %d services, want 4", len(names))
+	// 1 Docker service (redis) + 2 binary services (s3, mail).
+	if len(names) != 3 {
+		t.Errorf("Available() returned %d services, want 3", len(names))
 	}
 }
 

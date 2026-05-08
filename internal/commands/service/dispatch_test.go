@@ -30,7 +30,7 @@ func TestResolveKind_BinaryServiceByName(t *testing.T) {
 
 func TestResolveKind_DockerServiceByName(t *testing.T) {
 	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-	kind, bin, doc, err := resolveKind(reg, "mysql")
+	kind, bin, doc, err := resolveKind(reg, "redis")
 	if err != nil {
 		t.Fatalf("resolveKind: %v", err)
 	}

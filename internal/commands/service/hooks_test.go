@@ -126,23 +126,23 @@ func TestApplyStopAllFallbacks(t *testing.T) {
 func TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	mysqlProjectDir := t.TempDir()
-	os.WriteFile(filepath.Join(mysqlProjectDir, ".env"),
-		[]byte("DB_CONNECTION=sqlite\n"), 0644)
+	redisProjectDir := t.TempDir()
+	os.WriteFile(filepath.Join(redisProjectDir, ".env"),
+		[]byte("APP_NAME=demo\n"), 0644)
 
-	postgresProjectDir := t.TempDir()
-	os.WriteFile(filepath.Join(postgresProjectDir, ".env"),
-		[]byte("DB_CONNECTION=sqlite\n"), 0644)
+	otherProjectDir := t.TempDir()
+	os.WriteFile(filepath.Join(otherProjectDir, ".env"),
+		[]byte("APP_NAME=other\n"), 0644)
 
 	reg := &registry.Registry{
 		Services: map[string]*registry.ServiceInstance{
-			"mysql@8.4": {Image: "mysql:8.4", Port: 33000},
+			"redis": {Image: "redis:latest", Port: 6379},
 		},
 		Projects: []registry.Project{
-			{Name: "mysql-app", Path: mysqlProjectDir, Type: "laravel",
-				Services: &registry.ProjectServices{MySQL: "8.4"}},
-			{Name: "postgres-app", Path: postgresProjectDir, Type: "laravel",
-				Services: &registry.ProjectServices{Postgres: "17"}},
+			{Name: "redis-app", Path: redisProjectDir, Type: "laravel",
+				Services: &registry.ProjectServices{Redis: true}},
+			{Name: "other-app", Path: otherProjectDir, Type: "laravel",
+				Services: &registry.ProjectServices{}},
 		},
 	}
 
@@ -150,16 +150,16 @@ func TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject(t *testing.T) {
 	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
 	defer func() { automation.ConfirmFunc = origConfirm }()
 
-	updateLinkedProjectsEnv(reg, "mysql", &services.MySQL{}, "8.4")
+	updateLinkedProjectsEnv(reg, "redis", &services.Redis{}, "latest")
 
-	mysqlEnv, _ := services.ReadDotEnv(filepath.Join(mysqlProjectDir, ".env"))
-	if mysqlEnv["DB_CONNECTION"] != "mysql" {
-		t.Errorf("mysql-app DB_CONNECTION = %q, want mysql", mysqlEnv["DB_CONNECTION"])
+	redisEnv, _ := services.ReadDotEnv(filepath.Join(redisProjectDir, ".env"))
+	if redisEnv["REDIS_HOST"] != "127.0.0.1" {
+		t.Errorf("redis-app REDIS_HOST = %q, want 127.0.0.1", redisEnv["REDIS_HOST"])
 	}
 
-	postgresEnv, _ := services.ReadDotEnv(filepath.Join(postgresProjectDir, ".env"))
-	if postgresEnv["DB_CONNECTION"] != "sqlite" {
-		t.Errorf("postgres-app DB_CONNECTION = %q, want sqlite (should not have changed)", postgresEnv["DB_CONNECTION"])
+	otherEnv, _ := services.ReadDotEnv(filepath.Join(otherProjectDir, ".env"))
+	if _, ok := otherEnv["REDIS_HOST"]; ok {
+		t.Errorf("other-app REDIS_HOST should be unset, got %q", otherEnv["REDIS_HOST"])
 	}
 }
 
