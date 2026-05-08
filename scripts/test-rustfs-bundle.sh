@@ -51,6 +51,7 @@ echo "  $RUSTFS_VER"
 
 # 2. start rustfs
 echo "== 2. start rustfs =="
+mkdir -p "$WORK_DIR/data"
 RUSTFS_ACCESS_KEY="$ACCESS_KEY" \
 RUSTFS_SECRET_KEY="$SECRET_KEY" \
 "$RUSTFS" server "$WORK_DIR/data" \
