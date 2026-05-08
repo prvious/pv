@@ -248,18 +248,25 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		return "no services bound", nil
 	}
 	vars := SmartEnvVars(proj.Services)
-	if len(vars) == 0 {
-		return "no env vars to set", nil
-	}
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
-	if err := services.MergeDotEnv(envPath, "", vars); err != nil {
-		return "", fmt.Errorf("merge service env: %w", err)
+	if len(vars) > 0 {
+		if err := services.MergeDotEnv(envPath, "", vars); err != nil {
+			return "", fmt.Errorf("merge service env: %w", err)
+		}
 	}
 	proj = ctx.Registry.Find(ctx.ProjectName)
 	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
 		if err := UpdateProjectEnvForPostgres(ctx.ProjectPath, ctx.ProjectName, proj.Services.Postgres, proj.Services); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not write postgres env vars: %v", err))
 		}
+	}
+	if proj != nil && proj.Services != nil && proj.Services.MySQL != "" {
+		if err := UpdateProjectEnvForMysql(ctx.ProjectPath, ctx.ProjectName, proj.Services.MySQL, proj.Services); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not write mysql env vars: %v", err))
+		}
+	}
+	if len(vars) == 0 {
+		return "no env vars to set", nil
 	}
 	return fmt.Sprintf("set %d service env vars", len(vars)), nil
 }

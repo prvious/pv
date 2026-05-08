@@ -617,3 +617,35 @@ func TestIsLaravel(t *testing.T) {
 		})
 	}
 }
+
+func TestDetectServicesStep_WritesMysqlEnvVars(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{
+			{Name: "demo", Path: dir, Type: "laravel",
+				Services: &registry.ProjectServices{MySQL: "8.4"}},
+		},
+	}
+	ctx := &automation.Context{
+		ProjectName: "demo",
+		ProjectPath: dir,
+		ProjectType: "laravel",
+		Registry:    reg,
+	}
+	step := &DetectServicesStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	body, _ := os.ReadFile(envPath)
+	for _, want := range []string{"DB_CONNECTION=mysql", "DB_PORT=33084", "DB_DATABASE=demo"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("missing %q in .env:\n%s", want, string(body))
+		}
+	}
+}
