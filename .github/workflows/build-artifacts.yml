@@ -472,7 +472,9 @@ jobs:
           mkdir -p staging
           tar -xzf mailpit.tar.gz -C staging
           chmod +x staging/mailpit
-          staging/mailpit version
+          # "mailpit version" auto-checks for updates (HTTP call that 403s
+          # without auth), so allow it to fail — the smoke test validates the binary.
+          staging/mailpit version || true
 
       - name: Smoke test
         run: bash scripts/test-mailpit-bundle.sh staging/mailpit
