@@ -15,6 +15,18 @@ on:
         description: "Skip the MySQL bundle matrix (8.0 + 8.4 + 9.7)"
         type: boolean
         default: false
+      skip_mailpit:
+        description: "Skip the Mailpit build"
+        type: boolean
+        default: false
+      skip_rustfs:
+        description: "Skip the RustFS build"
+        type: boolean
+        default: false
+      skip_redis:
+        description: "Skip the Redis build"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 0 * * 1"
 
@@ -423,6 +435,169 @@ jobs:
         with:
           name: mysql-mac-arm64-${{ matrix.major }}
           path: mysql-mac-arm64-${{ matrix.major }}.tar.gz
+          compression-level: 0
+
+  mailpit:
+    if: ${{ inputs.skip_mailpit != true }}
+    name: Mailpit
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-mailpit-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Resolve latest release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/axllent/mailpit/releases/latest --jq '.tag_name')
+          echo "Resolved Mailpit → $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          URL="https://github.com/axllent/mailpit/releases/download/${TAG}/mailpit-darwin-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL -o mailpit.tar.gz "$URL"
+          ls -lh mailpit.tar.gz
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          tar -xzf mailpit.tar.gz -C staging
+          chmod +x staging/mailpit
+          staging/mailpit version
+
+      - name: Smoke test
+        run: bash scripts/test-mailpit-bundle.sh staging/mailpit
+
+      - name: Repack
+        run: |
+          set -euo pipefail
+          tar -czf mailpit-mac-arm64.tar.gz -C staging mailpit
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mailpit-mac-arm64
+          path: mailpit-mac-arm64.tar.gz
+          compression-level: 0
+
+  rustfs:
+    if: ${{ inputs.skip_rustfs != true }}
+    name: RustFS
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-rustfs-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Download pinned release
+        run: |
+          set -euo pipefail
+          # Pinned: 1.0.0-beta.2 has no release assets. Remove pin when fixed.
+          VERSION="1.0.0-beta.1"
+          URL="https://github.com/rustfs/rustfs/releases/download/${VERSION}/rustfs-macos-aarch64-v${VERSION}.zip"
+          echo "Downloading $URL"
+          curl -fsSL -o rustfs.zip "$URL"
+          ls -lh rustfs.zip
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          unzip -o rustfs.zip -d staging
+          chmod +x staging/rustfs
+          staging/rustfs --version
+
+      - name: Smoke test
+        run: bash scripts/test-rustfs-bundle.sh staging/rustfs
+
+      - name: Rename binary
+        run: mv staging/rustfs rustfs-mac-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfs-mac-arm64
+          path: rustfs-mac-arm64
+          compression-level: 0
+
+  redis:
+    if: ${{ inputs.skip_redis != true }}
+    name: Redis
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-redis-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Resolve latest stable version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/redis/redis/releases/latest --jq '.tag_name')
+          echo "Resolved Redis → $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download source
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          URL="https://github.com/redis/redis/archive/refs/tags/${TAG}.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL -o redis-src.tar.gz "$URL"
+          tar -xzf redis-src.tar.gz
+          echo "SRC_DIR=redis-${TAG}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cd "$SRC_DIR"
+          make -j$(sysctl -n hw.ncpu) MALLOC=libc BUILD_TLS=no USE_SYSTEMD=no
+
+      - name: Verify no external deps
+        run: |
+          set -euo pipefail
+          for bin in "$SRC_DIR/src/redis-server" "$SRC_DIR/src/redis-cli"; do
+            echo "=== $(basename "$bin") ==="
+            otool -L "$bin"
+            bad=$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|@)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::$(basename "$bin") links against non-system libraries:"
+              echo "$bad"
+              exit 1
+            fi
+          done
+          echo "All binaries link only against system libraries."
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp "$SRC_DIR/src/redis-server" staging/
+          cp "$SRC_DIR/src/redis-cli" staging/
+          chmod +x staging/redis-server staging/redis-cli
+          bash scripts/test-redis-bundle.sh staging
+
+      - name: Package
+        run: tar -czf redis-mac-arm64.tar.gz -C staging redis-server redis-cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-mac-arm64
+          path: redis-mac-arm64.tar.gz
           compression-level: 0
 
   release:
