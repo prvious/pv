@@ -76,7 +76,7 @@ echo "  ✓ accepting connections (API :$API_PORT, Console :$CONSOLE_PORT)"
 
 # 3. create a bucket
 echo "== 3. create bucket =="
-# RustFS supports MinIO-compatible API. Use curl with AWS SigV4 via --aws-sigv4.
+# Use curl with AWS SigV4 via --aws-sigv4.
 # First, create a bucket named "pv-ci-test".
 BUCKET="pv-ci-test"
 curl -sf -X PUT \
