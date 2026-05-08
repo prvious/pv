@@ -101,7 +101,7 @@ pv install --tld=test
 pv install --with="php:8.2,mago"
 
 # Include backing services
-pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
+pv install --with="php:8.3,service[redis:7]"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 

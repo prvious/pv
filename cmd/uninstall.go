@@ -15,10 +15,12 @@ import (
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
+	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
+	my "github.com/prvious/pv/internal/mysql"
 	pg "github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
@@ -218,6 +220,19 @@ var uninstallCmd = &cobra.Command{
 					hadFailures = true
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("postgres %s uninstall failed: %v", major, err))
+					}
+				}
+			}
+		}
+
+		// Mysql uninstall (per installed version). Removes data dirs, binaries,
+		// state. User has already consented to a full pv uninstall.
+		if versions, err := my.InstalledVersions(); err == nil {
+			for _, version := range versions {
+				if err := mysqlCmds.UninstallForce(version); err != nil {
+					hadFailures = true
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("mysql %s uninstall failed: %v", version, err))
 					}
 				}
 			}
