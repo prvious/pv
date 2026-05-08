@@ -601,11 +601,18 @@ jobs:
           compression-level: 0
 
   release:
-    needs: [frankenphp, postgres, mysql]
+    needs: [frankenphp, postgres, mysql, mailpit, rustfs, redis]
     # Only publish from main, and only when every build family ran. A skipped
     # build job reports as "success" to its dependents, so without these extra
     # clauses a dispatch with skip_* flags would publish a half-baked release.
-    if: ${{ github.ref == 'refs/heads/main' && inputs.skip_frankenphp != true && inputs.skip_postgres != true && inputs.skip_mysql != true }}
+    if: >-
+      ${{ github.ref == 'refs/heads/main'
+      && inputs.skip_frankenphp != true
+      && inputs.skip_postgres != true
+      && inputs.skip_mysql != true
+      && inputs.skip_mailpit != true
+      && inputs.skip_rustfs != true
+      && inputs.skip_redis != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -628,6 +635,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: mysql-mac-arm64-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mailpit-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rustfs-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: redis-mac-*
           path: artifacts
 
       - name: Prepare release assets
@@ -676,6 +698,24 @@ jobs:
             exit 1
           fi
 
+          # Mailpit: single artifact (no version matrix).
+          if [ ! -d "artifacts/mailpit-mac-arm64" ]; then
+            echo "::error::Missing mailpit artifact"
+            exit 1
+          fi
+
+          # RustFS: single artifact (no version matrix).
+          if [ ! -d "artifacts/rustfs-mac-arm64" ]; then
+            echo "::error::Missing rustfs artifact"
+            exit 1
+          fi
+
+          # Redis: single artifact (no version matrix).
+          if [ ! -d "artifacts/redis-mac-arm64" ]; then
+            echo "::error::Missing redis artifact"
+            exit 1
+          fi
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
           for dir in "${fp_dirs[@]}"; do
@@ -695,6 +735,13 @@ jobs:
           for dir in "${mysql_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
+          # Mailpit tarball: copy as-is (no chmod needed).
+          cp artifacts/mailpit-mac-arm64/* "release/"
+          # RustFS binary: bare binary (like FrankenPHP).
+          cp artifacts/rustfs-mac-arm64/* "release/"
+          chmod +x "release/rustfs-mac-arm64"
+          # Redis tarball: copy as-is (no chmod needed).
+          cp artifacts/redis-mac-arm64/* "release/"
           ls -la release/
 
       - name: Upload to artifacts release
@@ -712,8 +759,8 @@ jobs:
             echo "Creating $TAG release"
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
-              --title "pv binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL)" \
-              --notes "Rolling release of binaries used by pv: FrankenPHP, static PHP CLI, PostgreSQL, and MySQL. Rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
+              --title "pv binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL, Mailpit, RustFS, Redis)" \
+              --notes "Rolling release of binaries used by pv: FrankenPHP, static PHP CLI, PostgreSQL, MySQL, Mailpit, RustFS, and Redis. Rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
               --latest=false
           fi
 
