@@ -12,7 +12,6 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
-	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
@@ -248,16 +247,11 @@ var setupCmd = &cobra.Command{
 					ui.Fail(fmt.Sprintf("Service %s: %v", name, lookupErr))
 					continue
 				}
-				var svcArgs []string
-				switch kind {
-				case services.KindBinary:
-					// Binary services are unversioned; service:add ignores any
-					// explicit version (verified in Task 1).
-					svcArgs = []string{name}
-				case services.KindDocker:
-					svcArgs = []string{name, docSvc.DefaultVersion()}
+				version := ""
+				if kind == services.KindDocker {
+					version = docSvc.DefaultVersion()
 				}
-				if err := service.RunAdd(svcArgs); err != nil {
+				if err := addService(name, version); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
 					}

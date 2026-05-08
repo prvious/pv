@@ -12,7 +12,6 @@ import (
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
 	"github.com/prvious/pv/internal/commands/php"
-	"github.com/prvious/pv/internal/commands/service"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/packages"
 	"github.com/prvious/pv/internal/services"
@@ -235,11 +234,7 @@ pv install --with="php:8.3,service[redis:7],service[mysql:8.0]"`,
 
 		// Step 9: Install services from --with.
 		for _, svc := range spec.services {
-			svcArgs := []string{svc.name}
-			if svc.version != "" {
-				svcArgs = append(svcArgs, svc.version)
-			}
-			if err := service.RunAdd(svcArgs); err != nil {
+			if err := addService(svc.name, svc.version); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
 				}

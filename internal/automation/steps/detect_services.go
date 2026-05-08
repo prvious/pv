@@ -64,14 +64,14 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 				h := envVars["MAIL_HOST"]
 				return h != "" && (strings.Contains(h, "localhost") || strings.Contains(h, "127.0.0.1"))
 			}(),
-			"mail", "pv service:add mail",
+			"mail", "pv mailpit:install",
 		},
 		{
 			func() bool {
 				e := envVars["AWS_ENDPOINT"]
 				return e != "" && (strings.Contains(e, "localhost") || strings.Contains(e, "127.0.0.1"))
 			}(),
-			"s3", "pv service:add s3",
+			"s3", "pv rustfs:install",
 		},
 	}
 

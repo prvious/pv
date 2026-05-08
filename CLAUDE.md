@@ -186,6 +186,6 @@ The `release` job is gated on all three skip flags being false, so a partial dis
 
 ## Services
 
-- Each backing service (mysql, postgres, redis, mail, s3) implements `services.Service` interface.
-- Services run as Docker containers via Colima. Container operations go through `container.Engine`.
-- Service commands use `service:action` format. New services need: implementation in `internal/services/`, command in `internal/commands/service/`.
+- **Docker-backed services** (mysql, redis): implement `services.Service`; live under `service:*` commands. Run as Docker containers via Colima — container ops go through `container.Engine`. Add via `service:add`; new docker services need an impl in `internal/services/` and the command stays in `internal/commands/service/`.
+- **First-class native binaries** (postgres, rustfs/s3, mailpit/mail): each has its own top-level command group (`postgres:*`, `rustfs:*` with `s3:*` alias, `mailpit:*` with `mail:*` alias). Lifecycle (install/uninstall/update/start/stop/restart/status/logs) is supervised by the daemon, not Docker. Shared logic lives in `internal/svchooks/` (binding, install/update/uninstall, enable/disable, status, logs); the per-tool packages in `internal/commands/{rustfs,mailpit,postgres}/` are thin cobra wrappers.
+- The legacy `service:add s3` / `service:add mail` paths now error with a redirect message pointing at the new commands.
