@@ -176,7 +176,8 @@ Example:
 
 ```bash
 gh workflow run build-artifacts.yml --ref <branch> \
-  -f skip_frankenphp=true -f skip_postgres=true
+  -f skip_frankenphp=true -f skip_postgres=true \
+  -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true
 ```
 
 The `release` job is gated on all six skip flags being false, so a partial dispatch never publishes a half-baked release.

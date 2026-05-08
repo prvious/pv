@@ -35,6 +35,10 @@ REDIS_PID=""
 
 cleanup() {
     local rc=$?
+    # Try to read PID from pidfile if we don't have it yet (daemonized server).
+    if [ -z "$REDIS_PID" ] && [ -f "$WORK_DIR/redis.pid" ]; then
+        REDIS_PID=$(cat "$WORK_DIR/redis.pid" 2>/dev/null || true)
+    fi
     if [ -n "$REDIS_PID" ]; then
         "$CLI" -p "$PORT" SHUTDOWN NOSAVE 2>/dev/null || \
             kill "$REDIS_PID" 2>/dev/null || true

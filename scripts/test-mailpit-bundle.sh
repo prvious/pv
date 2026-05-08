@@ -49,8 +49,8 @@ echo "  $MAILPIT_VER"
 # 2. start mailpit
 echo "== 2. start mailpit =="
 "$MAILPIT" \
-    --smtp 0.0.0.0:$SMTP_PORT \
-    --listen 0.0.0.0:$HTTP_PORT \
+    --smtp 127.0.0.1:$SMTP_PORT \
+    --listen 127.0.0.1:$HTTP_PORT \
     --database "$WORK_DIR/mailpit.db" \
     >"$WORK_DIR/mailpit.log" 2>&1 &
 MAILPIT_PID=$!
