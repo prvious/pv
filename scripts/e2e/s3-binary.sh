@@ -17,7 +17,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create a minimal linked Laravel project BEFORE service:add so we exercise
+# Create a minimal linked Laravel project BEFORE rustfs:install so we exercise
 # the retroactive-bind path (issue #69): projects linked before a binary
 # service existed must still get their .env keys written.
 ENVTEST_DIR=$(mktemp -d)
@@ -27,8 +27,8 @@ echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
 echo "FILESYSTEM_DISK=local" > "$ENVTEST_DIR/.env"
 sudo -E pv link "$ENVTEST_DIR" --name e2e-s3-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
-echo "==> service:add s3"
-sudo -E pv service:add s3 || { echo "FAIL: pv service:add s3 failed"; exit 1; }
+echo "==> rustfs:install"
+sudo -E pv rustfs:install || { echo "FAIL: pv rustfs:install failed"; exit 1; }
 
 echo "==> Verify rustfs binary exists"
 test -x "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not installed"; exit 1; }
@@ -51,40 +51,47 @@ for i in $(seq 1 20); do
     if nc -z 127.0.0.1 9000 2>/dev/null; then break; fi
     sleep 1
 done
-nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after service:add"; exit 1; }
+nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after rustfs:install"; exit 1; }
 echo "OK: port 9000 reachable"
 
 echo "==> Verify linked project .env got AWS_ENDPOINT"
 grep -q "AWS_ENDPOINT=http://127.0.0.1:9000" "$ENVTEST_DIR/.env" || {
-    echo "FAIL: linked project .env should have AWS_ENDPOINT after service:add s3";
+    echo "FAIL: linked project .env should have AWS_ENDPOINT after rustfs:install";
     echo "  actual .env contents:";
     cat "$ENVTEST_DIR/.env";
     exit 1;
 }
 echo "OK: linked project .env has AWS_ENDPOINT"
 
-echo "==> service:stop s3"
-sudo -E pv service:stop s3
+echo "==> rustfs:stop"
+sudo -E pv rustfs:stop
 sleep 2
 if nc -z 127.0.0.1 9000 2>/dev/null; then
-    echo "FAIL: port 9000 still answering after service:stop"
+    echo "FAIL: port 9000 still answering after rustfs:stop"
     exit 1
 fi
-echo "OK: port 9000 silent after service:stop"
+echo "OK: port 9000 silent after rustfs:stop"
 
-echo "==> service:start s3"
-sudo -E pv service:start s3
+echo "==> rustfs:start"
+sudo -E pv rustfs:start
 for i in $(seq 1 20); do
     if nc -z 127.0.0.1 9000 2>/dev/null; then break; fi
     sleep 1
 done
-nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after service:start"; exit 1; }
-echo "OK: port 9000 reachable after service:start"
+nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after rustfs:start"; exit 1; }
+echo "OK: port 9000 reachable after rustfs:start"
 
-echo "==> service:destroy s3"
-sudo -E pv service:destroy s3
-test ! -f "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not deleted after destroy"; exit 1; }
-test ! -d "$HOME/.pv/services/s3/latest/data" || { echo "FAIL: data dir not deleted after destroy"; exit 1; }
+echo "==> Verify s3:* alias dispatches to rustfs (s3:status)"
+sudo -E pv s3:status 2>&1 | grep -qi "rustfs" || {
+    echo "FAIL: s3:status alias should resolve to rustfs"
+    exit 1
+}
+echo "OK: s3:* alias works"
+
+echo "==> rustfs:uninstall --force"
+sudo -E pv rustfs:uninstall --force
+test ! -f "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not deleted after uninstall"; exit 1; }
+test ! -d "$HOME/.pv/services/s3/latest/data" || { echo "FAIL: data dir not deleted after uninstall"; exit 1; }
 echo "OK: binary and data removed"
 
 echo "==> pv stop"
