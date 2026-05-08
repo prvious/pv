@@ -27,7 +27,7 @@ var listCmd = &cobra.Command{
 		svcs := reg.ListServices()
 		if len(svcs) == 0 {
 			fmt.Fprintln(os.Stderr)
-			ui.Subtle("No services configured. Run 'pv service:add mysql' to get started.")
+			ui.Subtle("No services configured. Run 'pv service:add redis' to get started.")
 			fmt.Fprintln(os.Stderr)
 			return nil
 		}

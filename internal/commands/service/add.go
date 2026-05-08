@@ -24,9 +24,9 @@ var addCmd = &cobra.Command{
 	Use:     "service:add <service> [version]",
 	GroupID: "service",
 	Short:   "Add and start a service",
-	Long:    "Add a backing service (mail, mysql, redis, s3). Optionally specify a version.",
-	Example: `# Add MySQL with default version
-pv service:add mysql
+	Long:    "Add a backing service (mail, redis, s3). Optionally specify a version.",
+	Example: `# Add Redis
+pv service:add redis
 
 # Add S3 (RustFS binary)
 pv service:add s3
