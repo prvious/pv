@@ -12,6 +12,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/supervisor"
@@ -165,13 +166,14 @@ func (m *ServerManager) RunningVersions() []string {
 }
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
-// set computed from three sources:
+// set computed from four sources:
 //  1. registry: single-version services (rustfs, mailpit) marked Kind=binary
 //     and Enabled.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
+//  4. internal/redis:    single-version, on-disk + state.json driven.
 //
-// The diff/start/stop loop is shared across all three sources.
+// The diff/start/stop loop is shared across all four sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	if m.supervisor == nil {
 		return nil
@@ -229,6 +231,16 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			continue
 		}
 		wanted["mysql-"+version] = proc
+	}
+
+	// Source 4 — redis, single-version, filesystem + state.json.
+	if redis.IsWanted() {
+		proc, err := redis.BuildSupervisorProcess()
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("redis: build: %v", err))
+		} else {
+			wanted["redis"] = proc
+		}
 	}
 
 	// Diff: stop unneeded. If the postgres source failed, skip postgres-

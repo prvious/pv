@@ -13,6 +13,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/supervisor"
 )
@@ -278,5 +279,77 @@ func TestReconcileBinaryServices_StopsRemovedMysql(t *testing.T) {
 	}
 	if sup.IsRunning("mysql-8.4") {
 		t.Error("expected mysql-8.4 stopped after wanted flipped to stopped")
+	}
+}
+
+func TestReconcileBinaryServices_StartsWantedRedis(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisDir(), "redis-server"),
+		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake redis-server: %v\n%s", err, out)
+	}
+
+	if err := redis.SetWanted(redis.WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+	defer sup.StopAll(2 * time.Second)
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatalf("reconcileBinaryServices: %v", err)
+	}
+
+	if !sup.IsRunning("redis") {
+		t.Error("expected redis to be supervised after reconcile")
+	}
+}
+
+func TestReconcileBinaryServices_StopsRemovedRedis(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisDir(), "redis-server"),
+		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake redis-server: %v\n%s", err, out)
+	}
+	if err := redis.SetWanted(redis.WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+	defer sup.StopAll(2 * time.Second)
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !sup.IsRunning("redis") {
+		t.Fatal("expected redis running after first reconcile")
+	}
+
+	if err := redis.SetWanted(redis.WantedStopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sup.IsRunning("redis") {
+		t.Error("expected redis stopped after wanted flipped to stopped")
 	}
 }
