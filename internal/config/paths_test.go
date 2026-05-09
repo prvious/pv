@@ -556,3 +556,43 @@ func TestEnsureDirs_CreatesMysqlDir(t *testing.T) {
 		t.Errorf("MysqlDir not created: %v", err)
 	}
 }
+
+func TestRedisDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisDir()
+	want := "/home/test/.pv/redis"
+	if got != want {
+		t.Errorf("RedisDir = %q, want %q", got, want)
+	}
+}
+
+func TestRedisDataDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisDataDir()
+	want := "/home/test/.pv/data/redis"
+	if got != want {
+		t.Errorf("RedisDataDir = %q, want %q", got, want)
+	}
+}
+
+func TestRedisLogPath(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisLogPath()
+	want := "/home/test/.pv/logs/redis.log"
+	if got != want {
+		t.Errorf("RedisLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureDirs_CreatesRedisDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	if _, err := os.Stat(RedisDir()); err != nil {
+		t.Errorf("RedisDir not created: %v", err)
+	}
+	if _, err := os.Stat(RedisDataDir()); err != nil {
+		t.Errorf("RedisDataDir not created: %v", err)
+	}
+}
