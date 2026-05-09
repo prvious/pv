@@ -91,7 +91,7 @@ for f in ~/.pv/logs/postgres-*.log; do
 done
 echo ""
 echo "==> /tmp pv e2e logs"
-for f in /tmp/pv-mysql-e2e.log /tmp/pv-postgres-e2e.log /tmp/pv-mail-e2e.log /tmp/pv-s3-e2e.log; do
+for f in /tmp/pv-mysql-e2e.log /tmp/pv-postgres-e2e.log /tmp/pv-mail-e2e.log /tmp/pv-s3-e2e.log /tmp/pv-redis-e2e.log; do
   [ -e "$f" ] || continue
   echo "--- $f ---"
   tail -100 "$f" 2>/dev/null || echo "(unreadable)"
@@ -110,3 +110,26 @@ ls -la ~/.pv/mysql/ 2>/dev/null || echo "(no mysql binary dir)"
 echo ""
 echo "==> /tmp pv-mysql sockets/pids"
 ls -la /tmp/pv-mysql-* 2>/dev/null || echo "(no /tmp/pv-mysql files)"
+
+echo "==> redis log"
+if [ -f ~/.pv/logs/redis.log ]; then
+  echo "  -- ~/.pv/logs/redis.log --"
+  tail -200 ~/.pv/logs/redis.log
+else
+  echo "(no redis.log)"
+fi
+
+echo "==> redis data dir"
+ls -la ~/.pv/data/redis/ 2>/dev/null || echo "(no redis data dir)"
+
+echo "==> redis binary tree"
+ls -la ~/.pv/redis/ 2>/dev/null || echo "(no redis binary dir)"
+
+echo "==> /tmp pv-redis files"
+ls -la /tmp/pv-redis* 2>/dev/null || echo "(no /tmp/pv-redis files)"
+
+echo "==> redis e2e log"
+if [ -f /tmp/pv-redis-e2e.log ]; then
+  echo "  -- /tmp/pv-redis-e2e.log --"
+  tail -200 /tmp/pv-redis-e2e.log
+fi
