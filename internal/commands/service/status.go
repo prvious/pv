@@ -2,13 +2,11 @@ package service
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -17,49 +15,18 @@ import (
 var statusCmd = &cobra.Command{
 	Use:     "service:status <service>",
 	GroupID: "service",
-	Short:   "Show detailed status for a service",
+	Short:   "Show detailed status for a docker-backed service",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := redirectIfBinary(args[0], "status"); err != nil {
+			return err
+		}
+
 		key := args[0]
 
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
-		}
-
-		kind, binSvc, _, resolveErr := resolveKind(reg, args[0])
-		if resolveErr != nil {
-			return resolveErr
-		}
-		if kind == kindBinary {
-			name := binSvc.Name()
-			inst, ok := reg.Services[name]
-			enabled := true
-			registered := ok
-			if ok && inst.Enabled != nil {
-				enabled = *inst.Enabled
-			}
-
-			running := false
-			pid := 0
-			if snap, err := server.ReadDaemonStatus(); err == nil {
-				if st, exists := snap.Supervised[binSvc.Binary().Name]; exists {
-					running = st.Running
-					pid = st.PID
-				}
-			}
-
-			fmt.Fprintln(os.Stderr)
-			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Service"), binSvc.DisplayName())
-			fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Kind"), "binary")
-			fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Registered"), registered)
-			fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Enabled"), enabled)
-			fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Running"), running)
-			if pid > 0 {
-				fmt.Fprintf(os.Stderr, "  %s  %d\n", ui.Muted.Render("PID"), pid)
-			}
-			fmt.Fprintln(os.Stderr)
-			return nil
 		}
 
 		var resolveKeyErr error

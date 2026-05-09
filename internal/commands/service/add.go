@@ -1,13 +1,9 @@
 package service
 
 import (
-	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"time"
 
-	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/colima"
 	colimacmds "github.com/prvious/pv/internal/commands/colima"
@@ -23,41 +19,34 @@ import (
 var addCmd = &cobra.Command{
 	Use:     "service:add <service> [version]",
 	GroupID: "service",
-	Short:   "Add and start a service",
-	Long:    "Add a backing service (mail, redis, s3). Optionally specify a version.",
+	Short:   "Add and start a docker-backed service",
+	Long:    "Add a docker-backed service (redis). Optionally specify a version. For S3 (RustFS) use `pv rustfs:install`; for Mail (Mailpit) use `pv mailpit:install`; for MySQL use `pv mysql:install`.",
 	Example: `# Add Redis
 pv service:add redis
-
-# Add S3 (RustFS binary)
-pv service:add s3
 
 # Add a specific Redis version
 pv service:add redis 7`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
+		if err := redirectIfBinary(name, "install"); err != nil {
+			return err
+		}
 
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
 		}
 
-		kind, binSvc, dockerSvc, err := resolveKind(reg, name)
+		dockerSvc, err := services.Lookup(name)
 		if err != nil {
 			return err
 		}
-
-		switch kind {
-		case kindBinary:
-			return addBinary(cmd.Context(), reg, binSvc)
-		case kindDocker:
-			version := dockerSvc.DefaultVersion()
-			if len(args) > 1 {
-				version = args[1]
-			}
-			return addDocker(cmd, reg, dockerSvc, name, version)
+		version := dockerSvc.DefaultVersion()
+		if len(args) > 1 {
+			version = args[1]
 		}
-		return fmt.Errorf("unknown service %q", name)
+		return addDocker(cmd, reg, dockerSvc, name, version)
 	},
 }
 
@@ -190,106 +179,4 @@ func addDocker(cmd *cobra.Command, reg *registry.Registry, svc services.Service,
 	fmt.Fprintln(os.Stderr)
 
 	return nil
-}
-
-// addBinary downloads the service's binary (if not yet present), persists its
-// version, registers the service in the registry, then signals the daemon.
-func addBinary(ctx context.Context, reg *registry.Registry, svc services.BinaryService) error {
-	name := svc.Name()
-	if _, exists := reg.Services[name]; exists {
-		ui.Success(fmt.Sprintf("%s is already added", svc.DisplayName()))
-		return nil
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-
-	// Resolve latest upstream version.
-	latest, err := binaries.FetchLatestVersion(client, svc.Binary())
-	if err != nil {
-		return fmt.Errorf("cannot resolve latest %s version: %w", svc.Binary().DisplayName, err)
-	}
-
-	// Download + extract into ~/.pv/internal/bin/<name>.
-	if err := ui.Step(fmt.Sprintf("Downloading %s %s...", svc.Binary().DisplayName, latest), func() (string, error) {
-		if err := binaries.InstallBinary(client, svc.Binary(), latest); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Installed %s %s", svc.Binary().DisplayName, latest), nil
-	}); err != nil {
-		return err
-	}
-
-	// Record version for later pv-update comparisons.
-	vs, err := binaries.LoadVersions()
-	if err != nil {
-		return fmt.Errorf("cannot load versions state: %w", err)
-	}
-	vs.Set(svc.Binary().Name, latest)
-	if err := vs.Save(); err != nil {
-		return fmt.Errorf("cannot save versions state: %w", err)
-	}
-
-	// Register service.
-	enabled := true
-	inst := &registry.ServiceInstance{
-		Port:        svc.Port(),
-		ConsolePort: svc.ConsolePort(),
-		Kind:        "binary",
-		Enabled:     &enabled,
-	}
-	if err := reg.AddService(name, inst); err != nil {
-		return err
-	}
-	if err := reg.Save(); err != nil {
-		return fmt.Errorf("cannot save registry: %w", err)
-	}
-
-	// Projects linked before this service was added won't be in ProjectsUsingService;
-	// bind them now so updateLinkedProjectsEnvBinary can find them.
-	if err := bindBinaryServiceToAllProjects(reg, name); err != nil {
-		return fmt.Errorf("cannot bind service to projects: %w", err)
-	}
-	if err := reg.Save(); err != nil {
-		return fmt.Errorf("cannot save registry after binding service: %w", err)
-	}
-
-	// Update .env for linked Laravel projects — parity with the docker path
-	// (updateLinkedProjectsEnv at the end of addDocker). Without this the
-	// user adds s3 but linked projects never get AWS_* keys written.
-	updateLinkedProjectsEnvBinary(reg, name, svc)
-
-	// Regenerate Caddy configs for service consoles (*.pv.{tld}).
-	if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
-		ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
-	}
-
-	// Signal daemon to reconcile.
-	if server.IsRunning() {
-		if err := server.SignalDaemon(); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
-		}
-		ui.Success(fmt.Sprintf("%s registered and running on :%d", svc.DisplayName(), svc.Port()))
-	} else {
-		ui.Success(fmt.Sprintf("%s registered on :%d", svc.DisplayName(), svc.Port()))
-		ui.Subtle("daemon not running — service will start on next `pv start`")
-	}
-
-	printBinaryConnectionDetails(svc)
-	return nil
-}
-
-// printBinaryConnectionDetails mirrors the verbose "Host / Port / web routes"
-// footer that the docker path prints, scoped to the binary-service shape.
-func printBinaryConnectionDetails(svc services.BinaryService) {
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintf(os.Stderr, "    %s  127.0.0.1\n", ui.Muted.Render("Host"))
-	fmt.Fprintf(os.Stderr, "    %s  %d\n", ui.Muted.Render("Port"), svc.Port())
-	settings, _ := config.LoadSettings()
-	if settings != nil {
-		for _, route := range svc.WebRoutes() {
-			fmt.Fprintf(os.Stderr, "    %s  https://%s.pv.%s\n",
-				ui.Muted.Render(route.Subdomain), route.Subdomain, settings.Defaults.TLD)
-		}
-	}
-	fmt.Fprintln(os.Stderr)
 }

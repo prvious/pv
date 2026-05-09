@@ -1,43 +1,28 @@
+// Package service holds cobra commands for the service:* group, which
+// now manages docker-backed services (mysql, redis, ...) only. The
+// formerly-binary services s3 (RustFS) and mail (Mailpit) live under
+// their own first-class command groups: rustfs:* / mailpit:* with
+// s3:* / mail:* aliases.
 package service
 
 import (
 	"fmt"
 
-	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 )
 
-type serviceKind int
-
-const (
-	kindUnknown serviceKind = iota
-	kindDocker
-	kindBinary
-)
-
-// resolveKind determines whether the named service is a binary or docker
-// service, returning at most one of the concrete service values.
-// If the name matches a binary service but the registry already holds a
-// docker-shaped entry for that name, an error is returned: no silent
-// auto-migration. The user's remedy is `pv uninstall && pv setup`.
-func resolveKind(reg *registry.Registry, name string) (serviceKind, services.BinaryService, services.Service, error) {
-	binSvc, binOK := services.LookupBinary(name)
-	docSvc, docErr := services.Lookup(name)
-
-	if binOK {
-		// Guard against a pre-existing docker-shaped entry for what is now
-		// a binary service.
-		if existing, ok := reg.Services[name]; ok {
-			if existing.Kind != "binary" {
-				return kindUnknown, nil, nil, fmt.Errorf(
-					"%s is already registered (as docker) from a previous pv version. "+
-						"Run `pv uninstall && pv setup` to reset", name)
-			}
-		}
-		return kindBinary, binSvc, nil, nil
+// redirectIfBinary returns a redirect error when name resolves to a
+// binary service in the global registry. The action verb tailors the
+// suggestion ("install", "start", "uninstall", ...) so the user gets
+// a directly-runnable next step. Returns nil for docker / unknown
+// names — those flow through to services.Lookup as before.
+func redirectIfBinary(name, action string) error {
+	binSvc, ok := services.LookupBinary(name)
+	if !ok {
+		return nil
 	}
-	if docErr == nil {
-		return kindDocker, nil, docSvc, nil
-	}
-	return kindUnknown, nil, nil, docErr
+	return fmt.Errorf(
+		"%s is now a first-class command — use `pv %s:%s` (alias: `pv %s:%s`)",
+		name, binSvc.Binary().Name, action, name, action,
+	)
 }

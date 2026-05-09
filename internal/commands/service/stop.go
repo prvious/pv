@@ -7,8 +7,8 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/svchooks"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -16,9 +16,15 @@ import (
 var stopCmd = &cobra.Command{
 	Use:     "service:stop [service]",
 	GroupID: "service",
-	Short:   "Stop a service or all services",
+	Short:   "Stop a docker-backed service or all of them",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if err := redirectIfBinary(args[0], "stop"); err != nil {
+				return err
+			}
+		}
+
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
@@ -36,8 +42,7 @@ var stopCmd = &cobra.Command{
 			}
 			for key, inst := range svcs {
 				if inst.Kind == "binary" {
-					// Binary services are managed by the daemon; nothing to do here.
-					// A subsequent SignalDaemon call will reconcile them.
+					// Binary services are owned by rustfs:* / mailpit:* now.
 					continue
 				}
 				if err := ui.Step(fmt.Sprintf("Stopping %s...", key), func() (string, error) {
@@ -65,39 +70,6 @@ var stopCmd = &cobra.Command{
 			// are skipped by applyStopAllFallbacks because they were not stopped.
 			applyStopAllFallbacks(reg)
 		} else {
-			// Dispatch on service kind. Binary services don't use the versioned-key
-			// machinery below; they flip a registry flag and let the daemon reconcile.
-			kind, binSvc, _, resErr := resolveKind(reg, args[0])
-			if resErr != nil {
-				return resErr
-			}
-			if kind == kindBinary {
-				name := binSvc.Name()
-				inst, ok := reg.Services[name]
-				if !ok {
-					return fmt.Errorf("%s not registered", name)
-				}
-				fls := false
-				inst.Enabled = &fls
-				if err := reg.Save(); err != nil {
-					return fmt.Errorf("cannot save registry: %w", err)
-				}
-				if server.IsRunning() {
-					if err := server.SignalDaemon(); err != nil {
-						// Registry updated but daemon didn't pick up the change.
-						// Don't print "reconciled" — the supervised process is
-						// still running.
-						ui.Fail(fmt.Sprintf("%s disabled in registry, but could not signal daemon: %v", binSvc.DisplayName(), err))
-						ui.Subtle("Run `pv restart` to stop the supervised process.")
-						return nil
-					}
-					ui.Success(fmt.Sprintf("%s disabled; daemon reconciled", binSvc.DisplayName()))
-				} else {
-					ui.Success(fmt.Sprintf("%s disabled", binSvc.DisplayName()))
-				}
-				return nil
-			}
-
 			key := args[0]
 			var resolveErr error
 			key, resolveErr = reg.ResolveServiceKey(key)
@@ -132,7 +104,7 @@ var stopCmd = &cobra.Command{
 			}
 			// Apply fallbacks for the stopped service.
 			svcName, _ := services.ParseServiceKey(key)
-			applyFallbacksToLinkedProjects(reg, svcName)
+			svchooks.ApplyFallbacksToLinkedProjects(reg, svcName)
 		}
 
 		fmt.Fprintln(os.Stderr)

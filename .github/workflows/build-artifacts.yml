@@ -15,6 +15,18 @@ on:
         description: "Skip the MySQL bundle matrix (8.0 + 8.4 + 9.7)"
         type: boolean
         default: false
+      skip_mailpit:
+        description: "Skip the Mailpit build"
+        type: boolean
+        default: false
+      skip_rustfs:
+        description: "Skip the RustFS build"
+        type: boolean
+        default: false
+      skip_redis:
+        description: "Skip the Redis build"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 0 * * 1"
 
@@ -425,12 +437,184 @@ jobs:
           path: mysql-mac-arm64-${{ matrix.major }}.tar.gz
           compression-level: 0
 
+  mailpit:
+    if: ${{ inputs.skip_mailpit != true }}
+    name: Mailpit
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-mailpit-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Resolve latest release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/axllent/mailpit/releases/latest --jq '.tag_name')
+          echo "Resolved Mailpit → $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          URL="https://github.com/axllent/mailpit/releases/download/${TAG}/mailpit-darwin-arm64.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL -o mailpit.tar.gz "$URL"
+          ls -lh mailpit.tar.gz
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          tar -xzf mailpit.tar.gz -C staging
+          chmod +x staging/mailpit
+          # "mailpit version" auto-checks for updates (HTTP call that 403s
+          # without auth), so allow it to fail — the smoke test validates the binary.
+          staging/mailpit version || true
+
+      - name: Smoke test
+        run: bash scripts/test-mailpit-bundle.sh staging/mailpit
+
+      - name: Repack
+        run: |
+          set -euo pipefail
+          tar -czf mailpit-mac-arm64.tar.gz -C staging mailpit
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mailpit-mac-arm64
+          path: mailpit-mac-arm64.tar.gz
+          compression-level: 0
+
+  rustfs:
+    if: ${{ inputs.skip_rustfs != true }}
+    name: RustFS
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-rustfs-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Download pinned release
+        run: |
+          set -euo pipefail
+          # Pinned: 1.0.0-beta.2 has no release assets. Remove pin when fixed.
+          VERSION="1.0.0-beta.1"
+          URL="https://github.com/rustfs/rustfs/releases/download/${VERSION}/rustfs-macos-aarch64-v${VERSION}.zip"
+          echo "Downloading $URL"
+          curl -fsSL -o rustfs.zip "$URL"
+          ls -lh rustfs.zip
+
+      - name: Extract
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          unzip -o rustfs.zip -d staging
+          chmod +x staging/rustfs
+          staging/rustfs --version
+
+      - name: Smoke test
+        run: bash scripts/test-rustfs-bundle.sh staging/rustfs
+
+      - name: Rename binary
+        run: mv staging/rustfs rustfs-mac-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfs-mac-arm64
+          path: rustfs-mac-arm64
+          compression-level: 0
+
+  redis:
+    if: ${{ inputs.skip_redis != true }}
+    name: Redis
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pv (for scripts/test-redis-bundle.sh)
+        uses: actions/checkout@v4
+
+      - name: Resolve latest stable version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/redis/redis/releases/latest --jq '.tag_name')
+          echo "Resolved Redis → $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download source
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          URL="https://github.com/redis/redis/archive/refs/tags/${TAG}.tar.gz"
+          echo "Downloading $URL"
+          curl -fsSL -o redis-src.tar.gz "$URL"
+          tar -xzf redis-src.tar.gz
+          echo "SRC_DIR=redis-${TAG}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cd "$SRC_DIR"
+          make -j$(sysctl -n hw.ncpu) MALLOC=libc BUILD_TLS=no USE_SYSTEMD=no
+
+      - name: Verify no external deps
+        run: |
+          set -euo pipefail
+          for bin in "$SRC_DIR/src/redis-server" "$SRC_DIR/src/redis-cli"; do
+            echo "=== $(basename "$bin") ==="
+            otool -L "$bin"
+            bad=$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|@)' || true)
+            if [ -n "$bad" ]; then
+              echo "::error::$(basename "$bin") links against non-system libraries:"
+              echo "$bad"
+              exit 1
+            fi
+          done
+          echo "All binaries link only against system libraries."
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp "$SRC_DIR/src/redis-server" staging/
+          cp "$SRC_DIR/src/redis-cli" staging/
+          chmod +x staging/redis-server staging/redis-cli
+          bash scripts/test-redis-bundle.sh staging
+
+      - name: Package
+        run: tar -czf redis-mac-arm64.tar.gz -C staging redis-server redis-cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-mac-arm64
+          path: redis-mac-arm64.tar.gz
+          compression-level: 0
+
   release:
-    needs: [frankenphp, postgres, mysql]
+    needs: [frankenphp, postgres, mysql, mailpit, rustfs, redis]
     # Only publish from main, and only when every build family ran. A skipped
     # build job reports as "success" to its dependents, so without these extra
     # clauses a dispatch with skip_* flags would publish a half-baked release.
-    if: ${{ github.ref == 'refs/heads/main' && inputs.skip_frankenphp != true && inputs.skip_postgres != true && inputs.skip_mysql != true }}
+    if: >-
+      ${{ github.ref == 'refs/heads/main'
+      && inputs.skip_frankenphp != true
+      && inputs.skip_postgres != true
+      && inputs.skip_mysql != true
+      && inputs.skip_mailpit != true
+      && inputs.skip_rustfs != true
+      && inputs.skip_redis != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -453,6 +637,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: mysql-mac-arm64-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mailpit-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rustfs-mac-*
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: redis-mac-*
           path: artifacts
 
       - name: Prepare release assets
@@ -501,6 +700,24 @@ jobs:
             exit 1
           fi
 
+          # Mailpit: single artifact (no version matrix).
+          if [ ! -d "artifacts/mailpit-mac-arm64" ]; then
+            echo "::error::Missing mailpit artifact"
+            exit 1
+          fi
+
+          # RustFS: single artifact (no version matrix).
+          if [ ! -d "artifacts/rustfs-mac-arm64" ]; then
+            echo "::error::Missing rustfs artifact"
+            exit 1
+          fi
+
+          # Redis: single artifact (no version matrix).
+          if [ ! -d "artifacts/redis-mac-arm64" ]; then
+            echo "::error::Missing redis artifact"
+            exit 1
+          fi
+
           mkdir -p release
           # FrankenPHP binaries: artifact dir name matches the binary name.
           for dir in "${fp_dirs[@]}"; do
@@ -520,6 +737,13 @@ jobs:
           for dir in "${mysql_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
+          # Mailpit tarball: copy as-is (no chmod needed).
+          cp artifacts/mailpit-mac-arm64/* "release/"
+          # RustFS binary: bare binary (like FrankenPHP).
+          cp artifacts/rustfs-mac-arm64/* "release/"
+          chmod +x "release/rustfs-mac-arm64"
+          # Redis tarball: copy as-is (no chmod needed).
+          cp artifacts/redis-mac-arm64/* "release/"
           ls -la release/
 
       - name: Upload to artifacts release
@@ -528,8 +752,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # All FrankenPHP + PHP CLI binaries live in a single non-versioned
-          # "artifacts" release, independent of pv's own versioned (v*) releases.
+          # All built binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL, Mailpit,
+          # RustFS, Redis) live in a single non-versioned "artifacts" release,
+          # independent of pv's own versioned (v*) releases.
           # Create it on first run, then clobber on every rebuild.
           TAG="artifacts"
 
@@ -537,8 +762,8 @@ jobs:
             echo "Creating $TAG release"
             gh release create "$TAG" \
               --repo "${{ github.repository }}" \
-              --title "pv binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL)" \
-              --notes "Rolling release of binaries used by pv: FrankenPHP, static PHP CLI, PostgreSQL, and MySQL. Rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
+              --title "pv binaries (FrankenPHP, PHP CLI, PostgreSQL, MySQL, Mailpit, RustFS, Redis)" \
+              --notes "Rolling release of binaries used by pv: FrankenPHP, static PHP CLI, PostgreSQL, MySQL, Mailpit, RustFS, and Redis. Rebuilt weekly by build-artifacts.yml. Not a versioned pv release." \
               --latest=false
           fi
 
