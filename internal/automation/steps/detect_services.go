@@ -10,6 +10,7 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
@@ -72,6 +73,14 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		}
 	}
 
+	// Redis auto-bind: unconditional on every Laravel project once redis
+	// is installed. No .env heuristic — redis-as-cache/session is the
+	// path of least surprise in Laravel; mirrors mailpit/rustfs.
+	if redis.IsInstalled() {
+		bindProjectService(ctx.Registry, ctx.ProjectName, "redis", "redis")
+		bound++
+	}
+
 	type probe struct {
 		match  bool
 		name   string
@@ -79,7 +88,6 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	probes := []probe{
-		{envVars["REDIS_HOST"] != "", "redis", "pv service:add redis"},
 		{
 			func() bool {
 				h := envVars["MAIL_HOST"]
