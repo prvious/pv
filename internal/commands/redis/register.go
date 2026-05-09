@@ -15,6 +15,9 @@ func Register(parent *cobra.Command) {
 		startCmd,
 		stopCmd,
 		restartCmd,
+		listCmd,
+		logsCmd,
+		statusCmd,
 		downloadCmd, // hidden; included so it's discoverable for debugging
 	}
 	for _, c := range cmds {
