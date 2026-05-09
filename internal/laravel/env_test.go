@@ -368,3 +368,45 @@ func TestUpdateProjectEnvForMysql_NoEnvFile(t *testing.T) {
 		t.Fatalf("UpdateProjectEnvForMysql with no .env: %v", err)
 	}
 }
+
+func TestUpdateProjectEnvForRedis(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=test\nREDIS_HOST=stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bound := &registry.ProjectServices{Redis: true}
+	if err := UpdateProjectEnvForRedis(dir, "test", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForRedis: %v", err)
+	}
+
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"REDIS_HOST=127.0.0.1",
+		"REDIS_PORT=6379",
+		"REDIS_PASSWORD=null",
+		"CACHE_STORE=redis",
+		"SESSION_DRIVER=redis",
+		"QUEUE_CONNECTION=redis",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf(".env missing %q; got: %s", want, string(got))
+		}
+	}
+}
+
+func TestUpdateProjectEnvForRedis_NoEnvFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	bound := &registry.ProjectServices{Redis: true}
+	// No .env file in dir — helper must no-op without error.
+	if err := UpdateProjectEnvForRedis(dir, "test", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForRedis on missing .env: %v", err)
+	}
+}

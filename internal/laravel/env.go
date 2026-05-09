@@ -6,6 +6,7 @@ import (
 
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 )
@@ -156,4 +157,22 @@ func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *r
 	}
 	backupPath := envPath + ".pv-backup"
 	return services.MergeDotEnv(envPath, backupPath, myVars)
+}
+
+// UpdateProjectEnvForRedis mirrors UpdateProjectEnvForMysql /
+// UpdateProjectEnvForPostgres for the redis native-binary case.
+// Redis has the simplest signature — EnvVars(projectName) returns a
+// constant map (REDIS_HOST/PORT/PASSWORD), no error.
+func UpdateProjectEnvForRedis(projectPath, projectName string, bound *registry.ProjectServices) error {
+	envPath := filepath.Join(projectPath, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil
+	}
+	rVars := redis.EnvVars(projectName)
+	smartVars := SmartEnvVars(bound)
+	for k, v := range smartVars {
+		rVars[k] = v
+	}
+	backupPath := envPath + ".pv-backup"
+	return services.MergeDotEnv(envPath, backupPath, rVars)
 }

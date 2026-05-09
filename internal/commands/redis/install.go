@@ -3,15 +3,22 @@ package redis
 import (
 	"fmt"
 
+	"github.com/prvious/pv/internal/laravel"
 	r "github.com/prvious/pv/internal/redis"
+	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-// TODO(task-22): wire r.EnvWriter to laravel.UpdateProjectEnvForRedis once
-// that helper lands in internal/laravel/env.go. Adding the wiring before
-// the helper exists would create an import-cycle / undefined-symbol issue.
+// init wires the per-project .env writer callback. Kept in the cobra
+// layer rather than in internal/redis to avoid an import cycle:
+// laravel imports redis (for EnvVars), so redis cannot import laravel.
+func init() {
+	r.EnvWriter = func(projectPath, projectName string, bound *registry.ProjectServices) error {
+		return laravel.UpdateProjectEnvForRedis(projectPath, projectName, bound)
+	}
+}
 
 var installCmd = &cobra.Command{
 	Use:     "redis:install",
