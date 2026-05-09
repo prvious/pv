@@ -22,7 +22,14 @@ import (
 // "%s is already added" notice).
 func Install(reg *registry.Registry, svc services.BinaryService) error {
 	name := svc.Name()
-	if _, exists := reg.Services[name]; exists {
+	if existing, exists := reg.Services[name]; exists {
+		if existing.Kind != "binary" {
+			return fmt.Errorf(
+				"%s is registered as %q from a previous pv version. "+
+					"Run `pv uninstall && pv setup` to reset",
+				name, existing.Kind,
+			)
+		}
 		ui.Success(fmt.Sprintf("%s is already added", svc.DisplayName()))
 		return nil
 	}

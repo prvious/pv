@@ -11,8 +11,10 @@ import (
 )
 
 // PrintStatus writes a stderr-side detail block for svc — registered,
-// enabled, running, PID. Returns no error: a missing-daemon snapshot
-// just suppresses the running/PID rows.
+// enabled, running, PID. Returns no error: an unreadable daemon
+// snapshot is reported via a Subtle line and the running row falls
+// back to "unknown" so the user can tell that case apart from a real
+// stopped state.
 func PrintStatus(reg *registry.Registry, svc services.BinaryService) {
 	name := svc.Name()
 	inst, ok := reg.Services[name]
@@ -22,11 +24,18 @@ func PrintStatus(reg *registry.Registry, svc services.BinaryService) {
 		enabled = *inst.Enabled
 	}
 
-	running := false
+	runningLabel := "false"
 	pid := 0
-	if snap, err := server.ReadDaemonStatus(); err == nil {
+	snap, err := server.ReadDaemonStatus()
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		runningLabel = "unknown"
+		ui.Subtle(fmt.Sprintf("Could not read daemon status: %v", err))
+	case err == nil:
 		if st, exists := snap.Supervised[svc.Binary().Name]; exists {
-			running = st.Running
+			if st.Running {
+				runningLabel = "true"
+			}
 			pid = st.PID
 		}
 	}
@@ -36,7 +45,7 @@ func PrintStatus(reg *registry.Registry, svc services.BinaryService) {
 	fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Kind"), "binary")
 	fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Registered"), registered)
 	fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Enabled"), enabled)
-	fmt.Fprintf(os.Stderr, "  %s  %v\n", ui.Muted.Render("Running"), running)
+	fmt.Fprintf(os.Stderr, "  %s  %s\n", ui.Muted.Render("Running"), runningLabel)
 	if pid > 0 {
 		fmt.Fprintf(os.Stderr, "  %s  %d\n", ui.Muted.Render("PID"), pid)
 	}

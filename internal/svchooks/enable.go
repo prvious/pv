@@ -11,15 +11,17 @@ import (
 
 // SetEnabled flips the registry Enabled flag for svc and signals the
 // daemon to reconcile. Used by start (enabled=true) and stop
-// (enabled=false). Returns an error if the service is not registered.
+// (enabled=false). Returns an error if the service is not registered,
+// if its registry entry is from a legacy docker-shaped install, or if
+// the daemon could not be signaled (so the exit code reflects whether
+// the supervisor actually picked up the change).
 //
 // Reports outcome via the ui helpers — callers don't need to print
 // anything on success.
 func SetEnabled(reg *registry.Registry, svc services.BinaryService, enabled bool) error {
-	name := svc.Name()
-	inst, ok := reg.Services[name]
-	if !ok {
-		return fmt.Errorf("%s not registered (run `pv %s:install` first)", name, svc.Binary().Name)
+	inst, err := requireBinaryEntry(reg, svc)
+	if err != nil {
+		return err
 	}
 
 	flag := enabled
@@ -42,12 +44,8 @@ func SetEnabled(reg *registry.Registry, svc services.BinaryService, enabled bool
 	}
 
 	if err := server.SignalDaemon(); err != nil {
-		// Registry is already updated but the daemon did not pick it up.
-		// Don't claim "reconciled" — that would lie to the user about
-		// the actual supervisor state.
-		ui.Fail(fmt.Sprintf("%s %s in registry, but could not signal daemon: %v", svc.DisplayName(), verb, err))
 		ui.Subtle("Run `pv restart` to load the change.")
-		return nil
+		return fmt.Errorf("%s %s in registry, but could not signal daemon: %w", svc.DisplayName(), verb, err)
 	}
 	ui.Success(fmt.Sprintf("%s %s; daemon reconciled", svc.DisplayName(), verb))
 	return nil

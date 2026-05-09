@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRedirectIfBinary_S3(t *testing.T) {
@@ -48,5 +50,48 @@ func TestRedirectIfBinary_UnknownName_ReturnsNil(t *testing.T) {
 	// the binary-name case.
 	if err := redirectIfBinary("bogus", "install"); err != nil {
 		t.Errorf("unknown name should not redirect: %v", err)
+	}
+}
+
+// TestServiceCommands_RedirectBinaryWiring locks every service:* RunE
+// against the redirect contract. Each command must call
+// redirectIfBinary before any colima/registry side-effects so that
+// `pv service:add s3` (and friends, including the mail spelling) fast-
+// fails with a redirect error pointing at the first-class command —
+// not a confused docker-engine error.
+func TestServiceCommands_RedirectBinaryWiring(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cases := []struct {
+		cmd    *cobra.Command
+		name   string // command label, for failure messages
+		arg    string // "s3" or "mail"
+		expect string // substring that must appear in the error
+	}{
+		{addCmd, "service:add s3", "s3", "rustfs:install"},
+		{addCmd, "service:add mail", "mail", "mailpit:install"},
+		{startCmd, "service:start s3", "s3", "rustfs:start"},
+		{startCmd, "service:start mail", "mail", "mailpit:start"},
+		{stopCmd, "service:stop s3", "s3", "rustfs:stop"},
+		{stopCmd, "service:stop mail", "mail", "mailpit:stop"},
+		{logsCmd, "service:logs s3", "s3", "rustfs:logs"},
+		{logsCmd, "service:logs mail", "mail", "mailpit:logs"},
+		{statusCmd, "service:status s3", "s3", "rustfs:status"},
+		{statusCmd, "service:status mail", "mail", "mailpit:status"},
+		{removeCmd, "service:remove s3", "s3", "rustfs:uninstall"},
+		{removeCmd, "service:remove mail", "mail", "mailpit:uninstall"},
+		{destroyCmd, "service:destroy s3", "s3", "rustfs:uninstall"},
+		{destroyCmd, "service:destroy mail", "mail", "mailpit:uninstall"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cmd.RunE(tc.cmd, []string{tc.arg})
+			if err == nil {
+				t.Fatalf("%s with arg %q should redirect, got nil error", tc.name, tc.arg)
+			}
+			if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("%s should mention %q in error; got %q", tc.name, tc.expect, err)
+			}
+		})
 	}
 }

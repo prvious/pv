@@ -26,11 +26,6 @@ pv mail:install`,
 		if !ok {
 			return fmt.Errorf("mailpit binary service not registered (build issue)")
 		}
-		if existing, ok := reg.Services["mail"]; ok && existing.Kind != "binary" {
-			return fmt.Errorf(
-				"mail is already registered (as docker) from a previous pv version. " +
-					"Run `pv uninstall && pv setup` to reset")
-		}
 		return svchooks.Install(reg, svc)
 	},
 }

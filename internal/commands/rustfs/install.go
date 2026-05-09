@@ -26,13 +26,6 @@ pv s3:install`,
 		if !ok {
 			return fmt.Errorf("rustfs binary service not registered (build issue)")
 		}
-		// Guard against a docker-shaped "s3" entry from a pv version that
-		// predated the binary-service migration. No silent auto-migration.
-		if existing, ok := reg.Services["s3"]; ok && existing.Kind != "binary" {
-			return fmt.Errorf(
-				"s3 is already registered (as docker) from a previous pv version. " +
-					"Run `pv uninstall && pv setup` to reset")
-		}
 		return svchooks.Install(reg, svc)
 	},
 }

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,7 +32,11 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
 	envVars, err := services.ReadDotEnv(envPath)
 	if err != nil {
-		return "no .env found", nil
+		if os.IsNotExist(err) {
+			return "no .env found", nil
+		}
+		ui.Subtle(fmt.Sprintf("Could not read %s: %v", envPath, err))
+		return "skipped (.env unreadable)", nil
 	}
 
 	var bound int

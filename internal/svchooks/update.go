@@ -13,12 +13,14 @@ import (
 )
 
 // Update re-downloads svc's binary to the latest upstream version. The
-// service must already be installed (registered). On success the daemon
-// is signaled so the supervisor restarts the process with the new binary.
+// service must already be installed (registered with Kind="binary").
+// On success the daemon is signaled so the supervisor restarts the
+// process with the new binary; if the signal fails, the function
+// returns a non-nil error so the exit code reflects that the supervisor
+// is still running the previous version.
 func Update(reg *registry.Registry, svc services.BinaryService) error {
-	name := svc.Name()
-	if _, ok := reg.Services[name]; !ok {
-		return fmt.Errorf("%s is not installed (run `pv %s:install`)", name, svc.Binary().Name)
+	if _, err := requireBinaryEntry(reg, svc); err != nil {
+		return err
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -48,7 +50,10 @@ func Update(reg *registry.Registry, svc services.BinaryService) error {
 
 	if server.IsRunning() {
 		if err := server.SignalDaemon(); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not signal daemon: %v", err))
+			return fmt.Errorf(
+				"%s binary updated to %s, but the daemon is still running the previous version (run `pv restart`): %w",
+				svc.DisplayName(), latest, err,
+			)
 		}
 	}
 	ui.Success(fmt.Sprintf("%s updated to %s", svc.DisplayName(), latest))

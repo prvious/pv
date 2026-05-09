@@ -23,13 +23,6 @@ var restartCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("mailpit binary service not registered (build issue)")
 		}
-		if err := svchooks.SetEnabled(reg, svc, false); err != nil {
-			return err
-		}
-		reg, err = registry.Load()
-		if err != nil {
-			return fmt.Errorf("cannot reload registry: %w", err)
-		}
-		return svchooks.SetEnabled(reg, svc, true)
+		return svchooks.Restart(reg, svc)
 	},
 }
