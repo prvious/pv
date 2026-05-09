@@ -13,9 +13,11 @@ import (
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
 	mysqlcmd "github.com/prvious/pv/internal/commands/mysql"
+	rediscmd "github.com/prvious/pv/internal/commands/redis"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/phpenv"
+	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/services"
 	setupinternal "github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/tools"
@@ -65,6 +67,7 @@ var setupCmd = &cobra.Command{
 		toolOpts := []selectOption{
 			{label: "Mago (PHP linter & formatter)", value: "mago", selected: isExecutable(config.BinDir() + "/mago")},
 			{label: "MySQL 8.4 (LTS, native binary)", value: "mysql-8.4", selected: mysql.IsInstalled("8.4")},
+			{label: "Redis (native binary)", value: "redis", selected: redis.IsInstalled()},
 		}
 
 		// Service options.
@@ -210,6 +213,14 @@ var setupCmd = &cobra.Command{
 			if err := mysqlcmd.RunInstall([]string{"8.4"}); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("MySQL 8.4 install failed: %v", err))
+				}
+			}
+		}
+
+		if toolSet["redis"] {
+			if err := rediscmd.RunInstall(nil); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Redis install failed: %v", err))
 				}
 			}
 		}

@@ -103,23 +103,26 @@ func TestParseWith_Mago(t *testing.T) {
 }
 
 func TestParseWith_Services(t *testing.T) {
-	spec, err := parseWith("service[redis:7],service[mail]")
+	// After redis migrated to a native binary (pv redis:install), the docker
+	// registry is empty. mail is the remaining binary service that still parses
+	// through `service[...]`. Keep one `:version` form to cover the parser.
+	spec, err := parseWith("service[mail:1.20],service[s3]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(spec.services) != 2 {
 		t.Fatalf("expected 2 services, got %d", len(spec.services))
 	}
-	if spec.services[0].name != "redis" || spec.services[0].version != "7" {
-		t.Errorf("service[0] = %+v, want redis:7", spec.services[0])
+	if spec.services[0].name != "mail" || spec.services[0].version != "1.20" {
+		t.Errorf("service[0] = %+v, want mail:1.20", spec.services[0])
 	}
-	if spec.services[1].name != "mail" || spec.services[1].version != "" {
-		t.Errorf("service[1] = %+v, want mail", spec.services[1])
+	if spec.services[1].name != "s3" || spec.services[1].version != "" {
+		t.Errorf("service[1] = %+v, want s3", spec.services[1])
 	}
 }
 
 func TestParseWith_Full(t *testing.T) {
-	spec, err := parseWith("php:8.3,mago,service[redis:7],service[mail]")
+	spec, err := parseWith("php:8.3,mago,service[mail],service[s3]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,15 +152,15 @@ func TestParseWith_UnknownService(t *testing.T) {
 }
 
 func TestParseWith_ServiceNoVersion(t *testing.T) {
-	spec, err := parseWith("service[redis]")
+	spec, err := parseWith("service[mail]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(spec.services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(spec.services))
 	}
-	if spec.services[0].name != "redis" || spec.services[0].version != "" {
-		t.Errorf("service = %+v, want redis with empty version", spec.services[0])
+	if spec.services[0].name != "mail" || spec.services[0].version != "" {
+		t.Errorf("service = %+v, want mail with empty version", spec.services[0])
 	}
 }
 

@@ -17,9 +17,11 @@ import (
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
+	rediscmd "github.com/prvious/pv/internal/commands/redis"
 	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
 	pg "github.com/prvious/pv/internal/postgres"
+	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/server"
@@ -113,6 +115,17 @@ var updateCmd = &cobra.Command{
 					}
 					failures = append(failures, "MySQL "+version)
 				}
+			}
+		}
+
+		// Update redis (single-version). Skip if not installed — redis is
+		// opt-in via `pv redis:install`.
+		if r.IsInstalled() {
+			if err := rediscmd.RunUpdate(nil); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("Redis update failed: %v", err))
+				}
+				failures = append(failures, "Redis")
 			}
 		}
 
