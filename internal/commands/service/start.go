@@ -8,7 +8,6 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -59,9 +58,15 @@ func startService(cmd *cobra.Command, _ *registry.Registry, key string) (string,
 var startCmd = &cobra.Command{
 	Use:     "service:start [service]",
 	GroupID: "service",
-	Short:   "Start a service or all services",
+	Short:   "Start a docker-backed service or all of them",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if err := redirectIfBinary(args[0], "start"); err != nil {
+				return err
+			}
+		}
+
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
@@ -90,8 +95,8 @@ var startCmd = &cobra.Command{
 			}
 			for key, inst := range svcs {
 				if inst.Kind == "binary" {
-					// Binary services are managed by the daemon; nothing to do here.
-					// A subsequent SignalDaemon call will reconcile them.
+					// Binary services are owned by rustfs:* / mailpit:*; the
+					// daemon reconciles them on its own ticks.
 					continue
 				}
 				if err := ui.Step(fmt.Sprintf("Starting %s...", key), func() (string, error) {
@@ -108,40 +113,6 @@ var startCmd = &cobra.Command{
 				}
 			}
 		} else {
-			// Dispatch on service kind. Binary services don't use the versioned-key
-			// machinery below; they flip a registry flag and let the daemon reconcile.
-			kind, binSvc, _, resErr := resolveKind(reg, args[0])
-			if resErr != nil {
-				return resErr
-			}
-			if kind == kindBinary {
-				name := binSvc.Name()
-				inst, ok := reg.Services[name]
-				if !ok {
-					return fmt.Errorf("%s not registered; run `pv service:add %s` first", name, name)
-				}
-				tru := true
-				inst.Enabled = &tru
-				if err := reg.Save(); err != nil {
-					return fmt.Errorf("cannot save registry: %w", err)
-				}
-				if server.IsRunning() {
-					if err := server.SignalDaemon(); err != nil {
-						// Registry is already updated but the running daemon did
-						// not pick it up. Don't claim "reconciled" — that would
-						// lie to the user about the supervisor state.
-						ui.Fail(fmt.Sprintf("%s enabled in registry, but could not signal daemon: %v", binSvc.DisplayName(), err))
-						ui.Subtle("Run `pv restart` to load the change.")
-						return nil
-					}
-					ui.Success(fmt.Sprintf("%s enabled; daemon reconciled", binSvc.DisplayName()))
-				} else {
-					ui.Success(fmt.Sprintf("%s enabled", binSvc.DisplayName()))
-					ui.Subtle("daemon not running — service will start on next `pv start`")
-				}
-				return nil
-			}
-
 			key := args[0]
 			var resolveErr error
 			key, resolveErr = reg.ResolveServiceKey(key)

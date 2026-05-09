@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -31,7 +32,11 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
 	envVars, err := services.ReadDotEnv(envPath)
 	if err != nil {
-		return "no .env found", nil
+		if os.IsNotExist(err) {
+			return "no .env found", nil
+		}
+		ui.Subtle(fmt.Sprintf("Could not read %s: %v", envPath, err))
+		return "skipped (.env unreadable)", nil
 	}
 
 	var bound int
@@ -64,14 +69,14 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 				h := envVars["MAIL_HOST"]
 				return h != "" && (strings.Contains(h, "localhost") || strings.Contains(h, "127.0.0.1"))
 			}(),
-			"mail", "pv service:add mail",
+			"mail", "pv mailpit:install",
 		},
 		{
 			func() bool {
 				e := envVars["AWS_ENDPOINT"]
 				return e != "" && (strings.Contains(e, "localhost") || strings.Contains(e, "127.0.0.1"))
 			}(),
-			"s3", "pv service:add s3",
+			"s3", "pv rustfs:install",
 		},
 	}
 
