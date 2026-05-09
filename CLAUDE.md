@@ -155,28 +155,32 @@ The CLI uses a layered Charm stack:
 
 ### Dispatching `build-artifacts.yml` manually
 
-A full dispatch runs the FrankenPHP matrix (3 PHP versions, ~30 min each), Postgres (17 + 18), and MySQL (8.0 + 8.4 + 9.7). That's ~90 min of macOS runner time per push and almost always more than the change under test needs.
+A full dispatch runs the FrankenPHP matrix (3 PHP versions, ~30 min each), Postgres (17 + 18), MySQL (8.0 + 8.4 + 9.7), Mailpit, RustFS, and Redis. That's significant macOS runner time per push and almost always more than the change under test needs.
 
 **Always pass `skip_*` flags scoped to the change.** Infer from context — don't run families unrelated to the work:
 
 | Working on… | Dispatch with |
 |---|---|
-| MySQL artifacts / `mysql:` job / `scripts/test-mysql-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true` |
-| Postgres artifacts / `postgres:` job / `scripts/test-postgres-bundle.sh` | `-f skip_frankenphp=true -f skip_mysql=true` |
-| FrankenPHP build / `static-php-cli` extensions | `-f skip_postgres=true -f skip_mysql=true` |
+| MySQL artifacts / `mysql:` job / `scripts/test-mysql-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
+| Postgres artifacts / `postgres:` job / `scripts/test-postgres-bundle.sh` | `-f skip_frankenphp=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
+| FrankenPHP build / `static-php-cli` extensions | `-f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
+| Mailpit artifacts / `mailpit:` job / `scripts/test-mailpit-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_rustfs=true -f skip_redis=true` |
+| RustFS artifacts / `rustfs:` job / `scripts/test-rustfs-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_redis=true` |
+| Redis artifacts / `redis:` job / `scripts/test-redis-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true` |
 | Release-job wiring / artifacts upload logic | run the family that produces the artifacts in question; skip the others |
 | Truly cross-cutting (e.g. concurrency-group changes) | no skips — needs the full matrix |
 
 If the affected family is ambiguous from the diff, ask before dispatching. Never dispatch with no skip flags "just to be safe" — that's the failure mode this convention exists to prevent.
 
-Example:
+Example (MySQL-only dispatch):
 
 ```bash
 gh workflow run build-artifacts.yml --ref <branch> \
-  -f skip_frankenphp=true -f skip_postgres=true
+  -f skip_frankenphp=true -f skip_postgres=true \
+  -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true
 ```
 
-The `release` job is gated on all three skip flags being false, so a partial dispatch never publishes a half-baked release.
+The `release` job is gated on all six skip flags being false, so a partial dispatch never publishes a half-baked release.
 
 ## Multi-version PHP
 
