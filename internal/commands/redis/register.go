@@ -10,6 +10,11 @@ import (
 func Register(parent *cobra.Command) {
 	cmds := []*cobra.Command{
 		installCmd,
+		uninstallCmd,
+		updateCmd,
+		startCmd,
+		stopCmd,
+		restartCmd,
 		downloadCmd, // hidden; included so it's discoverable for debugging
 	}
 	for _, c := range cmds {
@@ -23,4 +28,22 @@ func Register(parent *cobra.Command) {
 // place.
 func RunInstall(args []string) error {
 	return installCmd.RunE(installCmd, args)
+}
+
+func RunUpdate(args []string) error {
+	return updateCmd.RunE(updateCmd, args)
+}
+
+func RunUninstall(args []string) error {
+	return uninstallCmd.RunE(uninstallCmd, args)
+}
+
+// UninstallForce removes redis without a confirmation prompt. Used by
+// the pv uninstall orchestrator after it has already obtained blanket
+// consent from the user. Mirrors postgres.UninstallForce / mysql.UninstallForce.
+func UninstallForce() error {
+	prev := uninstallForce
+	uninstallForce = true
+	defer func() { uninstallForce = prev }()
+	return uninstallCmd.RunE(uninstallCmd, nil)
 }
