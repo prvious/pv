@@ -62,8 +62,12 @@ func InstallProgress(client *http.Client, progress binaries.ProgressFunc) error 
 		}
 	}
 
-	// Ensure data dir + chown to SUDO_USER so the dropped redis-server
-	// can write dump.rdb. EnsureDirs already created it; chown if root.
+	// Create + chown the data dir to SUDO_USER so the dropped
+	// redis-server can write dump.rdb. EnsureDirs deliberately doesn't
+	// create this — see internal/config/paths.go's comment about why.
+	if err := os.MkdirAll(config.RedisDataDir(), 0o755); err != nil {
+		return fmt.Errorf("create redis data dir: %w", err)
+	}
 	if err := chownToTarget(config.RedisDataDir()); err != nil {
 		return fmt.Errorf("chown redis data dir: %w", err)
 	}

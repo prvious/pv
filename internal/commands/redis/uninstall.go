@@ -6,7 +6,6 @@ import (
 
 	"charm.land/huh/v2"
 	r "github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -64,17 +63,11 @@ var uninstallCmd = &cobra.Command{
 			return err
 		}
 
-		// Unbind from projects — Uninstall already did this internally,
-		// but reload + save once more here is a defensive belt-and-braces
-		// in case another writer raced us between steps.
-		reg, err := registry.Load()
-		if err != nil {
-			return err
-		}
-		reg.UnbindService("redis")
-		if err := reg.Save(); err != nil {
-			return err
-		}
+		// NOTE: Uninstall handles the registry unbind internally. We do NOT
+		// re-save the registry here — registry.Save calls config.EnsureDirs
+		// and any subsequent EnsureDirs call after Uninstall ran would have
+		// historically recreated RedisDir/RedisDataDir. Even now that those
+		// are no longer in EnsureDirs, a redundant Save is just churn.
 
 		ui.Success("Redis uninstalled.")
 		return nil

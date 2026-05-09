@@ -289,8 +289,6 @@ func EnsureDirs() error {
 		PackagesDir(),
 		ColimaHomeDir(),
 		MysqlDir(),
-		RedisDir(),
-		RedisDataDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
