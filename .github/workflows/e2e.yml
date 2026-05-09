@@ -137,13 +137,18 @@ jobs:
         timeout-minutes: 5
         run: scripts/e2e/mysql-binary.sh
 
-      # ── Phase 24: Uninstall ───────────────────────────────────────
+      # ── Phase 24: Redis native-binary lifecycle ────────────────────
+      - name: E2E — Redis native-binary lifecycle
+        timeout-minutes: 3
+        run: scripts/e2e/redis-binary.sh
+
+      # ── Phase 25: Uninstall ───────────────────────────────────────
       # TODO: frankenphp untrust hangs in CI (internal sudo prompt, no terminal)
       # - name: Test pv uninstall
       #   timeout-minutes: 1
       #   run: scripts/e2e/uninstall.sh
 
-      # ── Phase 25: Failure Diagnostics & Cleanup ────────────────────
+      # ── Phase 26: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
         run: scripts/e2e/diagnostics.sh
