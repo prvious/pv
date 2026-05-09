@@ -11,16 +11,14 @@ import (
 )
 
 // TestApplyStopAllFallbacks verifies the production function that stop.go
-// calls in the no-args path. Docker services get fallbacks; binary
-// services are skipped (they are owned by rustfs:* / mailpit:* now and
-// were never stopped by service:stop).
+// calls in the no-args path. Binary services are skipped (they're owned
+// by rustfs:* / mailpit:* now and were never stopped by service:stop).
+//
+// With redis migrated to a native binary, the docker registry is empty,
+// so this test asserts the binary-skip path only — the docker path has
+// no surface area to exercise.
 func TestApplyStopAllFallbacks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	// Two linked projects: one using redis (Docker), one using mail (binary).
-	redisProjectDir := t.TempDir()
-	os.WriteFile(filepath.Join(redisProjectDir, ".env"),
-		[]byte("CACHE_STORE=redis\n"), 0644)
 
 	mailProjectDir := t.TempDir()
 	os.WriteFile(filepath.Join(mailProjectDir, ".env"),
@@ -28,12 +26,9 @@ func TestApplyStopAllFallbacks(t *testing.T) {
 
 	reg := &registry.Registry{
 		Services: map[string]*registry.ServiceInstance{
-			"redis": {Image: "redis:latest", Port: 6379},
-			"mail":  {Kind: "binary", Port: 1025},
+			"mail": {Kind: "binary", Port: 1025},
 		},
 		Projects: []registry.Project{
-			{Name: "redis-app", Path: redisProjectDir, Type: "laravel",
-				Services: &registry.ProjectServices{Redis: true}},
 			{Name: "mail-app", Path: mailProjectDir, Type: "laravel",
 				Services: &registry.ProjectServices{Mail: true}},
 		},
@@ -43,14 +38,7 @@ func TestApplyStopAllFallbacks(t *testing.T) {
 	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
 	defer func() { automation.ConfirmFunc = origConfirm }()
 
-	// Call the production function — same code stop.go uses.
 	applyStopAllFallbacks(reg)
-
-	// Docker service (redis) should have fallback applied.
-	redisEnv, _ := services.ReadDotEnv(filepath.Join(redisProjectDir, ".env"))
-	if redisEnv["CACHE_STORE"] != "file" {
-		t.Errorf("redis CACHE_STORE = %q, want file", redisEnv["CACHE_STORE"])
-	}
 
 	// Binary service (mail) should NOT have fallback applied.
 	mailEnv, _ := services.ReadDotEnv(filepath.Join(mailProjectDir, ".env"))
@@ -60,48 +48,12 @@ func TestApplyStopAllFallbacks(t *testing.T) {
 	}
 }
 
-// TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject verifies that when a
-// service is added/started, only projects linked to that service have their
-// .env updated — not unrelated projects that happen to be in the registry.
-func TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	redisProjectDir := t.TempDir()
-	os.WriteFile(filepath.Join(redisProjectDir, ".env"),
-		[]byte("APP_NAME=demo\n"), 0644)
-
-	otherProjectDir := t.TempDir()
-	os.WriteFile(filepath.Join(otherProjectDir, ".env"),
-		[]byte("APP_NAME=other\n"), 0644)
-
-	reg := &registry.Registry{
-		Services: map[string]*registry.ServiceInstance{
-			"redis": {Image: "redis:latest", Port: 6379},
-		},
-		Projects: []registry.Project{
-			{Name: "redis-app", Path: redisProjectDir, Type: "laravel",
-				Services: &registry.ProjectServices{Redis: true}},
-			{Name: "other-app", Path: otherProjectDir, Type: "laravel",
-				Services: &registry.ProjectServices{}},
-		},
-	}
-
-	origConfirm := automation.ConfirmFunc
-	automation.ConfirmFunc = func(label string) (bool, error) { return true, nil }
-	defer func() { automation.ConfirmFunc = origConfirm }()
-
-	updateLinkedProjectsEnv(reg, "redis", &services.Redis{}, "latest")
-
-	redisEnv, _ := services.ReadDotEnv(filepath.Join(redisProjectDir, ".env"))
-	if redisEnv["REDIS_HOST"] != "127.0.0.1" {
-		t.Errorf("redis-app REDIS_HOST = %q, want 127.0.0.1", redisEnv["REDIS_HOST"])
-	}
-
-	otherEnv, _ := services.ReadDotEnv(filepath.Join(otherProjectDir, ".env"))
-	if _, ok := otherEnv["REDIS_HOST"]; ok {
-		t.Errorf("other-app REDIS_HOST should be unset, got %q", otherEnv["REDIS_HOST"])
-	}
-}
+// Note: TestUpdateLinkedProjectsEnv_OnlyUpdatesLinkedProject was dropped
+// when redis (the last docker Service) migrated to a native binary.
+// updateLinkedProjectsEnv takes a services.Service argument; with no
+// docker Service implementations left there's nothing to pass in. The
+// production function remains for callers in add.go / start.go that
+// would still apply if a docker service were ever reintroduced.
 
 func TestUnbindService_ClearsMailBinding(t *testing.T) {
 	reg := &registry.Registry{

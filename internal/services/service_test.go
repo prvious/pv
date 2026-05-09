@@ -5,17 +5,9 @@ import (
 )
 
 func TestLookup_Valid(t *testing.T) {
-	// s3 and mail are now BinaryServices, not in the Docker registry.
-	// postgres and mysql are now native binary services, not Docker services.
-	for _, name := range []string{"redis"} {
-		svc, err := Lookup(name)
-		if err != nil {
-			t.Errorf("Lookup(%q) error = %v", name, err)
-		}
-		if svc.Name() != name {
-			t.Errorf("Lookup(%q).Name() = %q", name, svc.Name())
-		}
-	}
+	// docker registry is empty; all former docker services (postgres,
+	// mysql, redis) are now native binaries. mail and s3 live in the
+	// binary registry, not the docker one. Nothing to iterate here.
 }
 
 func TestLookup_Invalid(t *testing.T) {
@@ -31,8 +23,6 @@ func TestServiceKey(t *testing.T) {
 	}{
 		{"mysql", "8.0.32", "mysql:8.0.32"},
 		{"mysql", "latest", "mysql"},
-		{"redis", "", "redis"},
-		{"redis", "latest", "redis"},
 		{"postgres", "16", "postgres:16"},
 	}
 	for _, tt := range tests {
@@ -45,9 +35,9 @@ func TestServiceKey(t *testing.T) {
 
 func TestAvailable(t *testing.T) {
 	names := Available()
-	// 1 Docker service (redis) + 2 binary services (s3, mail).
-	if len(names) != 3 {
-		t.Errorf("Available() returned %d services, want 3", len(names))
+	// 0 Docker services + 2 binary services (s3, mail).
+	if len(names) != 2 {
+		t.Errorf("Available() returned %d services, want 2", len(names))
 	}
 }
 
@@ -60,7 +50,6 @@ func TestParseServiceKey(t *testing.T) {
 		{"mysql:8.4", "mysql", "8.4"},
 		{"mysql:8.0.32", "mysql", "8.0.32"},
 		{"postgres:18-alpine", "postgres", "18-alpine"},
-		{"redis", "redis", "latest"},
 		{"s3", "s3", "latest"},
 		{":8.4", ":8.4", "latest"}, // edge: no name before colon, idx == 0
 	}

@@ -21,19 +21,12 @@ func TestLookupAny_BinaryService(t *testing.T) {
 	}
 }
 
-func TestLookupAny_DockerService(t *testing.T) {
-	kind, binSvc, docSvc, err := LookupAny("redis")
-	if err != nil {
-		t.Fatalf("LookupAny(\"redis\") error = %v", err)
-	}
-	if kind != KindDocker {
-		t.Errorf("kind = %v, want KindDocker", kind)
-	}
-	if docSvc == nil {
-		t.Error("docSvc is nil; want non-nil for docker kind")
-	}
-	if binSvc != nil {
-		t.Errorf("binSvc = %#v, want nil for docker kind", binSvc)
+func TestLookupAny_RedisRemoved(t *testing.T) {
+	// After redis migrated to a native binary, the docker registry is empty.
+	// LookupAny("redis") must now return the unknown-service error path.
+	_, _, _, err := LookupAny("redis")
+	if err == nil {
+		t.Error("LookupAny(\"redis\") should error after docker redis removal")
 	}
 }
 
@@ -56,41 +49,10 @@ func TestLookupAny_Unknown(t *testing.T) {
 	}
 }
 
-func TestLookupAny_BinaryWinsOnCollision(t *testing.T) {
-	// Pin the lookup-order invariant by temporarily seeding both registries
-	// with the same key. Restore via t.Cleanup so other tests are unaffected.
-	const key = "collisiontest"
-
-	// Stash any pre-existing entries (defensive — there should be none).
-	prevBin, hadBin := binaryRegistry[key]
-	prevDoc, hadDoc := registry[key]
-	t.Cleanup(func() {
-		if hadBin {
-			binaryRegistry[key] = prevBin
-		} else {
-			delete(binaryRegistry, key)
-		}
-		if hadDoc {
-			registry[key] = prevDoc
-		} else {
-			delete(registry, key)
-		}
-	})
-
-	binaryRegistry[key] = &Mailpit{} // any BinaryService will do
-	registry[key] = &Redis{}         // any Service will do
-
-	kind, binSvc, docSvc, err := LookupAny(key)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if kind != KindBinary {
-		t.Errorf("kind = %v, want KindBinary (binary should win on collision)", kind)
-	}
-	if binSvc == nil {
-		t.Error("binSvc is nil; want non-nil")
-	}
-	if docSvc != nil {
-		t.Errorf("docSvc = %#v, want nil (binary won)", docSvc)
-	}
-}
+// Note: TestLookupAny_BinaryWinsOnCollision was dropped when redis (the
+// last docker Service) migrated to a native binary. With the docker
+// registry empty there's no real Service implementation left to seed
+// the test with; collision behavior is now unobservable without
+// constructing a synthetic Service stub purely for the test, which adds
+// more surface area than the invariant is worth. If a docker Service is
+// ever reintroduced, restore the collision test against it.
