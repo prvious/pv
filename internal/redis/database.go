@@ -2,6 +2,7 @@ package redis
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/prvious/pv/internal/registry"
 )
@@ -46,8 +47,9 @@ func BindLinkedProjects() error {
 		if EnvWriter != nil {
 			if err := EnvWriter(p.Path, p.Name, p.Services); err != nil {
 				// Best-effort: don't fail the whole install on one
-				// project's .env write. The cobra layer logs via ui.Subtle.
-				fmt.Printf("redis: bind %s: %v\n", p.Name, err)
+				// project's .env write. Stderr keeps stdout
+				// machine-readable per CLAUDE.md UI rules.
+				fmt.Fprintf(os.Stderr, "redis: bind %s: %v\n", p.Name, err)
 			}
 		}
 	}
