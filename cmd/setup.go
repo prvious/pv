@@ -12,7 +12,9 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
+	mysqlcmd "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/services"
 	setupinternal "github.com/prvious/pv/internal/setup"
@@ -62,6 +64,7 @@ var setupCmd = &cobra.Command{
 		// Tool options.
 		toolOpts := []selectOption{
 			{label: "Mago (PHP linter & formatter)", value: "mago", selected: isExecutable(config.BinDir() + "/mago")},
+			{label: "MySQL 8.4 (LTS, native binary)", value: "mysql-8.4", selected: mysql.IsInstalled("8.4")},
 		}
 
 		// Service options.
@@ -199,6 +202,14 @@ var setupCmd = &cobra.Command{
 			if err := mago.RunDownload(); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Mago failed: %v", err))
+				}
+			}
+		}
+
+		if toolSet["mysql-8.4"] {
+			if err := mysqlcmd.RunInstall([]string{"8.4"}); err != nil {
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("MySQL 8.4 install failed: %v", err))
 				}
 			}
 		}

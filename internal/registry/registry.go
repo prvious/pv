@@ -248,6 +248,22 @@ func (r *Registry) UnbindPostgresMajor(major string) {
 	}
 }
 
+// UnbindMysqlVersion clears Services.MySQL on every project bound to the
+// given version. Projects bound to other versions are unaffected.
+// Tighter than UnbindService("mysql") — that would clear all mysql bindings
+// regardless of version, which is wrong when only one of several installed
+// versions is being removed.
+func (r *Registry) UnbindMysqlVersion(version string) {
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		if r.Projects[i].Services.MySQL == version {
+			r.Projects[i].Services.MySQL = ""
+		}
+	}
+}
+
 // GroupByPHP groups projects by their PHP version.
 // Projects with an empty PHP field are grouped under the given defaultVersion.
 func (r *Registry) GroupByPHP(defaultVersion string) map[string][]Project {

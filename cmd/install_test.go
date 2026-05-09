@@ -103,7 +103,7 @@ func TestParseWith_Mago(t *testing.T) {
 }
 
 func TestParseWith_Services(t *testing.T) {
-	spec, err := parseWith("service[redis:7],service[mysql:8.0]")
+	spec, err := parseWith("service[redis:7],service[mail]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,13 +113,13 @@ func TestParseWith_Services(t *testing.T) {
 	if spec.services[0].name != "redis" || spec.services[0].version != "7" {
 		t.Errorf("service[0] = %+v, want redis:7", spec.services[0])
 	}
-	if spec.services[1].name != "mysql" || spec.services[1].version != "8.0" {
-		t.Errorf("service[1] = %+v, want mysql:8.0", spec.services[1])
+	if spec.services[1].name != "mail" || spec.services[1].version != "" {
+		t.Errorf("service[1] = %+v, want mail", spec.services[1])
 	}
 }
 
 func TestParseWith_Full(t *testing.T) {
-	spec, err := parseWith("php:8.3,mago,service[redis:7],service[mysql:8.0]")
+	spec, err := parseWith("php:8.3,mago,service[redis:7],service[mail]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

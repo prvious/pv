@@ -336,3 +336,35 @@ func TestUpdateProjectEnvForPostgres(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateProjectEnvForMysql(t *testing.T) {
+	tmp := t.TempDir()
+	envPath := filepath.Join(tmp, ".env")
+	if err := os.WriteFile(envPath, []byte("# initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bound := &registry.ProjectServices{MySQL: "8.4"}
+	if err := UpdateProjectEnvForMysql(tmp, "my_app", "8.4", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForMysql: %v", err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	for _, want := range []string{"DB_CONNECTION=mysql", "DB_PORT=33084", "DB_DATABASE=my_app", "DB_USERNAME=root"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in .env:\n%s", want, body)
+		}
+	}
+}
+
+func TestUpdateProjectEnvForMysql_NoEnvFile(t *testing.T) {
+	tmp := t.TempDir()
+	bound := &registry.ProjectServices{MySQL: "8.4"}
+	// No .env on disk. Must be a no-op without error (matches the postgres
+	// and docker variants — pv never creates .env from nothing).
+	if err := UpdateProjectEnvForMysql(tmp, "my_app", "8.4", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForMysql with no .env: %v", err)
+	}
+}

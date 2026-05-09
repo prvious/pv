@@ -119,7 +119,7 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected project myapp in registry")
 	}
-	p.Services = &registry.ProjectServices{MySQL: "mysql:8.0"}
+	p.Services = &registry.ProjectServices{MySQL: "8.4"}
 	p.Databases = []string{"myapp"}
 	if err := reg.Save(); err != nil {
 		t.Fatalf("save registry: %v", err)
@@ -144,7 +144,7 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	if p2 == nil {
 		t.Fatal("expected project myapp in registry after relink")
 	}
-	if p2.Services == nil || p2.Services.MySQL != "mysql:8.0" {
+	if p2.Services == nil || p2.Services.MySQL != "8.4" {
 		t.Errorf("expected MySQL service preserved, got services=%v", p2.Services)
 	}
 	if len(p2.Databases) != 1 || p2.Databases[0] != "myapp" {

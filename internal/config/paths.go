@@ -227,6 +227,34 @@ func PostgresLogPath(major string) string {
 	return filepath.Join(LogsDir(), "postgres-"+major+".log")
 }
 
+// MysqlDir is the root for native mysql binary trees:
+// ~/.pv/mysql/<version>/{bin,lib,share}.
+func MysqlDir() string {
+	return filepath.Join(PvDir(), "mysql")
+}
+
+// MysqlVersionDir is the per-version root inside MysqlDir.
+func MysqlVersionDir(version string) string {
+	return filepath.Join(MysqlDir(), version)
+}
+
+// MysqlBinDir holds mysqld + mysql + mysqldump etc. for a version.
+func MysqlBinDir(version string) string {
+	return filepath.Join(MysqlVersionDir(version), "bin")
+}
+
+// MysqlDataDir is the per-version mysqld data dir, kept under
+// ~/.pv/data/mysql/<version>/ so it survives a binary uninstall (unless
+// --force is used).
+func MysqlDataDir(version string) string {
+	return filepath.Join(DataDir(), "mysql", version)
+}
+
+// MysqlLogPath returns the supervisor log file for a mysql version.
+func MysqlLogPath(version string) string {
+	return filepath.Join(LogsDir(), "mysql-"+version+".log")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),
@@ -241,6 +269,7 @@ func EnsureDirs() error {
 		InternalBinDir(),
 		PackagesDir(),
 		ColimaHomeDir(),
+		MysqlDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {

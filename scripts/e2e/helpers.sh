@@ -50,3 +50,21 @@ assert_fails() {
     exit 1
   fi
 }
+
+# wait_for_tcp HOST PORT [TIMEOUT_SEC]
+# Returns 0 once HOST:PORT accepts a TCP connection, or fails after TIMEOUT.
+# Used by binary-service e2e phases to gate on supervisor readiness.
+wait_for_tcp() {
+  local host="$1"
+  local port="$2"
+  local timeout="${3:-30}"
+  local i=0
+  while ! nc -z "$host" "$port" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -ge "$timeout" ]; then
+      echo "wait_for_tcp: ${host}:${port} not accepting after ${timeout}s" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}

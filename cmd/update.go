@@ -14,8 +14,10 @@ import (
 	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
+	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
+	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
 	pg "github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
@@ -97,6 +99,19 @@ var updateCmd = &cobra.Command{
 						ui.Fail(fmt.Sprintf("PostgreSQL %s update failed: %v", major, err))
 					}
 					failures = append(failures, "PostgreSQL "+major)
+				}
+			}
+		}
+
+		// Update each installed mysql version. Mirrors the postgres pass — fetches
+		// the rolling artifact and atomic-replaces the binary tree per version.
+		if versions, err := my.InstalledVersions(); err == nil {
+			for _, version := range versions {
+				if err := mysqlCmds.RunUpdate([]string{version}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("MySQL %s update failed: %v", version, err))
+					}
+					failures = append(failures, "MySQL "+version)
 				}
 			}
 		}

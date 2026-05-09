@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/supervisor"
@@ -184,4 +185,98 @@ func TestReconcileBinaryServices_StartsWantedPostgres(t *testing.T) {
 		t.Error("expected postgres-17 to be supervised after reconcile")
 	}
 	_ = sup.StopAll(2 * time.Second)
+}
+
+func TestReconcileBinaryServices_StartsWantedMysql(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	// Pre-stage an installed version. The supervisor's TCP ready-check needs
+	// a live listener on PortFor(version), so we compile a tiny Go fake that
+	// reads --port=N from argv and binds it.
+	bin := config.MysqlBinDir("8.4")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(bin, "mysqld"),
+		filepath.Join("..", "..", "internal", "mysql", "testdata", "fake-mysqld.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake mysqld: %v\n%s", err, out)
+	}
+
+	// Datadir + auto.cnf marker — BuildSupervisorProcess refuses to build
+	// without it (datadir-not-initialized guard).
+	dataDir := config.MysqlDataDir("8.4")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "auto.cnf"), []byte("[auto]\nserver-uuid=00000000-0000-0000-0000-000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mysql.SetWanted("8.4", mysql.WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatalf("reconcileBinaryServices: %v", err)
+	}
+
+	if !sup.IsRunning("mysql-8.4") {
+		t.Error("expected mysql-8.4 to be supervised after reconcile")
+	}
+	_ = sup.StopAll(2 * time.Second)
+}
+
+func TestReconcileBinaryServices_StopsRemovedMysql(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	bin := config.MysqlBinDir("8.4")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(bin, "mysqld"),
+		filepath.Join("..", "..", "internal", "mysql", "testdata", "fake-mysqld.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake mysqld: %v\n%s", err, out)
+	}
+	dataDir := config.MysqlDataDir("8.4")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dataDir, "auto.cnf"), []byte("[auto]\nserver-uuid=00000000-0000-0000-0000-000000000000\n"), 0o644)
+	if err := mysql.SetWanted("8.4", mysql.WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+	defer sup.StopAll(2 * time.Second)
+
+	// Phase 1: wanted=running → reconcile starts mysql-8.4.
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !sup.IsRunning("mysql-8.4") {
+		t.Fatal("expected mysql-8.4 running after first reconcile")
+	}
+
+	// Phase 2: flip to stopped → reconcile must stop mysql-8.4.
+	if err := mysql.SetWanted("8.4", mysql.WantedStopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sup.IsRunning("mysql-8.4") {
+		t.Error("expected mysql-8.4 stopped after wanted flipped to stopped")
+	}
 }

@@ -20,9 +20,9 @@ var addCmd = &cobra.Command{
 	Use:     "service:add <service> [version]",
 	GroupID: "service",
 	Short:   "Add and start a docker-backed service",
-	Long:    "Add a docker-backed service (mysql, redis). Optionally specify a version. For S3 (RustFS) use `pv rustfs:install`; for Mail (Mailpit) use `pv mailpit:install`.",
-	Example: `# Add MySQL with default version
-pv service:add mysql
+	Long:    "Add a docker-backed service (redis). Optionally specify a version. For S3 (RustFS) use `pv rustfs:install`; for Mail (Mailpit) use `pv mailpit:install`; for MySQL use `pv mysql:install`.",
+	Example: `# Add Redis
+pv service:add redis
 
 # Add a specific Redis version
 pv service:add redis 7`,

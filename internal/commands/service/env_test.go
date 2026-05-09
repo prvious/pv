@@ -19,15 +19,15 @@ func TestEnvVarsFor_BinaryService(t *testing.T) {
 }
 
 func TestEnvVarsFor_DockerService(t *testing.T) {
-	// MySQL.EnvVars takes (projectName, port) and uses both. Pass a non-default
-	// port to verify the port arg is consulted — a regression that always
-	// passed 0 in the docker branch would silently set DB_PORT=0.
-	got, err := envVarsFor("mysql", "anyproject", 3306)
+	// Redis is the only remaining docker service. Its EnvVars ignores the
+	// port arg (Redis.Port() returns the fixed 6379), but the test still
+	// exercises the docker branch of envVarsFor's switch.
+	got, err := envVarsFor("redis", "anyproject", 6379)
 	if err != nil {
-		t.Fatalf("envVarsFor(\"mysql\") error = %v", err)
+		t.Fatalf("envVarsFor(\"redis\") error = %v", err)
 	}
-	if got["DB_PORT"] != "3306" {
-		t.Errorf("DB_PORT = %q, want 3306", got["DB_PORT"])
+	if got["REDIS_HOST"] != "127.0.0.1" {
+		t.Errorf("REDIS_HOST = %q, want 127.0.0.1", got["REDIS_HOST"])
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -55,6 +56,22 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		}
 	}
 
+	// MySQL binding (native binary path; no longer routed via reg.Services).
+	// Only bind when DB_CONNECTION=mysql is *explicit* in .env. An unset
+	// DB_CONNECTION is Laravel's compiled default ("mysql") but we don't
+	// step on undecided projects.
+	if envVars["DB_CONNECTION"] == "mysql" {
+		versions, err := mysql.InstalledVersions()
+		if err == nil && len(versions) > 0 {
+			// Prefer the highest installed version (lex order: 9.7 > 8.4 > 8.0).
+			version := versions[len(versions)-1]
+			bindProjectMysql(ctx.Registry, ctx.ProjectName, version)
+			bound++
+		} else {
+			ui.Subtle("mysql detected but not installed. Run: pv mysql:install")
+		}
+	}
+
 	type probe struct {
 		match  bool
 		name   string
@@ -62,7 +79,6 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	probes := []probe{
-		{envVars["DB_CONNECTION"] == "mysql", "mysql", "pv service:add mysql"},
 		{envVars["REDIS_HOST"] != "", "redis", "pv service:add redis"},
 		{
 			func() bool {
@@ -131,13 +147,7 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 		if reg.Projects[i].Services == nil {
 			reg.Projects[i].Services = &registry.ProjectServices{}
 		}
-		version := "latest"
-		if idx := strings.Index(svcKey, ":"); idx > 0 {
-			version = svcKey[idx+1:]
-		}
 		switch svcType {
-		case "mysql":
-			reg.Projects[i].Services.MySQL = version
 		case "redis":
 			reg.Projects[i].Services.Redis = true
 		case "mail":
@@ -158,6 +168,19 @@ func bindProjectPostgres(reg *registry.Registry, projectName, major string) {
 			reg.Projects[i].Services = &registry.ProjectServices{}
 		}
 		reg.Projects[i].Services.Postgres = major
+		return
+	}
+}
+
+func bindProjectMysql(reg *registry.Registry, projectName, version string) {
+	for i := range reg.Projects {
+		if reg.Projects[i].Name != projectName {
+			continue
+		}
+		if reg.Projects[i].Services == nil {
+			reg.Projects[i].Services = &registry.ProjectServices{}
+		}
+		reg.Projects[i].Services.MySQL = version
 		return
 	}
 }
