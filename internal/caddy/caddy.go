@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 
 	"github.com/prvious/pv/internal/config"
@@ -359,11 +358,7 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 	}
 
 	for key := range reg.Services {
-		// Parse service name from key (e.g. "mysql:8.0" → "mysql").
-		svcName := key
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-		}
+		svcName, _ := registry.ParseServiceKey(key)
 
 		var routes []WebRoute
 		switch svcName {

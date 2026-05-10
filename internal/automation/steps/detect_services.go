@@ -136,10 +136,7 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 
 func findServiceByName(reg *registry.Registry, name string) string {
 	for key := range reg.Services {
-		keyName := key
-		if idx := strings.Index(key, ":"); idx > 0 {
-			keyName = key[:idx]
-		}
+		keyName, _ := registry.ParseServiceKey(key)
 		if keyName == name {
 			return key
 		}
