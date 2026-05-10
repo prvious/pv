@@ -9,7 +9,6 @@ import (
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 )
 
 // SmartEnvVars returns Laravel-specific behavioral env vars based on bound services.
@@ -84,25 +83,9 @@ func ApplyFallbacks(envPath, serviceName string) error {
 	return projectenv.MergeDotEnv(envPath, backupPath, replacements)
 }
 
-// UpdateProjectEnvForBinaryService merges connection vars + smart Laravel vars into .env
-// for services that run as native binaries (implementing services.BinaryService).
-func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName string, svc services.BinaryService, bound *registry.ProjectServices) error {
-	envPath := filepath.Join(projectPath, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		return nil
-	}
-	allVars := svc.EnvVars(projectName)
-	smartVars := SmartEnvVars(bound)
-	for k, v := range smartVars {
-		allVars[k] = v
-	}
-	backupPath := envPath + ".pv-backup"
-	return projectenv.MergeDotEnv(envPath, backupPath, allVars)
-}
-
-// UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForBinaryService for
-// the postgres native-binary case. postgres has its own EnvVars signature
-// (projectName, major) — it doesn't satisfy services.BinaryService.
+// UpdateProjectEnvForPostgres merges connection vars + smart Laravel vars into
+// .env for the postgres native-binary case. postgres has its own EnvVars
+// signature (projectName, major).
 func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -121,8 +104,7 @@ func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *
 }
 
 // UpdateProjectEnvForMysql mirrors UpdateProjectEnvForPostgres for the mysql
-// native-binary case. mysql has its own EnvVars signature (projectName, version)
-// — it doesn't satisfy services.BinaryService.
+// native-binary case. mysql has its own EnvVars signature (projectName, version).
 func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {

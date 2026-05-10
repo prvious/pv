@@ -82,8 +82,6 @@ func Install(reg *registry.Registry, svc services.BinaryService) error {
 		return fmt.Errorf("cannot save registry after binding service: %w", err)
 	}
 
-	UpdateLinkedProjectsEnvBinary(reg, name, svc)
-
 	if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
 		ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
 	}

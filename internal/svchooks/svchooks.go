@@ -15,69 +15,8 @@ import (
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 )
-
-// UpdateLinkedProjectsEnvBinary updates .env for Laravel projects linked
-// to a binary service (s3, mail) when the service is added or restarted.
-// Mirrors updateLinkedProjectsEnv in internal/commands/service/hooks.go
-// for docker services; the only difference is which laravel helper it
-// calls (the binary variant doesn't need a port argument because
-// BinaryService.Port() is fixed at the struct level).
-func UpdateLinkedProjectsEnvBinary(reg *registry.Registry, svcName string, svc services.BinaryService) {
-	settings, err := config.LoadSettings()
-	if err != nil {
-		ui.Subtle(fmt.Sprintf("Could not load settings for service env hooks: %v", err))
-		return
-	}
-	if settings.Automation.ServiceEnvUpdate == config.AutoOff {
-		return
-	}
-
-	linkedNames := reg.ProjectsUsingService(svcName)
-	var laravelProjects []registry.Project
-	for _, name := range linkedNames {
-		p := reg.Find(name)
-		if p != nil && (p.Type == "laravel" || p.Type == "laravel-octane") {
-			laravelProjects = append(laravelProjects, *p)
-		}
-	}
-	if len(laravelProjects) == 0 {
-		return
-	}
-
-	shouldUpdate := settings.Automation.ServiceEnvUpdate == config.AutoOn
-	if settings.Automation.ServiceEnvUpdate == config.AutoAsk {
-		if !automation.IsInteractive() {
-			return
-		}
-		confirmed, err := automation.ConfirmFunc(
-			fmt.Sprintf("Update .env for %d linked Laravel project(s)", len(laravelProjects)),
-		)
-		if err != nil {
-			return
-		}
-		shouldUpdate = confirmed
-	}
-	if !shouldUpdate {
-		return
-	}
-
-	for _, p := range laravelProjects {
-		project := reg.Find(p.Name)
-		if project == nil || project.Services == nil {
-			continue
-		}
-		if err := laravel.UpdateProjectEnvForBinaryService(
-			p.Path, p.Name, svcName, svc, project.Services,
-		); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not update .env for %s: %v", p.Name, err))
-		} else {
-			ui.Success(fmt.Sprintf("Updated .env for %s", p.Name))
-		}
-	}
-}
 
 // BindBinaryServiceToAllProjects sets the per-project Services flag for
 // svcName on every Laravel project so UpdateLinkedProjectsEnvBinary can
