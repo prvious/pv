@@ -107,7 +107,7 @@ pv link --name=myapp ~/Code/myapp`,
 
 		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
 		if err != nil {
-			return fmt.Errorf("read pv.yml: %w", err)
+			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
 
 		// Build automation context.
