@@ -64,9 +64,7 @@ func Install() error {
 		return fmt.Errorf("cannot save registry: %w", err)
 	}
 
-	if err := BindToAllProjects(reg); err != nil {
-		return fmt.Errorf("cannot bind service to projects: %w", err)
-	}
+	BindToAllProjects(reg)
 	if err := reg.Save(); err != nil {
 		return fmt.Errorf("cannot save registry after binding: %w", err)
 	}

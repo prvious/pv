@@ -6,7 +6,7 @@ import "github.com/prvious/pv/internal/registry"
 // that UpdateLinkedProjectsEnv can find projects that were linked
 // before the service existed. Caller is responsible for saving the
 // registry.
-func BindToAllProjects(reg *registry.Registry) error {
+func BindToAllProjects(reg *registry.Registry) {
 	for i := range reg.Projects {
 		p := &reg.Projects[i]
 		if p.Type != "laravel" && p.Type != "laravel-octane" {
@@ -17,5 +17,4 @@ func BindToAllProjects(reg *registry.Registry) error {
 		}
 		p.Services.S3 = true
 	}
-	return nil
 }

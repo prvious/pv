@@ -44,7 +44,6 @@ func EnvVars(projectName string) map[string]string {
 }
 
 // BuildSupervisorProcess returns the supervisor.Process for rustfs.
-// Mirrors postgres.BuildSupervisorProcess / mysql.BuildSupervisorProcess.
 func BuildSupervisorProcess() (supervisor.Process, error) {
 	binPath := filepath.Join(config.InternalBinDir(), Binary().Name)
 
@@ -70,6 +69,9 @@ func BuildSupervisorProcess() (supervisor.Process, error) {
 		"--console-enable",
 		"--console-address", fmt.Sprintf(":%d", consolePort),
 	}
+	// RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY are the env var names rustfs expects
+	// per `rustfs server --help`. ROOT_USER / ROOT_PASSWORD (the MinIO equivalents)
+	// are NOT recognised by RustFS — don't substitute them.
 	env := []string{
 		"RUSTFS_ACCESS_KEY=rstfsadmin",
 		"RUSTFS_SECRET_KEY=rstfsadmin",
