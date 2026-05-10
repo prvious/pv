@@ -5,8 +5,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
-	"github.com/prvious/pv/internal/svchooks"
+	pkg "github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -24,10 +23,6 @@ var uninstallCmd = &cobra.Command{
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
-		}
-		svc, ok := services.LookupBinary("s3")
-		if !ok {
-			return fmt.Errorf("rustfs binary service not registered (build issue)")
 		}
 		if _, ok := reg.Services["s3"]; !ok {
 			ui.Subtle("RustFS is not installed.")
@@ -47,7 +42,7 @@ var uninstallCmd = &cobra.Command{
 				return fmt.Errorf("aborted")
 			}
 		}
-		if err := svchooks.Uninstall(svc, reg, true); err != nil {
+		if err := pkg.Uninstall(true); err != nil {
 			return err
 		}
 		ui.Success("RustFS uninstalled.")
