@@ -26,7 +26,7 @@ func UpdateLinkedProjectsEnv(reg *registry.Registry) {
 		return
 	}
 
-	linkedNames := reg.ProjectsUsingService(serviceKey)
+	linkedNames := reg.ProjectsUsingService(ServiceKey())
 	var laravelProjects []registry.Project
 	for _, name := range linkedNames {
 		p := reg.Find(name)

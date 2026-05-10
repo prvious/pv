@@ -22,8 +22,8 @@ func Update() error {
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
-	if _, ok := reg.Services[serviceKey]; !ok {
-		return fmt.Errorf("%s not registered (run `pv %s:install` first)", serviceKey, Binary().Name)
+	if _, ok := reg.Services[ServiceKey()]; !ok {
+		return fmt.Errorf("%s not registered (run `pv %s:install` first)", ServiceKey(), Binary().Name)
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}

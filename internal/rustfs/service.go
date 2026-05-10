@@ -9,9 +9,6 @@ import (
 
 const (
 	displayName = "S3 Storage (RustFS)"
-	serviceKey  = "s3" // registry key + binding key — DO NOT change without a registry migration
-	port        = 9000
-	consolePort = 9001
 )
 
 // Binary returns the binaries.Binary descriptor for rustfs.
@@ -19,10 +16,10 @@ const (
 // proc directly without creating an import cycle through this package.
 func Binary() binaries.Binary { return rustfsproc.Binary() }
 
-func Port() int           { return port }
-func ConsolePort() int    { return consolePort }
+func Port() int           { return rustfsproc.Port() }
+func ConsolePort() int    { return rustfsproc.ConsolePort() }
 func DisplayName() string { return displayName }
-func ServiceKey() string  { return serviceKey }
+func ServiceKey() string  { return rustfsproc.ServiceKey() }
 
 func WebRoutes() []caddy.WebRoute {
 	raw := rustfsproc.WebRoutes()

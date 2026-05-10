@@ -19,7 +19,7 @@ func PrintStatus() error {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
 
-	inst, ok := reg.Services[serviceKey]
+	inst, ok := reg.Services[ServiceKey()]
 	enabled := true
 	registered := ok
 	if ok && inst.Enabled != nil {

@@ -29,9 +29,9 @@ func Uninstall(deleteData bool) error {
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
-	inst, ok := reg.Services[serviceKey]
+	inst, ok := reg.Services[ServiceKey()]
 	if !ok {
-		return fmt.Errorf("%s not registered (run `pv %s:install` first)", serviceKey, Binary().Name)
+		return fmt.Errorf("%s not registered (run `pv %s:install` first)", ServiceKey(), Binary().Name)
 	}
 
 	// Stop the supervised process first. If the daemon is up, set
@@ -45,7 +45,7 @@ func Uninstall(deleteData bool) error {
 	}
 	if server.IsRunning() {
 		if err := server.SignalDaemon(); err != nil {
-			return fmt.Errorf("could not signal daemon to stop %s: %w", serviceKey, err)
+			return fmt.Errorf("could not signal daemon to stop %s: %w", ServiceKey(), err)
 		}
 		if err := WaitStopped(30 * time.Second); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not confirm %s stopped: %v (continuing)", DisplayName(), err))
@@ -65,7 +65,7 @@ func Uninstall(deleteData bool) error {
 		}
 	}
 	if deleteData {
-		dataDir := config.ServiceDataDir(serviceKey, "latest")
+		dataDir := config.ServiceDataDir(ServiceKey(), "latest")
 		if err := os.RemoveAll(dataDir); err != nil {
 			return fmt.Errorf("cannot delete data: %w", err)
 		}
@@ -75,9 +75,9 @@ func Uninstall(deleteData bool) error {
 	// unbind. Fallbacks look up linked projects via the per-project
 	// flags, so the order matters.
 	ApplyFallbacksToLinkedProjects(reg)
-	reg.UnbindService(serviceKey)
+	reg.UnbindService(ServiceKey())
 
-	if err := reg.RemoveService(serviceKey); err != nil {
+	if err := reg.RemoveService(ServiceKey()); err != nil {
 		return err
 	}
 	if err := reg.Save(); err != nil {

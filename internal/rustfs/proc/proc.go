@@ -21,6 +21,15 @@ const (
 	consolePort = 9001
 )
 
+// ServiceKey returns the registry key for rustfs.
+func ServiceKey() string { return serviceKey }
+
+// Port returns the API port rustfs listens on.
+func Port() int { return port }
+
+// ConsolePort returns the web-console port rustfs listens on.
+func ConsolePort() int { return consolePort }
+
 // WebRoute maps a subdomain under pv.{tld} to a local port.
 // It mirrors caddy.WebRoute but is defined here to keep the proc package free
 // of a caddy import (which would create an import cycle when caddy imports proc).

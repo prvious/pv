@@ -22,7 +22,7 @@ func Install() error {
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
-	if _, exists := reg.Services[serviceKey]; exists {
+	if _, exists := reg.Services[ServiceKey()]; exists {
 		ui.Success(fmt.Sprintf("%s is already added", DisplayName()))
 		return nil
 	}
@@ -57,7 +57,7 @@ func Install() error {
 		ConsolePort: ConsolePort(),
 		Enabled:     &enabled,
 	}
-	if err := reg.AddService(serviceKey, inst); err != nil {
+	if err := reg.AddService(ServiceKey(), inst); err != nil {
 		return err
 	}
 	if err := reg.Save(); err != nil {

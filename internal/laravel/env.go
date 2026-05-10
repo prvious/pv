@@ -12,7 +12,6 @@ import (
 )
 
 // SmartEnvVars returns Laravel-specific behavioral env vars based on bound services.
-// Separate from services.EnvVars() which returns connection details.
 func SmartEnvVars(bound *registry.ProjectServices) map[string]string {
 	vars := make(map[string]string)
 	if bound.Redis {

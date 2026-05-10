@@ -24,6 +24,15 @@ const (
 	consolePort = 8025
 )
 
+// ServiceKey returns the registry key for mailpit.
+func ServiceKey() string { return serviceKey }
+
+// Port returns the SMTP port mailpit listens on.
+func Port() int { return port }
+
+// ConsolePort returns the web-console port mailpit listens on.
+func ConsolePort() int { return consolePort }
+
 // WebRoute maps a subdomain under pv.{tld} to a local port.
 // It mirrors caddy.WebRoute but is defined here to keep the proc package free
 // of a caddy import (which would create an import cycle when caddy imports proc).
@@ -58,7 +67,7 @@ func BuildSupervisorProcess() (supervisor.Process, error) {
 
 	// ReadyCheck uses Mailpit's documented /livez endpoint, which returns 200 once
 	// both the SMTP and HTTP servers are listening.
-	rc := supervisor.HTTPReady("http://127.0.0.1:8025/livez", 30*time.Second)
+	rc := supervisor.HTTPReady(fmt.Sprintf("http://127.0.0.1:%d/livez", consolePort), 30*time.Second)
 	ready, err := supervisor.BuildReadyFunc(rc)
 	if err != nil {
 		return supervisor.Process{}, fmt.Errorf("mailpit: %w", err)

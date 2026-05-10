@@ -9,14 +9,6 @@ import (
 
 const (
 	displayName = "Mail (Mailpit)"
-	// serviceKey must remain "mail" (not "mailpit") to preserve compatibility
-	// with the previous Docker-based mail service — renaming breaks existing
-	// pv.yml references and linked projects' .env files. See
-	// TestMailpit_EnvVars_Golden for the migration contract with the old
-	// Docker service.
-	serviceKey  = "mail"
-	port        = 1025
-	consolePort = 8025
 )
 
 // Binary returns the binaries.Binary descriptor for mailpit.
@@ -24,10 +16,10 @@ const (
 // proc directly without creating an import cycle through this package.
 func Binary() binaries.Binary { return mailpitproc.Binary() }
 
-func Port() int           { return port }
-func ConsolePort() int    { return consolePort }
+func Port() int           { return mailpitproc.Port() }
+func ConsolePort() int    { return mailpitproc.ConsolePort() }
 func DisplayName() string { return displayName }
-func ServiceKey() string  { return serviceKey }
+func ServiceKey() string  { return mailpitproc.ServiceKey() }
 
 func WebRoutes() []caddy.WebRoute {
 	raw := mailpitproc.WebRoutes()

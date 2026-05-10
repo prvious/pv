@@ -24,7 +24,7 @@ func ApplyFallbacksToLinkedProjects(reg *registry.Registry) {
 		return
 	}
 
-	projectNames := reg.ProjectsUsingService(serviceKey)
+	projectNames := reg.ProjectsUsingService(ServiceKey())
 	if len(projectNames) == 0 {
 		return
 	}
@@ -35,7 +35,7 @@ func ApplyFallbacksToLinkedProjects(reg *registry.Registry) {
 			return
 		}
 		confirmed, err := automation.ConfirmFunc(
-			fmt.Sprintf("Apply env fallbacks for %s to %d project(s)", serviceKey, len(projectNames)),
+			fmt.Sprintf("Apply env fallbacks for %s to %d project(s)", ServiceKey(), len(projectNames)),
 		)
 		if err != nil {
 			return
@@ -52,10 +52,10 @@ func ApplyFallbacksToLinkedProjects(reg *registry.Registry) {
 			continue
 		}
 		envPath := filepath.Join(project.Path, ".env")
-		if err := laravel.ApplyFallbacks(envPath, serviceKey); err != nil {
+		if err := laravel.ApplyFallbacks(envPath, ServiceKey()); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not apply fallbacks for %s: %v", pName, err))
 		} else {
-			ui.Success(fmt.Sprintf("Applied %s fallbacks for %s", serviceKey, pName))
+			ui.Success(fmt.Sprintf("Applied %s fallbacks for %s", ServiceKey(), pName))
 		}
 	}
 }

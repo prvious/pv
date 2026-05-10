@@ -22,9 +22,9 @@ func SetEnabled(enabled bool) error {
 	if err != nil {
 		return fmt.Errorf("cannot load registry: %w", err)
 	}
-	inst, ok := reg.Services[serviceKey]
+	inst, ok := reg.Services[ServiceKey()]
 	if !ok {
-		return fmt.Errorf("%s not registered (run `pv %s:install` first)", serviceKey, Binary().Name)
+		return fmt.Errorf("%s not registered (run `pv %s:install` first)", ServiceKey(), Binary().Name)
 	}
 
 	flag := enabled
