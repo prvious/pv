@@ -12,7 +12,11 @@ const ProjectConfigFilename = "pv.yml"
 
 // ProjectConfig represents the contents of a pv.yml file.
 type ProjectConfig struct {
-	PHP        string            `yaml:"php"`
+	PHP string `yaml:"php"`
+	// Aliases are additional hostnames Caddy should serve for this
+	// project, each minted its own TLS cert. The site's `*.{name}.{tld}`
+	// wildcard SAN already covers same-domain hostnames, so the typical
+	// use case is foreign domains (e.g., "api.test", "dashboard.example.com").
 	Aliases    []string          `yaml:"aliases,omitempty"`
 	Env        map[string]string `yaml:"env,omitempty"`
 	Postgresql *ServiceConfig    `yaml:"postgresql,omitempty"`

@@ -54,6 +54,13 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("%s is not a directory", absPath)
 		}
 
+		// Load pv.yml before any side effects — a malformed pv.yml must fail
+		// fast, not after we've already wiped the site config and TLS certs.
+		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
+		if err != nil {
+			return fmt.Errorf("cannot read pv.yml: %w", err)
+		}
+
 		name := linkName
 		if name == "" {
 			name = filepath.Base(absPath)
@@ -88,11 +95,6 @@ pv link --name=myapp ~/Code/myapp`,
 		phpVersion := globalPHP
 		if v, err := phpenv.ResolveVersion(absPath); err == nil && v != "" {
 			phpVersion = v
-		}
-
-		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
-		if err != nil {
-			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
 
 		var aliases []string
