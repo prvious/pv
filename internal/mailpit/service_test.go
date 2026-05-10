@@ -1,11 +1,13 @@
 package mailpit
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/config"
 )
 
 func TestServiceKey(t *testing.T) {
@@ -123,5 +125,52 @@ func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 	}
 	if proc.Ready == nil {
 		t.Error("Ready func must be set")
+	}
+}
+
+// TestBuildSupervisorProcess_NameAndPaths locks the process name, binary path,
+// and log file path so that a future rename of ServiceKey() or Binary().Name
+// cannot silently route to the wrong supervisor map entry. The supervisor map
+// in manager.go is keyed by proc.Name (= "mailpit"), NOT by ServiceKey()
+// (= "mail"). A swap of the two would compile cleanly but break supervision
+// because the map lookup would miss.
+func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	proc, err := BuildSupervisorProcess()
+	if err != nil {
+		t.Fatalf("BuildSupervisorProcess: %v", err)
+	}
+
+	// proc.Name must be "mailpit" (the binary name), NOT "mail" (the service key).
+	// The supervisor manager keyes its process map off proc.Name; using "mail"
+	// here would silently route to the wrong entry.
+	if proc.Name != "mailpit" {
+		t.Errorf("proc.Name = %q, want %q (not the service key %q)", proc.Name, "mailpit", "mail")
+	}
+
+	wantBinarySuffix := "/.pv/internal/bin/mailpit"
+	if !strings.HasSuffix(proc.Binary, wantBinarySuffix) {
+		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
+	}
+
+	wantLogSuffix := "/.pv/logs/mailpit.log"
+	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
+		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
+	}
+
+	dataDir := config.ServiceDataDir("mail", "latest")
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Errorf("data dir %q was not created: %v", dataDir, err)
+	} else if !info.IsDir() {
+		t.Errorf("data dir %q exists but is not a directory", dataDir)
+	}
+
+	logDir := config.LogsDir()
+	info, err = os.Stat(logDir)
+	if err != nil {
+		t.Errorf("log dir %q was not created: %v", logDir, err)
+	} else if !info.IsDir() {
+		t.Errorf("log dir %q exists but is not a directory", logDir)
 	}
 }

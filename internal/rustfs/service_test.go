@@ -1,10 +1,13 @@
 package rustfs
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/caddy"
+	"github.com/prvious/pv/internal/config"
 )
 
 func TestServiceKey(t *testing.T) {
@@ -128,5 +131,48 @@ func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 	}
 	if proc.Ready == nil {
 		t.Error("Ready func must be set")
+	}
+}
+
+// TestBuildSupervisorProcess_NameAndPaths locks the process name, binary path,
+// and log file path so that a future rename of ServiceKey() or Binary().Name
+// cannot silently route to the wrong supervisor map entry. The supervisor map
+// in manager.go is keyed by proc.Name, not by ServiceKey(); a swap of the two
+// would compile cleanly but break supervision.
+func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	proc, err := BuildSupervisorProcess()
+	if err != nil {
+		t.Fatalf("BuildSupervisorProcess: %v", err)
+	}
+
+	if proc.Name != "rustfs" {
+		t.Errorf("proc.Name = %q, want %q", proc.Name, "rustfs")
+	}
+
+	wantBinarySuffix := "/.pv/internal/bin/rustfs"
+	if !strings.HasSuffix(proc.Binary, wantBinarySuffix) {
+		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
+	}
+
+	wantLogSuffix := "/.pv/logs/rustfs.log"
+	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
+		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
+	}
+
+	dataDir := config.ServiceDataDir("s3", "latest")
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Errorf("data dir %q was not created: %v", dataDir, err)
+	} else if !info.IsDir() {
+		t.Errorf("data dir %q exists but is not a directory", dataDir)
+	}
+
+	logDir := config.LogsDir()
+	info, err = os.Stat(logDir)
+	if err != nil {
+		t.Errorf("log dir %q was not created: %v", logDir, err)
+	} else if !info.IsDir() {
+		t.Errorf("log dir %q exists but is not a directory", logDir)
 	}
 }

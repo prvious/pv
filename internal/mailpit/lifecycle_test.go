@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 )
 
@@ -119,6 +120,75 @@ func TestUninstall_DeleteData(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Errorf("data directory must be deleted; sentinel still exists (err=%v)", err)
+	}
+}
+
+func TestBindToAllProjects_SetsFlagOnLaravelProjects(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	reg := &registry.Registry{
+		Projects: []registry.Project{
+			{Name: "laravel-app", Path: "/tmp/laravel-app", Type: "laravel"},
+			{Name: "octane-app", Path: "/tmp/octane-app", Type: "laravel-octane"},
+			{Name: "static-app", Path: "/tmp/static-app", Type: "static"},
+		},
+	}
+
+	BindToAllProjects(reg)
+
+	laravel := reg.Find("laravel-app")
+	if laravel.Services == nil || !laravel.Services.Mail {
+		t.Errorf("laravel project: expected Services.Mail = true, got %+v", laravel.Services)
+	}
+
+	octane := reg.Find("octane-app")
+	if octane.Services == nil || !octane.Services.Mail {
+		t.Errorf("laravel-octane project: expected Services.Mail = true, got %+v", octane.Services)
+	}
+
+	static := reg.Find("static-app")
+	if static.Services != nil && static.Services.Mail {
+		t.Errorf("static project: expected Services.Mail unchanged (false/nil), got %+v", static.Services)
+	}
+}
+
+func TestApplyFallbacksToLinkedProjects_RewritesEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	envPath := filepath.Join(projectDir, ".env")
+	if err := os.WriteFile(envPath, []byte("MAIL_MAILER=smtp\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	reg := &registry.Registry{
+		Projects: []registry.Project{
+			{
+				Name:     "myapp",
+				Path:     projectDir,
+				Type:     "laravel",
+				Services: &registry.ProjectServices{Mail: true},
+			},
+		},
+	}
+	if err := reg.Save(); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	settings := config.DefaultSettings()
+	settings.Automation.ServiceFallback = config.AutoOn
+	if err := settings.Save(); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	ApplyFallbacksToLinkedProjects(reg)
+
+	env, err := projectenv.ReadDotEnv(envPath)
+	if err != nil {
+		t.Fatalf("read .env after fallback: %v", err)
+	}
+	if got := env["MAIL_MAILER"]; got != "log" {
+		t.Errorf("MAIL_MAILER = %q, want %q", got, "log")
 	}
 }
 
