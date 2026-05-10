@@ -26,7 +26,10 @@ func (s *DetectServicesStep) Label() string  { return "Detect and bind services"
 func (s *DetectServicesStep) Gate() string   { return "detect_services" }
 func (s *DetectServicesStep) Critical() bool { return false }
 
-func (s *DetectServicesStep) ShouldRun(_ *automation.Context) bool {
+func (s *DetectServicesStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasServices() {
+		return false
+	}
 	return true
 }
 

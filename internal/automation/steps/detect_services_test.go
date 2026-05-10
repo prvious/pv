@@ -192,3 +192,33 @@ func TestDetectServices_PrefersHighestMysqlVersion(t *testing.T) {
 		t.Errorf("MySQL binding = %q, want %q (highest)", got, "9.7")
 	}
 }
+
+func TestDetectServices_SkipsWhenPvYmlDeclaresServices(t *testing.T) {
+	ctx := &automation.Context{
+		ProjectConfig: &config.ProjectConfig{
+			Postgresql: &config.ServiceConfig{Version: "18"},
+		},
+	}
+	step := &DetectServicesStep{}
+	if step.ShouldRun(ctx) {
+		t.Errorf("ShouldRun: want false when pv.yml declares services")
+	}
+}
+
+func TestDetectServices_RunsWhenPvYmlEmpty(t *testing.T) {
+	ctx := &automation.Context{
+		ProjectConfig: &config.ProjectConfig{PHP: "8.4"},
+	}
+	step := &DetectServicesStep{}
+	if !step.ShouldRun(ctx) {
+		t.Errorf("ShouldRun: want true when pv.yml has no services")
+	}
+}
+
+func TestDetectServices_RunsWhenNoPvYml(t *testing.T) {
+	ctx := &automation.Context{}
+	step := &DetectServicesStep{}
+	if !step.ShouldRun(ctx) {
+		t.Errorf("ShouldRun: want true when no pv.yml at all")
+	}
+}

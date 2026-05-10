@@ -28,10 +28,14 @@ type ProjectServices struct {
 }
 
 type Project struct {
-	Name      string           `json:"name"`
-	Path      string           `json:"path"`
-	Type      string           `json:"type"`
-	PHP       string           `json:"php,omitempty"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"`
+	PHP  string `json:"php,omitempty"`
+	// Aliases are additional hostnames Caddy serves for this project.
+	// Replaced wholesale from pv.yml on every link / relink — removing
+	// an alias from pv.yml removes it from the registry on next link.
+	Aliases   []string         `json:"aliases,omitempty"`
 	Services  *ProjectServices `json:"services,omitempty"`
 	Databases []string         `json:"databases,omitempty"`
 }

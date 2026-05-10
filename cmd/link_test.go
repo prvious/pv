@@ -152,6 +152,65 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	}
 }
 
+func TestLink_RelinkOverwritesStaleAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeDefaultSettings(t)
+
+	projDir := t.TempDir()
+
+	// First link with two aliases in pv.yml.
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"),
+		[]byte("php: \"8.4\"\naliases:\n  - admin.myapp.test\n  - api.myapp.test\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := newLinkCmd()
+	cmd1.SetArgs([]string{"link", projDir, "--name", "myapp"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first link error = %v", err)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	p := reg.Find("myapp")
+	if p == nil {
+		t.Fatal("project 'myapp' not found in registry after first link")
+	}
+	if len(p.Aliases) != 2 {
+		t.Errorf("after first link: Aliases = %v, want 2 entries", p.Aliases)
+	}
+
+	// Rewrite pv.yml with only one alias.
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"),
+		[]byte("php: \"8.4\"\naliases:\n  - admin.myapp.test\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-link — should overwrite Aliases wholesale.
+	cmd2 := newLinkCmd()
+	cmd2.SetArgs([]string{"link", projDir, "--name", "myapp"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("re-link error = %v", err)
+	}
+
+	reg2, err := registry.Load()
+	if err != nil {
+		t.Fatalf("load registry after relink: %v", err)
+	}
+	p2 := reg2.Find("myapp")
+	if p2 == nil {
+		t.Fatal("project 'myapp' not found in registry after relink")
+	}
+	if len(p2.Aliases) != 1 || p2.Aliases[0] != "admin.myapp.test" {
+		t.Errorf("after relink: Aliases = %v, want [admin.myapp.test]", p2.Aliases)
+	}
+}
+
 func TestLink_RelinkUpdatesPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

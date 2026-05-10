@@ -426,3 +426,54 @@ func TestLoadProjectConfig_OmittedServicesAreNil(t *testing.T) {
 			cfg.Aliases, cfg.Env, cfg.Setup)
 	}
 }
+
+func TestProjectConfig_HasServices(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ProjectConfig
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", &ProjectConfig{PHP: "8.4"}, false},
+		{"postgres", &ProjectConfig{Postgresql: &ServiceConfig{Version: "18"}}, true},
+		{"mysql", &ProjectConfig{Mysql: &ServiceConfig{Version: "8.0"}}, true},
+		{"redis", &ProjectConfig{Redis: &ServiceConfig{}}, true},
+		{"mailpit", &ProjectConfig{Mailpit: &ServiceConfig{}}, true},
+		{"rustfs", &ProjectConfig{Rustfs: &ServiceConfig{}}, true},
+		{"multiple", &ProjectConfig{Postgresql: &ServiceConfig{Version: "18"}, Redis: &ServiceConfig{}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.HasServices(); got != tt.want {
+				t.Errorf("HasServices() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectConfig_HasAnyEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ProjectConfig
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", &ProjectConfig{PHP: "8.4"}, false},
+		{"top-level env", &ProjectConfig{Env: map[string]string{"APP_URL": "x"}}, true},
+		{"top-level env empty map", &ProjectConfig{Env: map[string]string{}}, false},
+		{"postgres env", &ProjectConfig{Postgresql: &ServiceConfig{Env: map[string]string{"DB_HOST": "x"}}}, true},
+		{"postgres declared no env", &ProjectConfig{Postgresql: &ServiceConfig{Version: "18"}}, false},
+		{"mysql env", &ProjectConfig{Mysql: &ServiceConfig{Env: map[string]string{"DB_HOST": "x"}}}, true},
+		{"redis env", &ProjectConfig{Redis: &ServiceConfig{Env: map[string]string{"REDIS_HOST": "x"}}}, true},
+		{"mailpit env", &ProjectConfig{Mailpit: &ServiceConfig{Env: map[string]string{"MAIL_HOST": "x"}}}, true},
+		{"rustfs env", &ProjectConfig{Rustfs: &ServiceConfig{Env: map[string]string{"AWS_ENDPOINT": "x"}}}, true},
+		{"top + service env", &ProjectConfig{Env: map[string]string{"APP_URL": "x"}, Postgresql: &ServiceConfig{Env: map[string]string{"DB_HOST": "x"}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.HasAnyEnv(); got != tt.want {
+				t.Errorf("HasAnyEnv() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -14,16 +14,17 @@ import (
 
 // Context carries state through an automation pipeline.
 type Context struct {
-	ProjectPath string
-	ProjectName string
-	ProjectType string
-	PHPVersion  string
-	GlobalPHP   string
-	TLD         string
-	Registry    *registry.Registry
-	Settings    *config.Settings
-	Env         map[string]string
-	DBCreated   bool
+	ProjectPath   string
+	ProjectName   string
+	ProjectType   string
+	PHPVersion    string
+	GlobalPHP     string
+	TLD           string
+	Registry      *registry.Registry
+	Settings      *config.Settings
+	Env           map[string]string
+	DBCreated     bool
+	ProjectConfig *config.ProjectConfig
 }
 
 // Step is a single automation action in a pipeline.

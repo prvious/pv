@@ -54,6 +54,13 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("%s is not a directory", absPath)
 		}
 
+		// Load pv.yml before any side effects — a malformed pv.yml must fail
+		// fast, not after we've already wiped the site config and TLS certs.
+		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
+		if err != nil {
+			return fmt.Errorf("cannot read pv.yml: %w", err)
+		}
+
 		name := linkName
 		if name == "" {
 			name = filepath.Base(absPath)
@@ -90,32 +97,39 @@ pv link --name=myapp ~/Code/myapp`,
 			phpVersion = v
 		}
 
+		var aliases []string
+		if projectCfg != nil {
+			aliases = projectCfg.Aliases
+		}
+
 		// Register or update project.
 		if relink {
 			if err := reg.UpdateWith(name, func(p *registry.Project) {
 				p.Path = absPath
 				p.Type = projectType
 				p.PHP = phpVersion
+				p.Aliases = aliases
 			}); err != nil {
 				return err
 			}
 		} else {
-			if err := reg.Add(registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}); err != nil {
+			if err := reg.Add(registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion, Aliases: aliases}); err != nil {
 				return err
 			}
 		}
 
 		// Build automation context.
 		ctx := &automation.Context{
-			ProjectPath: absPath,
-			ProjectName: name,
-			ProjectType: projectType,
-			PHPVersion:  phpVersion,
-			GlobalPHP:   globalPHP,
-			TLD:         settings.Defaults.TLD,
-			Registry:    reg,
-			Settings:    settings,
-			Env:         make(map[string]string),
+			ProjectPath:   absPath,
+			ProjectName:   name,
+			ProjectType:   projectType,
+			PHPVersion:    phpVersion,
+			GlobalPHP:     globalPHP,
+			TLD:           settings.Defaults.TLD,
+			Registry:      reg,
+			Settings:      settings,
+			Env:           make(map[string]string),
+			ProjectConfig: projectCfg,
 		}
 
 		// Load existing .env if present.
@@ -133,8 +147,10 @@ pv link --name=myapp ~/Code/myapp`,
 			&steps.GenerateSiteConfigStep{},
 			&steps.GenerateCaddyfileStep{},
 			&steps.GenerateTLSCertStep{},
+			&steps.ApplyPvYmlServicesStep{},
 			&steps.DetectServicesStep{},
 			&laravel.DetectServicesStep{},
+			&steps.ApplyPvYmlEnvStep{},
 			&laravel.SetAppURLStep{},
 			&laravel.SetViteTLSStep{},
 			&laravel.CreateDatabaseStep{},
