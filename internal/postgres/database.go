@@ -44,3 +44,25 @@ func CreateDatabase(major, dbName string) error {
 	}
 	return nil
 }
+
+// DropDatabase drops dbName on the given postgres major using the bundled
+// psql via absolute path. Idempotent: uses `DROP DATABASE IF EXISTS` so it
+// is a no-op when the database does not exist.
+func DropDatabase(major, dbName string) error {
+	port, err := PortFor(major)
+	if err != nil {
+		return err
+	}
+	psql := filepath.Join(config.PostgresBinDir(major), "psql")
+	args := []string{
+		"-h", "127.0.0.1",
+		"-p", strconv.Itoa(port),
+		"-U", "postgres",
+		"-c",
+		fmt.Sprintf(`DROP DATABASE IF EXISTS "%s"`, dbName),
+	}
+	if _, err := exec.Command(psql, args...).Output(); err != nil {
+		return fmt.Errorf("psql drop: %w", err)
+	}
+	return nil
+}

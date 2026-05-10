@@ -20,6 +20,8 @@ func Register(parent *cobra.Command) {
 		logsCmd,
 		statusCmd,
 		downloadCmd, // hidden; included so it's discoverable for debugging
+		dbCreateCmd,
+		dbDropCmd,
 	}
 	for _, c := range cmds {
 		parent.AddCommand(c)

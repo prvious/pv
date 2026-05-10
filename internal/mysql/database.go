@@ -33,3 +33,29 @@ func CreateDatabase(version, dbName string) error {
 	}
 	return nil
 }
+
+// DropDatabase drops dbName on the given mysql version using the bundled
+// `mysql` client over the unix socket. Idempotent via
+// `DROP DATABASE IF EXISTS`. The dbName is backquoted so identifiers with
+// dots or hyphens (typical when projectName comes from a slugified
+// directory) parse correctly.
+//
+// Connection details match CreateDatabase byte-for-byte:
+//   - binary: ~/.pv/mysql/<version>/bin/mysql (absolute path; not on PATH)
+//   - socket: /tmp/pv-mysql-<version>.sock
+//   - user:   root (empty password; loopback-only per spec)
+func DropDatabase(version, dbName string) error {
+	bin := filepath.Join(config.MysqlBinDir(version), "mysql")
+	socket := fmt.Sprintf("/tmp/pv-mysql-%s.sock", version)
+	stmt := fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", dbName)
+	args := []string{
+		"--socket=" + socket,
+		"-u", "root",
+		"-e", stmt,
+	}
+	out, err := exec.Command(bin, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mysql drop database %q: %w (output: %s)", dbName, err, string(out))
+	}
+	return nil
+}
