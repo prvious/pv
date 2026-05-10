@@ -23,6 +23,8 @@ import (
 // (ApplyPvYmlServicesStep) guarantees the binary is installed.
 type ApplyPvYmlEnvStep struct{}
 
+var _ automation.Step = (*ApplyPvYmlEnvStep)(nil)
+
 func (s *ApplyPvYmlEnvStep) Label() string  { return "Apply pv.yml env templates" }
 func (s *ApplyPvYmlEnvStep) Gate() string   { return "apply_pvyml_env" }
 func (s *ApplyPvYmlEnvStep) Critical() bool { return true }
@@ -92,10 +94,6 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 		if err := renderInto(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(), "rustfs.env"); err != nil {
 			return "", err
 		}
-	}
-
-	if len(rendered) == 0 {
-		return "no env keys to write", nil
 	}
 
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
