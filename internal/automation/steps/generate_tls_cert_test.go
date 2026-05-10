@@ -13,6 +13,7 @@ func TestExpandHostsForCertMinting(t *testing.T) {
 		want    []string
 	}{
 		{"no aliases", "myapp", "test", nil, []string{"myapp.test"}},
+		{"empty aliases", "myapp", "test", []string{}, []string{"myapp.test"}},
 		{"one alias", "myapp", "test", []string{"admin.myapp.test"}, []string{"myapp.test", "admin.myapp.test"}},
 		{"two aliases", "myapp", "test", []string{"a.test", "b.test"}, []string{"myapp.test", "a.test", "b.test"}},
 	}

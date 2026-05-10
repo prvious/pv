@@ -35,7 +35,11 @@ func (s *GenerateTLSCertStep) Run(ctx *automation.Context) (string, error) {
 	if len(hosts) == 1 {
 		return hosts[0], nil
 	}
-	return fmt.Sprintf("%s (+%d alias)", hosts[0], len(hosts)-1), nil
+	noun := "alias"
+	if len(hosts) > 2 {
+		noun = "aliases"
+	}
+	return fmt.Sprintf("%s (+%d %s)", hosts[0], len(hosts)-1, noun), nil
 }
 
 // expandHostsForCertMinting returns the primary host followed by every
