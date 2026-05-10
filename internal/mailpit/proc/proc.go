@@ -68,8 +68,8 @@ func BuildSupervisorProcess() (supervisor.Process, error) {
 	// must agree with Port() and ConsolePort() or MAIL_PORT / WebRoutes drift.
 	// Flag names match `mailpit --help` for v1.29.6.
 	args := []string{
-		"--smtp", ":1025",
-		"--listen", ":8025",
+		"--smtp", fmt.Sprintf(":%d", port),
+		"--listen", fmt.Sprintf(":%d", consolePort),
 		"--database", dataDir + "/mailpit.db",
 	}
 
