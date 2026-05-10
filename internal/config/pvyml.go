@@ -12,7 +12,23 @@ const ProjectConfigFilename = "pv.yml"
 
 // ProjectConfig represents the contents of a pv.yml file.
 type ProjectConfig struct {
-	PHP string `yaml:"php"`
+	PHP        string            `yaml:"php"`
+	Aliases    []string          `yaml:"aliases,omitempty"`
+	Env        map[string]string `yaml:"env,omitempty"`
+	Postgresql *ServiceConfig    `yaml:"postgresql,omitempty"`
+	Mysql      *ServiceConfig    `yaml:"mysql,omitempty"`
+	Redis      *ServiceConfig    `yaml:"redis,omitempty"`
+	Mailpit    *ServiceConfig    `yaml:"mailpit,omitempty"`
+	Rustfs     *ServiceConfig    `yaml:"rustfs,omitempty"`
+	Setup      []string          `yaml:"setup,omitempty"`
+}
+
+// ServiceConfig declares a backing service a project depends on.
+// Version is required for postgresql and mysql (multi-version aware);
+// optional and ignored for redis, mailpit, rustfs (single bundled version).
+type ServiceConfig struct {
+	Version string            `yaml:"version,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
 }
 
 // LoadProjectConfig reads and parses a pv.yml file at the given path.

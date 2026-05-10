@@ -246,3 +246,183 @@ func TestFindAndLoadProjectConfig_InvalidYAML(t *testing.T) {
 		t.Error("expected error for invalid YAML")
 	}
 }
+
+func TestLoadProjectConfig_ParsesAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := "php: \"8.4\"\naliases:\n  - admin.myapp.test\n  - api.myapp.test\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	want := []string{"admin.myapp.test", "api.myapp.test"}
+	if len(cfg.Aliases) != len(want) {
+		t.Fatalf("Aliases len = %d, want %d", len(cfg.Aliases), len(want))
+	}
+	for i, a := range want {
+		if cfg.Aliases[i] != a {
+			t.Errorf("Aliases[%d] = %q, want %q", i, cfg.Aliases[i], a)
+		}
+	}
+}
+
+func TestLoadProjectConfig_ParsesTopLevelEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := "php: \"8.4\"\nenv:\n  APP_URL: \"{{ .site_url }}\"\n  APP_NAME: MyApp\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if got := cfg.Env["APP_URL"]; got != "{{ .site_url }}" {
+		t.Errorf("Env[APP_URL] = %q, want %q", got, "{{ .site_url }}")
+	}
+	if got := cfg.Env["APP_NAME"]; got != "MyApp" {
+		t.Errorf("Env[APP_NAME] = %q, want %q", got, "MyApp")
+	}
+}
+
+func TestLoadProjectConfig_ParsesPostgresService(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := `php: "8.4"
+postgresql:
+  version: "18"
+  env:
+    DB_HOST: "{{ .host }}"
+    DB_PORT: "{{ .port }}"
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.Postgresql == nil {
+		t.Fatal("Postgresql is nil, want declared")
+	}
+	if cfg.Postgresql.Version != "18" {
+		t.Errorf("Postgresql.Version = %q, want %q", cfg.Postgresql.Version, "18")
+	}
+	if got := cfg.Postgresql.Env["DB_HOST"]; got != "{{ .host }}" {
+		t.Errorf("Postgresql.Env[DB_HOST] = %q, want %q", got, "{{ .host }}")
+	}
+}
+
+func TestLoadProjectConfig_ParsesMysqlService(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := `php: "8.4"
+mysql:
+  version: "8.0"
+  env:
+    DB_HOST: "{{ .host }}"
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.Mysql == nil {
+		t.Fatal("Mysql is nil, want declared")
+	}
+	if cfg.Mysql.Version != "8.0" {
+		t.Errorf("Mysql.Version = %q, want %q", cfg.Mysql.Version, "8.0")
+	}
+	if got := cfg.Mysql.Env["DB_HOST"]; got != "{{ .host }}" {
+		t.Errorf("Mysql.Env[DB_HOST] = %q, want %q", got, "{{ .host }}")
+	}
+}
+
+func TestLoadProjectConfig_ParsesRedisMailpitRustfs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := `php: "8.4"
+redis:
+  env:
+    REDIS_HOST: "{{ .host }}"
+mailpit:
+  env:
+    MAIL_HOST: "{{ .smtp_host }}"
+rustfs:
+  env:
+    AWS_ENDPOINT: "{{ .endpoint }}"
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.Redis == nil || cfg.Redis.Env["REDIS_HOST"] != "{{ .host }}" {
+		t.Errorf("Redis = %+v, want REDIS_HOST templated", cfg.Redis)
+	}
+	if cfg.Mailpit == nil || cfg.Mailpit.Env["MAIL_HOST"] != "{{ .smtp_host }}" {
+		t.Errorf("Mailpit = %+v, want MAIL_HOST templated", cfg.Mailpit)
+	}
+	if cfg.Rustfs == nil || cfg.Rustfs.Env["AWS_ENDPOINT"] != "{{ .endpoint }}" {
+		t.Errorf("Rustfs = %+v, want AWS_ENDPOINT templated", cfg.Rustfs)
+	}
+}
+
+func TestLoadProjectConfig_ParsesSetup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	body := `php: "8.4"
+setup:
+  - composer install
+  - php artisan key:generate
+  - php artisan migrate
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	want := []string{"composer install", "php artisan key:generate", "php artisan migrate"}
+	if len(cfg.Setup) != len(want) {
+		t.Fatalf("Setup len = %d, want %d", len(cfg.Setup), len(want))
+	}
+	for i, c := range want {
+		if cfg.Setup[i] != c {
+			t.Errorf("Setup[%d] = %q, want %q", i, cfg.Setup[i], c)
+		}
+	}
+}
+
+func TestLoadProjectConfig_OmittedServicesAreNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProjectConfigFilename)
+	if err := os.WriteFile(path, []byte("php: \"8.4\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.Postgresql != nil || cfg.Mysql != nil || cfg.Redis != nil ||
+		cfg.Mailpit != nil || cfg.Rustfs != nil {
+		t.Errorf("services should be nil when undeclared, got %+v / %+v / %+v / %+v / %+v",
+			cfg.Postgresql, cfg.Mysql, cfg.Redis, cfg.Mailpit, cfg.Rustfs)
+	}
+	if len(cfg.Aliases) != 0 || len(cfg.Env) != 0 || len(cfg.Setup) != 0 {
+		t.Errorf("optional slices/maps should be empty, got aliases=%v env=%v setup=%v",
+			cfg.Aliases, cfg.Env, cfg.Setup)
+	}
+}
