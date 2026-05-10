@@ -331,12 +331,19 @@ mysql:
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
+
 	cfg, err := LoadProjectConfig(path)
 	if err != nil {
 		t.Fatalf("LoadProjectConfig() error = %v", err)
 	}
-	if cfg.Mysql == nil || cfg.Mysql.Version != "8.0" {
-		t.Fatalf("Mysql = %+v, want version 8.0", cfg.Mysql)
+	if cfg.Mysql == nil {
+		t.Fatal("Mysql is nil, want declared")
+	}
+	if cfg.Mysql.Version != "8.0" {
+		t.Errorf("Mysql.Version = %q, want %q", cfg.Mysql.Version, "8.0")
+	}
+	if got := cfg.Mysql.Env["DB_HOST"]; got != "{{ .host }}" {
+		t.Errorf("Mysql.Env[DB_HOST] = %q, want %q", got, "{{ .host }}")
 	}
 }
 
