@@ -18,12 +18,10 @@ type ReadyCheck struct {
 	Timeout      time.Duration
 }
 
-// TCPReady returns a ReadyCheck that probes 127.0.0.1:port via TCP Dial.
 func TCPReady(port int, timeout time.Duration) ReadyCheck {
 	return ReadyCheck{tcpPort: port, Timeout: timeout}
 }
 
-// HTTPReady returns a ReadyCheck that GETs the given URL and expects a 2xx.
 func HTTPReady(url string, timeout time.Duration) ReadyCheck {
 	return ReadyCheck{httpEndpoint: url, Timeout: timeout}
 }

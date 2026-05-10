@@ -44,7 +44,8 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	var bound int
 	dbName := projectenv.SanitizeProjectName(ctx.ProjectName)
 
-	// Postgres takes a separate path: it's a native binary, not a docker service.
+	// Postgres takes a separate path: its binding records the installed major
+	// version, which requires querying postgres.InstalledMajors() directly.
 	if envVars["DB_CONNECTION"] == "pgsql" {
 		majors, err := postgres.InstalledMajors()
 		if err == nil && len(majors) > 0 {
@@ -57,7 +58,6 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		}
 	}
 
-	// MySQL binding (native binary path; no longer routed via reg.Services).
 	// Only bind when DB_CONNECTION=mysql is *explicit* in .env. An unset
 	// DB_CONNECTION is Laravel's compiled default ("mysql") but we don't
 	// step on undecided projects.

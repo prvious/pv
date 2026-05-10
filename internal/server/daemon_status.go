@@ -19,7 +19,6 @@ type DaemonStatus struct {
 	Supervised map[string]SupervisedStatus `json:"supervised"`
 }
 
-// SupervisedStatus holds the runtime state of a single supervised binary.
 type SupervisedStatus struct {
 	PID     int  `json:"pid"`
 	Running bool `json:"running"`
@@ -29,8 +28,7 @@ type SupervisedStatus struct {
 // daemon process. It is recorded in every status snapshot.
 var daemonStartedAt = time.Now()
 
-// writeDaemonStatus serializes the current supervisor state to
-// ~/.pv/daemon-status.json. Safe to call from the reconcile path.
+// writeDaemonStatus is safe to call from the reconcile path.
 func writeDaemonStatus(sup *supervisor.Supervisor) error {
 	snap := DaemonStatus{
 		PID:        os.Getpid(),

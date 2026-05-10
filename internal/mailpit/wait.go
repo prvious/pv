@@ -7,13 +7,9 @@ import (
 	"github.com/prvious/pv/internal/server"
 )
 
-// WaitStopped polls daemon-status.json until mailpit is no longer
-// running, or until timeout. Used before destructive on-disk operations
-// during uninstall and between the disable/enable halves of a restart so
-// we don't yank the binary out from under a live process or coalesce
-// two reconcile signals into a no-op. Returns nil when the daemon
-// snapshot reports the binary is not running, or when the snapshot is
-// missing (daemon stopped — already stopped from our perspective).
+// WaitStopped polls until mailpit is no longer running. Called before
+// destructive on-disk ops and between the disable/enable halves of a
+// restart to avoid coalescing two reconcile signals into a no-op.
 func WaitStopped(timeout time.Duration) error {
 	binaryName := Binary().Name
 	deadline := time.Now().Add(timeout)

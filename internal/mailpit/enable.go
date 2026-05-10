@@ -9,14 +9,9 @@ import (
 	"github.com/prvious/pv/internal/ui"
 )
 
-// SetEnabled flips the registry Enabled flag for mailpit and signals the
-// daemon to reconcile. Used by start (enabled=true) and stop
-// (enabled=false). Returns an error if the service is not registered or
-// if the daemon could not be signaled (so the exit code reflects
-// whether the supervisor actually picked up the change).
-//
-// Reports outcome via the ui helpers — callers don't need to print
-// anything on success.
+// SetEnabled flips the registry Enabled flag and signals the daemon to
+// reconcile. Returns an error if the daemon could not be signaled so
+// that the exit code reflects whether the supervisor picked up the change.
 func SetEnabled(enabled bool) error {
 	reg, err := registry.Load()
 	if err != nil {
@@ -54,11 +49,8 @@ func SetEnabled(enabled bool) error {
 	return nil
 }
 
-// Restart toggles mailpit off, waits for the supervisor to confirm the
-// process has exited, and toggles it back on. Without the wait, two
-// SignalDaemon calls in quick succession can be coalesced by the
-// supervisor into a no-op — the second reconcile sees the final
-// wanted-state as enabled and never stops the process.
+// Restart waits for the process to exit before re-enabling. Without the
+// wait, two SignalDaemon calls can be coalesced into a no-op by the supervisor.
 func Restart() error {
 	if err := SetEnabled(false); err != nil {
 		return err

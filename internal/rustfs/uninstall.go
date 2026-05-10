@@ -14,16 +14,9 @@ import (
 	"github.com/prvious/pv/internal/ui"
 )
 
-// Uninstall stops, unregisters, and removes the rustfs binary. When
-// deleteData is true the data directory is also wiped (postgres-style
-// :uninstall). Linked Laravel projects are unbound and their .env files
-// get fallback values applied. The caller is responsible for confirming
-// with the user before invoking when deleteData == true.
-//
-// The registry entry is removed last so that a failure in any earlier
-// step (file removal, data deletion) leaves a state where re-running
-// :uninstall is meaningful — the entry still exists, the operation can
-// be retried.
+// Uninstall removes rustfs. Registry entry is removed last so that a
+// failure in any earlier step leaves a state where re-running :uninstall
+// is meaningful — the entry still exists, the operation can be retried.
 func Uninstall(deleteData bool) error {
 	reg, err := registry.Load()
 	if err != nil {

@@ -2,8 +2,6 @@ package registry
 
 import "strings"
 
-// ServiceKey returns the registry key for a service instance.
-// For versioned services: "mysql:8.0.32". For unversioned: "redis".
 func ServiceKey(name, version string) string {
 	if version == "" || version == "latest" {
 		return name

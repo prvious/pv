@@ -283,8 +283,6 @@ func init() {
 	rootCmd.AddCommand(setupCmd)
 }
 
-// buildServiceOptions returns the wizard's service multi-select options.
-// All managed services are now binary services (s3, mail).
 func buildServiceOptions() []selectOption {
 	return []selectOption{
 		{label: mailpit.DisplayName(), value: "mail"},
