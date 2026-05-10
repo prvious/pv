@@ -3,6 +3,7 @@ package steps
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/automation"
@@ -72,8 +73,91 @@ func TestApplyPvYmlServices_ErrorsWhenVersionNotInstalled(t *testing.T) {
 		},
 	}
 	step := &ApplyPvYmlServicesStep{}
-	if _, err := step.Run(ctx); err == nil {
+	_, err := step.Run(ctx)
+	if err == nil {
 		t.Fatal("Run: want error when postgres not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "pv postgres:install 18") {
+		t.Errorf("err = %v; want it to include `pv postgres:install 18`", err)
+	}
+}
+
+func TestApplyPvYmlServices_BindsMysqlFromConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageMysqlBinary(t, "8.4")
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Mysql: &config.ServiceConfig{Version: "8.4"},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reg.Projects[0].Services == nil || reg.Projects[0].Services.MySQL != "8.4" {
+		t.Errorf("MySQL binding = %+v, want version=8.4", reg.Projects[0].Services)
+	}
+}
+
+func TestApplyPvYmlServices_ErrorsWhenMysqlNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// No stub — mysql.IsInstalled("8.4") returns false.
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Mysql: &config.ServiceConfig{Version: "8.4"},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error when mysql not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "pv mysql:install 8.4") {
+		t.Errorf("err = %v; want it to include `pv mysql:install 8.4`", err)
+	}
+}
+
+func TestApplyPvYmlServices_ErrorsWhenPostgresVersionEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Postgresql: &config.ServiceConfig{}, // no Version
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error when postgres version is empty, got nil")
+	}
+	if !strings.Contains(err.Error(), "version is required") {
+		t.Errorf("err = %v; want it to include `version is required`", err)
 	}
 }
 

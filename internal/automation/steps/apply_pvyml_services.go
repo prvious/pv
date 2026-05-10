@@ -15,8 +15,9 @@ import (
 //
 // For version-bearing services (postgres, mysql), errors if the
 // declared version isn't installed. For single-version services
-// (redis, mailpit, rustfs), binds unconditionally — matching the
-// existing auto-detect behavior.
+// (redis, mailpit, rustfs), errors if the service isn't installed
+// — pv.yml should fail loud, never silently bind a service that
+// won't be there.
 type ApplyPvYmlServicesStep struct{}
 
 var _ automation.Step = (*ApplyPvYmlServicesStep)(nil)
@@ -50,18 +51,7 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 		if version == "" {
 			return "", fmt.Errorf("pv.yml mysql: version is required")
 		}
-		installed, err := mysql.InstalledVersions()
-		if err != nil {
-			return "", fmt.Errorf("list mysql versions: %w", err)
-		}
-		found := false
-		for _, v := range installed {
-			if v == version {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !mysql.IsInstalled(version) {
 			return "", fmt.Errorf("pv.yml mysql %q is not installed — run `pv mysql:install %s`", version, version)
 		}
 		bindProjectMysql(ctx.Registry, ctx.ProjectName, version)
@@ -77,11 +67,17 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	if cfg.Mailpit != nil {
+		if findServiceByName(ctx.Registry, "mail") == "" {
+			return "", fmt.Errorf("pv.yml mailpit is not installed — run `pv mailpit:install`")
+		}
 		bindProjectService(ctx.Registry, ctx.ProjectName, "mail", "mailpit")
 		count++
 	}
 
 	if cfg.Rustfs != nil {
+		if findServiceByName(ctx.Registry, "s3") == "" {
+			return "", fmt.Errorf("pv.yml rustfs is not installed — run `pv rustfs:install`")
+		}
 		bindProjectService(ctx.Registry, ctx.ProjectName, "s3", "rustfs")
 		count++
 	}
