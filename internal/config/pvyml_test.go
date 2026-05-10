@@ -477,3 +477,24 @@ func TestProjectConfig_HasAnyEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectConfig_HasSetup(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ProjectConfig
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", &ProjectConfig{PHP: "8.4"}, false},
+		{"empty slice", &ProjectConfig{Setup: []string{}}, false},
+		{"one command", &ProjectConfig{Setup: []string{"composer install"}}, true},
+		{"several commands", &ProjectConfig{Setup: []string{"composer install", "php artisan migrate"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.HasSetup(); got != tt.want {
+				t.Errorf("HasSetup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

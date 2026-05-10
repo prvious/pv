@@ -104,3 +104,14 @@ func (p *ProjectConfig) HasAnyEnv() bool {
 	}
 	return false
 }
+
+// HasSetup reports whether pv.yml declares any setup: commands.
+// Nil-safe so it can be called on a freshly-loaded *ProjectConfig
+// that may not exist for the project. Empty slice (Setup: []) is
+// treated as "no setup declared" — same as omitting the block.
+func (p *ProjectConfig) HasSetup() bool {
+	if p == nil {
+		return false
+	}
+	return len(p.Setup) > 0
+}
