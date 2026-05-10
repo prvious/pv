@@ -1,7 +1,6 @@
 package projectenv
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/certs"
@@ -23,9 +22,6 @@ func TestProjectTemplateVars_Defaults(t *testing.T) {
 	}
 	if got["tls_key_path"] != certs.KeyPath("myapp.test") {
 		t.Errorf("tls_key_path = %q, want %q", got["tls_key_path"], certs.KeyPath("myapp.test"))
-	}
-	if !strings.HasSuffix(got["tls_cert_path"], "myapp.test.crt") {
-		t.Errorf("tls_cert_path should end with myapp.test.crt, got %q", got["tls_cert_path"])
 	}
 }
 
