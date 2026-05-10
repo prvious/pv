@@ -105,17 +105,23 @@ pv link --name=myapp ~/Code/myapp`,
 			}
 		}
 
+		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
+		if err != nil {
+			return fmt.Errorf("read pv.yml: %w", err)
+		}
+
 		// Build automation context.
 		ctx := &automation.Context{
-			ProjectPath: absPath,
-			ProjectName: name,
-			ProjectType: projectType,
-			PHPVersion:  phpVersion,
-			GlobalPHP:   globalPHP,
-			TLD:         settings.Defaults.TLD,
-			Registry:    reg,
-			Settings:    settings,
-			Env:         make(map[string]string),
+			ProjectPath:   absPath,
+			ProjectName:   name,
+			ProjectType:   projectType,
+			PHPVersion:    phpVersion,
+			GlobalPHP:     globalPHP,
+			TLD:           settings.Defaults.TLD,
+			Registry:      reg,
+			Settings:      settings,
+			Env:           make(map[string]string),
+			ProjectConfig: projectCfg,
 		}
 
 		// Load existing .env if present.

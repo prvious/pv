@@ -70,3 +70,33 @@ func FindAndLoadProjectConfig(startDir string) (*ProjectConfig, error) {
 	}
 	return LoadProjectConfig(path)
 }
+
+// HasServices reports whether any service block is declared in pv.yml.
+// Nil-safe so it can be called on a freshly-loaded *ProjectConfig that
+// may not exist for the project.
+func (p *ProjectConfig) HasServices() bool {
+	if p == nil {
+		return false
+	}
+	return p.Postgresql != nil || p.Mysql != nil || p.Redis != nil ||
+		p.Mailpit != nil || p.Rustfs != nil
+}
+
+// HasAnyEnv reports whether pv.yml declares any env keys — either the
+// top-level Env map or any service's Env map. Used to decide whether
+// the new pv.yml-driven env writer runs and the legacy Laravel
+// writer skips.
+func (p *ProjectConfig) HasAnyEnv() bool {
+	if p == nil {
+		return false
+	}
+	if len(p.Env) > 0 {
+		return true
+	}
+	for _, svc := range []*ServiceConfig{p.Postgresql, p.Mysql, p.Redis, p.Mailpit, p.Rustfs} {
+		if svc != nil && len(svc.Env) > 0 {
+			return true
+		}
+	}
+	return false
+}
