@@ -649,3 +649,41 @@ func TestDetectServicesStep_WritesMysqlEnvVars(t *testing.T) {
 		}
 	}
 }
+
+// laravelCtxWithBoundService returns an automation.Context that
+// satisfies every condition of DetectServicesStep.ShouldRun EXCEPT
+// the pv.yml short-circuit — useful for verifying the short-circuit
+// is the only thing toggling ShouldRun in these tests.
+func laravelCtxWithBoundService(name string) *automation.Context {
+	return &automation.Context{
+		ProjectName: name,
+		ProjectType: "laravel",
+		Registry: &registry.Registry{
+			Projects: []registry.Project{{
+				Name:     name,
+				Type:     "laravel",
+				Services: &registry.ProjectServices{Redis: true},
+			}},
+		},
+	}
+}
+
+func TestLaravelDetectServices_SkipsWhenPvYmlHasEnv(t *testing.T) {
+	ctx := laravelCtxWithBoundService("test-project")
+	ctx.ProjectConfig = &config.ProjectConfig{
+		Env: map[string]string{"APP_URL": "{{ .site_url }}"},
+	}
+	step := &DetectServicesStep{}
+	if step.ShouldRun(ctx) {
+		t.Errorf("ShouldRun: want false when pv.yml has env")
+	}
+}
+
+func TestLaravelDetectServices_RunsWhenPvYmlEmpty(t *testing.T) {
+	ctx := laravelCtxWithBoundService("test-project")
+	ctx.ProjectConfig = &config.ProjectConfig{PHP: "8.4"}
+	step := &DetectServicesStep{}
+	if !step.ShouldRun(ctx) {
+		t.Errorf("ShouldRun: want true when pv.yml has no env")
+	}
+}

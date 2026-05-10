@@ -227,6 +227,9 @@ func (s *DetectServicesStep) Gate() string   { return "update_env_on_service" }
 func (s *DetectServicesStep) Critical() bool { return false }
 
 func (s *DetectServicesStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasAnyEnv() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
