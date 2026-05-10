@@ -4,7 +4,7 @@ import "strconv"
 
 // EnvVars returns the DB_* map injected into a linked project's .env when
 // the project is bound to a mysql version. projectName is sanitized by
-// the caller (services.SanitizeProjectName).
+// the caller (projectenv.SanitizeProjectName).
 //
 // DB_PASSWORD is empty: mysqld is initialized with --initialize-insecure
 // and bound to 127.0.0.1 only, so root has no password. Matches the

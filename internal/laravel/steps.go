@@ -9,7 +9,7 @@ import (
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
-	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/ui"
 )
 
@@ -49,7 +49,7 @@ func (s *CopyEnvStep) Run(ctx *automation.Context) (string, error) {
 	if err := os.WriteFile(dst, data, 0644); err != nil {
 		return "", fmt.Errorf("write .env: %w", err)
 	}
-	env, err := services.ReadDotEnv(dst)
+	env, err := projectenv.ReadDotEnv(dst)
 	if err != nil {
 		return "", fmt.Errorf("parse .env: %w", err)
 	}
@@ -108,7 +108,7 @@ func (s *SetAppURLStep) Run(ctx *automation.Context) (string, error) {
 	appURL := fmt.Sprintf("https://%s.%s", ctx.ProjectName, tld)
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
 	vars := map[string]string{"APP_URL": appURL}
-	if err := services.MergeDotEnv(envPath, "", vars); err != nil {
+	if err := projectenv.MergeDotEnv(envPath, "", vars); err != nil {
 		return "", fmt.Errorf("set APP_URL: %w", err)
 	}
 	return appURL, nil
@@ -141,7 +141,7 @@ func (s *SetViteTLSStep) Run(ctx *automation.Context) (string, error) {
 		"VITE_DEV_SERVER_CERT": certs.CertPath(hostname),
 		"VITE_DEV_SERVER_KEY":  certs.KeyPath(hostname),
 	}
-	if err := services.MergeDotEnv(envPath, "", vars); err != nil {
+	if err := projectenv.MergeDotEnv(envPath, "", vars); err != nil {
 		return "", fmt.Errorf("set Vite TLS: %w", err)
 	}
 	return hostname, nil
@@ -250,7 +250,7 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	vars := SmartEnvVars(proj.Services)
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
 	if len(vars) > 0 {
-		if err := services.MergeDotEnv(envPath, "", vars); err != nil {
+		if err := projectenv.MergeDotEnv(envPath, "", vars); err != nil {
 			return "", fmt.Errorf("merge service env: %w", err)
 		}
 	}

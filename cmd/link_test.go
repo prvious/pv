@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 	"github.com/spf13/cobra"
 )
 
@@ -421,7 +421,7 @@ func TestLink_AutomationCopiesEnv(t *testing.T) {
 		t.Fatal(".env was not created by automation pipeline")
 	}
 
-	env, err := services.ReadDotEnv(envPath)
+	env, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		t.Fatalf("failed to read .env: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestLink_AutomationSetsAppURL(t *testing.T) {
 		t.Fatalf("link command error = %v", err)
 	}
 
-	env, err := services.ReadDotEnv(filepath.Join(projDir, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
 	if err != nil {
 		t.Fatalf("failed to read .env: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
 	}
 
 	// SetAppURLStep should have updated APP_URL even with pre-existing .env.
-	env, err := services.ReadDotEnv(filepath.Join(projDir, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
 	if err != nil {
 		t.Fatalf("failed to read .env: %v", err)
 	}

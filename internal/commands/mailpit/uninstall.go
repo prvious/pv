@@ -4,9 +4,8 @@ import (
 	"fmt"
 
 	"charm.land/huh/v2"
+	pkg "github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
-	"github.com/prvious/pv/internal/svchooks"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -24,10 +23,6 @@ var uninstallCmd = &cobra.Command{
 		reg, err := registry.Load()
 		if err != nil {
 			return fmt.Errorf("cannot load registry: %w", err)
-		}
-		svc, ok := services.LookupBinary("mail")
-		if !ok {
-			return fmt.Errorf("mailpit binary service not registered (build issue)")
 		}
 		if _, ok := reg.Services["mail"]; !ok {
 			ui.Subtle("Mailpit is not installed.")
@@ -47,7 +42,7 @@ var uninstallCmd = &cobra.Command{
 				return fmt.Errorf("aborted")
 			}
 		}
-		if err := svchooks.Uninstall(svc, reg, true); err != nil {
+		if err := pkg.Uninstall(true); err != nil {
 			return err
 		}
 		ui.Success("Mailpit uninstalled.")

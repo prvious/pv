@@ -84,7 +84,7 @@ func TestReconcile_SpawnsBinaryServices(t *testing.T) {
 	enabled := true
 	reg := &registry.Registry{
 		Services: map[string]*registry.ServiceInstance{
-			"s3": {Kind: "binary", Port: 9000, ConsolePort: 9001, Enabled: &enabled},
+			"s3": {Port: 9000, ConsolePort: 9001, Enabled: &enabled},
 		},
 	}
 	if err := reg.Save(); err != nil {
@@ -119,7 +119,7 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	// Phase 1: enabled, should start.
 	enabled := true
 	reg1 := &registry.Registry{Services: map[string]*registry.ServiceInstance{
-		"s3": {Kind: "binary", Port: 9000, Enabled: &enabled},
+		"s3": {Port: 9000, Enabled: &enabled},
 	}}
 	if err := reg1.Save(); err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	// Phase 2: disabled, should stop.
 	disabled := false
 	reg2 := &registry.Registry{Services: map[string]*registry.ServiceInstance{
-		"s3": {Kind: "binary", Port: 9000, Enabled: &disabled},
+		"s3": {Port: 9000, Enabled: &disabled},
 	}}
 	if err := reg2.Save(); err != nil {
 		t.Fatal(err)

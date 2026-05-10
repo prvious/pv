@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 
 	"github.com/prvious/pv/internal/config"
+	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
+	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
 )
 
 // --- Template for service console reverse proxy (*.pv.{tld}) ---
@@ -358,17 +358,21 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 	}
 
 	for key := range reg.Services {
-		// Parse service name from key (e.g. "mysql:8.0" → "mysql").
-		svcName := key
-		if idx := strings.Index(key, ":"); idx > 0 {
-			svcName = key[:idx]
-		}
+		svcName, _ := registry.ParseServiceKey(key)
 
-		binSvc, ok := services.LookupBinary(svcName)
-		if !ok {
+		var routes []WebRoute
+		switch svcName {
+		case "s3":
+			for _, r := range rustfsproc.WebRoutes() {
+				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
+			}
+		case "mail":
+			for _, r := range mailpitproc.WebRoutes() {
+				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
+			}
+		default:
 			continue
 		}
-		routes := binSvc.WebRoutes()
 
 		for _, route := range routes {
 			var buf bytes.Buffer

@@ -9,8 +9,8 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 )
 
 func testCtx(dir string) *automation.Context {
@@ -169,7 +169,7 @@ func TestSetAppURLStep_Run(t *testing.T) {
 	}
 
 	// Verify .env was updated
-	env, err := services.ReadDotEnv(filepath.Join(dir, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(dir, ".env"))
 	if err != nil {
 		t.Fatalf("failed to read .env: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestSetViteTLSStep_Run(t *testing.T) {
 		t.Error("expected non-empty result")
 	}
 
-	env, err := services.ReadDotEnv(filepath.Join(dir, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(dir, ".env"))
 	if err != nil {
 		t.Fatalf("ReadDotEnv: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestDetectServicesStep_Run(t *testing.T) {
 	}
 
 	// Check .env was updated
-	env, err := services.ReadDotEnv(filepath.Join(dir, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(dir, ".env"))
 	if err != nil {
 		t.Fatalf("failed to read .env: %v", err)
 	}

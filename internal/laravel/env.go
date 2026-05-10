@@ -6,13 +6,12 @@ import (
 
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 )
 
 // SmartEnvVars returns Laravel-specific behavioral env vars based on bound services.
-// Separate from services.EnvVars() which returns connection details.
 func SmartEnvVars(bound *registry.ProjectServices) map[string]string {
 	vars := make(map[string]string)
 	if bound.Redis {
@@ -66,7 +65,7 @@ func ApplyFallbacks(envPath, serviceName string) error {
 	if len(rules) == 0 {
 		return nil
 	}
-	env, err := services.ReadDotEnv(envPath)
+	env, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		return err
 	}
@@ -80,28 +79,12 @@ func ApplyFallbacks(envPath, serviceName string) error {
 		return nil
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, replacements)
+	return projectenv.MergeDotEnv(envPath, backupPath, replacements)
 }
 
-// UpdateProjectEnvForBinaryService merges connection vars + smart Laravel vars into .env
-// for services that run as native binaries (implementing services.BinaryService).
-func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName string, svc services.BinaryService, bound *registry.ProjectServices) error {
-	envPath := filepath.Join(projectPath, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		return nil
-	}
-	allVars := svc.EnvVars(projectName)
-	smartVars := SmartEnvVars(bound)
-	for k, v := range smartVars {
-		allVars[k] = v
-	}
-	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, allVars)
-}
-
-// UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForBinaryService for
-// the postgres native-binary case. postgres has its own EnvVars signature
-// (projectName, major) — it doesn't satisfy services.BinaryService.
+// UpdateProjectEnvForPostgres merges connection vars + smart Laravel vars into
+// .env for the postgres native-binary case. postgres has its own EnvVars
+// signature (projectName, major).
 func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -116,12 +99,11 @@ func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *
 		pgVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, pgVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, pgVars)
 }
 
 // UpdateProjectEnvForMysql mirrors UpdateProjectEnvForPostgres for the mysql
-// native-binary case. mysql has its own EnvVars signature (projectName, version)
-// — it doesn't satisfy services.BinaryService.
+// native-binary case. mysql has its own EnvVars signature (projectName, version).
 func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -136,7 +118,7 @@ func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *r
 		myVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, myVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, myVars)
 }
 
 // UpdateProjectEnvForRedis mirrors UpdateProjectEnvForMysql /
@@ -154,5 +136,5 @@ func UpdateProjectEnvForRedis(projectPath, projectName string, bound *registry.P
 		rVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, rVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, rVars)
 }

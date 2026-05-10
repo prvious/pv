@@ -683,13 +683,11 @@ func TestServiceSaveLoad_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestServiceInstance_JSON_WithKindEnabled(t *testing.T) {
+func TestServiceInstance_JSON_WithEnabled(t *testing.T) {
 	enabled := true
 	si := ServiceInstance{
-		Image:       "",
 		Port:        9000,
 		ConsolePort: 9001,
-		Kind:        "binary",
 		Enabled:     &enabled,
 	}
 	data, err := json.Marshal(si)
@@ -700,23 +698,23 @@ func TestServiceInstance_JSON_WithKindEnabled(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatal(err)
 	}
-	if back.Kind != "binary" {
-		t.Errorf("Kind round-trip: got %q", back.Kind)
+	if back.Port != 9000 {
+		t.Errorf("Port round-trip: got %d", back.Port)
+	}
+	if back.ConsolePort != 9001 {
+		t.Errorf("ConsolePort round-trip: got %d", back.ConsolePort)
 	}
 	if back.Enabled == nil || *back.Enabled != true {
 		t.Errorf("Enabled round-trip: got %v", back.Enabled)
 	}
 }
 
-func TestServiceInstance_JSON_OldFormat_DefaultsToDocker(t *testing.T) {
-	// Entries written by earlier pv versions do not include Kind or Enabled.
+func TestServiceInstance_JSON_OldFormat_DefaultsToNilEnabled(t *testing.T) {
+	// Entries written by earlier pv versions do not include Enabled.
 	blob := []byte(`{"image":"redis:7","port":6379}`)
 	var si ServiceInstance
 	if err := json.Unmarshal(blob, &si); err != nil {
 		t.Fatal(err)
-	}
-	if si.Kind != "" {
-		t.Errorf("old entry should deserialize with empty Kind; got %q", si.Kind)
 	}
 	if si.Enabled != nil {
 		t.Errorf("old entry should deserialize with nil Enabled; got %v", si.Enabled)
@@ -727,9 +725,6 @@ func TestServiceInstance_JSON_EmptyFields_Omitted(t *testing.T) {
 	si := ServiceInstance{Image: "redis:7", Port: 6379}
 	data, _ := json.Marshal(si)
 	s := string(data)
-	if strings.Contains(s, "kind") {
-		t.Errorf("expected kind to be omitted when empty; got %s", s)
-	}
 	if strings.Contains(s, "enabled") {
 		t.Errorf("expected enabled to be omitted when nil; got %s", s)
 	}

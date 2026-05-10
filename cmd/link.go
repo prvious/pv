@@ -13,9 +13,9 @@ import (
 	"github.com/prvious/pv/internal/detection"
 	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -119,7 +119,7 @@ pv link --name=myapp ~/Code/myapp`,
 		}
 
 		// Load existing .env if present.
-		if envVars, err := services.ReadDotEnv(filepath.Join(absPath, ".env")); err == nil {
+		if envVars, err := projectenv.ReadDotEnv(filepath.Join(absPath, ".env")); err == nil {
 			ctx.Env = envVars
 		}
 

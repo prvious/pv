@@ -14,11 +14,8 @@ type ServiceInstance struct {
 	Image       string `json:"image,omitempty"`
 	Port        int    `json:"port"`
 	ConsolePort int    `json:"console_port,omitempty"`
-	// Kind is "docker" (default) or "binary". Empty/unset is treated as "docker"
-	// for backwards compatibility with registry files written by earlier pv versions.
-	Kind string `json:"kind,omitempty"`
-	// Enabled is only meaningful for Kind == "binary". nil is treated as enabled=true
-	// (same back-compat reason). A non-nil false means "registered but stopped".
+	// Enabled — nil means enabled (back-compat with pre-migration registries).
+	// A non-nil false means "registered but stopped".
 	Enabled *bool `json:"enabled,omitempty"`
 }
 

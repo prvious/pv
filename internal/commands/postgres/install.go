@@ -5,9 +5,9 @@ import (
 
 	"github.com/prvious/pv/internal/laravel"
 	pg "github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -63,9 +63,8 @@ pv postgres:install 17`,
 
 // bindLinkedProjectsToPostgres walks linked projects and binds any
 // pgsql-using project to the just-installed major if it has no postgres
-// binding yet. Mirrors bindBinaryServiceToAllProjects + the env-write
-// hook that service:add does for mail/s3 — the retroactive-bind path for
-// projects linked before postgres existed.
+// binding yet. The retroactive-bind path for projects linked before
+// postgres existed; mirrors rustfs.BindToAllProjects / mailpit.BindToAllProjects.
 //
 // Bind condition: project is Laravel-shaped AND its .env has
 // DB_CONNECTION=pgsql AND Services.Postgres is empty. Projects already
@@ -85,7 +84,7 @@ func bindLinkedProjectsToPostgres(major string) error {
 			continue // already bound (to this or another major)
 		}
 		envPath := p.Path + "/.env"
-		envVars, err := services.ReadDotEnv(envPath)
+		envVars, err := projectenv.ReadDotEnv(envPath)
 		if err != nil {
 			continue // no .env or unreadable; skip silently
 		}

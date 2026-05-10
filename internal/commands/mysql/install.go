@@ -5,9 +5,9 @@ import (
 
 	"github.com/prvious/pv/internal/laravel"
 	my "github.com/prvious/pv/internal/mysql"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -63,8 +63,9 @@ pv mysql:install 9.7`,
 //
 // Bind condition: project is Laravel-shaped AND its .env has
 // DB_CONNECTION=mysql AND Services.MySQL is empty. Projects already
-// bound to a different version are left alone. Per spec Q5/A1, an
-// unset DB_CONNECTION does NOT trigger binding.
+// bound to a different version are left alone. An unset DB_CONNECTION
+// does NOT trigger binding — "mysql" is Laravel's compiled default and
+// we don't step on undecided projects.
 func bindLinkedProjectsToMysql(version string) error {
 	reg, err := registry.Load()
 	if err != nil {
@@ -80,7 +81,7 @@ func bindLinkedProjectsToMysql(version string) error {
 			continue
 		}
 		envPath := p.Path + "/.env"
-		envVars, err := services.ReadDotEnv(envPath)
+		envVars, err := projectenv.ReadDotEnv(envPath)
 		if err != nil {
 			continue
 		}

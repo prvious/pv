@@ -1,0 +1,49 @@
+package rustfs
+
+import (
+	"github.com/prvious/pv/internal/binaries"
+	"github.com/prvious/pv/internal/caddy"
+	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
+	"github.com/prvious/pv/internal/supervisor"
+)
+
+const (
+	displayName = "S3 Storage (RustFS)"
+)
+
+// Binary returns the binaries.Binary descriptor for rustfs.
+// Delegates to the leaf proc package so that internal/server can import
+// proc directly without creating an import cycle through this package.
+func Binary() binaries.Binary { return rustfsproc.Binary() }
+
+func Port() int           { return rustfsproc.Port() }
+func ConsolePort() int    { return rustfsproc.ConsolePort() }
+func DisplayName() string { return displayName }
+func ServiceKey() string  { return rustfsproc.ServiceKey() }
+
+func WebRoutes() []caddy.WebRoute {
+	raw := rustfsproc.WebRoutes()
+	out := make([]caddy.WebRoute, len(raw))
+	for i, r := range raw {
+		out[i] = caddy.WebRoute{Subdomain: r.Subdomain, Port: r.Port}
+	}
+	return out
+}
+
+func EnvVars(projectName string) map[string]string {
+	return map[string]string{
+		"AWS_ACCESS_KEY_ID":           "rstfsadmin",
+		"AWS_SECRET_ACCESS_KEY":       "rstfsadmin",
+		"AWS_DEFAULT_REGION":          "us-east-1",
+		"AWS_BUCKET":                  projectName,
+		"AWS_ENDPOINT":                "http://127.0.0.1:9000",
+		"AWS_USE_PATH_STYLE_ENDPOINT": "true",
+	}
+}
+
+// BuildSupervisorProcess returns the supervisor.Process for rustfs.
+// Delegates to proc.BuildSupervisorProcess so the build logic is defined
+// once in the leaf package.
+func BuildSupervisorProcess() (supervisor.Process, error) {
+	return rustfsproc.BuildSupervisorProcess()
+}

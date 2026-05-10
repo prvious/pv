@@ -10,9 +10,9 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 )
 
@@ -32,7 +32,7 @@ func (s *DetectServicesStep) ShouldRun(_ *automation.Context) bool {
 
 func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
-	envVars, err := services.ReadDotEnv(envPath)
+	envVars, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "no .env found", nil
@@ -42,9 +42,10 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	var bound int
-	dbName := services.SanitizeProjectName(ctx.ProjectName)
+	dbName := projectenv.SanitizeProjectName(ctx.ProjectName)
 
-	// Postgres takes a separate path: it's a native binary, not a docker service.
+	// Postgres takes a separate path: its binding records the installed major
+	// version, which requires querying postgres.InstalledMajors() directly.
 	if envVars["DB_CONNECTION"] == "pgsql" {
 		majors, err := postgres.InstalledMajors()
 		if err == nil && len(majors) > 0 {
@@ -57,7 +58,6 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		}
 	}
 
-	// MySQL binding (native binary path; no longer routed via reg.Services).
 	// Only bind when DB_CONNECTION=mysql is *explicit* in .env. An unset
 	// DB_CONNECTION is Laravel's compiled default ("mysql") but we don't
 	// step on undecided projects.
@@ -136,10 +136,7 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 
 func findServiceByName(reg *registry.Registry, name string) string {
 	for key := range reg.Services {
-		keyName := key
-		if idx := strings.Index(key, ":"); idx > 0 {
-			keyName = key[:idx]
-		}
+		keyName, _ := registry.ParseServiceKey(key)
 		if keyName == name {
 			return key
 		}
