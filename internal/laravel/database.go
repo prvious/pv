@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/projectenv"
-	"github.com/prvious/pv/internal/services"
 )
 
 // ResolveDatabaseName reads DB_DATABASE from .env.example.
@@ -14,12 +13,12 @@ func ResolveDatabaseName(projectPath, projectName string) string {
 	envExample := filepath.Join(projectPath, ".env.example")
 	env, err := projectenv.ReadDotEnv(envExample)
 	if err != nil {
-		return services.SanitizeProjectName(projectName)
+		return projectenv.SanitizeProjectName(projectName)
 	}
 
 	dbName, ok := env["DB_DATABASE"]
 	if !ok || dbName == "" || dbName == "laravel" {
-		return services.SanitizeProjectName(projectName)
+		return projectenv.SanitizeProjectName(projectName)
 	}
 
 	return dbName

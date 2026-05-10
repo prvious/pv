@@ -13,7 +13,6 @@ import (
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 )
 
@@ -43,7 +42,7 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	var bound int
-	dbName := services.SanitizeProjectName(ctx.ProjectName)
+	dbName := projectenv.SanitizeProjectName(ctx.ProjectName)
 
 	// Postgres takes a separate path: it's a native binary, not a docker service.
 	if envVars["DB_CONNECTION"] == "pgsql" {
