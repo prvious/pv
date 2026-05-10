@@ -265,6 +265,11 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 			ui.Subtle(fmt.Sprintf("Could not write mysql env vars: %v", err))
 		}
 	}
+	if proj != nil && proj.Services != nil && proj.Services.Redis {
+		if err := UpdateProjectEnvForRedis(ctx.ProjectPath, ctx.ProjectName, proj.Services); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not write redis env vars: %v", err))
+		}
+	}
 	if len(vars) == 0 {
 		return "no env vars to set", nil
 	}

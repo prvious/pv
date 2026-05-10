@@ -33,9 +33,11 @@ type Service interface {
 	HasDatabases() bool
 }
 
-var registry = map[string]Service{
-	"redis": &Redis{},
-}
+// Docker registry — currently empty. Postgres and MySQL migrated to
+// native binaries (PR #75 / PR #80); Redis migrated in this PR. The
+// registry stays as a map so callers (Lookup, Available) continue to
+// compile and operate over the empty set.
+var registry = map[string]Service{}
 
 func Lookup(name string) (Service, error) {
 	svc, ok := registry[name]

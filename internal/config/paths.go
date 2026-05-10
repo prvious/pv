@@ -255,6 +255,25 @@ func MysqlLogPath(version string) string {
 	return filepath.Join(LogsDir(), "mysql-"+version+".log")
 }
 
+// RedisDir is the root for the native redis binary tree:
+// ~/.pv/redis/{redis-server,redis-cli}.
+// Single-version — no per-version subdir.
+func RedisDir() string {
+	return filepath.Join(PvDir(), "redis")
+}
+
+// RedisDataDir is the redis-server data dir, kept under
+// ~/.pv/data/redis/ so it survives a binary uninstall (unless
+// --force is used). RDB snapshots land in <RedisDataDir>/dump.rdb.
+func RedisDataDir() string {
+	return filepath.Join(DataDir(), "redis")
+}
+
+// RedisLogPath returns the supervisor log file for redis.
+func RedisLogPath() string {
+	return filepath.Join(LogsDir(), "redis.log")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),

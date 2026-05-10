@@ -234,42 +234,13 @@ func TestApplyFallbacks_NoRulesForService(t *testing.T) {
 	}
 }
 
-func TestUpdateProjectEnvForService(t *testing.T) {
-	dir := t.TempDir()
-	envPath := filepath.Join(dir, ".env")
-	os.WriteFile(envPath, []byte("APP_NAME=test\nDB_HOST=localhost\n"), 0644)
-
-	svc, _ := services.Lookup("redis")
-	bound := &registry.ProjectServices{Redis: true}
-
-	if err := UpdateProjectEnvForService(dir, "my-app", "redis", svc, 6379, bound); err != nil {
-		t.Fatalf("UpdateProjectEnvForService: %v", err)
-	}
-
-	env, _ := services.ReadDotEnv(envPath)
-	// Connection vars from Redis.EnvVars
-	if env["REDIS_HOST"] != "127.0.0.1" {
-		t.Errorf("REDIS_HOST = %q, want 127.0.0.1", env["REDIS_HOST"])
-	}
-	// Smart vars from SmartEnvVars
-	if env["CACHE_STORE"] != "redis" {
-		t.Errorf("CACHE_STORE = %q, want redis", env["CACHE_STORE"])
-	}
-	if env["SESSION_DRIVER"] != "redis" {
-		t.Errorf("SESSION_DRIVER = %q, want redis", env["SESSION_DRIVER"])
-	}
-}
-
-func TestUpdateProjectEnvForService_NoEnvFile(t *testing.T) {
-	dir := t.TempDir()
-	svc, _ := services.Lookup("redis")
-	bound := &registry.ProjectServices{Redis: true}
-
-	// Should not error when .env doesn't exist
-	if err := UpdateProjectEnvForService(dir, "my-app", "redis", svc, 6379, bound); err != nil {
-		t.Fatalf("UpdateProjectEnvForService should not error for missing .env: %v", err)
-	}
-}
+// Note: TestUpdateProjectEnvForService and TestUpdateProjectEnvForService_NoEnvFile
+// were dropped when redis (the last docker Service) migrated to a native binary.
+// UpdateProjectEnvForService takes a services.Service argument; with no docker
+// Service implementations left there's nothing to construct via services.Lookup.
+// The function itself remains for any future docker service that might be
+// reintroduced, and is exercised through the binary / postgres / mysql / redis
+// variants below.
 
 func TestUpdateProjectEnvForBinaryService(t *testing.T) {
 	dir := t.TempDir()
@@ -366,5 +337,47 @@ func TestUpdateProjectEnvForMysql_NoEnvFile(t *testing.T) {
 	// and docker variants — pv never creates .env from nothing).
 	if err := UpdateProjectEnvForMysql(tmp, "my_app", "8.4", bound); err != nil {
 		t.Fatalf("UpdateProjectEnvForMysql with no .env: %v", err)
+	}
+}
+
+func TestUpdateProjectEnvForRedis(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=test\nREDIS_HOST=stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bound := &registry.ProjectServices{Redis: true}
+	if err := UpdateProjectEnvForRedis(dir, "test", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForRedis: %v", err)
+	}
+
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"REDIS_HOST=127.0.0.1",
+		"REDIS_PORT=6379",
+		"REDIS_PASSWORD=null",
+		"CACHE_STORE=redis",
+		"SESSION_DRIVER=redis",
+		"QUEUE_CONNECTION=redis",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf(".env missing %q; got: %s", want, string(got))
+		}
+	}
+}
+
+func TestUpdateProjectEnvForRedis_NoEnvFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	bound := &registry.ProjectServices{Redis: true}
+	// No .env file in dir — helper must no-op without error.
+	if err := UpdateProjectEnvForRedis(dir, "test", bound); err != nil {
+		t.Fatalf("UpdateProjectEnvForRedis on missing .env: %v", err)
 	}
 }

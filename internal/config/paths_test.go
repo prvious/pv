@@ -556,3 +556,51 @@ func TestEnsureDirs_CreatesMysqlDir(t *testing.T) {
 		t.Errorf("MysqlDir not created: %v", err)
 	}
 }
+
+func TestRedisDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisDir()
+	want := "/home/test/.pv/redis"
+	if got != want {
+		t.Errorf("RedisDir = %q, want %q", got, want)
+	}
+}
+
+func TestRedisDataDir(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisDataDir()
+	want := "/home/test/.pv/data/redis"
+	if got != want {
+		t.Errorf("RedisDataDir = %q, want %q", got, want)
+	}
+}
+
+func TestRedisLogPath(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+	got := RedisLogPath()
+	want := "/home/test/.pv/logs/redis.log"
+	if got != want {
+		t.Errorf("RedisLogPath = %q, want %q", got, want)
+	}
+}
+
+// Redis dirs are deliberately NOT created by EnsureDirs. Unlike Mysql/Postgres
+// where EnsureDirs only creates the parent, redis previously listed both
+// RedisDir and RedisDataDir directly — which meant any registry/state save
+// (each routes through EnsureDirs) recreated them on every call, including
+// after Uninstall removed them. The redis lifecycle now creates these
+// dirs on demand: Install performs `os.Rename(staging, RedisDir())` and an
+// explicit `os.MkdirAll(RedisDataDir())`. Anything outside Install can
+// trust IsInstalled() / RedisDataDir-existence checks.
+func TestEnsureDirs_DoesNotCreateRedisDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	if _, err := os.Stat(RedisDir()); !os.IsNotExist(err) {
+		t.Errorf("RedisDir should NOT be created by EnsureDirs (got err=%v)", err)
+	}
+	if _, err := os.Stat(RedisDataDir()); !os.IsNotExist(err) {
+		t.Errorf("RedisDataDir should NOT be created by EnsureDirs (got err=%v)", err)
+	}
+}

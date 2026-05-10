@@ -18,10 +18,12 @@ import (
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
+	rediscmd "github.com/prvious/pv/internal/commands/redis"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
 	my "github.com/prvious/pv/internal/mysql"
 	pg "github.com/prvious/pv/internal/postgres"
+	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
@@ -234,6 +236,17 @@ var uninstallCmd = &cobra.Command{
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("mysql %s uninstall failed: %v", version, err))
 					}
+				}
+			}
+		}
+
+		// Redis uninstall (single-version). Removes data dir, binary, state.
+		// User has already consented to a full pv uninstall.
+		if r.IsInstalled() {
+			if err := rediscmd.UninstallForce(); err != nil {
+				hadFailures = true
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("redis uninstall failed: %v", err))
 				}
 			}
 		}
