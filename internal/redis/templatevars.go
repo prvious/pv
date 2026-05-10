@@ -12,7 +12,7 @@ import (
 // Keys: host, port, password, url.
 func TemplateVars() map[string]string {
 	const host = "127.0.0.1"
-	port := RedisPort
+	port := PortFor()
 	return map[string]string{
 		"host":     host,
 		"port":     strconv.Itoa(port),
