@@ -9,6 +9,8 @@ import (
 // `postgresql.env:` block. The caller passes the major (e.g., "18")
 // from pv.yml and the probed fullVersion (e.g., "18.1"); both come
 // from outside so this function stays pure and testable.
+//
+// Keys: host, port, username, password, version, dsn.
 func TemplateVars(major, fullVersion string) (map[string]string, error) {
 	port, err := PortFor(major)
 	if err != nil {
