@@ -23,7 +23,7 @@ const serviceConsoleTmpl = `{{.Subdomain}}.pv.{{.TLD}} {
 
 // --- Templates for the main process (direct serving) ---
 
-const laravelOctaneTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
+const laravelOctaneTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}}{{range .Aliases}}, {{.}}{{end}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -40,7 +40,7 @@ const laravelOctaneTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
 }
 `
 
-const laravelTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
+const laravelTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}}{{range .Aliases}}, {{.}}{{end}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -51,7 +51,7 @@ const laravelTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
 }
 `
 
-const phpTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
+const phpTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}}{{range .Aliases}}, {{.}}{{end}} {
     tls internal
     root * {{.RootPath}}
     encode zstd gzip
@@ -62,7 +62,7 @@ const phpTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
 }
 `
 
-const staticTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
+const staticTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}}{{range .Aliases}}, {{.}}{{end}} {
     tls internal
     root * {{.RootPath}}
     file_server
@@ -71,7 +71,7 @@ const staticTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
 
 // --- Template for reverse proxy (main process proxies to secondary) ---
 
-const proxyTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
+const proxyTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}}{{range .Aliases}}, {{.}}{{end}} {
     tls internal
     reverse_proxy 127.0.0.1:{{.Port}}
 }
@@ -79,7 +79,7 @@ const proxyTmpl = `{{.Name}}.{{.TLD}}, *.{{.Name}}.{{.TLD}} {
 
 // --- Templates for secondary FrankenPHP instances ---
 
-const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
+const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}}{{range .Aliases}}, http://{{.}}{{end}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -95,7 +95,7 @@ const versionLaravelOctaneTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.
 }
 `
 
-const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
+const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}}{{range .Aliases}}, http://{{.}}{{end}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -105,7 +105,7 @@ const versionLaravelTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD
 }
 `
 
-const versionPhpTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}} {
+const versionPhpTmpl = `http://{{.Name}}.{{.TLD}}, http://*.{{.Name}}.{{.TLD}}{{range .Aliases}}, http://{{.}}{{end}} {
     root * {{.RootPath}}
     encode zstd gzip
 
@@ -159,6 +159,7 @@ type siteData struct {
 	RootPath string
 	TLD      string
 	Port     int
+	Aliases  []string
 }
 
 type mainCaddyData struct {
@@ -420,6 +421,7 @@ func writeConfig(dir string, p registry.Project, settings *config.Settings, root
 		RootPath: rootPath,
 		TLD:      settings.Defaults.TLD,
 		Port:     port,
+		Aliases:  p.Aliases,
 	}); err != nil {
 		return err
 	}

@@ -588,6 +588,47 @@ func TestGenerateServiceSiteConfigs_Empty(t *testing.T) {
 	}
 }
 
+func TestGenerateSiteConfig_IncludesAliases(t *testing.T) {
+	scaffold(t)
+
+	projDir := t.TempDir()
+	proj := registry.Project{
+		Name:    "myapp",
+		Path:    projDir,
+		Type:    "php",
+		PHP:     "8.4",
+		Aliases: []string{"admin.myapp.test", "api.myapp.test"},
+	}
+	if err := GenerateSiteConfig(proj, ""); err != nil {
+		t.Fatalf("GenerateSiteConfig: %v", err)
+	}
+	cfg := readSiteConfig(t, "myapp")
+	for _, want := range []string{"myapp.test", "*.myapp.test", "admin.myapp.test", "api.myapp.test"} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("config missing host %q\n%s", want, cfg)
+		}
+	}
+}
+
+func TestGenerateSiteConfig_NoAliasesPreservesLegacy(t *testing.T) {
+	scaffold(t)
+
+	projDir := t.TempDir()
+	proj := registry.Project{
+		Name: "myapp",
+		Path: projDir,
+		Type: "php",
+		PHP:  "8.4",
+	}
+	if err := GenerateSiteConfig(proj, ""); err != nil {
+		t.Fatalf("GenerateSiteConfig: %v", err)
+	}
+	cfg := readSiteConfig(t, "myapp")
+	if !strings.Contains(cfg, "myapp.test, *.myapp.test {") {
+		t.Errorf("legacy two-host line missing\n%s", cfg)
+	}
+}
+
 func TestGenerateAllSiteConfigs(t *testing.T) {
 	scaffold(t)
 

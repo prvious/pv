@@ -32,6 +32,7 @@ type Project struct {
 	Path      string           `json:"path"`
 	Type      string           `json:"type"`
 	PHP       string           `json:"php,omitempty"`
+	Aliases   []string         `json:"aliases,omitempty"`
 	Services  *ProjectServices `json:"services,omitempty"`
 	Databases []string         `json:"databases,omitempty"`
 }

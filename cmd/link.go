@@ -90,24 +90,30 @@ pv link --name=myapp ~/Code/myapp`,
 			phpVersion = v
 		}
 
+		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
+		if err != nil {
+			return fmt.Errorf("cannot read pv.yml: %w", err)
+		}
+
+		var aliases []string
+		if projectCfg != nil {
+			aliases = projectCfg.Aliases
+		}
+
 		// Register or update project.
 		if relink {
 			if err := reg.UpdateWith(name, func(p *registry.Project) {
 				p.Path = absPath
 				p.Type = projectType
 				p.PHP = phpVersion
+				p.Aliases = aliases
 			}); err != nil {
 				return err
 			}
 		} else {
-			if err := reg.Add(registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion}); err != nil {
+			if err := reg.Add(registry.Project{Name: name, Path: absPath, Type: projectType, PHP: phpVersion, Aliases: aliases}); err != nil {
 				return err
 			}
-		}
-
-		projectCfg, err := config.FindAndLoadProjectConfig(absPath)
-		if err != nil {
-			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
 
 		// Build automation context.
