@@ -63,9 +63,8 @@ pv postgres:install 17`,
 
 // bindLinkedProjectsToPostgres walks linked projects and binds any
 // pgsql-using project to the just-installed major if it has no postgres
-// binding yet. Mirrors bindBinaryServiceToAllProjects + the env-write
-// hook that service:add does for mail/s3 — the retroactive-bind path for
-// projects linked before postgres existed.
+// binding yet. The retroactive-bind path for projects linked before
+// postgres existed; mirrors rustfs.BindToAllProjects / mailpit.BindToAllProjects.
 //
 // Bind condition: project is Laravel-shaped AND its .env has
 // DB_CONNECTION=pgsql AND Services.Postgres is empty. Projects already
