@@ -10,11 +10,12 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
+	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
+	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -167,8 +168,8 @@ func (m *ServerManager) RunningVersions() []string {
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
 // set computed from four sources:
-//  1. registry: single-version services (rustfs, mailpit) marked Kind=binary
-//     and Enabled.
+//  1. registry: single-version services (rustfs via "s3", mailpit via "mail"),
+//     gated on the registry Enabled flag.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
 //  4. internal/redis:    single-version, on-disk + state.json driven.
@@ -188,21 +189,28 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	wanted := map[string]supervisor.Process{}
 	var startErrors []string
 
-	// Source 1 — single-version binary services.
-	for name, svc := range services.AllBinary() {
-		entry := reg.Services[name]
-		if entry == nil || entry.Kind != "binary" {
-			continue
+	// Source 1a — rustfs.
+	if entry := reg.Services["s3"]; entry != nil {
+		if entry.Enabled == nil || *entry.Enabled {
+			proc, err := rustfsproc.BuildSupervisorProcess()
+			if err != nil {
+				startErrors = append(startErrors, fmt.Sprintf("s3: build: %v", err))
+			} else {
+				wanted[rustfsproc.Binary().Name] = proc
+			}
 		}
-		if entry.Enabled != nil && !*entry.Enabled {
-			continue
+	}
+
+	// Source 1b — mailpit.
+	if entry := reg.Services["mail"]; entry != nil {
+		if entry.Enabled == nil || *entry.Enabled {
+			proc, err := mailpitproc.BuildSupervisorProcess()
+			if err != nil {
+				startErrors = append(startErrors, fmt.Sprintf("mail: build: %v", err))
+			} else {
+				wanted[mailpitproc.Binary().Name] = proc
+			}
 		}
-		proc, err := buildSupervisorProcess(svc)
-		if err != nil {
-			startErrors = append(startErrors, fmt.Sprintf("%s: build: %v", name, err))
-			continue
-		}
-		wanted[svc.Binary().Name] = proc
 	}
 
 	// Source 2 — postgres, multi-version.

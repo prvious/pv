@@ -1,14 +1,9 @@
 package rustfs
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"time"
-
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
-	"github.com/prvious/pv/internal/config"
+	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -19,11 +14,15 @@ const (
 	consolePort = 9001
 )
 
-func Binary() binaries.Binary { return binaries.Rustfs }
-func Port() int               { return port }
-func ConsolePort() int        { return consolePort }
-func DisplayName() string     { return displayName }
-func ServiceKey() string      { return serviceKey }
+// Binary returns the binaries.Binary descriptor for rustfs.
+// Delegates to the leaf proc package so that internal/server can import
+// proc directly without creating an import cycle through this package.
+func Binary() binaries.Binary { return rustfsproc.Binary() }
+
+func Port() int           { return port }
+func ConsolePort() int    { return consolePort }
+func DisplayName() string { return displayName }
+func ServiceKey() string  { return serviceKey }
 
 func WebRoutes() []caddy.WebRoute {
 	return []caddy.WebRoute{
@@ -44,46 +43,8 @@ func EnvVars(projectName string) map[string]string {
 }
 
 // BuildSupervisorProcess returns the supervisor.Process for rustfs.
+// Delegates to proc.BuildSupervisorProcess so the build logic is defined
+// once in the leaf package.
 func BuildSupervisorProcess() (supervisor.Process, error) {
-	binPath := filepath.Join(config.InternalBinDir(), Binary().Name)
-
-	dataDir := config.ServiceDataDir(serviceKey, "latest")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return supervisor.Process{}, fmt.Errorf("create data dir %s: %w", dataDir, err)
-	}
-
-	logFile := filepath.Join(config.PvDir(), "logs", Binary().Name+".log")
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		return supervisor.Process{}, fmt.Errorf("create log dir: %w", err)
-	}
-
-	rc := supervisor.TCPReady(port, 30*time.Second)
-	ready, err := supervisor.BuildReadyFunc(rc)
-	if err != nil {
-		return supervisor.Process{}, fmt.Errorf("rustfs: %w", err)
-	}
-
-	args := []string{
-		"server", dataDir,
-		"--address", fmt.Sprintf(":%d", port),
-		"--console-enable",
-		"--console-address", fmt.Sprintf(":%d", consolePort),
-	}
-	// RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY are the env var names rustfs expects
-	// per `rustfs server --help`. ROOT_USER / ROOT_PASSWORD (the MinIO equivalents)
-	// are NOT recognised by RustFS — don't substitute them.
-	env := []string{
-		"RUSTFS_ACCESS_KEY=rstfsadmin",
-		"RUSTFS_SECRET_KEY=rstfsadmin",
-	}
-
-	return supervisor.Process{
-		Name:         Binary().Name,
-		Binary:       binPath,
-		Args:         args,
-		Env:          env,
-		LogFile:      logFile,
-		Ready:        ready,
-		ReadyTimeout: rc.Timeout,
-	}, nil
+	return rustfsproc.BuildSupervisorProcess()
 }

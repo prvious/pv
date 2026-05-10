@@ -1,14 +1,9 @@
 package mailpit
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"time"
-
 	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/caddy"
-	"github.com/prvious/pv/internal/config"
+	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -24,11 +19,15 @@ const (
 	consolePort = 8025
 )
 
-func Binary() binaries.Binary { return binaries.Mailpit }
-func Port() int               { return port }
-func ConsolePort() int        { return consolePort }
-func DisplayName() string     { return displayName }
-func ServiceKey() string      { return serviceKey }
+// Binary returns the binaries.Binary descriptor for mailpit.
+// Delegates to the leaf proc package so that internal/server can import
+// proc directly without creating an import cycle through this package.
+func Binary() binaries.Binary { return mailpitproc.Binary() }
+
+func Port() int           { return port }
+func ConsolePort() int    { return consolePort }
+func DisplayName() string { return displayName }
+func ServiceKey() string  { return serviceKey }
 
 func WebRoutes() []caddy.WebRoute {
 	return []caddy.WebRoute{
@@ -46,43 +45,9 @@ func EnvVars(_ string) map[string]string {
 	}
 }
 
+// BuildSupervisorProcess returns the supervisor.Process for mailpit.
+// Delegates to proc.BuildSupervisorProcess so the build logic is defined
+// once in the leaf package.
 func BuildSupervisorProcess() (supervisor.Process, error) {
-	binPath := filepath.Join(config.InternalBinDir(), Binary().Name)
-
-	dataDir := config.ServiceDataDir(serviceKey, "latest")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return supervisor.Process{}, fmt.Errorf("create data dir %s: %w", dataDir, err)
-	}
-
-	logFile := filepath.Join(config.PvDir(), "logs", Binary().Name+".log")
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		return supervisor.Process{}, fmt.Errorf("create log dir: %w", err)
-	}
-
-	// ReadyCheck uses Mailpit's documented /livez endpoint, which returns 200 once
-	// both the SMTP and HTTP servers are listening.
-	rc := supervisor.HTTPReady("http://127.0.0.1:8025/livez", 30*time.Second)
-	ready, err := supervisor.BuildReadyFunc(rc)
-	if err != nil {
-		return supervisor.Process{}, fmt.Errorf("mailpit: %w", err)
-	}
-
-	// Args pins the SMTP and HTTP bind addresses to :1025 and :8025; the values
-	// must agree with Port() and ConsolePort() or MAIL_PORT / WebRoutes drift.
-	// Flag names match `mailpit --help` for v1.29.6.
-	args := []string{
-		"--smtp", ":1025",
-		"--listen", ":8025",
-		"--database", dataDir + "/mailpit.db",
-	}
-
-	return supervisor.Process{
-		Name:         Binary().Name,
-		Binary:       binPath,
-		Args:         args,
-		Env:          nil,
-		LogFile:      logFile,
-		Ready:        ready,
-		ReadyTimeout: rc.Timeout,
-	}, nil
+	return mailpitproc.BuildSupervisorProcess()
 }
