@@ -124,7 +124,6 @@ func TestDoctor_SkipsBinaryServices(t *testing.T) {
 	}
 	tru := true
 	reg.Services["mail"] = &registry.ServiceInstance{
-		Kind:    "binary",
 		Port:    1025,
 		Enabled: &tru,
 	}
