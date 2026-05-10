@@ -92,35 +92,33 @@ pv mago:update
 pv mago:uninstall
 ```
 
-This pattern applies to all tools: `php`, `mago`, `composer`, `colima`.
+This pattern applies to all tools: `php`, `mago`, `composer`.
 
 ### Backing services
 
-Containerized services for databases, caching, and more — powered by Colima/Docker:
+All backing services run as native binaries supervised by the pv daemon — no Docker, no VM. Each service has its own first-class command group:
 
 ```bash
-# Add a service
-pv service:add mysql
-pv service:add redis 7
+# Databases
+pv postgres:install 17
+pv postgres:start
 
-# Manage services
-pv service:start mysql
-pv service:stop mysql
-pv service:status mysql
-pv service:list
+pv mysql:install 8.4
+pv mysql:start 8.4
 
-# Inject credentials into your project's .env
-pv service:env my-app
+pv redis:install
+pv redis:start
 
-# View logs
-pv service:logs mysql
+# Mail (Mailpit) — `mail:*` is an alias for `mailpit:*`
+pv mailpit:install
+pv mailpit:start
 
-# Remove or destroy
-pv service:remove mysql
-pv service:destroy mysql
+# S3 (RustFS) — `s3:*` is an alias for `rustfs:*`
+pv rustfs:install
+pv rustfs:start
 ```
 
-Available services: MySQL, PostgreSQL, Redis, Mail (Mailpit), S3 (Rustfs).
+Each service exposes the standard lifecycle (`install`, `uninstall`, `update`, `start`, `stop`, `restart`, `status`, `logs`).
 
 ### Daemon mode
 
@@ -148,10 +146,8 @@ pv uninstall         # Complete removal with guided cleanup
 │   ├── php                     # Shim (version resolution)
 │   ├── composer                # Shim (wraps PHAR with PHP)
 │   ├── frankenphp              # Symlink → ~/.pv/php/{ver}/frankenphp
-│   ├── mago                    # Symlink → ~/.pv/internal/bin/mago
-│   └── colima                  # Symlink → ~/.pv/internal/bin/colima (opt-in)
+│   └── mago                    # Symlink → ~/.pv/internal/bin/mago
 ├── internal/bin/               # Private storage — real binaries
-│   ├── colima
 │   ├── mago
 │   └── composer.phar
 ├── pv.yml                      # Global settings (TLD, default PHP)
@@ -181,8 +177,11 @@ internal/
     php/             # php:install, php:use, php:list, etc.
     mago/            # mago:install, mago:update, etc.
     composer/        # composer:install, composer:update, etc.
-    colima/          # colima:install, colima:update, etc.
-    service/         # service:add, service:remove, etc.
+    postgres/        # postgres:install, postgres:start, etc.
+    mysql/           # mysql:install, mysql:start, etc.
+    redis/           # redis:install, redis:start, etc.
+    rustfs/          # rustfs:* / s3:* (object storage)
+    mailpit/         # mailpit:* / mail:* (SMTP catcher)
     daemon/          # daemon:enable, daemon:disable, etc.
   tools/             # Tool abstraction (exposure, shims, symlinks)
   config/            # Path helpers, settings
@@ -191,11 +190,11 @@ internal/
   caddy/             # Caddyfile generation
   server/            # Process management, DNS
   daemon/            # macOS launchd integration
+  supervisor/        # Native binary supervision (start/stop/health)
   binaries/          # Binary download helpers
   selfupdate/        # pv self-update
-  colima/            # Container runtime
-  container/         # Docker abstraction
-  services/          # Backing service definitions
+  postgres/, mysql/, redis/  # Per-database lifecycle helpers
+  services/          # Binary-service registry (mail, s3)
   detection/         # Project type detection
   setup/             # Prerequisites, shell config
   ui/                # Terminal UI (lipgloss)

@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/binaries"
-	"github.com/prvious/pv/internal/colima"
-	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
@@ -81,19 +79,10 @@ var updateCmd = &cobra.Command{
 			failures = append(failures, "Composer")
 		}
 
-		if colima.IsInstalled() {
-			if err := colimacmd.RunUpdate(); err != nil {
-				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Fail(fmt.Sprintf("Colima update failed: %v", err))
-				}
-				failures = append(failures, "Colima")
-			}
-		}
-
 		// Update each installed postgres major. Each fetches the latest rolling
 		// artifact and atomically swaps in the new binary tree. Failures are
 		// surfaced via ui.Fail and counted in the failures list — same shape
-		// as PHP / Mago / Composer / Colima above.
+		// as PHP / Mago / Composer above.
 		if majors, err := pg.InstalledMajors(); err == nil {
 			for _, major := range majors {
 				if err := postgresCmds.RunUpdate([]string{major}); err != nil {
@@ -191,8 +180,8 @@ var updateCmd = &cobra.Command{
 						ui.Subtle(fmt.Sprintf("Could not save versions state: %v", err))
 					}
 					if server.IsRunning() {
-						ui.Subtle(fmt.Sprintf("Updated binaries: %s. Run `pv service:stop %s && pv service:start %s` (or `pv restart`) to load them.",
-							strings.Join(binaryUpdated, ", "), binaryUpdated[0], binaryUpdated[0]))
+						ui.Subtle(fmt.Sprintf("Updated binaries: %s. Run `pv restart` to load them.",
+							strings.Join(binaryUpdated, ", ")))
 					}
 				}
 			}

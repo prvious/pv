@@ -189,28 +189,6 @@ func PackagesDir() string {
 	return filepath.Join(PvDir(), "internal", "packages")
 }
 
-func ColimaPath() string {
-	return filepath.Join(InternalBinDir(), "colima")
-}
-
-// ColimaHomeDir returns the directory used as COLIMA_HOME, keeping all Colima
-// and Lima state under ~/.pv/ instead of the default ~/.colima/.
-func ColimaHomeDir() string {
-	return filepath.Join(PvDir(), "internal", "colima")
-}
-
-func LimaDir() string {
-	return filepath.Join(PvDir(), "internal", "lima")
-}
-
-func LimaBinDir() string {
-	return filepath.Join(LimaDir(), "bin")
-}
-
-func ColimaSocketPath() string {
-	return filepath.Join(ColimaHomeDir(), "pv", "docker.sock")
-}
-
 func PostgresDir() string {
 	return filepath.Join(PvDir(), "postgres")
 }
@@ -287,7 +265,6 @@ func EnsureDirs() error {
 		ServicesDir(),
 		InternalBinDir(),
 		PackagesDir(),
-		ColimaHomeDir(),
 		MysqlDir(),
 	}
 	for _, dir := range dirs {

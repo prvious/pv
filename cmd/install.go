@@ -11,7 +11,9 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
+	mailpit "github.com/prvious/pv/internal/commands/mailpit"
 	"github.com/prvious/pv/internal/commands/php"
+	rustfs "github.com/prvious/pv/internal/commands/rustfs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/packages"
 	"github.com/prvious/pv/internal/services"
@@ -34,8 +36,7 @@ type withSpec struct {
 }
 
 type serviceSpec struct {
-	name    string
-	version string
+	name string
 }
 
 func parseWith(raw string) (withSpec, error) {
@@ -51,16 +52,11 @@ func parseWith(raw string) (withSpec, error) {
 		}
 
 		if strings.HasPrefix(item, "service[") && strings.HasSuffix(item, "]") {
-			inner := item[8 : len(item)-1]
-			parts := strings.SplitN(inner, ":", 2)
-			s := serviceSpec{name: parts[0]}
-			if len(parts) > 1 {
-				s.version = parts[1]
+			name := item[8 : len(item)-1]
+			if _, ok := services.LookupBinary(name); !ok {
+				return spec, fmt.Errorf("unknown service %q in --with (available: %s)", name, strings.Join(services.Available(), ", "))
 			}
-			if k, _, _, _ := services.LookupAny(s.name); k == services.KindUnknown {
-				return spec, fmt.Errorf("unknown service %q in --with (available: %s)", s.name, strings.Join(services.Available(), ", "))
-			}
-			spec.services = append(spec.services, s)
+			spec.services = append(spec.services, serviceSpec{name: name})
 		} else {
 			parts := strings.SplitN(item, ":", 2)
 			name := parts[0]
@@ -88,8 +84,7 @@ var installCmd = &cobra.Command{
 	Long: `Installs the core pv stack non-interactively. For an interactive setup wizard, use: pv setup
 
 Non-negotiable tools (always installed): PHP, Composer
-Optional tools: Mago (via --with)
-Colima is installed automatically when you add your first service.`,
+Optional tools: Mago (via --with)`,
 	Example: `# Install with defaults
 pv install
 
@@ -99,8 +94,8 @@ pv install --tld=test
 # Choose a specific PHP version and optional tools
 pv install --with="php:8.2,mago"
 
-# Include backing services
-pv install --with="php:8.3,service[redis:7]"`,
+# Include backing services (s3, mail)
+pv install --with="php:8.3,service[s3],service[mail]"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		start := time.Now()
 
@@ -232,9 +227,9 @@ pv install --with="php:8.3,service[redis:7]"`,
 			}
 		}
 
-		// Step 9: Install services from --with.
+		// Step 9: Install binary services from --with.
 		for _, svc := range spec.services {
-			if err := addService(svc.name, svc.version); err != nil {
+			if err := installBinaryService(svc.name); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Service %s failed: %v", svc.name, err))
 				}
@@ -245,6 +240,20 @@ pv install --with="php:8.3,service[redis:7]"`,
 
 		return nil
 	},
+}
+
+// installBinaryService installs a binary backing service by name.
+// Only s3 (rustfs) and mail (mailpit) are supported. Database services
+// (postgres, mysql, redis) have their own first-class commands.
+func installBinaryService(name string) error {
+	switch name {
+	case "s3":
+		return rustfs.RunInstall()
+	case "mail":
+		return mailpit.RunInstall()
+	default:
+		return fmt.Errorf("unknown binary service %q", name)
+	}
 }
 
 // shortPath returns the path relative to HOME for display.

@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/prvious/pv/internal/container"
 )
 
 var safeIdentifier = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -18,52 +16,24 @@ type WebRoute struct {
 	Port      int
 }
 
-type Service interface {
-	Name() string
-	DisplayName() string
-	ImageName(version string) string
-	ContainerName(version string) string
-	DefaultVersion() string
-	Port(version string) int
-	ConsolePort(version string) int
-	WebRoutes() []WebRoute // HTTP endpoints exposed under *.pv.{tld}
-	CreateOpts(version string) container.CreateOpts
-	EnvVars(projectName string, port int) map[string]string
-	CreateDatabase(engine *container.Engine, containerID, dbName string) error
-	HasDatabases() bool
-}
-
-// Docker registry — currently empty. Postgres and MySQL migrated to
-// native binaries (PR #75 / PR #80); Redis migrated in this PR. The
-// registry stays as a map so callers (Lookup, Available) continue to
-// compile and operate over the empty set.
-var registry = map[string]Service{}
-
-func Lookup(name string) (Service, error) {
-	svc, ok := registry[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(Available(), ", "))
-	}
-	return svc, nil
-}
-
-// Available returns the union of Docker and binary service names, sorted.
-// A set deduplicates entries in case a name ever appears in both registries —
-// not currently the case, but not prevented by the type system either.
+// Available returns the names of all registered services, sorted.
+// All services now run as native binaries supervised by the daemon.
 func Available() []string {
-	seen := make(map[string]struct{}, len(registry)+len(binaryRegistry))
-	for n := range registry {
-		seen[n] = struct{}{}
-	}
+	names := make([]string, 0, len(binaryRegistry))
 	for n := range binaryRegistry {
-		seen[n] = struct{}{}
-	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Lookup returns the BinaryService registered under name, or an error
+// listing the available services.
+func Lookup(name string) (BinaryService, error) {
+	if svc, ok := binaryRegistry[name]; ok {
+		return svc, nil
+	}
+	return nil, fmt.Errorf("unknown service %q (available: %s)", name, strings.Join(Available(), ", "))
 }
 
 // SanitizeProjectName converts a directory name to a database-safe identifier.

@@ -12,7 +12,6 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/certs"
-	colimacmd "github.com/prvious/pv/internal/commands/colima"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
@@ -207,13 +206,6 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
-		if err := colimacmd.RunUninstall(); err != nil {
-			hadFailures = true
-			if !errors.Is(err, ui.ErrAlreadyPrinted) {
-				ui.Fail(fmt.Sprintf("Colima uninstall failed: %v", err))
-			}
-		}
-
 		// Postgres uninstall (per installed major). Removes data dirs, binaries,
 		// state. User has already consented to a full pv uninstall.
 		if majors, err := pg.InstalledMajors(); err == nil {

@@ -4,16 +4,20 @@ import (
 	"testing"
 )
 
-func TestLookup_Valid(t *testing.T) {
-	// docker registry is empty; all former docker services (postgres,
-	// mysql, redis) are now native binaries. mail and s3 live in the
-	// binary registry, not the docker one. Nothing to iterate here.
-}
-
 func TestLookup_Invalid(t *testing.T) {
 	_, err := Lookup("mongodb")
 	if err == nil {
 		t.Error("expected error for unknown service, got nil")
+	}
+}
+
+func TestLookup_BinaryService(t *testing.T) {
+	svc, err := Lookup("mail")
+	if err != nil {
+		t.Fatalf("Lookup(\"mail\") error = %v", err)
+	}
+	if svc == nil {
+		t.Error("Lookup(\"mail\") returned nil service")
 	}
 }
 
@@ -35,7 +39,7 @@ func TestServiceKey(t *testing.T) {
 
 func TestAvailable(t *testing.T) {
 	names := Available()
-	// 0 Docker services + 2 binary services (s3, mail).
+	// 2 binary services: s3, mail.
 	if len(names) != 2 {
 		t.Errorf("Available() returned %d services, want 2", len(names))
 	}

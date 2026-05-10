@@ -364,14 +364,11 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 			svcName = key[:idx]
 		}
 
-		var routes []services.WebRoute
-		if dockerSvc, err := services.Lookup(svcName); err == nil {
-			routes = dockerSvc.WebRoutes()
-		} else if binSvc, ok := services.LookupBinary(svcName); ok {
-			routes = binSvc.WebRoutes()
-		} else {
+		binSvc, ok := services.LookupBinary(svcName)
+		if !ok {
 			continue
 		}
+		routes := binSvc.WebRoutes()
 
 		for _, route := range routes {
 			var buf bytes.Buffer

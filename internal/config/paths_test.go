@@ -337,36 +337,6 @@ func TestInternalBinDir(t *testing.T) {
 	}
 }
 
-func TestColimaPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	got := ColimaPath()
-	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "bin", "colima")) {
-		t.Errorf("ColimaPath() = %q, want suffix .pv/internal/bin/colima", got)
-	}
-}
-
-func TestColimaSocketPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	got := ColimaSocketPath()
-	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "colima", "pv", "docker.sock")) {
-		t.Errorf("ColimaSocketPath() = %q, want suffix .pv/internal/colima/pv/docker.sock", got)
-	}
-}
-
-func TestColimaHomeDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	got := ColimaHomeDir()
-	if !strings.HasSuffix(got, filepath.Join(".pv", "internal", "colima")) {
-		t.Errorf("ColimaHomeDir() = %q, want suffix .pv/internal/colima", got)
-	}
-}
-
 func TestEnsureDirs_Idempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

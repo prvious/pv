@@ -83,26 +83,8 @@ func ApplyFallbacks(envPath, serviceName string) error {
 	return services.MergeDotEnv(envPath, backupPath, replacements)
 }
 
-// UpdateProjectEnvForService merges connection vars + smart Laravel vars into .env.
-func UpdateProjectEnvForService(projectPath, projectName, serviceName string, svc services.Service, port int, bound *registry.ProjectServices) error {
-	envPath := filepath.Join(projectPath, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		return nil
-	}
-	allVars := svc.EnvVars(projectName, port)
-	smartVars := SmartEnvVars(bound)
-	for k, v := range smartVars {
-		allVars[k] = v
-	}
-	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, allVars)
-}
-
-// UpdateProjectEnvForBinaryService mirrors UpdateProjectEnvForService for
-// services that run as native binaries (implementing services.BinaryService
-// rather than services.Service). The difference is the EnvVars signature:
-// binary services don't take a port argument because their port is fixed
-// at the struct level.
+// UpdateProjectEnvForBinaryService merges connection vars + smart Laravel vars into .env
+// for services that run as native binaries (implementing services.BinaryService).
 func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName string, svc services.BinaryService, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -117,10 +99,9 @@ func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName stri
 	return services.MergeDotEnv(envPath, backupPath, allVars)
 }
 
-// UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForService and
-// UpdateProjectEnvForBinaryService for the postgres native-binary case.
-// postgres has its own EnvVars signature (projectName, major) — it doesn't
-// satisfy services.Service or services.BinaryService.
+// UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForBinaryService for
+// the postgres native-binary case. postgres has its own EnvVars signature
+// (projectName, major) — it doesn't satisfy services.BinaryService.
 func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -138,10 +119,9 @@ func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *
 	return services.MergeDotEnv(envPath, backupPath, pgVars)
 }
 
-// UpdateProjectEnvForMysql mirrors UpdateProjectEnvForService and
-// UpdateProjectEnvForPostgres for the mysql native-binary case.
-// mysql has its own EnvVars signature (projectName, version) — it doesn't
-// satisfy services.Service or services.BinaryService.
+// UpdateProjectEnvForMysql mirrors UpdateProjectEnvForPostgres for the mysql
+// native-binary case. mysql has its own EnvVars signature (projectName, version)
+// — it doesn't satisfy services.BinaryService.
 func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *registry.ProjectServices) error {
 	envPath := filepath.Join(projectPath, ".env")
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {

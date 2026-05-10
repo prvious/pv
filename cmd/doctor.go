@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -11,14 +10,11 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/prvious/pv/internal/caddy"
-	"github.com/prvious/pv/internal/colima"
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/container"
 	"github.com/prvious/pv/internal/daemon"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -58,9 +54,6 @@ var doctorCmd = &cobra.Command{
 		allChecks = append(allChecks, runNetworkChecks(settings))
 		allChecks = append(allChecks, runServerChecks(globalPHP, reg))
 		allChecks = append(allChecks, runProjectChecks(settings, reg, globalPHP))
-		if svcChecks := runServiceChecks(reg); len(svcChecks.Checks) > 0 {
-			allChecks = append(allChecks, svcChecks)
-		}
 
 		ui.SectionHeader("pv doctor")
 
@@ -557,118 +550,6 @@ func runProjectChecks(settings *config.Settings, reg *registry.Registry, globalP
 }
 
 // --- Service Checks ---
-
-func runServiceChecks(reg *registry.Registry) sectionResult {
-	var checks []check
-
-	svcs := reg.ListServices()
-	if len(svcs) == 0 {
-		return sectionResult{Name: "Services", Checks: checks}
-	}
-
-	// Check Colima.
-	if colima.IsInstalled() {
-		if colima.IsRunning() {
-			checks = append(checks, check{Name: "Colima VM running", Status: true})
-		} else {
-			checks = append(checks, check{
-				Name:    "Colima VM",
-				Status:  false,
-				Message: "Colima VM is not running",
-				Fix:     "pv service:start",
-			})
-		}
-	} else {
-		checks = append(checks, check{
-			Name:    "Colima",
-			Status:  false,
-			Message: "Colima not installed",
-			Fix:     "pv install",
-		})
-	}
-
-	// Check Docker socket.
-	socketPath := config.ColimaSocketPath()
-	if fileExists(socketPath) {
-		checks = append(checks, check{Name: "Docker Engine reachable", Status: true})
-	} else {
-		checks = append(checks, check{
-			Name:    "Docker Engine",
-			Status:  false,
-			Message: "Docker socket not found at " + socketPath,
-			Fix:     "pv service:start",
-		})
-	}
-
-	// Check each registered service.
-	engine, engineErr := container.NewEngine(config.ColimaSocketPath())
-	if engineErr == nil {
-		defer engine.Close()
-	} else {
-		checks = append(checks, check{
-			Name:    "Docker Engine connection",
-			Status:  false,
-			Message: fmt.Sprintf("cannot connect to Docker: %v", engineErr),
-			Fix:     "pv service:start",
-		})
-	}
-
-	for key, svc := range svcs {
-		svcName, version := services.ParseServiceKey(key)
-
-		// Skip binary services: they have no Docker container to probe.
-		// Binary supervision health is reported via `pv service:list` and
-		// `pv service:status`, which read the daemon's status snapshot
-		// directly. Including them here would couple doctor to the daemon's
-		// internal status format and produce misleading "lookup_error"
-		// output for healthy services (mail, s3).
-		if kind, _, _, _ := services.LookupAny(svcName); kind == services.KindBinary {
-			continue
-		}
-
-		status := "unknown"
-		if engine != nil {
-			svcDef, lookupErr := services.Lookup(svcName)
-			if lookupErr != nil {
-				status = "lookup_error"
-			} else {
-				running, runErr := engine.IsRunning(context.Background(), svcDef.ContainerName(version))
-				if runErr != nil {
-					status = "error"
-				} else if running {
-					status = "running"
-				} else {
-					status = "stopped"
-				}
-			}
-		}
-
-		if status == "running" {
-			checks = append(checks, check{
-				Name:   fmt.Sprintf("%s running on :%d", key, svc.Port),
-				Status: true,
-			})
-		} else {
-			msg := "not running"
-			switch status {
-			case "error":
-				msg = "cannot determine status"
-			case "unknown":
-				msg = "cannot check status (Docker unavailable)"
-			case "lookup_error":
-				msg = "unknown service type — registry may be out of date"
-			}
-			checks = append(checks, check{
-				Name:    key,
-				Status:  false,
-				Message: msg,
-				Fix:     fmt.Sprintf("pv service:start %s", key),
-			})
-		}
-	}
-
-	return sectionResult{Name: "Services", Checks: checks}
-}
 
 // --- Helpers ---
 

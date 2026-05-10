@@ -135,9 +135,9 @@ var setupCmd = &cobra.Command{
 				return "", fmt.Errorf("cannot create directories: %w", err)
 			}
 
-			// Build settings from wizard output, preserving existing PHP default and VM config.
+			// Build settings from wizard output, preserving existing PHP default.
 			s := &config.Settings{
-				Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon), VM: settings.Defaults.VM},
+				Defaults:   config.Defaults{TLD: tld, PHP: settings.Defaults.PHP, Daemon: config.BoolPtr(daemon)},
 				Automation: automation,
 			}
 			if err := s.Save(); err != nil {
@@ -195,7 +195,7 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Install optional tools (Colima is lazy-installed via service:add).
+		// Install optional tools.
 		toolSet := make(map[string]bool)
 		for _, t := range selectedTools {
 			toolSet[t] = true
@@ -260,20 +260,11 @@ var setupCmd = &cobra.Command{
 			}
 		}
 
-		// Spin up selected services.
+		// Spin up selected binary services (s3 / mail).
 		if len(selectedServices) > 0 {
 			fmt.Fprintln(os.Stderr)
 			for _, name := range selectedServices {
-				kind, _, docSvc, lookupErr := services.LookupAny(name)
-				if lookupErr != nil {
-					ui.Fail(fmt.Sprintf("Service %s: %v", name, lookupErr))
-					continue
-				}
-				version := ""
-				if kind == services.KindDocker {
-					version = docSvc.DefaultVersion()
-				}
-				if err := addService(name, version); err != nil {
+				if err := installBinaryService(name); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("Service %s failed: %v", name, err))
 					}
@@ -292,27 +283,16 @@ func init() {
 }
 
 // buildServiceOptions returns the wizard's service multi-select options.
-// Both Docker and binary services are listed using their DisplayName so that
-// binary-only services (mail, s3) are visible in the picker.
+// All managed services are now binary services (s3, mail).
 func buildServiceOptions() []selectOption {
 	names := services.Available()
 	out := make([]selectOption, 0, len(names))
 	for _, name := range names {
-		kind, binSvc, docSvc, err := services.LookupAny(name)
-		if err != nil {
-			// Available() is the union of both registries; LookupAny over
-			// the same names should never miss. If it does, skip silently
-			// rather than break the wizard.
+		svc, ok := services.LookupBinary(name)
+		if !ok {
 			continue
 		}
-		var label string
-		switch kind {
-		case services.KindBinary:
-			label = binSvc.DisplayName()
-		case services.KindDocker:
-			label = docSvc.DisplayName()
-		}
-		out = append(out, selectOption{label: label, value: name})
+		out = append(out, selectOption{label: svc.DisplayName(), value: name})
 	}
 	return out
 }

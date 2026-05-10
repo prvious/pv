@@ -29,7 +29,6 @@ func init() {
 		&cobra.Group{ID: "php", Title: "PHP"},
 		&cobra.Group{ID: "composer", Title: "Composer"},
 		&cobra.Group{ID: "mago", Title: "Mago"},
-		&cobra.Group{ID: "colima", Title: "Colima"},
 		&cobra.Group{ID: "service", Title: "Services"},
 		&cobra.Group{ID: "ca", Title: "CA"},
 		&cobra.Group{ID: "daemon", Title: "Daemon"},

@@ -166,15 +166,10 @@ func TestExposeAll(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(config.BinDir(), "mago")); err != nil {
 		t.Error("mago symlink not created by ExposeAll")
 	}
-
-	// Colima should NOT be exposed (AutoExpose=false).
-	if _, err := os.Lstat(filepath.Join(config.BinDir(), "colima")); err == nil {
-		t.Error("colima should not be exposed by ExposeAll")
-	}
 }
 
 func TestExpose_None(t *testing.T) {
-	tool := &Tool{Name: "colima", Exposure: ExposureNone}
+	tool := &Tool{Name: "noexpose", Exposure: ExposureNone}
 	if err := Expose(tool); err != nil {
 		t.Fatalf("Expose(ExposureNone) should be no-op, got: %v", err)
 	}

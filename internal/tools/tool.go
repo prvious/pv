@@ -77,15 +77,6 @@ var registry = map[string]*Tool{
 			return config.MagoPath()
 		},
 	},
-	"colima": {
-		DisplayName: "Colima",
-		AutoExpose:  false,
-		Exposure:    ExposureShim,
-		InternalPath: func() string {
-			return config.ColimaPath()
-		},
-		WriteShim: writeColimaShim,
-	},
 }
 
 func init() {

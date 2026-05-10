@@ -140,6 +140,6 @@ func getInode(info os.FileInfo) uint64 {
 func init() {
 	logCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output")
 	logCmd.Flags().IntVarP(&logLines, "lines", "n", 50, "Number of lines to show")
-	logCmd.Flags().BoolVar(&logDaemon, "daemon", false, "Show daemon log (watcher events, Colima boot, recovery)")
+	logCmd.Flags().BoolVar(&logDaemon, "daemon", false, "Show daemon log (watcher events, supervisor)")
 	rootCmd.AddCommand(logCmd)
 }

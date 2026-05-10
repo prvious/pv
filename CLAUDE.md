@@ -4,7 +4,7 @@ Instructions for working in this codebase. See `README.md` for architecture over
 
 ## What is pv
 
-`pv` is a local dev server manager powered by FrankenPHP. Go + cobra CLI. Manages PHP versions, serves projects under `.test` domains with HTTPS, runs containerized backing services via Colima/Docker.
+`pv` is a local dev server manager powered by FrankenPHP. Go + cobra CLI. Manages PHP versions, serves projects under `.test` domains with HTTPS, supervises backing services as native binaries (no Docker, no VM).
 
 ## This is a Go codebase — use Go
 
@@ -49,7 +49,7 @@ go test ./...                  # run tests
 
 ## Command conventions
 
-- **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `service:add`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
+- **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `postgres:start`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
 - **Subpackage layout**: tool/service/daemon commands live in `internal/commands/<group>/` (e.g., `internal/commands/mago/install.go`). Each group has a `register.go` with a `Register(parent *cobra.Command)` function that wires all commands onto rootCmd. Bridge files in `cmd/` (e.g., `cmd/mago.go`) call `Register(rootCmd)` in `init()`.
 - **Core/orchestrator commands** (`install`, `update`, `uninstall`, `link`, `start`, `stop`, etc.) remain in `cmd/` as flat files.
 - **Cross-package calls**: `register.go` exports `Run*()` helpers (e.g., `php.RunInstall(args)`) for orchestrators to call sub-tool RunE functions.
@@ -57,7 +57,7 @@ go test ./...                  # run tests
 
 ## Tool command rules
 
-Every managed tool (php, mago, composer, colima) follows a strict five-command pattern. When adding a new tool, create all five:
+Every managed tool (php, mago, composer) follows a strict five-command pattern. When adding a new tool, create all five:
 
 | Command | What it does | Where logic lives |
 |---------|-------------|-------------------|
@@ -84,8 +84,7 @@ Every managed tool (php, mago, composer, colima) follows a strict five-command p
 ## Binary storage rules
 
 - `~/.pv/bin/` — user PATH. **Only** shims and symlinks go here. Never place real binaries.
-- `~/.pv/internal/bin/` — private storage. Real binaries (mago, composer.phar, colima) live here.
-- `~/.pv/internal/lima/` — Lima runtime (limactl and supporting binaries). Downloaded as part of `colima:install`.
+- `~/.pv/internal/bin/` — private storage. Real binaries (mago, composer.phar) live here.
 - `~/.pv/php/{ver}/` — versioned PHP binaries (php, frankenphp) live here.
 - Use `config.InternalBinDir()` for private storage paths, `config.BinDir()` for PATH entries.
 
@@ -190,6 +189,9 @@ The `release` job is gated on all six skip flags being false, so a partial dispa
 
 ## Services
 
-- **Docker-backed services** (mysql, redis): implement `services.Service`; live under `service:*` commands. Run as Docker containers via Colima — container ops go through `container.Engine`. Add via `service:add`; new docker services need an impl in `internal/services/` and the command stays in `internal/commands/service/`.
-- **First-class native binaries** (postgres, rustfs/s3, mailpit/mail): each has its own top-level command group (`postgres:*`, `rustfs:*` with `s3:*` alias, `mailpit:*` with `mail:*` alias). Lifecycle (install/uninstall/update/start/stop/restart/status/logs) is supervised by the daemon, not Docker. Shared logic lives in `internal/svchooks/` (binding, install/update/uninstall, enable/disable, status, logs); the per-tool packages in `internal/commands/{rustfs,mailpit,postgres}/` are thin cobra wrappers.
-- The legacy `service:add s3` / `service:add mail` paths now error with a redirect message pointing at the new commands.
+All backing services are native binaries supervised by the pv daemon — there is no Docker layer and no `service:*` command group.
+
+- **First-class command groups**: postgres (`postgres:*`), mysql (`mysql:*`), redis (`redis:*`), rustfs (`rustfs:*` with `s3:*` alias), mailpit (`mailpit:*` with `mail:*` alias). Each exposes the standard lifecycle: `install`, `uninstall`, `update`, `start`, `stop`, `restart`, `status`, `logs`.
+- **Per-tool packages**: `internal/commands/{postgres,mysql,redis,rustfs,mailpit}/` are thin cobra wrappers. Database-specific lifecycle helpers live in `internal/{postgres,mysql,redis}/`.
+- **Binary services with shared shape** (s3 / mail): registered in `internal/services/` (the `BinaryService` interface). Shared lifecycle logic lives in `internal/svchooks/` (binding, install/update/uninstall, enable/disable, status, logs).
+- **Supervision**: the daemon (`internal/supervisor/`) starts/stops binaries and tracks readiness. Services do not boot a VM or talk to a container engine.

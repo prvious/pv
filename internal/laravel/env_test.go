@@ -234,14 +234,6 @@ func TestApplyFallbacks_NoRulesForService(t *testing.T) {
 	}
 }
 
-// Note: TestUpdateProjectEnvForService and TestUpdateProjectEnvForService_NoEnvFile
-// were dropped when redis (the last docker Service) migrated to a native binary.
-// UpdateProjectEnvForService takes a services.Service argument; with no docker
-// Service implementations left there's nothing to construct via services.Lookup.
-// The function itself remains for any future docker service that might be
-// reintroduced, and is exercised through the binary / postgres / mysql / redis
-// variants below.
-
 func TestUpdateProjectEnvForBinaryService(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
