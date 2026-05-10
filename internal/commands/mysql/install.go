@@ -5,9 +5,9 @@ import (
 
 	"github.com/prvious/pv/internal/laravel"
 	my "github.com/prvious/pv/internal/mysql"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -80,7 +80,7 @@ func bindLinkedProjectsToMysql(version string) error {
 			continue
 		}
 		envPath := p.Path + "/.env"
-		envVars, err := services.ReadDotEnv(envPath)
+		envVars, err := projectenv.ReadDotEnv(envPath)
 		if err != nil {
 			continue
 		}

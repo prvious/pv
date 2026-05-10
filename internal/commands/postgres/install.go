@@ -5,9 +5,9 @@ import (
 
 	"github.com/prvious/pv/internal/laravel"
 	pg "github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -85,7 +85,7 @@ func bindLinkedProjectsToPostgres(major string) error {
 			continue // already bound (to this or another major)
 		}
 		envPath := p.Path + "/.env"
-		envVars, err := services.ReadDotEnv(envPath)
+		envVars, err := projectenv.ReadDotEnv(envPath)
 		if err != nil {
 			continue // no .env or unreadable; skip silently
 		}

@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 )
 
 func init() {
@@ -16,7 +16,7 @@ func init() {
 		if _, err := os.Stat(envPath); os.IsNotExist(err) {
 			return nil
 		}
-		return services.MergeDotEnv(envPath, "", map[string]string{
+		return projectenv.MergeDotEnv(envPath, "", map[string]string{
 			"REDIS_HOST":     "127.0.0.1",
 			"REDIS_PORT":     strconv.Itoa(PortFor()),
 			"REDIS_PASSWORD": "null",

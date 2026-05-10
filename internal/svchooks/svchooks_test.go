@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
-	"github.com/prvious/pv/internal/services"
 )
 
 func TestApplyFallbacksToLinkedProjects_Mail(t *testing.T) {
@@ -33,7 +33,7 @@ func TestApplyFallbacksToLinkedProjects_Mail(t *testing.T) {
 
 	ApplyFallbacksToLinkedProjects(reg, "mail")
 
-	env, _ := services.ReadDotEnv(envPath)
+	env, _ := projectenv.ReadDotEnv(envPath)
 	if env["MAIL_MAILER"] != "log" {
 		t.Errorf("MAIL_MAILER = %q, want log", env["MAIL_MAILER"])
 	}

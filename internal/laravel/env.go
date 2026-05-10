@@ -6,6 +6,7 @@ import (
 
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -66,7 +67,7 @@ func ApplyFallbacks(envPath, serviceName string) error {
 	if len(rules) == 0 {
 		return nil
 	}
-	env, err := services.ReadDotEnv(envPath)
+	env, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		return err
 	}
@@ -80,7 +81,7 @@ func ApplyFallbacks(envPath, serviceName string) error {
 		return nil
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, replacements)
+	return projectenv.MergeDotEnv(envPath, backupPath, replacements)
 }
 
 // UpdateProjectEnvForBinaryService merges connection vars + smart Laravel vars into .env
@@ -96,7 +97,7 @@ func UpdateProjectEnvForBinaryService(projectPath, projectName, serviceName stri
 		allVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, allVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, allVars)
 }
 
 // UpdateProjectEnvForPostgres mirrors UpdateProjectEnvForBinaryService for
@@ -116,7 +117,7 @@ func UpdateProjectEnvForPostgres(projectPath, projectName, major string, bound *
 		pgVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, pgVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, pgVars)
 }
 
 // UpdateProjectEnvForMysql mirrors UpdateProjectEnvForPostgres for the mysql
@@ -136,7 +137,7 @@ func UpdateProjectEnvForMysql(projectPath, projectName, version string, bound *r
 		myVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, myVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, myVars)
 }
 
 // UpdateProjectEnvForRedis mirrors UpdateProjectEnvForMysql /
@@ -154,5 +155,5 @@ func UpdateProjectEnvForRedis(projectPath, projectName string, bound *registry.P
 		rVars[k] = v
 	}
 	backupPath := envPath + ".pv-backup"
-	return services.MergeDotEnv(envPath, backupPath, rVars)
+	return projectenv.MergeDotEnv(envPath, backupPath, rVars)
 }

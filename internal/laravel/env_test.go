@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
 )
@@ -150,7 +151,7 @@ func TestApplyFallbacks_ReplacesMatchingValues(t *testing.T) {
 		t.Fatalf("ApplyFallbacks: %v", err)
 	}
 
-	env, err := services.ReadDotEnv(envPath)
+	env, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		t.Fatalf("ReadDotEnv: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestApplyFallbacks_SkipsNonMatchingValues(t *testing.T) {
 		t.Fatalf("ApplyFallbacks: %v", err)
 	}
 
-	env, err := services.ReadDotEnv(envPath)
+	env, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		t.Fatalf("ReadDotEnv: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestApplyFallbacks_S3(t *testing.T) {
 		t.Fatalf("ApplyFallbacks: %v", err)
 	}
 
-	env, _ := services.ReadDotEnv(envPath)
+	env, _ := projectenv.ReadDotEnv(envPath)
 	if env["FILESYSTEM_DISK"] != "local" {
 		t.Errorf("FILESYSTEM_DISK = %q, want local", env["FILESYSTEM_DISK"])
 	}
@@ -213,7 +214,7 @@ func TestApplyFallbacks_Mail(t *testing.T) {
 		t.Fatalf("ApplyFallbacks: %v", err)
 	}
 
-	env, _ := services.ReadDotEnv(envPath)
+	env, _ := projectenv.ReadDotEnv(envPath)
 	if env["MAIL_MAILER"] != "log" {
 		t.Errorf("MAIL_MAILER = %q, want log", env["MAIL_MAILER"])
 	}
@@ -228,7 +229,7 @@ func TestApplyFallbacks_NoRulesForService(t *testing.T) {
 		t.Fatalf("ApplyFallbacks: %v", err)
 	}
 
-	env, _ := services.ReadDotEnv(envPath)
+	env, _ := projectenv.ReadDotEnv(envPath)
 	if env["DB_CONNECTION"] != "mysql" {
 		t.Errorf("DB_CONNECTION = %q, want mysql (unchanged)", env["DB_CONNECTION"])
 	}
@@ -251,7 +252,7 @@ func TestUpdateProjectEnvForBinaryService(t *testing.T) {
 		t.Fatalf("UpdateProjectEnvForBinaryService: %v", err)
 	}
 
-	env, _ := services.ReadDotEnv(envPath)
+	env, _ := projectenv.ReadDotEnv(envPath)
 	// Connection vars from RustFS.EnvVars
 	if env["AWS_BUCKET"] != "my-app" {
 		t.Errorf("AWS_BUCKET = %q, want my-app", env["AWS_BUCKET"])

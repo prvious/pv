@@ -3,6 +3,7 @@ package laravel
 import (
 	"path/filepath"
 
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/services"
 )
 
@@ -11,7 +12,7 @@ import (
 // or DB_DATABASE is the generic "laravel" default.
 func ResolveDatabaseName(projectPath, projectName string) string {
 	envExample := filepath.Join(projectPath, ".env.example")
-	env, err := services.ReadDotEnv(envExample)
+	env, err := projectenv.ReadDotEnv(envExample)
 	if err != nil {
 		return services.SanitizeProjectName(projectName)
 	}

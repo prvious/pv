@@ -10,6 +10,7 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/services"
@@ -32,7 +33,7 @@ func (s *DetectServicesStep) ShouldRun(_ *automation.Context) bool {
 
 func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
-	envVars, err := services.ReadDotEnv(envPath)
+	envVars, err := projectenv.ReadDotEnv(envPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "no .env found", nil

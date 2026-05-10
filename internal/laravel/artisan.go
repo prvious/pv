@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/projectenv"
 )
 
 // HasComposerJSON checks whether composer.json exists in the project.
@@ -60,7 +60,7 @@ func HasOctanePackage(projectPath string) bool {
 // ReadAppKey reads APP_KEY from the project's .env file.
 // Returns empty string if .env is missing or APP_KEY is not set.
 func ReadAppKey(projectPath string) string {
-	env, err := services.ReadDotEnv(filepath.Join(projectPath, ".env"))
+	env, err := projectenv.ReadDotEnv(filepath.Join(projectPath, ".env"))
 	if err != nil {
 		return ""
 	}

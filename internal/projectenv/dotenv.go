@@ -1,4 +1,5 @@
-package services
+// internal/projectenv/dotenv.go
+package projectenv
 
 import (
 	"os"
@@ -28,20 +29,17 @@ func ReadDotEnv(path string) (map[string]string, error) {
 // MergeDotEnv reads an existing .env file, replaces matching keys in-place,
 // appends new keys, and writes the result. Creates a backup at backupPath.
 func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
-	// Read existing content.
 	existing, err := os.ReadFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	// Create backup if file exists.
 	if err == nil && backupPath != "" {
 		if err := os.WriteFile(backupPath, existing, 0644); err != nil {
 			return err
 		}
 	}
 
-	// Track which keys we've already replaced.
 	replaced := make(map[string]bool)
 	var lines []string
 
@@ -63,7 +61,6 @@ func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
 		}
 	}
 
-	// Append keys that weren't replaced.
 	for key, val := range newVars {
 		if !replaced[key] {
 			lines = append(lines, key+"="+val)
