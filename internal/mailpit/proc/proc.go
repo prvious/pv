@@ -24,6 +24,21 @@ const (
 	consolePort = 8025
 )
 
+// WebRoute maps a subdomain under pv.{tld} to a local port.
+// It mirrors caddy.WebRoute but is defined here to keep the proc package free
+// of a caddy import (which would create an import cycle when caddy imports proc).
+type WebRoute struct {
+	Subdomain string
+	Port      int
+}
+
+// WebRoutes returns the reverse-proxy routes that mailpit exposes.
+func WebRoutes() []WebRoute {
+	return []WebRoute{
+		{Subdomain: "mail", Port: consolePort},
+	}
+}
+
 // Binary returns the binaries.Binary descriptor for mailpit.
 func Binary() binaries.Binary { return binaries.Mailpit }
 

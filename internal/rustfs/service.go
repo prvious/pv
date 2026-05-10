@@ -25,10 +25,12 @@ func DisplayName() string { return displayName }
 func ServiceKey() string  { return serviceKey }
 
 func WebRoutes() []caddy.WebRoute {
-	return []caddy.WebRoute{
-		{Subdomain: "s3", Port: consolePort},
-		{Subdomain: "s3-api", Port: port},
+	raw := rustfsproc.WebRoutes()
+	out := make([]caddy.WebRoute, len(raw))
+	for i, r := range raw {
+		out[i] = caddy.WebRoute{Subdomain: r.Subdomain, Port: r.Port}
 	}
+	return out
 }
 
 func EnvVars(projectName string) map[string]string {

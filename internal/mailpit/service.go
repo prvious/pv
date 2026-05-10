@@ -30,9 +30,12 @@ func DisplayName() string { return displayName }
 func ServiceKey() string  { return serviceKey }
 
 func WebRoutes() []caddy.WebRoute {
-	return []caddy.WebRoute{
-		{Subdomain: "mail", Port: consolePort},
+	raw := mailpitproc.WebRoutes()
+	out := make([]caddy.WebRoute, len(raw))
+	for i, r := range raw {
+		out[i] = caddy.WebRoute{Subdomain: r.Subdomain, Port: r.Port}
 	}
+	return out
 }
 
 func EnvVars(_ string) map[string]string {

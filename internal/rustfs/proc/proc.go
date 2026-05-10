@@ -21,6 +21,22 @@ const (
 	consolePort = 9001
 )
 
+// WebRoute maps a subdomain under pv.{tld} to a local port.
+// It mirrors caddy.WebRoute but is defined here to keep the proc package free
+// of a caddy import (which would create an import cycle when caddy imports proc).
+type WebRoute struct {
+	Subdomain string
+	Port      int
+}
+
+// WebRoutes returns the reverse-proxy routes that rustfs exposes.
+func WebRoutes() []WebRoute {
+	return []WebRoute{
+		{Subdomain: "s3", Port: consolePort},
+		{Subdomain: "s3-api", Port: port},
+	}
+}
+
 // Binary returns the binaries.Binary descriptor for rustfs.
 func Binary() binaries.Binary { return binaries.Rustfs }
 
