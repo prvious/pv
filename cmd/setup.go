@@ -15,10 +15,11 @@ import (
 	mysqlcmd "github.com/prvious/pv/internal/commands/mysql"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/services"
+	"github.com/prvious/pv/internal/rustfs"
 	setupinternal "github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/tools"
 	"github.com/prvious/pv/internal/ui"
@@ -285,14 +286,8 @@ func init() {
 // buildServiceOptions returns the wizard's service multi-select options.
 // All managed services are now binary services (s3, mail).
 func buildServiceOptions() []selectOption {
-	names := services.Available()
-	out := make([]selectOption, 0, len(names))
-	for _, name := range names {
-		svc, ok := services.LookupBinary(name)
-		if !ok {
-			continue
-		}
-		out = append(out, selectOption{label: svc.DisplayName(), value: name})
+	return []selectOption{
+		{label: mailpit.DisplayName(), value: "mail"},
+		{label: rustfs.DisplayName(), value: "s3"},
 	}
-	return out
 }

@@ -16,14 +16,15 @@ import (
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
+	"github.com/prvious/pv/internal/mailpit"
 	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
 	pg "github.com/prvious/pv/internal/postgres"
 	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/selfupdate"
 	"github.com/prvious/pv/internal/server"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -149,31 +150,41 @@ var updateCmd = &cobra.Command{
 			if vsErr != nil {
 				ui.Subtle(fmt.Sprintf("Skipping binary-service updates: cannot load versions state: %v", vsErr))
 			} else {
+				type binaryAddonInfo struct {
+					regKey string
+					bin    binaries.Binary
+					label  string
+				}
+				addons := []binaryAddonInfo{
+					{regKey: "mail", bin: mailpit.Binary(), label: mailpit.DisplayName()},
+					{regKey: "s3", bin: rustfs.Binary(), label: rustfs.DisplayName()},
+				}
+
 				var binaryUpdated []string
-				for name, svc := range services.AllBinary() {
-					if _, registered := reg.Services[name]; !registered {
+				for _, a := range addons {
+					if _, registered := reg.Services[a.regKey]; !registered {
 						continue
 					}
-					latest, err := binaries.FetchLatestVersion(client, svc.Binary())
+					latest, err := binaries.FetchLatestVersion(client, a.bin)
 					if err != nil {
-						ui.Subtle(fmt.Sprintf("Skipping %s: %v", svc.DisplayName(), err))
+						ui.Subtle(fmt.Sprintf("Skipping %s: %v", a.label, err))
 						continue
 					}
-					if !binaries.NeedsUpdate(vs, svc.Binary(), latest) {
+					if !binaries.NeedsUpdate(vs, a.bin, latest) {
 						continue
 					}
-					current := vs.Get(svc.Binary().Name)
-					if err := ui.Step(fmt.Sprintf("Updating %s %s -> %s", svc.Binary().DisplayName, current, latest), func() (string, error) {
-						if err := binaries.InstallBinary(client, svc.Binary(), latest); err != nil {
+					current := vs.Get(a.bin.Name)
+					if err := ui.Step(fmt.Sprintf("Updating %s %s -> %s", a.bin.DisplayName, current, latest), func() (string, error) {
+						if err := binaries.InstallBinary(client, a.bin, latest); err != nil {
 							return "", err
 						}
-						return fmt.Sprintf("Updated %s to %s", svc.Binary().DisplayName, latest), nil
+						return fmt.Sprintf("Updated %s to %s", a.bin.DisplayName, latest), nil
 					}); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not update %s: %v", svc.DisplayName(), err))
+						ui.Subtle(fmt.Sprintf("Could not update %s: %v", a.label, err))
 						continue
 					}
-					vs.Set(svc.Binary().Name, latest)
-					binaryUpdated = append(binaryUpdated, name)
+					vs.Set(a.bin.Name, latest)
+					binaryUpdated = append(binaryUpdated, a.regKey)
 				}
 				if len(binaryUpdated) > 0 {
 					if err := vs.Save(); err != nil {

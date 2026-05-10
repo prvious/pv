@@ -11,12 +11,11 @@ import (
 	"github.com/prvious/pv/internal/commands/composer"
 	daemoncmds "github.com/prvious/pv/internal/commands/daemon"
 	"github.com/prvious/pv/internal/commands/mago"
-	mailpit "github.com/prvious/pv/internal/commands/mailpit"
+	mailpitcmd "github.com/prvious/pv/internal/commands/mailpit"
 	"github.com/prvious/pv/internal/commands/php"
-	rustfs "github.com/prvious/pv/internal/commands/rustfs"
+	rustfscmd "github.com/prvious/pv/internal/commands/rustfs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/packages"
-	"github.com/prvious/pv/internal/services"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
@@ -53,8 +52,8 @@ func parseWith(raw string) (withSpec, error) {
 
 		if strings.HasPrefix(item, "service[") && strings.HasSuffix(item, "]") {
 			name := item[8 : len(item)-1]
-			if _, ok := services.LookupBinary(name); !ok {
-				return spec, fmt.Errorf("unknown service %q in --with (available: %s)", name, strings.Join(services.Available(), ", "))
+			if !isKnownBinaryAddon(name) {
+				return spec, fmt.Errorf("unknown service %q in --with (available: %s)", name, strings.Join(binaryAddons, ", "))
 			}
 			spec.services = append(spec.services, serviceSpec{name: name})
 		} else {
@@ -242,15 +241,28 @@ pv install --with="php:8.3,service[s3],service[mail]"`,
 	},
 }
 
+// binaryAddons is the canonical list of binary addon names accepted by --with.
+var binaryAddons = []string{"mail", "s3"}
+
+// isKnownBinaryAddon reports whether name is a recognised binary addon.
+func isKnownBinaryAddon(name string) bool {
+	for _, a := range binaryAddons {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
 // installBinaryService installs a binary backing service by name.
 // Only s3 (rustfs) and mail (mailpit) are supported. Database services
 // (postgres, mysql, redis) have their own first-class commands.
 func installBinaryService(name string) error {
 	switch name {
 	case "s3":
-		return rustfs.RunInstall()
+		return rustfscmd.RunInstall()
 	case "mail":
-		return mailpit.RunInstall()
+		return mailpitcmd.RunInstall()
 	default:
 		return fmt.Errorf("unknown binary service %q", name)
 	}
