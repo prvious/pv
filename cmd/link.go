@@ -59,6 +59,9 @@ pv link --name=myapp ~/Code/myapp`,
 		if err != nil {
 			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
+		if projectCfg == nil {
+			return fmt.Errorf("no pv.yml found at %s. Run `pv init` to generate one.", absPath)
+		}
 
 		if projectCfg.HasSetup() {
 			ui.Subtle("pv.yml setup: declared — legacy setup steps skipped")
