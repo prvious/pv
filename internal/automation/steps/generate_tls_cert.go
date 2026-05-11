@@ -16,6 +16,7 @@ var _ automation.Step = (*GenerateTLSCertStep)(nil)
 func (s *GenerateTLSCertStep) Label() string  { return "Generate TLS certificate" }
 func (s *GenerateTLSCertStep) Gate() string   { return "generate_tls_cert" }
 func (s *GenerateTLSCertStep) Critical() bool { return false }
+func (s *GenerateTLSCertStep) Verbose() bool  { return false }
 
 func (s *GenerateTLSCertStep) ShouldRun(_ *automation.Context) bool {
 	return true

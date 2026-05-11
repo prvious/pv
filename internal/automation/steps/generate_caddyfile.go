@@ -13,6 +13,7 @@ var _ automation.Step = (*GenerateCaddyfileStep)(nil)
 func (s *GenerateCaddyfileStep) Label() string  { return "Generate Caddyfile" }
 func (s *GenerateCaddyfileStep) Gate() string   { return "generate_caddyfile" }
 func (s *GenerateCaddyfileStep) Critical() bool { return true }
+func (s *GenerateCaddyfileStep) Verbose() bool  { return false }
 
 func (s *GenerateCaddyfileStep) ShouldRun(_ *automation.Context) bool {
 	return true

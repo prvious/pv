@@ -28,8 +28,16 @@ var _ automation.Step = (*CopyEnvStep)(nil)
 func (s *CopyEnvStep) Label() string  { return "Copy .env" }
 func (s *CopyEnvStep) Gate() string   { return "copy_env" }
 func (s *CopyEnvStep) Critical() bool { return false }
+func (s *CopyEnvStep) Verbose() bool  { return false }
 
 func (s *CopyEnvStep) ShouldRun(ctx *automation.Context) bool {
+	// pv.yml setup: declared — user owns the setup pipeline, skip the
+	// legacy step. The same guard appears on every Laravel step below
+	// that the user can replicate via setup: lines (composer install,
+	// key generate, octane install, create database, run migrations).
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -67,8 +75,12 @@ var _ automation.Step = (*GenerateKeyStep)(nil)
 func (s *GenerateKeyStep) Label() string  { return "Generate application key" }
 func (s *GenerateKeyStep) Gate() string   { return "generate_key" }
 func (s *GenerateKeyStep) Critical() bool { return false }
+func (s *GenerateKeyStep) Verbose() bool  { return false }
 
 func (s *GenerateKeyStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -95,6 +107,7 @@ var _ automation.Step = (*SetAppURLStep)(nil)
 func (s *SetAppURLStep) Label() string  { return "Set APP_URL" }
 func (s *SetAppURLStep) Gate() string   { return "set_app_url" }
 func (s *SetAppURLStep) Critical() bool { return false }
+func (s *SetAppURLStep) Verbose() bool  { return false }
 
 func (s *SetAppURLStep) ShouldRun(ctx *automation.Context) bool {
 	return isLaravel(ctx.ProjectType) && HasEnvFile(ctx.ProjectPath)
@@ -125,6 +138,7 @@ var _ automation.Step = (*SetViteTLSStep)(nil)
 func (s *SetViteTLSStep) Label() string  { return "Set Vite TLS" }
 func (s *SetViteTLSStep) Gate() string   { return "set_vite_tls" }
 func (s *SetViteTLSStep) Critical() bool { return false }
+func (s *SetViteTLSStep) Verbose() bool  { return false }
 
 func (s *SetViteTLSStep) ShouldRun(ctx *automation.Context) bool {
 	return isLaravel(ctx.ProjectType) && HasEnvFile(ctx.ProjectPath)
@@ -158,8 +172,12 @@ var _ automation.Step = (*InstallOctaneStep)(nil)
 func (s *InstallOctaneStep) Label() string  { return "Install Octane" }
 func (s *InstallOctaneStep) Gate() string   { return "install_octane" }
 func (s *InstallOctaneStep) Critical() bool { return false }
+func (s *InstallOctaneStep) Verbose() bool  { return false }
 
 func (s *InstallOctaneStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -196,8 +214,12 @@ var _ automation.Step = (*ComposerInstallStep)(nil)
 func (s *ComposerInstallStep) Label() string  { return "Install Composer dependencies" }
 func (s *ComposerInstallStep) Gate() string   { return "composer_install" }
 func (s *ComposerInstallStep) Critical() bool { return false }
+func (s *ComposerInstallStep) Verbose() bool  { return false }
 
 func (s *ComposerInstallStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -225,6 +247,7 @@ var _ automation.Step = (*DetectServicesStep)(nil)
 func (s *DetectServicesStep) Label() string  { return "Configure service environment" }
 func (s *DetectServicesStep) Gate() string   { return "update_env_on_service" }
 func (s *DetectServicesStep) Critical() bool { return false }
+func (s *DetectServicesStep) Verbose() bool  { return false }
 
 func (s *DetectServicesStep) ShouldRun(ctx *automation.Context) bool {
 	if ctx.ProjectConfig.HasAnyEnv() {
@@ -289,8 +312,12 @@ var _ automation.Step = (*CreateDatabaseStep)(nil)
 func (s *CreateDatabaseStep) Label() string  { return "Create database" }
 func (s *CreateDatabaseStep) Gate() string   { return "create_database" }
 func (s *CreateDatabaseStep) Critical() bool { return false }
+func (s *CreateDatabaseStep) Verbose() bool  { return false }
 
 func (s *CreateDatabaseStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -354,8 +381,12 @@ var _ automation.Step = (*RunMigrationsStep)(nil)
 func (s *RunMigrationsStep) Label() string  { return "Run migrations" }
 func (s *RunMigrationsStep) Gate() string   { return "run_migrations" }
 func (s *RunMigrationsStep) Critical() bool { return false }
+func (s *RunMigrationsStep) Verbose() bool  { return false }
 
 func (s *RunMigrationsStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}

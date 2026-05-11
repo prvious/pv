@@ -14,6 +14,7 @@ var _ automation.Step = (*InstallPHPStep)(nil)
 func (s *InstallPHPStep) Label() string  { return "Install PHP version" }
 func (s *InstallPHPStep) Gate() string   { return "install_php_version" }
 func (s *InstallPHPStep) Critical() bool { return true }
+func (s *InstallPHPStep) Verbose() bool  { return false }
 
 func (s *InstallPHPStep) ShouldRun(ctx *automation.Context) bool {
 	return ctx.PHPVersion != "" &&

@@ -687,3 +687,184 @@ func TestLaravelDetectServices_RunsWhenPvYmlEmpty(t *testing.T) {
 		t.Errorf("ShouldRun: want true when pv.yml has no env")
 	}
 }
+
+// --- HasSetup() short-circuit tests ---
+//
+// Each test below sets up the minimum filesystem/registry state so that
+// ShouldRun returns true with no Setup declared (baseline assertion),
+// and verifies it returns false when Setup is declared (gated assertion).
+// Both halves in one test make the test self-validating: a regression
+// that removes the HasSetup short-circuit would fail the gated half.
+
+func TestCopyEnvStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+	// .env.example exists, no .env → ShouldRun would normally return true.
+	if err := os.WriteFile(filepath.Join(dir, ".env.example"), []byte("APP_NAME=Test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &CopyEnvStep{}
+
+	// Sanity: without setup, the step WOULD run. If this fails, the test
+	// setup is broken and the assertion below would pass for the wrong
+	// reason.
+	baseline := &automation.Context{
+		ProjectType: "laravel",
+		ProjectPath: dir,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: CopyEnvStep should run when .env.example exists without setup")
+	}
+
+	// With setup, the step skips.
+	gated := &automation.Context{
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"cp .env.example .env"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}
+
+func TestGenerateKeyStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+	// .env exists with empty APP_KEY → ShouldRun would normally return true.
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_KEY=\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &GenerateKeyStep{}
+
+	baseline := &automation.Context{
+		ProjectType: "laravel",
+		ProjectPath: dir,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: GenerateKeyStep should run when .env has empty APP_KEY")
+	}
+
+	gated := &automation.Context{
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"php artisan key:generate"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}
+
+func TestInstallOctaneStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+	// composer.json declares laravel/octane → HasOctanePackage true.
+	// No public/frankenphp-worker.php → !HasOctaneWorker.
+	composer := `{"require": {"laravel/octane": "*"}}`
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(composer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &InstallOctaneStep{}
+
+	baseline := &automation.Context{
+		ProjectType: "laravel",
+		ProjectPath: dir,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: InstallOctaneStep should run when octane is in composer.json without worker")
+	}
+
+	gated := &automation.Context{
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"composer require laravel/octane"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}
+
+func TestComposerInstallStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+	// composer.json exists, no vendor/ → ShouldRun would normally return true.
+	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &ComposerInstallStep{}
+
+	baseline := &automation.Context{
+		ProjectType: "laravel",
+		ProjectPath: dir,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: ComposerInstallStep should run when composer.json exists without vendor/")
+	}
+
+	gated := &automation.Context{
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"composer install"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}
+
+func TestCreateDatabaseStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{
+			Name: "p", Path: dir, Type: "laravel",
+			Services: &registry.ProjectServices{Postgres: "18"},
+		}},
+	}
+
+	step := &CreateDatabaseStep{}
+
+	baseline := &automation.Context{
+		ProjectName: "p",
+		ProjectType: "laravel",
+		ProjectPath: dir,
+		Registry:    reg,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: CreateDatabaseStep should run when a DB service is bound")
+	}
+
+	gated := &automation.Context{
+		ProjectName:   "p",
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		Registry:      reg,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"pv postgres:db:create my_app"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}
+
+func TestRunMigrationsStep_SkipsWhenSetupDeclared(t *testing.T) {
+	dir := t.TempDir()
+
+	step := &RunMigrationsStep{}
+
+	baseline := &automation.Context{
+		ProjectType: "laravel",
+		ProjectPath: dir,
+		DBCreated:   true,
+	}
+	if !step.ShouldRun(baseline) {
+		t.Fatalf("test invariant: RunMigrationsStep should run when DBCreated is true")
+	}
+
+	gated := &automation.Context{
+		ProjectType:   "laravel",
+		ProjectPath:   dir,
+		DBCreated:     true,
+		ProjectConfig: &config.ProjectConfig{Setup: []string{"php artisan migrate"}},
+	}
+	if step.ShouldRun(gated) {
+		t.Errorf("ShouldRun: want false when setup declared")
+	}
+}

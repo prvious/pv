@@ -28,6 +28,7 @@ var _ automation.Step = (*ApplyPvYmlEnvStep)(nil)
 func (s *ApplyPvYmlEnvStep) Label() string  { return "Apply pv.yml env templates" }
 func (s *ApplyPvYmlEnvStep) Gate() string   { return "apply_pvyml_env" }
 func (s *ApplyPvYmlEnvStep) Critical() bool { return true }
+func (s *ApplyPvYmlEnvStep) Verbose() bool  { return false }
 
 func (s *ApplyPvYmlEnvStep) ShouldRun(ctx *automation.Context) bool {
 	return ctx.ProjectConfig.HasAnyEnv()
@@ -49,7 +50,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	if cfg.Postgresql != nil && len(cfg.Postgresql.Env) > 0 {
 		full, err := postgres.ProbeVersion(cfg.Postgresql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe postgres version: %w", err)
+			return "", fmt.Errorf("probe postgres %q: %w", cfg.Postgresql.Version, err)
 		}
 		vars, err := postgres.TemplateVars(cfg.Postgresql.Version, full)
 		if err != nil {
@@ -64,7 +65,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	if cfg.Mysql != nil && len(cfg.Mysql.Env) > 0 {
 		full, err := mysql.ProbeVersion(cfg.Mysql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe mysql version: %w", err)
+			return "", fmt.Errorf("probe mysql %q: %w", cfg.Mysql.Version, err)
 		}
 		vars, err := mysql.TemplateVars(cfg.Mysql.Version, full)
 		if err != nil {
