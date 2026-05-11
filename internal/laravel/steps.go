@@ -10,7 +10,6 @@ import (
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/projectenv"
-	"github.com/prvious/pv/internal/ui"
 )
 
 // isLaravel returns true if the project type is Laravel or Laravel with Octane.
@@ -235,71 +234,6 @@ func (s *ComposerInstallStep) Run(ctx *automation.Context) (string, error) {
 		return "", fmt.Errorf("composer install: %w", err)
 	}
 	return out, nil
-}
-
-// --- DetectServicesStep ---
-
-// DetectServicesStep merges smart env vars for bound services into .env.
-type DetectServicesStep struct{}
-
-var _ automation.Step = (*DetectServicesStep)(nil)
-
-func (s *DetectServicesStep) Label() string  { return "Configure service environment" }
-func (s *DetectServicesStep) Gate() string   { return "update_env_on_service" }
-func (s *DetectServicesStep) Critical() bool { return false }
-func (s *DetectServicesStep) Verbose() bool  { return false }
-
-func (s *DetectServicesStep) ShouldRun(ctx *automation.Context) bool {
-	if ctx.ProjectConfig.HasAnyEnv() {
-		return false
-	}
-	if !isLaravel(ctx.ProjectType) {
-		return false
-	}
-	if ctx.Registry == nil {
-		return false
-	}
-	proj := ctx.Registry.Find(ctx.ProjectName)
-	if proj == nil || proj.Services == nil {
-		return false
-	}
-	// Run if any service is bound.
-	svc := proj.Services
-	return svc.Redis || svc.S3 || svc.Mail || svc.MySQL != "" || svc.Postgres != ""
-}
-
-func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
-	proj := ctx.Registry.Find(ctx.ProjectName)
-	if proj == nil || proj.Services == nil {
-		return "no services bound", nil
-	}
-	vars := SmartEnvVars(proj.Services)
-	envPath := filepath.Join(ctx.ProjectPath, ".env")
-	if len(vars) > 0 {
-		if err := projectenv.MergeDotEnv(envPath, "", vars); err != nil {
-			return "", fmt.Errorf("merge service env: %w", err)
-		}
-	}
-	proj = ctx.Registry.Find(ctx.ProjectName)
-	if proj != nil && proj.Services != nil && proj.Services.Postgres != "" {
-		if err := UpdateProjectEnvForPostgres(ctx.ProjectPath, ctx.ProjectName, proj.Services.Postgres, proj.Services); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not write postgres env vars: %v", err))
-		}
-	}
-	if proj != nil && proj.Services != nil && proj.Services.MySQL != "" {
-		if err := UpdateProjectEnvForMysql(ctx.ProjectPath, ctx.ProjectName, proj.Services.MySQL, proj.Services); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not write mysql env vars: %v", err))
-		}
-	}
-	if proj != nil && proj.Services != nil && proj.Services.Redis {
-		if err := UpdateProjectEnvForRedis(ctx.ProjectPath, ctx.ProjectName, proj.Services); err != nil {
-			ui.Subtle(fmt.Sprintf("Could not write redis env vars: %v", err))
-		}
-	}
-	if len(vars) == 0 {
-		return "no env vars to set", nil
-	}
-	return fmt.Sprintf("set %d service env vars", len(vars)), nil
 }
 
 // --- CreateDatabaseStep ---

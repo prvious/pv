@@ -3,7 +3,6 @@ package laravel
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/automation"
@@ -387,95 +386,6 @@ func TestComposerInstallStep_ShouldRun_FalseWhenVendorExists(t *testing.T) {
 	}
 }
 
-// --- DetectServicesStep tests ---
-
-func TestDetectServicesStep_ShouldRun_FalseForNonLaravel(t *testing.T) {
-	dir := t.TempDir()
-	ctx := testCtx(dir)
-	ctx.ProjectType = "php"
-	step := &DetectServicesStep{}
-
-	if step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be false for non-Laravel projects")
-	}
-}
-
-func TestDetectServicesStep_ShouldRun_FalseWithNoRegistry(t *testing.T) {
-	dir := t.TempDir()
-	ctx := testCtx(dir)
-	step := &DetectServicesStep{}
-
-	if step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be false with nil registry")
-	}
-}
-
-func TestDetectServicesStep_ShouldRun_FalseNoServicesbound(t *testing.T) {
-	dir := t.TempDir()
-	ctx := testCtx(dir)
-	reg := &registry.Registry{
-		Projects: []registry.Project{
-			{Name: "test-project", Path: dir, Services: &registry.ProjectServices{}},
-		},
-	}
-	ctx.Registry = reg
-	step := &DetectServicesStep{}
-
-	if step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be false when no services are bound")
-	}
-}
-
-func TestDetectServicesStep_ShouldRun_TrueWithRedis(t *testing.T) {
-	dir := t.TempDir()
-	ctx := testCtx(dir)
-	reg := &registry.Registry{
-		Projects: []registry.Project{
-			{Name: "test-project", Path: dir, Services: &registry.ProjectServices{Redis: true}},
-		},
-	}
-	ctx.Registry = reg
-	step := &DetectServicesStep{}
-
-	if !step.ShouldRun(ctx) {
-		t.Error("ShouldRun should be true when Redis is bound")
-	}
-}
-
-func TestDetectServicesStep_Run(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_NAME=Test\n"), 0644)
-
-	ctx := testCtx(dir)
-	reg := &registry.Registry{
-		Projects: []registry.Project{
-			{Name: "test-project", Path: dir, Services: &registry.ProjectServices{Redis: true, Mail: true}},
-		},
-	}
-	ctx.Registry = reg
-	step := &DetectServicesStep{}
-
-	result, err := step.Run(ctx)
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if !strings.Contains(result, "4 service env vars") {
-		t.Errorf("Run() result = %q, expected mention of 4 vars", result)
-	}
-
-	// Check .env was updated
-	env, err := projectenv.ReadDotEnv(filepath.Join(dir, ".env"))
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	if env["CACHE_STORE"] != "redis" {
-		t.Errorf("CACHE_STORE = %q, want %q", env["CACHE_STORE"], "redis")
-	}
-	if env["MAIL_MAILER"] != "smtp" {
-		t.Errorf("MAIL_MAILER = %q, want %q", env["MAIL_MAILER"], "smtp")
-	}
-}
-
 // --- CreateDatabaseStep tests ---
 
 func TestCreateDatabaseStep_ShouldRun_FalseForNonLaravel(t *testing.T) {
@@ -615,76 +525,6 @@ func TestIsLaravel(t *testing.T) {
 				t.Errorf("isLaravel(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestDetectServicesStep_WritesMysqlEnvVars(t *testing.T) {
-	dir := t.TempDir()
-	envPath := filepath.Join(dir, ".env")
-	if err := os.WriteFile(envPath, []byte("APP_NAME=demo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	reg := &registry.Registry{
-		Services: map[string]*registry.ServiceInstance{},
-		Projects: []registry.Project{
-			{Name: "demo", Path: dir, Type: "laravel",
-				Services: &registry.ProjectServices{MySQL: "8.4"}},
-		},
-	}
-	ctx := &automation.Context{
-		ProjectName: "demo",
-		ProjectPath: dir,
-		ProjectType: "laravel",
-		Registry:    reg,
-	}
-	step := &DetectServicesStep{}
-	if _, err := step.Run(ctx); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	body, _ := os.ReadFile(envPath)
-	for _, want := range []string{"DB_CONNECTION=mysql", "DB_PORT=33084", "DB_DATABASE=demo"} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("missing %q in .env:\n%s", want, string(body))
-		}
-	}
-}
-
-// laravelCtxWithBoundService returns an automation.Context that
-// satisfies every condition of DetectServicesStep.ShouldRun EXCEPT
-// the pv.yml short-circuit — useful for verifying the short-circuit
-// is the only thing toggling ShouldRun in these tests.
-func laravelCtxWithBoundService(name string) *automation.Context {
-	return &automation.Context{
-		ProjectName: name,
-		ProjectType: "laravel",
-		Registry: &registry.Registry{
-			Projects: []registry.Project{{
-				Name:     name,
-				Type:     "laravel",
-				Services: &registry.ProjectServices{Redis: true},
-			}},
-		},
-	}
-}
-
-func TestLaravelDetectServices_SkipsWhenPvYmlHasEnv(t *testing.T) {
-	ctx := laravelCtxWithBoundService("test-project")
-	ctx.ProjectConfig = &config.ProjectConfig{
-		Env: map[string]string{"APP_URL": "{{ .site_url }}"},
-	}
-	step := &DetectServicesStep{}
-	if step.ShouldRun(ctx) {
-		t.Errorf("ShouldRun: want false when pv.yml has env")
-	}
-}
-
-func TestLaravelDetectServices_RunsWhenPvYmlEmpty(t *testing.T) {
-	ctx := laravelCtxWithBoundService("test-project")
-	ctx.ProjectConfig = &config.ProjectConfig{PHP: "8.4"}
-	step := &DetectServicesStep{}
-	if !step.ShouldRun(ctx) {
-		t.Errorf("ShouldRun: want true when pv.yml has no env")
 	}
 }
 

@@ -58,7 +58,6 @@ var automationItems = []struct {
 	{"Configure Laravel Octane", func(a *config.Automation) config.AutoMode { return a.InstallOctane }, func(a *config.Automation, m config.AutoMode) { a.InstallOctane = m }},
 	{"Create project database", func(a *config.Automation) config.AutoMode { return a.CreateDatabase }, func(a *config.Automation, m config.AutoMode) { a.CreateDatabase = m }},
 	{"Run database migrations", func(a *config.Automation) config.AutoMode { return a.RunMigrations }, func(a *config.Automation, m config.AutoMode) { a.RunMigrations = m }},
-	{"Update .env when services change", func(a *config.Automation) config.AutoMode { return a.ServiceEnvUpdate }, func(a *config.Automation, m config.AutoMode) { a.ServiceEnvUpdate = m }},
 	{"Reset .env on service stop", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
 }
 

@@ -139,8 +139,6 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 		return a.CreateDatabase
 	case "run_migrations":
 		return a.RunMigrations
-	case "update_env_on_service":
-		return a.ServiceEnvUpdate
 	case "service_fallback":
 		return a.ServiceFallback
 	case "generate_site_config":

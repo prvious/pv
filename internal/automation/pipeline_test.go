@@ -236,7 +236,6 @@ func TestLookupGate(t *testing.T) {
 		{"install_octane", a.InstallOctane},
 		{"create_database", a.CreateDatabase},
 		{"run_migrations", a.RunMigrations},
-		{"update_env_on_service", a.ServiceEnvUpdate},
 		{"service_fallback", a.ServiceFallback},
 		{"generate_site_config", a.GenerateSiteConfig},
 		{"generate_caddyfile", a.GenerateCaddyfile},

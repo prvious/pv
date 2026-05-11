@@ -224,9 +224,6 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.RunMigrations != AutoAsk {
 		t.Errorf("RunMigrations = %q, want %q", a.RunMigrations, AutoAsk)
 	}
-	if a.ServiceEnvUpdate != AutoOn {
-		t.Errorf("ServiceEnvUpdate = %q, want %q", a.ServiceEnvUpdate, AutoOn)
-	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
@@ -316,9 +313,6 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 	if a.RunMigrations != AutoAsk {
 		t.Errorf("RunMigrations = %q, want %q", a.RunMigrations, AutoAsk)
-	}
-	if a.ServiceEnvUpdate != AutoOn {
-		t.Errorf("ServiceEnvUpdate = %q, want %q", a.ServiceEnvUpdate, AutoOn)
 	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)

@@ -34,7 +34,6 @@ type Automation struct {
 	InstallOctane     AutoMode `yaml:"install_octane,omitempty"`
 	CreateDatabase    AutoMode `yaml:"create_database,omitempty"`
 	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
-	ServiceEnvUpdate  AutoMode `yaml:"update_env_on_service,omitempty"`
 	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
 
 	// Hidden gates — not shown in setup wizard, configurable via pv.yml.
@@ -65,7 +64,6 @@ func DefaultAutomation() Automation {
 		InstallOctane:      AutoAsk,
 		CreateDatabase:     AutoOn,
 		RunMigrations:      AutoAsk,
-		ServiceEnvUpdate:   AutoOn,
 		ServiceFallback:    AutoOn,
 		GenerateSiteConfig: AutoOn,
 		GenerateCaddyfile:  AutoOn,
@@ -110,9 +108,6 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.RunMigrations) {
 		a.RunMigrations = d.RunMigrations
-	}
-	if !validAutoMode(a.ServiceEnvUpdate) {
-		a.ServiceEnvUpdate = d.ServiceEnvUpdate
 	}
 	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback
