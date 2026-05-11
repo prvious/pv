@@ -31,8 +31,9 @@ type Options struct {
 	Mysql string
 }
 
-// Generate returns the YAML string for opts. Always emits valid YAML
-// the existing LoadProjectConfig can parse round-trip.
+// Generate returns the YAML string for opts. The output is parseable
+// by config.LoadProjectConfig — the package tests verify this by
+// round-tripping every template through that parser.
 func Generate(opts Options) string {
 	switch opts.ProjectType {
 	case "laravel", "laravel-octane":

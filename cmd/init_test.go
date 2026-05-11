@@ -156,3 +156,74 @@ func TestInit_UnknownProject(t *testing.T) {
 		t.Errorf("pv.yml should have at least the php: field:\n%s", s)
 	}
 }
+
+func TestResolveInitPath_StatError(t *testing.T) {
+	_, err := resolveInitPath([]string{"/nonexistent/path/that/does/not/exist"})
+	if err == nil {
+		t.Fatal("resolveInitPath: want error for nonexistent path, got nil")
+	}
+}
+
+func TestResolveInitPath_NotADirectory(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveInitPath([]string{filePath})
+	if err == nil {
+		t.Fatal("resolveInitPath: want error for file path, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("err = %v, want it to mention 'not a directory'", err)
+	}
+}
+
+func TestResolveInit_MysqlFlagPrecedence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Stage stub postgres 18 + mysql 8.4
+	stagePostgresStub(t, "18")
+	stageMysqlStub(t, "8.4")
+
+	// preferMysql=false: postgres wins
+	if got := resolveInitPostgres(false); got != "18" {
+		t.Errorf("resolveInitPostgres(false) = %q, want 18", got)
+	}
+	if got := resolveInitMysql(false); got != "" {
+		t.Errorf("resolveInitMysql(false) = %q, want empty (postgres wins)", got)
+	}
+
+	// preferMysql=true: mysql wins
+	if got := resolveInitPostgres(true); got != "" {
+		t.Errorf("resolveInitPostgres(true) = %q, want empty (mysql wins)", got)
+	}
+	if got := resolveInitMysql(true); got != "8.4" {
+		t.Errorf("resolveInitMysql(true) = %q, want 8.4", got)
+	}
+}
+
+// stagePostgresStub mirrors the helper in internal/automation/steps/.
+// Creates ~/.pv/postgres/<major>/bin/postgres so postgres.InstalledMajors()
+// reports the version. Caller must set HOME to a tempdir first.
+func stagePostgresStub(t *testing.T, major string) {
+	t.Helper()
+	bin := config.PostgresBinDir(major)
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", bin, err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "postgres"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage postgres: %v", err)
+	}
+}
+
+func stageMysqlStub(t *testing.T, version string) {
+	t.Helper()
+	bin := config.MysqlBinDir(version)
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", bin, err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "mysqld"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage mysqld: %v", err)
+	}
+}

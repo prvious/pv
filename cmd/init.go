@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,9 +46,6 @@ between your project and pv.`,
 		}
 
 		ymlPath := filepath.Join(projectPath, config.ProjectConfigFilename)
-		if _, statErr := os.Stat(ymlPath); statErr == nil && !initForce {
-			return fmt.Errorf("pv.yml already exists at %s — pass --force to overwrite", ymlPath)
-		}
 
 		projectType := detection.Detect(projectPath)
 		projectName := projectenv.SanitizeProjectName(filepath.Base(projectPath))
@@ -60,8 +59,8 @@ between your project and pv.`,
 		}
 
 		body := initgen.Generate(opts)
-		if err := os.WriteFile(ymlPath, []byte(body), 0o644); err != nil {
-			return fmt.Errorf("write pv.yml: %w", err)
+		if err := writePvYml(ymlPath, []byte(body), initForce); err != nil {
+			return err
 		}
 
 		ui.Success(fmt.Sprintf("Generated %s", ymlPath))
@@ -69,6 +68,61 @@ between your project and pv.`,
 		ui.Subtle("Review the file and adjust before running `pv link`.")
 		return nil
 	},
+}
+
+// writePvYml atomically writes the generated pv.yml. When force is
+// false, the write is create-only (O_EXCL) and fails with a clear
+// "already exists" error — no stat-then-write race. When force is
+// true, the write goes through a sibling temp file + rename so a
+// crash or disk-full mid-write doesn't corrupt the user's existing
+// pv.yml.
+func writePvYml(path string, body []byte, force bool) error {
+	if !force {
+		// Create-only. EEXIST is the "user has a pv.yml" signal; any
+		// other error (perms, broken parent) propagates verbatim.
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("pv.yml already exists at %s — pass --force to overwrite", path)
+			}
+			return fmt.Errorf("create pv.yml: %w", err)
+		}
+		defer f.Close()
+		if _, err := f.Write(body); err != nil {
+			return fmt.Errorf("write pv.yml: %w", err)
+		}
+		return f.Sync()
+	}
+
+	// Force path: write to sibling temp, then rename. Rename within the
+	// same dir is atomic on every filesystem that ships with macOS or
+	// Linux runners.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".pv.yml.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp pv.yml: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // best-effort cleanup if rename fails
+
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp pv.yml: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp pv.yml: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp pv.yml: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("chmod temp pv.yml: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename pv.yml: %w", err)
+	}
+	return nil
 }
 
 // resolveInitPath returns the absolute path of the project we're
@@ -102,7 +156,9 @@ func resolveInitPHP(projectPath string) string {
 		return v
 	}
 	settings, err := config.LoadSettings()
-	if err == nil && settings != nil && settings.Defaults.PHP != "" {
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("Could not load settings: %v — using default PHP", err))
+	} else if settings != nil && settings.Defaults.PHP != "" {
 		return settings.Defaults.PHP
 	}
 	return "8.4"
@@ -113,8 +169,10 @@ func resolveInitPHP(projectPath string) string {
 // Greedy on the first token only — compound constraints like
 // "^8.3 || ^8.4" yield "8.3"; exact pins like "8.4.10" yield "8.4"
 // (taking the first major.minor as a usable hint). Returns no match
-// only when the constraint doesn't start with a numeric token at all
-// (e.g., "@dev", ""), in which case the caller falls back to the
+// for inputs that don't expose a "<major>.<minor>" token after an
+// optional supported prefix — including bare majors like "8",
+// non-supported operators like ">7.4", and non-numeric constraints
+// like "@dev" or "". In those cases the caller falls back to the
 // global default.
 var composerVersionRe = regexp.MustCompile(`^(?:\^|~|>=)?\s*(\d+\.\d+)`)
 
@@ -125,14 +183,19 @@ var composerVersionRe = regexp.MustCompile(`^(?:\^|~|>=)?\s*(\d+\.\d+)`)
 // the caller should fall back to settings.Defaults.PHP when this
 // returns "".
 func phpFromComposer(projectPath string) string {
-	raw, err := os.ReadFile(filepath.Join(projectPath, "composer.json"))
+	composerPath := filepath.Join(projectPath, "composer.json")
+	raw, err := os.ReadFile(composerPath)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			ui.Subtle(fmt.Sprintf("Could not read composer.json: %v — using default PHP", err))
+		}
 		return ""
 	}
 	var parsed struct {
 		Require map[string]string `json:"require"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
+		ui.Subtle(fmt.Sprintf("composer.json is unparseable: %v — using default PHP", err))
 		return ""
 	}
 	constraint := strings.TrimSpace(parsed.Require["php"])
@@ -146,17 +209,38 @@ func phpFromComposer(projectPath string) string {
 	return m[1]
 }
 
+// installedPostgresMajors wraps postgres.InstalledMajors with a
+// ui.Subtle warning on real errors so the caller doesn't have to
+// repeat the boilerplate at every call site. Returns the (possibly
+// nil) slice in all cases — listing failure is non-fatal because
+// init's job is to emit a best-effort default.
+func installedPostgresMajors() []string {
+	majors, err := postgres.InstalledMajors()
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("Could not list installed postgres versions: %v", err))
+	}
+	return majors
+}
+
+// installedMysqlVersions mirrors installedPostgresMajors for mysql.
+func installedMysqlVersions() []string {
+	versions, err := mysql.InstalledVersions()
+	if err != nil {
+		ui.Subtle(fmt.Sprintf("Could not list installed mysql versions: %v", err))
+	}
+	return versions
+}
+
 // resolveInitPostgres returns the highest installed postgres major,
 // or "" if mysql is preferred (and installed) OR if no postgres is
 // installed.
 func resolveInitPostgres(preferMysql bool) string {
-	majors, _ := postgres.InstalledMajors()
+	majors := installedPostgresMajors()
 	if len(majors) == 0 {
 		return ""
 	}
 	if preferMysql {
-		versions, _ := mysql.InstalledVersions()
-		if len(versions) > 0 {
+		if len(installedMysqlVersions()) > 0 {
 			return ""
 		}
 	}
@@ -167,13 +251,12 @@ func resolveInitPostgres(preferMysql bool) string {
 // "" when postgres should win (postgres installed AND preferMysql is
 // false) or no mysql is installed.
 func resolveInitMysql(preferMysql bool) string {
-	versions, _ := mysql.InstalledVersions()
+	versions := installedMysqlVersions()
 	if len(versions) == 0 {
 		return ""
 	}
 	if !preferMysql {
-		majors, _ := postgres.InstalledMajors()
-		if len(majors) > 0 {
+		if len(installedPostgresMajors()) > 0 {
 			return ""
 		}
 	}
