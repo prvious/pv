@@ -68,7 +68,7 @@ pv php:remove 8.3
 
 Per-project versions are supported too — add a `pv.yml` file with `php: "8.4"` in your project root or let `pv` read the PHP constraint from `composer.json`. Multiple PHP versions run simultaneously, each project served by its own FrankenPHP process.
 
-`pv link` auto-detects your project type (Laravel, Laravel + Octane, generic PHP, static) and generates the right server configuration automatically.
+`pv init` detects your project type (Laravel, Laravel + Octane, generic PHP, static) and writes a default `pv.yml` you review and commit; `pv link` then reads `pv.yml` and serves the project.
 
 ### Tool management
 
