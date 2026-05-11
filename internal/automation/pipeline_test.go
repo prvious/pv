@@ -13,6 +13,7 @@ type stubStep struct {
 	label     string
 	gate      string
 	critical  bool
+	verbose   bool
 	shouldRun bool
 	result    string
 	err       error
@@ -22,6 +23,7 @@ type stubStep struct {
 func (s *stubStep) Label() string             { return s.label }
 func (s *stubStep) Gate() string              { return s.gate }
 func (s *stubStep) Critical() bool            { return s.critical }
+func (s *stubStep) Verbose() bool             { return s.verbose }
 func (s *stubStep) ShouldRun(_ *Context) bool { return s.shouldRun }
 func (s *stubStep) Run(_ *Context) (string, error) {
 	s.ran = true
@@ -240,6 +242,9 @@ func TestLookupGate(t *testing.T) {
 		{"generate_caddyfile", a.GenerateCaddyfile},
 		{"generate_tls_cert", a.GenerateTLSCert},
 		{"detect_services", a.DetectServices},
+		{"apply_pvyml_services", a.ApplyPvYmlServices},
+		{"apply_pvyml_env", a.ApplyPvYmlEnv},
+		{"apply_setup", a.ApplySetup},
 		{"unknown_gate", config.AutoAsk},
 	}
 

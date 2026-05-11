@@ -42,6 +42,9 @@ type Automation struct {
 	GenerateCaddyfile  AutoMode `yaml:"generate_caddyfile,omitempty"`
 	GenerateTLSCert    AutoMode `yaml:"generate_tls_cert,omitempty"`
 	DetectServices     AutoMode `yaml:"detect_services,omitempty"`
+	ApplyPvYmlServices AutoMode `yaml:"apply_pvyml_services,omitempty"`
+	ApplyPvYmlEnv      AutoMode `yaml:"apply_pvyml_env,omitempty"`
+	ApplySetup         AutoMode `yaml:"apply_setup,omitempty"`
 }
 
 type Settings struct {
@@ -69,6 +72,9 @@ func DefaultAutomation() Automation {
 		GenerateCaddyfile:  AutoOn,
 		GenerateTLSCert:    AutoOn,
 		DetectServices:     AutoOn,
+		ApplyPvYmlServices: AutoOn,
+		ApplyPvYmlEnv:      AutoOn,
+		ApplySetup:         AutoOn,
 	}
 }
 
@@ -124,6 +130,15 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.DetectServices) {
 		a.DetectServices = d.DetectServices
+	}
+	if !validAutoMode(a.ApplyPvYmlServices) {
+		a.ApplyPvYmlServices = d.ApplyPvYmlServices
+	}
+	if !validAutoMode(a.ApplyPvYmlEnv) {
+		a.ApplyPvYmlEnv = d.ApplyPvYmlEnv
+	}
+	if !validAutoMode(a.ApplySetup) {
+		a.ApplySetup = d.ApplySetup
 	}
 }
 

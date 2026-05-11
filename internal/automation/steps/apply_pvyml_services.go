@@ -25,6 +25,7 @@ var _ automation.Step = (*ApplyPvYmlServicesStep)(nil)
 func (s *ApplyPvYmlServicesStep) Label() string  { return "Bind services from pv.yml" }
 func (s *ApplyPvYmlServicesStep) Gate() string   { return "apply_pvyml_services" }
 func (s *ApplyPvYmlServicesStep) Critical() bool { return true }
+func (s *ApplyPvYmlServicesStep) Verbose() bool  { return false }
 
 func (s *ApplyPvYmlServicesStep) ShouldRun(ctx *automation.Context) bool {
 	return ctx.ProjectConfig.HasServices()

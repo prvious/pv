@@ -14,6 +14,7 @@ var _ automation.Step = (*GenerateSiteConfigStep)(nil)
 func (s *GenerateSiteConfigStep) Label() string  { return "Generate site config" }
 func (s *GenerateSiteConfigStep) Gate() string   { return "generate_site_config" }
 func (s *GenerateSiteConfigStep) Critical() bool { return true }
+func (s *GenerateSiteConfigStep) Verbose() bool  { return false }
 
 func (s *GenerateSiteConfigStep) ShouldRun(_ *automation.Context) bool {
 	return true

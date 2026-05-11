@@ -28,6 +28,7 @@ var _ automation.Step = (*ApplyPvYmlEnvStep)(nil)
 func (s *ApplyPvYmlEnvStep) Label() string  { return "Apply pv.yml env templates" }
 func (s *ApplyPvYmlEnvStep) Gate() string   { return "apply_pvyml_env" }
 func (s *ApplyPvYmlEnvStep) Critical() bool { return true }
+func (s *ApplyPvYmlEnvStep) Verbose() bool  { return false }
 
 func (s *ApplyPvYmlEnvStep) ShouldRun(ctx *automation.Context) bool {
 	return ctx.ProjectConfig.HasAnyEnv()

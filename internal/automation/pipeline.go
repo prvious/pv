@@ -32,6 +32,10 @@ type Step interface {
 	Label() string
 	Gate() string
 	Critical() bool
+	// Verbose reports whether the step streams its own output to
+	// stdout/stderr and therefore must run without a spinner. When true,
+	// RunPipeline uses ui.StepVerbose instead of ui.Step.
+	Verbose() bool
 	ShouldRun(ctx *Context) bool
 	Run(ctx *Context) (string, error)
 }
@@ -96,7 +100,11 @@ func RunPipeline(steps []Step, ctx *Context) error {
 			}
 		}
 
-		err := ui.Step(step.Label(), func() (string, error) {
+		runner := ui.Step
+		if step.Verbose() {
+			runner = ui.StepVerbose
+		}
+		err := runner(step.Label(), func() (string, error) {
 			return step.Run(ctx)
 		})
 		if err != nil && step.Critical() {
@@ -143,6 +151,12 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 		return a.GenerateTLSCert
 	case "detect_services":
 		return a.DetectServices
+	case "apply_pvyml_services":
+		return a.ApplyPvYmlServices
+	case "apply_pvyml_env":
+		return a.ApplyPvYmlEnv
+	case "apply_setup":
+		return a.ApplySetup
 	default:
 		fmt.Fprintf(os.Stderr, "Warning: unknown automation gate %q, defaulting to ask\n", gate)
 		return config.AutoAsk

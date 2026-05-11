@@ -26,6 +26,7 @@ var _ automation.Step = (*ApplySetupStep)(nil)
 func (s *ApplySetupStep) Label() string  { return "Run pv.yml setup commands" }
 func (s *ApplySetupStep) Gate() string   { return "apply_setup" }
 func (s *ApplySetupStep) Critical() bool { return true }
+func (s *ApplySetupStep) Verbose() bool  { return true }
 
 func (s *ApplySetupStep) ShouldRun(ctx *automation.Context) bool {
 	return ctx.ProjectConfig.HasSetup()
@@ -47,21 +48,17 @@ func (s *ApplySetupStep) Run(ctx *automation.Context) (string, error) {
 }
 
 // buildSetupEnv copies os.Environ() and prepends the pinned PHP's bin
-// directory to PATH. If phpVersion is empty or the PHP path can't be
-// resolved, the host PATH is returned unchanged.
+// directory to PATH. If phpVersion is empty, the host PATH is returned
+// unchanged.
 func buildSetupEnv(phpVersion string) []string {
 	env := os.Environ()
 	if phpVersion == "" {
 		return env
 	}
-	phpBin := phpenv.PHPPath(phpVersion)
-	if phpBin == "" {
-		return env
-	}
-	binDir := filepath.Dir(phpBin)
+	binDir := filepath.Dir(phpenv.PHPPath(phpVersion))
 	for i, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			env[i] = "PATH=" + binDir + ":" + strings.TrimPrefix(e, "PATH=")
+		if rest, ok := strings.CutPrefix(e, "PATH="); ok {
+			env[i] = "PATH=" + binDir + ":" + rest
 			return env
 		}
 	}
