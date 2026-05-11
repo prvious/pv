@@ -31,6 +31,9 @@ func (s *CopyEnvStep) Critical() bool { return false }
 func (s *CopyEnvStep) Verbose() bool  { return false }
 
 func (s *CopyEnvStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -71,6 +74,9 @@ func (s *GenerateKeyStep) Critical() bool { return false }
 func (s *GenerateKeyStep) Verbose() bool  { return false }
 
 func (s *GenerateKeyStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -165,6 +171,9 @@ func (s *InstallOctaneStep) Critical() bool { return false }
 func (s *InstallOctaneStep) Verbose() bool  { return false }
 
 func (s *InstallOctaneStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -204,6 +213,9 @@ func (s *ComposerInstallStep) Critical() bool { return false }
 func (s *ComposerInstallStep) Verbose() bool  { return false }
 
 func (s *ComposerInstallStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -299,6 +311,9 @@ func (s *CreateDatabaseStep) Critical() bool { return false }
 func (s *CreateDatabaseStep) Verbose() bool  { return false }
 
 func (s *CreateDatabaseStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
@@ -365,6 +380,9 @@ func (s *RunMigrationsStep) Critical() bool { return false }
 func (s *RunMigrationsStep) Verbose() bool  { return false }
 
 func (s *RunMigrationsStep) ShouldRun(ctx *automation.Context) bool {
+	if ctx.ProjectConfig.HasSetup() {
+		return false
+	}
 	if !isLaravel(ctx.ProjectType) {
 		return false
 	}
