@@ -11,8 +11,7 @@ import (
 )
 
 // ApplyPvYmlServicesStep binds the services declared in a project's
-// pv.yml into the registry. It runs before DetectServicesStep and,
-// when active, causes DetectServicesStep to skip via its ShouldRun.
+// pv.yml into the registry.
 //
 // For version-bearing services (postgres, mysql), errors if the
 // declared version isn't installed. For single-version services

@@ -241,7 +241,6 @@ func TestLookupGate(t *testing.T) {
 		{"generate_site_config", a.GenerateSiteConfig},
 		{"generate_caddyfile", a.GenerateCaddyfile},
 		{"generate_tls_cert", a.GenerateTLSCert},
-		{"detect_services", a.DetectServices},
 		{"apply_pvyml_services", a.ApplyPvYmlServices},
 		{"apply_pvyml_env", a.ApplyPvYmlEnv},
 		{"apply_setup", a.ApplySetup},

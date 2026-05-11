@@ -149,8 +149,6 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 		return a.GenerateCaddyfile
 	case "generate_tls_cert":
 		return a.GenerateTLSCert
-	case "detect_services":
-		return a.DetectServices
 	case "apply_pvyml_services":
 		return a.ApplyPvYmlServices
 	case "apply_pvyml_env":

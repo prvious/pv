@@ -239,9 +239,6 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.GenerateTLSCert != AutoOn {
 		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
 	}
-	if a.DetectServices != AutoOn {
-		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
-	}
 }
 
 func TestSettings_AutomationRoundTrip(t *testing.T) {
@@ -334,9 +331,6 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	}
 	if a.GenerateTLSCert != AutoOn {
 		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
-	}
-	if a.DetectServices != AutoOn {
-		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
 	}
 }
 

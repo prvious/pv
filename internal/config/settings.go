@@ -41,7 +41,6 @@ type Automation struct {
 	GenerateSiteConfig AutoMode `yaml:"generate_site_config,omitempty"`
 	GenerateCaddyfile  AutoMode `yaml:"generate_caddyfile,omitempty"`
 	GenerateTLSCert    AutoMode `yaml:"generate_tls_cert,omitempty"`
-	DetectServices     AutoMode `yaml:"detect_services,omitempty"`
 	ApplyPvYmlServices AutoMode `yaml:"apply_pvyml_services,omitempty"`
 	ApplyPvYmlEnv      AutoMode `yaml:"apply_pvyml_env,omitempty"`
 	ApplySetup         AutoMode `yaml:"apply_setup,omitempty"`
@@ -71,7 +70,6 @@ func DefaultAutomation() Automation {
 		GenerateSiteConfig: AutoOn,
 		GenerateCaddyfile:  AutoOn,
 		GenerateTLSCert:    AutoOn,
-		DetectServices:     AutoOn,
 		ApplyPvYmlServices: AutoOn,
 		ApplyPvYmlEnv:      AutoOn,
 		ApplySetup:         AutoOn,
@@ -127,9 +125,6 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.GenerateTLSCert) {
 		a.GenerateTLSCert = d.GenerateTLSCert
-	}
-	if !validAutoMode(a.DetectServices) {
-		a.DetectServices = d.DetectServices
 	}
 	if !validAutoMode(a.ApplyPvYmlServices) {
 		a.ApplyPvYmlServices = d.ApplyPvYmlServices
