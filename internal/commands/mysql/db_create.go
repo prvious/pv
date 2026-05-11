@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	my "github.com/prvious/pv/internal/mysql"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -21,11 +22,14 @@ var dbCreateCmd = &cobra.Command{
 		if len(versions) == 0 {
 			return fmt.Errorf("no MySQL installed — run `pv mysql:install <version>`")
 		}
-		version := versions[len(versions)-1] // highest installed (InstalledVersions returns sorted asc)
+		// Highest installed. InstalledMajors / InstalledVersions sort
+		// lexicographically — fine for current values, revisit if
+		// versions ever reach 3 digits (e.g., postgres 100, mysql 10.0).
+		version := versions[len(versions)-1]
 		if err := my.CreateDatabase(version, dbName); err != nil {
 			return fmt.Errorf("create %s: %w", dbName, err)
 		}
-		fmt.Printf("created database %q in mysql %s\n", dbName, version)
+		ui.Success(fmt.Sprintf("Database %q created in mysql %s.", dbName, version))
 		return nil
 	},
 }

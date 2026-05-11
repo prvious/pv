@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	pg "github.com/prvious/pv/internal/postgres"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -21,11 +22,14 @@ var dbCreateCmd = &cobra.Command{
 		if len(majors) == 0 {
 			return fmt.Errorf("no PostgreSQL installed — run `pv postgres:install <major>`")
 		}
-		major := majors[len(majors)-1] // highest installed (InstalledMajors returns sorted asc)
+		// Highest installed. InstalledMajors / InstalledVersions sort
+		// lexicographically — fine for current values, revisit if
+		// versions ever reach 3 digits (e.g., postgres 100, mysql 10.0).
+		major := majors[len(majors)-1]
 		if err := pg.CreateDatabase(major, dbName); err != nil {
 			return fmt.Errorf("create %s: %w", dbName, err)
 		}
-		fmt.Printf("created database %q in postgres %s\n", dbName, major)
+		ui.Success(fmt.Sprintf("Database %q created in postgres %s.", dbName, major))
 		return nil
 	},
 }
