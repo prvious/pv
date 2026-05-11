@@ -22,10 +22,12 @@ var dbDropCmd = &cobra.Command{
 		if len(majors) == 0 {
 			return fmt.Errorf("no PostgreSQL installed — nothing to drop")
 		}
-		// Highest installed. InstalledMajors / InstalledVersions sort
-		// lexicographically — fine for current values, revisit if
-		// versions ever reach 3 digits (e.g., postgres 100, mysql 10.0).
+		// InstalledMajors sorts lexicographically — fine for current
+		// values, revisit if majors ever reach 3 digits (postgres 100+).
 		major := majors[len(majors)-1]
+		if len(majors) > 1 {
+			ui.Subtle(fmt.Sprintf("Using postgres %s (highest of %d installed)", major, len(majors)))
+		}
 		if err := pg.DropDatabase(major, dbName); err != nil {
 			return fmt.Errorf("drop %s: %w", dbName, err)
 		}

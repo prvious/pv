@@ -22,10 +22,12 @@ var dbCreateCmd = &cobra.Command{
 		if len(versions) == 0 {
 			return fmt.Errorf("no MySQL installed — run `pv mysql:install <version>`")
 		}
-		// Highest installed. InstalledMajors / InstalledVersions sort
-		// lexicographically — fine for current values, revisit if
-		// versions ever reach 3 digits (e.g., postgres 100, mysql 10.0).
+		// InstalledVersions sorts lexicographically — fine for current
+		// values, revisit if versions ever reach 3 digits (e.g., 10.0).
 		version := versions[len(versions)-1]
+		if len(versions) > 1 {
+			ui.Subtle(fmt.Sprintf("Using mysql %s (highest of %d installed)", version, len(versions)))
+		}
 		if err := my.CreateDatabase(version, dbName); err != nil {
 			return fmt.Errorf("create %s: %w", dbName, err)
 		}

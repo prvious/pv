@@ -31,6 +31,10 @@ func (s *CopyEnvStep) Critical() bool { return false }
 func (s *CopyEnvStep) Verbose() bool  { return false }
 
 func (s *CopyEnvStep) ShouldRun(ctx *automation.Context) bool {
+	// pv.yml setup: declared — user owns the setup pipeline, skip the
+	// legacy step. The same guard appears on every Laravel step below
+	// that the user can replicate via setup: lines (composer install,
+	// key generate, octane install, create database, run migrations).
 	if ctx.ProjectConfig.HasSetup() {
 		return false
 	}

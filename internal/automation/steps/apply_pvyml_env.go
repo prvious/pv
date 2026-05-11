@@ -50,7 +50,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	if cfg.Postgresql != nil && len(cfg.Postgresql.Env) > 0 {
 		full, err := postgres.ProbeVersion(cfg.Postgresql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe postgres version: %w", err)
+			return "", fmt.Errorf("probe postgres %q: %w", cfg.Postgresql.Version, err)
 		}
 		vars, err := postgres.TemplateVars(cfg.Postgresql.Version, full)
 		if err != nil {
@@ -65,7 +65,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	if cfg.Mysql != nil && len(cfg.Mysql.Env) > 0 {
 		full, err := mysql.ProbeVersion(cfg.Mysql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe mysql version: %w", err)
+			return "", fmt.Errorf("probe mysql %q: %w", cfg.Mysql.Version, err)
 		}
 		vars, err := mysql.TemplateVars(cfg.Mysql.Version, full)
 		if err != nil {

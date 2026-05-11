@@ -61,6 +61,10 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
 
+		if projectCfg.HasSetup() {
+			ui.Subtle("pv.yml setup: declared — legacy setup steps skipped")
+		}
+
 		name := linkName
 		if name == "" {
 			name = filepath.Base(absPath)

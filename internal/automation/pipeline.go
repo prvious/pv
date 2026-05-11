@@ -158,7 +158,7 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 	case "apply_setup":
 		return a.ApplySetup
 	default:
-		fmt.Fprintf(os.Stderr, "Warning: unknown automation gate %q, defaulting to ask\n", gate)
+		ui.Subtle(fmt.Sprintf("Warning: unknown automation gate %q, defaulting to ask", gate))
 		return config.AutoAsk
 	}
 }
