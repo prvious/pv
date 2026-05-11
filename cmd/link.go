@@ -11,7 +11,6 @@ import (
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
-	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
@@ -149,8 +148,6 @@ pv link --name=myapp ~/Code/myapp`,
 			&steps.GenerateTLSCertStep{},
 			&steps.ApplyPvYmlServicesStep{},
 			&steps.ApplyPvYmlEnvStep{},
-			&laravel.SetAppURLStep{},
-			&laravel.SetViteTLSStep{},
 			&steps.ApplySetupStep{},
 		}
 		if err := automation.RunPipeline(allSteps, ctx); err != nil {

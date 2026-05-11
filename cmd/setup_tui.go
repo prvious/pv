@@ -51,7 +51,6 @@ var automationItems = []struct {
 	set   func(*config.Automation, config.AutoMode)
 }{
 	{"Auto install missing PHP version", func(a *config.Automation) config.AutoMode { return a.InstallPHPVersion }, func(a *config.Automation, m config.AutoMode) { a.InstallPHPVersion = m }},
-	{"Set APP_URL to project domain", func(a *config.Automation) config.AutoMode { return a.SetAppURL }, func(a *config.Automation, m config.AutoMode) { a.SetAppURL = m }},
 	{"Reset .env on service stop", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
 }
 

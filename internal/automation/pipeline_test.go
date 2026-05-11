@@ -49,7 +49,7 @@ func TestRunPipeline_SkipsWhenShouldRunFalse(t *testing.T) {
 
 	step := &stubStep{
 		label:     "skip me",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: false,
 		result:    "done",
 	}
@@ -71,13 +71,13 @@ func TestRunPipeline_SkipsWhenGateOff(t *testing.T) {
 
 	step := &stubStep{
 		label:     "set app url",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.SetAppURL = config.AutoOff
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoOff
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
 		t.Fatalf("RunPipeline() error = %v", err)
@@ -95,13 +95,13 @@ func TestRunPipeline_RunsWhenGateOn(t *testing.T) {
 
 	step := &stubStep{
 		label:     "set app url",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.SetAppURL = config.AutoOn
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoOn
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
 		t.Fatalf("RunPipeline() error = %v", err)
@@ -119,13 +119,13 @@ func TestRunPipeline_AskTreatedAsOffWhenNonInteractive(t *testing.T) {
 
 	step := &stubStep{
 		label:     "set app url",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.SetAppURL = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force non-interactive
 	origIsInteractive := isInteractiveFunc
@@ -148,13 +148,13 @@ func TestRunPipeline_AskRunsWhenConfirmed(t *testing.T) {
 
 	step := &stubStep{
 		label:     "set app url",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.SetAppURL = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force interactive + confirm yes
 	origIsInteractive := isInteractiveFunc
@@ -181,13 +181,13 @@ func TestRunPipeline_AskSkipsWhenDenied(t *testing.T) {
 
 	step := &stubStep{
 		label:     "set app url",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.SetAppURL = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force interactive + confirm no
 	origIsInteractive := isInteractiveFunc
@@ -228,8 +228,6 @@ func TestLookupGate(t *testing.T) {
 		want config.AutoMode
 	}{
 		{"install_php_version", a.InstallPHPVersion},
-		{"set_app_url", a.SetAppURL},
-		{"set_vite_tls", a.SetViteTLS},
 		{"service_fallback", a.ServiceFallback},
 		{"generate_site_config", a.GenerateSiteConfig},
 		{"generate_caddyfile", a.GenerateCaddyfile},
@@ -258,14 +256,14 @@ func TestRunPipeline_AbortOnCriticalFailure(t *testing.T) {
 
 	criticalStep := &stubStep{
 		label:     "critical step",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		critical:  true,
 		err:       fmt.Errorf("critical failure"),
 	}
 	nextStep := &stubStep{
 		label:     "next step",
-		gate:      "set_vite_tls",
+		gate:      "service_fallback",
 		shouldRun: true,
 		result:    "done",
 	}
@@ -288,14 +286,14 @@ func TestRunPipeline_ContinuesOnNonCriticalFailure(t *testing.T) {
 
 	failStep := &stubStep{
 		label:     "non-critical step",
-		gate:      "set_app_url",
+		gate:      "install_php_version",
 		shouldRun: true,
 		critical:  false,
 		err:       fmt.Errorf("non-critical failure"),
 	}
 	nextStep := &stubStep{
 		label:     "next step",
-		gate:      "set_vite_tls",
+		gate:      "service_fallback",
 		shouldRun: true,
 		result:    "done",
 	}

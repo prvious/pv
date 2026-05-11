@@ -200,12 +200,6 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.InstallPHPVersion != AutoOn {
 		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
 	}
-	if a.SetAppURL != AutoOn {
-		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
-	}
-	if a.SetViteTLS != AutoOn {
-		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
-	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
@@ -224,8 +218,6 @@ func TestSettings_AutomationRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	s := DefaultSettings()
-	s.Automation.SetAppURL = AutoOff
-	s.Automation.SetViteTLS = AutoAsk
 	s.Automation.ServiceFallback = AutoOff
 
 	if err := s.Save(); err != nil {
@@ -237,12 +229,6 @@ func TestSettings_AutomationRoundTrip(t *testing.T) {
 		t.Fatalf("LoadSettings() error = %v", err)
 	}
 
-	if loaded.Automation.SetAppURL != AutoOff {
-		t.Errorf("SetAppURL = %q, want %q", loaded.Automation.SetAppURL, AutoOff)
-	}
-	if loaded.Automation.SetViteTLS != AutoAsk {
-		t.Errorf("SetViteTLS = %q, want %q", loaded.Automation.SetViteTLS, AutoAsk)
-	}
 	if loaded.Automation.ServiceFallback != AutoOff {
 		t.Errorf("ServiceFallback = %q, want %q", loaded.Automation.ServiceFallback, AutoOff)
 	}
@@ -272,12 +258,6 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	if a.InstallPHPVersion != AutoOn {
 		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
 	}
-	if a.SetAppURL != AutoOn {
-		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
-	}
-	if a.SetViteTLS != AutoOn {
-		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
-	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
@@ -299,7 +279,7 @@ func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
 	if err := EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(SettingsPath(), []byte("automation:\n    set_app_url: banana\n    service_fallback: \"false\"\n"), 0644); err != nil {
+	if err := os.WriteFile(SettingsPath(), []byte("automation:\n    install_php_version: banana\n    service_fallback: \"false\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,8 +288,8 @@ func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
 		t.Fatalf("LoadSettings() error = %v", err)
 	}
 	// "banana" is invalid → should be reset to default ("true").
-	if loaded.Automation.SetAppURL != AutoOn {
-		t.Errorf("SetAppURL = %q, want %q (invalid value should reset to default)", loaded.Automation.SetAppURL, AutoOn)
+	if loaded.Automation.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q (invalid value should reset to default)", loaded.Automation.InstallPHPVersion, AutoOn)
 	}
 	// "false" is valid → should be preserved.
 	if loaded.Automation.ServiceFallback != AutoOff {

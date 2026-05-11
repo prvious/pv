@@ -26,8 +26,6 @@ type Defaults struct {
 // Automation controls which link-time steps run automatically.
 type Automation struct {
 	InstallPHPVersion AutoMode `yaml:"install_php_version,omitempty"`
-	SetAppURL         AutoMode `yaml:"set_app_url,omitempty"`
-	SetViteTLS        AutoMode `yaml:"set_vite_tls,omitempty"`
 	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
 
 	// Hidden gates — not shown in setup wizard, configurable via pv.yml.
@@ -50,8 +48,6 @@ var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 func DefaultAutomation() Automation {
 	return Automation{
 		InstallPHPVersion:  AutoOn,
-		SetAppURL:          AutoOn,
-		SetViteTLS:         AutoOn,
 		ServiceFallback:    AutoOn,
 		GenerateSiteConfig: AutoOn,
 		GenerateCaddyfile:  AutoOn,
@@ -72,12 +68,6 @@ func applyAutomationDefaults(a *Automation) {
 	d := DefaultAutomation()
 	if !validAutoMode(a.InstallPHPVersion) {
 		a.InstallPHPVersion = d.InstallPHPVersion
-	}
-	if !validAutoMode(a.SetAppURL) {
-		a.SetAppURL = d.SetAppURL
-	}
-	if !validAutoMode(a.SetViteTLS) {
-		a.SetViteTLS = d.SetViteTLS
 	}
 	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback

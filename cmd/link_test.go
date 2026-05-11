@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/spf13/cobra"
 )
@@ -439,7 +438,7 @@ func TestLink_CreatesCaddyfile(t *testing.T) {
 }
 
 // scaffoldLaravelProject creates a minimal Laravel project directory for testing.
-// It creates composer.json and a pre-existing .env so SetAppURLStep can run.
+// It creates composer.json and a pre-existing .env.
 func scaffoldLaravelProject(t *testing.T, name string) string {
 	t.Helper()
 	projDir := filepath.Join(t.TempDir(), name)
@@ -455,28 +454,6 @@ func scaffoldLaravelProject(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return projDir
-}
-
-func TestLink_AutomationSetsAppURL(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "urltest")
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "urltest"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	want := "https://urltest.test"
-	if env["APP_URL"] != want {
-		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
-	}
 }
 
 func TestLink_AutomationSkippedForNonLaravel(t *testing.T) {
@@ -542,39 +519,6 @@ func TestLink_AutomationRedetectsOctane(t *testing.T) {
 	}
 	if p.Type != "laravel-octane" {
 		t.Errorf("Type = %q, want %q", p.Type, "laravel-octane")
-	}
-}
-
-func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "existingenv")
-
-	// Pre-create .env so it's loaded into context and SetAppURLStep can run.
-	envContent := "APP_NAME=Existing\nAPP_KEY=base64:existingkey\nAPP_URL=http://localhost\n"
-	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "existingenv"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	// SetAppURLStep should have updated APP_URL even with pre-existing .env.
-	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	want := "https://existingenv.test"
-	if env["APP_URL"] != want {
-		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
-	}
-	// APP_KEY should remain unchanged (no step writes APP_KEY in the new pipeline).
-	if env["APP_KEY"] != "base64:existingkey" {
-		t.Errorf("APP_KEY = %q, want %q", env["APP_KEY"], "base64:existingkey")
 	}
 }
 
