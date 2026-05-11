@@ -144,10 +144,6 @@ pv link --name=myapp ~/Code/myapp`,
 		// Run the full pipeline.
 		allSteps := []automation.Step{
 			&steps.InstallPHPStep{},
-			&laravel.CopyEnvStep{},
-			&laravel.ComposerInstallStep{},
-			&laravel.GenerateKeyStep{},
-			&laravel.InstallOctaneStep{},
 			&steps.GenerateSiteConfigStep{},
 			&steps.GenerateCaddyfileStep{},
 			&steps.GenerateTLSCertStep{},
@@ -155,8 +151,6 @@ pv link --name=myapp ~/Code/myapp`,
 			&steps.ApplyPvYmlEnvStep{},
 			&laravel.SetAppURLStep{},
 			&laravel.SetViteTLSStep{},
-			&laravel.CreateDatabaseStep{},
-			&laravel.RunMigrationsStep{},
 			&steps.ApplySetupStep{},
 		}
 		if err := automation.RunPipeline(allSteps, ctx); err != nil {

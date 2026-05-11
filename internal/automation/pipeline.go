@@ -123,22 +123,10 @@ func LookupGate(a *config.Automation, gate string) config.AutoMode {
 	switch gate {
 	case "install_php_version":
 		return a.InstallPHPVersion
-	case "composer_install":
-		return a.ComposerInstall
-	case "copy_env":
-		return a.CopyEnv
-	case "generate_key":
-		return a.GenerateKey
 	case "set_app_url":
 		return a.SetAppURL
 	case "set_vite_tls":
 		return a.SetViteTLS
-	case "install_octane":
-		return a.InstallOctane
-	case "create_database":
-		return a.CreateDatabase
-	case "run_migrations":
-		return a.RunMigrations
 	case "service_fallback":
 		return a.ServiceFallback
 	case "generate_site_config":

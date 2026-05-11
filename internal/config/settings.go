@@ -26,14 +26,8 @@ type Defaults struct {
 // Automation controls which link-time steps run automatically.
 type Automation struct {
 	InstallPHPVersion AutoMode `yaml:"install_php_version,omitempty"`
-	ComposerInstall   AutoMode `yaml:"composer_install,omitempty"`
-	CopyEnv           AutoMode `yaml:"copy_env,omitempty"`
-	GenerateKey       AutoMode `yaml:"generate_key,omitempty"`
 	SetAppURL         AutoMode `yaml:"set_app_url,omitempty"`
 	SetViteTLS        AutoMode `yaml:"set_vite_tls,omitempty"`
-	InstallOctane     AutoMode `yaml:"install_octane,omitempty"`
-	CreateDatabase    AutoMode `yaml:"create_database,omitempty"`
-	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
 	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
 
 	// Hidden gates — not shown in setup wizard, configurable via pv.yml.
@@ -56,14 +50,8 @@ var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 func DefaultAutomation() Automation {
 	return Automation{
 		InstallPHPVersion:  AutoOn,
-		ComposerInstall:    AutoOn,
-		CopyEnv:            AutoOn,
-		GenerateKey:        AutoOn,
 		SetAppURL:          AutoOn,
 		SetViteTLS:         AutoOn,
-		InstallOctane:      AutoAsk,
-		CreateDatabase:     AutoOn,
-		RunMigrations:      AutoAsk,
 		ServiceFallback:    AutoOn,
 		GenerateSiteConfig: AutoOn,
 		GenerateCaddyfile:  AutoOn,
@@ -85,29 +73,11 @@ func applyAutomationDefaults(a *Automation) {
 	if !validAutoMode(a.InstallPHPVersion) {
 		a.InstallPHPVersion = d.InstallPHPVersion
 	}
-	if !validAutoMode(a.ComposerInstall) {
-		a.ComposerInstall = d.ComposerInstall
-	}
-	if !validAutoMode(a.CopyEnv) {
-		a.CopyEnv = d.CopyEnv
-	}
-	if !validAutoMode(a.GenerateKey) {
-		a.GenerateKey = d.GenerateKey
-	}
 	if !validAutoMode(a.SetAppURL) {
 		a.SetAppURL = d.SetAppURL
 	}
 	if !validAutoMode(a.SetViteTLS) {
 		a.SetViteTLS = d.SetViteTLS
-	}
-	if !validAutoMode(a.InstallOctane) {
-		a.InstallOctane = d.InstallOctane
-	}
-	if !validAutoMode(a.CreateDatabase) {
-		a.CreateDatabase = d.CreateDatabase
-	}
-	if !validAutoMode(a.RunMigrations) {
-		a.RunMigrations = d.RunMigrations
 	}
 	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback

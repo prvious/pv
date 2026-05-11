@@ -439,8 +439,7 @@ func TestLink_CreatesCaddyfile(t *testing.T) {
 }
 
 // scaffoldLaravelProject creates a minimal Laravel project directory for testing.
-// It creates composer.json, .env.example, and a vendor/ dir (to prevent
-// ComposerInstallStep from trying to run the real composer binary).
+// It creates composer.json and a pre-existing .env so SetAppURLStep can run.
 func scaffoldLaravelProject(t *testing.T, name string) string {
 	t.Helper()
 	projDir := filepath.Join(t.TempDir(), name)
@@ -451,42 +450,11 @@ func scaffoldLaravelProject(t *testing.T, name string) string {
 	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	envExample := "APP_NAME=Laravel\nAPP_KEY=\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n"
-	if err := os.WriteFile(filepath.Join(projDir, ".env.example"), []byte(envExample), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Create vendor/ so ComposerInstallStep is skipped (no real composer in tests).
-	if err := os.MkdirAll(filepath.Join(projDir, "vendor"), 0755); err != nil {
+	envContent := "APP_NAME=Laravel\nAPP_KEY=\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n"
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return projDir
-}
-
-func TestLink_AutomationCopiesEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "envtest")
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "envtest"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	// .env should have been created by CopyEnvStep.
-	envPath := filepath.Join(projDir, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		t.Fatal(".env was not created by automation pipeline")
-	}
-
-	env, err := projectenv.ReadDotEnv(envPath)
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	if env["APP_NAME"] != "Laravel" {
-		t.Errorf("APP_NAME = %q, want %q", env["APP_NAME"], "Laravel")
-	}
 }
 
 func TestLink_AutomationSetsAppURL(t *testing.T) {
@@ -583,7 +551,7 @@ func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
 
 	projDir := scaffoldLaravelProject(t, "existingenv")
 
-	// Pre-create .env so CopyEnvStep is skipped but the file is loaded into context.
+	// Pre-create .env so it's loaded into context and SetAppURLStep can run.
 	envContent := "APP_NAME=Existing\nAPP_KEY=base64:existingkey\nAPP_URL=http://localhost\n"
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
@@ -604,7 +572,7 @@ func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
 	if env["APP_URL"] != want {
 		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
 	}
-	// APP_KEY should remain unchanged (GenerateKeyStep skipped because key is set).
+	// APP_KEY should remain unchanged (no step writes APP_KEY in the new pipeline).
 	if env["APP_KEY"] != "base64:existingkey" {
 		t.Errorf("APP_KEY = %q, want %q", env["APP_KEY"], "base64:existingkey")
 	}
