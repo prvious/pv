@@ -155,6 +155,7 @@ pv link --name=myapp ~/Code/myapp`,
 			&laravel.SetViteTLSStep{},
 			&laravel.CreateDatabaseStep{},
 			&laravel.RunMigrationsStep{},
+			&steps.ApplySetupStep{},
 		}
 		if err := automation.RunPipeline(allSteps, ctx); err != nil {
 			return err
