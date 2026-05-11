@@ -138,6 +138,55 @@ pv update --no-self-update  # Only update tools
 pv uninstall         # Complete removal with guided cleanup
 ```
 
+## Migrating from pre-pv.yml versions
+
+If you used pv before this release, your projects worked via auto-detection plus a hardcoded setup pipeline. Both are gone. **`pv.yml` is now the project's contract with pv.**
+
+To migrate an existing linked project:
+
+```bash
+cd /path/to/your/project
+pv init               # detects project type; writes pv.yml with sensible defaults
+# review the generated file — adjust services, env, setup as needed
+git add pv.yml && git commit -m "Add pv.yml"
+pv link               # relinks with the new contract
+```
+
+`pv init` writes a `pv.yml` with:
+
+- The project's PHP version (from `composer.json` `require.php` when parseable, otherwise your global default)
+- A `postgresql:` or `mysql:` block when the matching engine is installed (use `--mysql` to prefer mysql when both are installed)
+- A `setup:` block with `cp .env.example .env`, `composer install`, `php artisan key:generate`, and `php artisan migrate` for Laravel projects (just `composer install` for generic PHP, empty for static sites)
+- A commented-out `aliases:` line you can uncomment to add extra hostnames
+
+Common adjustments after `pv init`:
+
+- **No database**: remove the `postgresql:` / `mysql:` block and the `pv <engine>:db:create` + `php artisan migrate` lines from `setup:`.
+- **Custom migrate command**: replace `php artisan migrate` with whatever your team uses (e.g., `php artisan x-migrate` for multi-database setups).
+- **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates like `{{ .site_url }}`, `{{ .host }}`, `{{ .port }}`. See [the spec](docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md) for the full template variable reference.
+- **Aliases**: uncomment the `aliases:` line and add hostnames; each alias gets its own TLS cert.
+
+## What's no longer automatic
+
+The following used to happen invisibly during `pv link` and related commands. After this release, they only happen if you declare them in `pv.yml`:
+
+- **Service binding from `.env` hints** (e.g., `DB_CONNECTION=pgsql` no longer auto-binds postgres) — declare the service in `pv.yml` instead.
+- **Laravel-shaped env writes** (`DB_HOST`, `DB_PORT`, `CACHE_STORE`, `SESSION_DRIVER`, `QUEUE_CONNECTION`, `FILESYSTEM_DISK`, `MAIL_MAILER`) — declare the keys in `pv.yml`'s `env:` blocks; values come from template variables like `{{ .host }}`, `{{ .port }}`.
+- **`.env.example` → `.env` copy** — put `cp .env.example .env` in `setup:`.
+- **Composer install, `key:generate`, migrations, Octane install** — put each in `setup:`.
+- **Database creation** — call `pv postgres:db:create <name>` (or `mysql`) from `setup:`.
+- **Retroactive env writes on service install** (e.g., installing postgres no longer modifies existing projects' `.env`) — re-run `pv link` in each project to refresh env values from your pv.yml's templates.
+- **`APP_URL` and Vite TLS env vars** — declare in pv.yml's top-level `env:`:
+
+  ```yaml
+  env:
+    APP_URL: "{{ .site_url }}"
+    VITE_DEV_SERVER_KEY: "{{ .tls_key_path }}"
+    VITE_DEV_SERVER_CERT: "{{ .tls_cert_path }}"
+  ```
+
+The trade-off: a one-time `pv init` per project in exchange for never seeing a mystery `.env` write again.
+
 ## Architecture
 
 ```
