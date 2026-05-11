@@ -17,18 +17,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create a minimal linked Laravel project BEFORE rustfs:install so we exercise
-# the retroactive-bind path (issue #69): projects linked before a binary
-# service existed must still get their .env keys written.
+# Install rustfs BEFORE pv link so ApplyPvYmlServicesStep finds it
+# (PR 5 deleted the retroactive-bind path that used to fire on
+# `pv rustfs:install`; binding now happens at link time via pv.yml).
+echo "==> rustfs:install"
+sudo -E pv rustfs:install || { echo "FAIL: pv rustfs:install failed"; exit 1; }
+
+# Now link a Laravel project that declares rustfs + env template in pv.yml.
+# pv link's ApplyPvYmlEnvStep will render the templates and write
+# AWS_ENDPOINT into the project's .env.
 ENVTEST_DIR=$(mktemp -d)
 echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
 mkdir -p "$ENVTEST_DIR/public"
 echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
 echo "FILESYSTEM_DISK=local" > "$ENVTEST_DIR/.env"
+cat > "$ENVTEST_DIR/pv.yml" << 'YMLEOF'
+php: "8.4"
+rustfs:
+  env:
+    AWS_ENDPOINT: "{{ .endpoint }}"
+YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-s3-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
-
-echo "==> rustfs:install"
-sudo -E pv rustfs:install || { echo "FAIL: pv rustfs:install failed"; exit 1; }
 
 echo "==> Verify rustfs binary exists"
 test -x "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not installed"; exit 1; }
@@ -54,9 +63,12 @@ done
 nc -z 127.0.0.1 9000 || { echo "FAIL: port 9000 not reachable after rustfs:install"; exit 1; }
 echo "OK: port 9000 reachable"
 
-echo "==> Verify linked project .env got AWS_ENDPOINT"
+echo "==> Verify linked project .env got AWS_ENDPOINT via pv.yml env template"
+# ApplyPvYmlEnvStep rendered rustfs.env.AWS_ENDPOINT against {{ .endpoint }}
+# during `pv link`. Replaces the deleted retroactive-bind path that used to
+# fire on `pv rustfs:install` for already-linked projects.
 grep -q "AWS_ENDPOINT=http://127.0.0.1:9000" "$ENVTEST_DIR/.env" || {
-    echo "FAIL: linked project .env should have AWS_ENDPOINT after rustfs:install";
+    echo "FAIL: linked project .env should have AWS_ENDPOINT after pv link";
     echo "  actual .env contents:";
     cat "$ENVTEST_DIR/.env";
     exit 1;

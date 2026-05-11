@@ -17,16 +17,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Pre-link a Laravel project so the redis auto-bind path is exercised.
+# Install redis BEFORE pv link so ApplyPvYmlServicesStep finds it
+# (PR 5 deleted the retroactive-bind path; binding now happens at link time
+# via pv.yml).
+echo "==> redis:install"
+sudo -E pv redis:install || { echo "FAIL: redis:install"; exit 1; }
+
+# Now link a Laravel project that declares redis + env template in pv.yml.
+# pv link's ApplyPvYmlEnvStep will render the templates and write REDIS_*
+# into the project's .env (the path that replaced the deleted retroactive
+# bind on `pv redis:install`).
 ENVTEST_DIR=$(mktemp -d)
 echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
 mkdir -p "$ENVTEST_DIR/public"
 echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
 echo "APP_NAME=test" > "$ENVTEST_DIR/.env"
+cat > "$ENVTEST_DIR/pv.yml" << 'YMLEOF'
+php: "8.4"
+redis:
+  env:
+    REDIS_HOST: "{{ .host }}"
+    REDIS_PORT: "{{ .port }}"
+    REDIS_PASSWORD: "null"
+YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-redis-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
-
-echo "==> redis:install"
-sudo -E pv redis:install || { echo "FAIL: redis:install"; exit 1; }
 
 echo "==> Verify binary tree exists"
 test -x "$HOME/.pv/redis/redis-server" || { echo "FAIL: redis-server binary missing"; exit 1; }
@@ -52,7 +66,10 @@ GOT=$("$HOME/.pv/redis/redis-cli" -h 127.0.0.1 -p 6379 GET pv_e2e_key)
 [ "$GOT" = "hello-world" ] || { echo "FAIL: GET returned '$GOT', want 'hello-world'"; exit 1; }
 echo "OK: SET/GET roundtrip"
 
-echo "==> Verify pre-linked project got REDIS_HOST=127.0.0.1 (auto-bind retroactive)"
+echo "==> Verify linked project got REDIS_* via pv.yml env templates"
+# ApplyPvYmlEnvStep renders redis.env templates against {{ .host }}/{{ .port }}
+# during `pv link`. This replaces the deleted retroactive-bind path that
+# used to fire on `pv redis:install` for already-linked projects.
 grep -q "REDIS_HOST=127.0.0.1" "$ENVTEST_DIR/.env" || {
     echo "FAIL: linked project .env should have REDIS_HOST=127.0.0.1";
     echo "  actual .env contents:";
