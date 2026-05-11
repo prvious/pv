@@ -108,15 +108,22 @@ func resolveInitPHP(projectPath string) string {
 	return "8.4"
 }
 
-// composerVersionRe matches "^8.4", "^8.4.0", "~8.4", "~8.4.0",
-// ">=8.4", ">=8.4.0" prefixes and captures the major.minor. Anything
-// else (compound constraints with `|`, exact pins like "8.4.10", etc.)
-// returns "" — fall back to the global default rather than guess wrong.
+// composerVersionRe captures the leading "major.minor" of a composer
+// require.php constraint, with an optional "^", "~", or ">=" prefix.
+// Greedy on the first token only — compound constraints like
+// "^8.3 || ^8.4" yield "8.3"; exact pins like "8.4.10" yield "8.4"
+// (taking the first major.minor as a usable hint). Returns no match
+// only when the constraint doesn't start with a numeric token at all
+// (e.g., "@dev", ""), in which case the caller falls back to the
+// global default.
 var composerVersionRe = regexp.MustCompile(`^(?:\^|~|>=)?\s*(\d+\.\d+)`)
 
-// phpFromComposer reads composer.json's require.php and returns a
-// concrete major.minor when the constraint can be cleanly parsed.
-// Returns "" on any parse failure.
+// phpFromComposer reads composer.json's require.php and returns the
+// leading "major.minor" captured by composerVersionRe. Returns "" on
+// any I/O / JSON parse failure or when the constraint doesn't expose
+// a numeric token. Best-effort hint, not a strict version pinner —
+// the caller should fall back to settings.Defaults.PHP when this
+// returns "".
 func phpFromComposer(projectPath string) string {
 	raw, err := os.ReadFile(filepath.Join(projectPath, "composer.json"))
 	if err != nil {
