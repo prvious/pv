@@ -12,7 +12,6 @@ import (
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/ui"
 )
 
@@ -136,60 +135,4 @@ func (s *DetectServicesStep) Run(ctx *automation.Context) (string, error) {
 		return "no services detected", nil
 	}
 	return fmt.Sprintf("bound %d services", bound), nil
-}
-
-func findServiceByName(reg *registry.Registry, name string) string {
-	for key := range reg.Services {
-		keyName, _ := registry.ParseServiceKey(key)
-		if keyName == name {
-			return key
-		}
-	}
-	return ""
-}
-
-func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey string) {
-	for i := range reg.Projects {
-		if reg.Projects[i].Name != projectName {
-			continue
-		}
-		if reg.Projects[i].Services == nil {
-			reg.Projects[i].Services = &registry.ProjectServices{}
-		}
-		switch svcType {
-		case "redis":
-			reg.Projects[i].Services.Redis = true
-		case "mail":
-			reg.Projects[i].Services.Mail = true
-		case "s3":
-			reg.Projects[i].Services.S3 = true
-		}
-		break
-	}
-}
-
-func bindProjectPostgres(reg *registry.Registry, projectName, major string) {
-	for i := range reg.Projects {
-		if reg.Projects[i].Name != projectName {
-			continue
-		}
-		if reg.Projects[i].Services == nil {
-			reg.Projects[i].Services = &registry.ProjectServices{}
-		}
-		reg.Projects[i].Services.Postgres = major
-		return
-	}
-}
-
-func bindProjectMysql(reg *registry.Registry, projectName, version string) {
-	for i := range reg.Projects {
-		if reg.Projects[i].Name != projectName {
-			continue
-		}
-		if reg.Projects[i].Services == nil {
-			reg.Projects[i].Services = &registry.ProjectServices{}
-		}
-		reg.Projects[i].Services.MySQL = version
-		return
-	}
 }
