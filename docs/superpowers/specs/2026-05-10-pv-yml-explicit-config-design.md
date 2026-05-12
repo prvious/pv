@@ -204,7 +204,7 @@ After this change, `pv link` runs the following ordered steps. The list is final
 1. **Resolve PHP version** from pv.yml `php:`. If not installed, run `pv php:install <version>` (existing behavior).
 2. **Start declared services.** For each service block in pv.yml, ensure it's installed at the requested version. If not installed, `pv link` errors with a clear message pointing at `pv <service>:install <version>`. No silent installs.
 3. **Render env templates.** Top-level `env:` resolves against project-level vars; per-service `env:` resolves against service-specific vars. Values that aren't templates are passed through as literal strings.
-4. **Merge into `.env`.** Rendered keys are written to the project's `.env` via the existing `MergeDotEnv`. A `.pv-backup` is written before any modification (current behavior, retained). Keys not declared in pv.yml are not touched.
+4. **Merge into `.env`.** Rendered keys are written to the project's `.env` via `MergeManagedDotEnv`, which labels each written key with a preceding `# pv-managed` comment. A `.pv-backup` is written before any modification (current behavior, retained). Keys not declared in pv.yml are not touched.
 5. **Wire Caddy site.** The primary host + every alias gets a SAN entry in one Caddy site block. pv mints a cert for each.
 6. **Run `setup:` commands.** Each command runs in order, fail-fast, from the project root, with pinned PHP on PATH. The first non-zero exit aborts.
 7. **Register / update registry. Signal daemon.** (Existing behavior, unchanged.)
@@ -252,7 +252,7 @@ Other types get analogous templates. `pv init` refuses to overwrite an existing 
 ### Conflict policy
 
 - pv.yml is the source of truth while a key remains declared there. Templated env values overwrite existing `.env` values on every `pv link` and are labeled with `# pv-managed`. A user who edits a currently declared pv-managed key in `.env` will see their edit clobbered on next link; the right place to change that value is pv.yml (either the literal, or by overriding the template result).
-- `.pv-backup` is written before any merge (current `MergeDotEnv` behavior).
+- `.pv-backup` is written before any merge.
 - Keys not declared in pv.yml are untouched. Comments and blank lines are preserved (current behavior).
 
 ### `pv unlink` does not touch `.env`
@@ -327,7 +327,7 @@ Pure additive. No runtime behavior change.
 ### PR 2 — `pv link` honors `services:`, `env:`, `aliases:` from pv.yml
 
 - When pv.yml declares one or more service blocks, bind those services for the project (replacing what the auto-detect step would have inferred). Auto-detect remains as a fallback when no service blocks are declared, so existing users are not broken.
-- Render top-level `env:` and per-service `env:` against template vars. Merge results into `.env` via `MergeDotEnv`.
+- Render top-level `env:` and per-service `env:` against template vars. Merge results into `.env` via `MergeManagedDotEnv`.
 - Add `aliases:` support to Caddy site generation: primary host + every alias appear as SANs in one site block, all certed by pv's local CA.
 - Tests for: service-block-honored path, env-template-rendering path, alias-cert path, fallback-to-auto-detect path.
 

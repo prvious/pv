@@ -41,7 +41,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	// Top-level env: project-level vars.
 	if len(cfg.Env) > 0 {
 		vars := projectenv.ProjectTemplateVars(ctx.ProjectName, ctx.TLD)
-		if err := renderInto(rendered, cfg.Env, vars, "env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Env, vars, "env"); err != nil {
 			return "", err
 		}
 	}
@@ -56,7 +56,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("postgres template vars: %w", err)
 		}
-		if err := renderInto(rendered, cfg.Postgresql.Env, vars, "postgresql.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Postgresql.Env, vars, "postgresql.env"); err != nil {
 			return "", err
 		}
 	}
@@ -71,28 +71,28 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("mysql template vars: %w", err)
 		}
-		if err := renderInto(rendered, cfg.Mysql.Env, vars, "mysql.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Mysql.Env, vars, "mysql.env"); err != nil {
 			return "", err
 		}
 	}
 
 	// redis.env
 	if cfg.Redis != nil && len(cfg.Redis.Env) > 0 {
-		if err := renderInto(rendered, cfg.Redis.Env, redis.TemplateVars(), "redis.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Redis.Env, redis.TemplateVars(), "redis.env"); err != nil {
 			return "", err
 		}
 	}
 
 	// mailpit.env
 	if cfg.Mailpit != nil && len(cfg.Mailpit.Env) > 0 {
-		if err := renderInto(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(), "mailpit.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(), "mailpit.env"); err != nil {
 			return "", err
 		}
 	}
 
 	// rustfs.env
 	if cfg.Rustfs != nil && len(cfg.Rustfs.Env) > 0 {
-		if err := renderInto(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(), "rustfs.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(), "rustfs.env"); err != nil {
 			return "", err
 		}
 	}
@@ -105,10 +105,14 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 	return fmt.Sprintf("wrote %d key(s) to .env", len(rendered)), nil
 }
 
-// renderInto renders each template in src against vars and accumulates
+// renderIntoMap renders each template in src against vars and accumulates
 // the result into dst. scope is used only for error messages.
-func renderInto(dst, src, vars map[string]string, scope string) error {
+// Returns an error if a key already exists in dst (duplicate across scopes).
+func renderIntoMap(dst, src, vars map[string]string, scope string) error {
 	for key, tmpl := range src {
+		if _, exists := dst[key]; exists {
+			return fmt.Errorf("%s[%s]: duplicate env key across scopes", scope, key)
+		}
 		out, err := projectenv.Render(tmpl, vars)
 		if err != nil {
 			return fmt.Errorf("%s[%s]: %w", scope, key, err)

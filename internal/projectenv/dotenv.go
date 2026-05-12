@@ -1,7 +1,10 @@
 package projectenv
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -28,16 +31,50 @@ func ReadDotEnv(path string) (map[string]string, error) {
 }
 
 // MergeDotEnv reads an existing .env file, replaces matching keys in-place,
-// appends new keys, and writes the result. Creates a backup at backupPath.
+// appends new keys, and writes the result. Creates a backup at backupPath
+// only if one does not already exist. Preserves the original file's
+// permission bits and writes atomically via temp-file + rename.
 func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
+	return mergeDotEnv(envPath, backupPath, newVars, false)
+}
+
+// MergeManagedDotEnv reads an existing .env file, replaces matching keys
+// in-place, appends new keys, and labels every key it writes with a
+// preceding # pv-managed marker. Existing keys that are not present in newVars
+// are left untouched, including any old markers they already have.
+// Creates a backup at backupPath only if one does not already exist.
+// Preserves the original file's permission bits and writes atomically.
+func MergeManagedDotEnv(envPath, backupPath string, newVars map[string]string) error {
+	return mergeDotEnv(envPath, backupPath, newVars, true)
+}
+
+func mergeDotEnv(envPath, backupPath string, newVars map[string]string, managed bool) error {
+	// Validate keys and values.
+	for key, val := range newVars {
+		if key == "" || strings.ContainsAny(key, "\n\r=") || strings.ContainsAny(val, "\n\r") {
+			return fmt.Errorf("invalid env key or value: %q", key)
+		}
+	}
+
 	existing, err := os.ReadFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
+	// Preserve original file permissions.
+	var mode os.FileMode = 0o644
+	if err == nil {
+		if info, statErr := os.Stat(envPath); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+	}
+
+	// Create backup only if one does not already exist.
 	if err == nil && backupPath != "" {
-		if err := os.WriteFile(backupPath, existing, 0644); err != nil {
-			return err
+		if _, statErr := os.Stat(backupPath); os.IsNotExist(statErr) {
+			if writeErr := os.WriteFile(backupPath, existing, mode); writeErr != nil {
+				return writeErr
+			}
 		}
 	}
 
@@ -45,13 +82,22 @@ func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
 	var lines []string
 
 	if len(existing) > 0 {
-		for _, line := range strings.Split(string(existing), "\n") {
+		raw := strings.TrimSuffix(string(existing), "\n")
+		for _, line := range strings.Split(raw, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 				parts := strings.SplitN(trimmed, "=", 2)
 				if len(parts) == 2 {
 					key := parts[0]
 					if val, ok := newVars[key]; ok {
+						if replaced[key] {
+							// Already updated the first occurrence; preserve duplicates as-is.
+							lines = append(lines, line)
+							continue
+						}
+						if managed && !hasManagedMarker(lines) {
+							lines = append(lines, managedMarker)
+						}
 						lines = append(lines, key+"="+val)
 						replaced[key] = true
 						continue
@@ -62,10 +108,21 @@ func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
 		}
 	}
 
-	for key, val := range newVars {
-		if !replaced[key] {
-			lines = append(lines, key+"="+val)
+	// Sort keys for deterministic output.
+	keys := make([]string, 0, len(newVars))
+	for k := range newVars {
+		if !replaced[k] {
+			keys = append(keys, k)
 		}
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		val := newVars[key]
+		if managed {
+			lines = append(lines, managedMarker)
+		}
+		lines = append(lines, key+"="+val)
 	}
 
 	content := strings.Join(lines, "\n")
@@ -73,66 +130,39 @@ func MergeDotEnv(envPath, backupPath string, newVars map[string]string) error {
 		content += "\n"
 	}
 
-	return os.WriteFile(envPath, []byte(content), 0644)
-}
-
-// MergeManagedDotEnv reads an existing .env file, replaces matching keys
-// in-place, appends new keys, and labels every key it writes with a
-// preceding # pv-managed marker. Existing keys that are not present in newVars
-// are left untouched, including any old markers they already have.
-func MergeManagedDotEnv(envPath, backupPath string, newVars map[string]string) error {
-	existing, err := os.ReadFile(envPath)
-	if err != nil && !os.IsNotExist(err) {
+	// Atomic write: temp file in the same directory, then rename.
+	dir := filepath.Dir(envPath)
+	tmp, err := os.CreateTemp(dir, ".env.tmp-*")
+	if err != nil {
 		return err
 	}
+	tmpPath := tmp.Name()
 
-	if err == nil && backupPath != "" {
-		if err := os.WriteFile(backupPath, existing, 0644); err != nil {
-			return err
-		}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
 	}
-
-	replaced := make(map[string]bool)
-	var lines []string
-
-	if len(existing) > 0 {
-		lines = strings.Split(string(existing), "\n")
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-
-		merged := make([]string, 0, len(lines)+len(newVars)*2)
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-				parts := strings.SplitN(trimmed, "=", 2)
-				if len(parts) == 2 {
-					key := parts[0]
-					if val, ok := newVars[key]; ok {
-						if len(merged) == 0 || strings.TrimSpace(merged[len(merged)-1]) != managedMarker {
-							merged = append(merged, managedMarker)
-						}
-						merged = append(merged, key+"="+val)
-						replaced[key] = true
-						continue
-					}
-				}
-			}
-			merged = append(merged, line)
-		}
-		lines = merged
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, envPath)
+}
 
-	for key, val := range newVars {
-		if !replaced[key] {
-			lines = append(lines, managedMarker, key+"="+val)
+// hasManagedMarker reports whether the last non-empty line in lines is
+// the pv-managed marker. It skips blank lines when looking backward.
+func hasManagedMarker(lines []string) bool {
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
 		}
+		return trimmed == managedMarker
 	}
-
-	content := strings.Join(lines, "\n")
-	if !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-
-	return os.WriteFile(envPath, []byte(content), 0644)
+	return false
 }
