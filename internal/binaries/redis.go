@@ -6,9 +6,10 @@ import (
 	"runtime"
 )
 
-// Redis descriptor. Single-version — there is no version arg; the URL
-// resolves to the rolling artifacts-release asset which always carries
-// the latest GA upstream redis.
+const redisMinorVersion = "8.6"
+
+// Redis descriptor. Single supported minor — the URL resolves to the
+// artifacts-release asset for redisMinorVersion.
 var Redis = Binary{
 	Name:         "redis",
 	DisplayName:  "Redis",
@@ -40,5 +41,5 @@ func RedisURL() (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported architecture for Redis: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	return fmt.Sprintf("https://github.com/prvious/pv/releases/download/artifacts/redis-%s.tar.gz", platform), nil
+	return fmt.Sprintf("https://github.com/prvious/pv/releases/download/artifacts/redis-%s-%s.tar.gz", platform, redisMinorVersion), nil
 }
