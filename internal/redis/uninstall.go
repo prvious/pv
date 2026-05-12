@@ -25,8 +25,12 @@ import (
 // dirs first and then saving state would leave behind empty dirs.
 func Uninstall(force bool) error {
 	if isInstalledOnDisk() {
-		_ = SetWanted(WantedStopped)
-		_ = WaitStopped(10 * time.Second)
+		v, _ := ProbeVersion()
+		if v == "" {
+			v = "unknown"
+		}
+		_ = SetWanted(v, WantedStopped)
+		_ = WaitStopped(v, 10*time.Second)
 	}
 
 	// Update bookkeeping first — these saves call EnsureDirs internally

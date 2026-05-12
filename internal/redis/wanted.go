@@ -3,25 +3,33 @@ package redis
 import (
 	"fmt"
 	"os"
+	"sort"
 )
 
-// IsWanted reports whether redis should currently be supervised:
-// state says wanted=running AND the binary is on disk. Stale entries
-// (state says running but binary is missing) emit a stderr warning and
-// return false — recovery is `redis:install` after the binary is
-// restored.
-func IsWanted() bool {
+func WantedVersions() ([]string, error) {
 	st, err := LoadState()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "redis: load state: %v\n", err)
-		return false
+		return nil, err
 	}
-	if st.Wanted != WantedRunning {
-		return false
+	installed, err := InstalledVersions()
+	if err != nil {
+		return nil, err
 	}
-	if !IsInstalled() {
-		fmt.Fprintln(os.Stderr, "redis: state.json wants redis running but binary is missing; skipping")
-		return false
+	installedSet := map[string]struct{}{}
+	for _, v := range installed {
+		installedSet[v] = struct{}{}
 	}
-	return true
+	var out []string
+	for version, vs := range st.Versions {
+		if vs.Wanted != WantedRunning {
+			continue
+		}
+		if _, ok := installedSet[version]; !ok {
+			fmt.Fprintf(os.Stderr, "redis: state.json wants %s running but binary is missing; skipping\n", version)
+			continue
+		}
+		out = append(out, version)
+	}
+	sort.Strings(out)
+	return out, nil
 }

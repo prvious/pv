@@ -8,52 +8,49 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-func install(t *testing.T) {
-	t.Helper()
-	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
+func TestWantedVersions_Empty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	vs, err := WantedVersions()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(config.RedisDir(), "redis-server"), []byte{}, 0o755); err != nil {
-		t.Fatal(err)
+	if len(vs) != 0 {
+		t.Error("expected empty")
 	}
 }
 
-func TestIsWanted_NotInstalled(t *testing.T) {
+func TestWantedVersions_WantedAndInstalled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if IsWanted() {
-		t.Error("IsWanted should be false when binary missing")
+
+	if err := SetWanted("8.6", WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	versionDir := config.RedisVersionDir("8.6")
+	os.MkdirAll(versionDir, 0o755)
+	os.WriteFile(filepath.Join(versionDir, "redis-server"), []byte("x"), 0o755)
+
+	vs, err := WantedVersions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 1 || vs[0] != "8.6" {
+		t.Errorf("got %v, want [8.6]", vs)
 	}
 }
 
-func TestIsWanted_InstalledButStopped(t *testing.T) {
+func TestWantedVersions_WantedButNotInstalled_Skipped(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	install(t)
-	if err := SetWanted(WantedStopped); err != nil {
-		t.Fatal(err)
-	}
-	if IsWanted() {
-		t.Error("IsWanted should be false when wanted=stopped")
-	}
-}
 
-func TestIsWanted_InstalledAndRunning(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	install(t)
-	if err := SetWanted(WantedRunning); err != nil {
+	if err := SetWanted("8.6", WantedRunning); err != nil {
 		t.Fatal(err)
 	}
-	if !IsWanted() {
-		t.Error("IsWanted should be true when binary present and wanted=running")
-	}
-}
 
-func TestIsWanted_StaleStateNoBinary(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	// SetWanted to running without installing the binary — drift case.
-	if err := SetWanted(WantedRunning); err != nil {
+	vs, err := WantedVersions()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if IsWanted() {
-		t.Error("IsWanted should be false when binary missing despite state=running")
+	if len(vs) != 0 {
+		t.Error("expected empty when binary missing")
 	}
 }

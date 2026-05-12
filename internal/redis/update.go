@@ -29,15 +29,21 @@ func UpdateProgress(client *http.Client, progress binaries.ProgressFunc) error {
 	// update. A user who explicitly stopped redis before running
 	// `redis:update` should NOT see it auto-start.
 	prevWanted := WantedStopped
-	if st, err := LoadState(); err == nil && st.Wanted != "" {
-		prevWanted = st.Wanted
+	prevVersion := "unknown"
+	if st, err := LoadState(); err == nil {
+		for ver, vs := range st.Versions {
+			prevVersion = ver
+			if vs.Wanted != "" {
+				prevWanted = vs.Wanted
+			}
+		}
 	}
 
 	// Stop running daemon (if any) and wait for the TCP port to close
 	// before swapping binaries.
 	if prevWanted == WantedRunning {
-		_ = SetWanted(WantedStopped)
-		_ = WaitStopped(10 * time.Second)
+		_ = SetWanted(prevVersion, WantedStopped)
+		_ = WaitStopped(prevVersion, 10*time.Second)
 	}
 
 	url, err := resolveRedisURL()
@@ -95,5 +101,5 @@ func UpdateProgress(client *http.Client, progress binaries.ProgressFunc) error {
 	}
 
 	// Restore prior wanted-state.
-	return SetWanted(prevWanted)
+	return SetWanted(prevVersion, prevWanted)
 }
