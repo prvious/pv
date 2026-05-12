@@ -1,16 +1,22 @@
 // Package redis owns the lifecycle of the native redis binary managed by
-// pv. Mirrors internal/postgres/ and internal/mysql/ but flat:
-// single-version, no per-version map. State at ~/.pv/redis/ and
-// ~/.pv/data/redis/.
+// pv. Mirrors internal/postgres/ and internal/mysql/ but versioned:
+// per-version map, version-parameterized API. State at ~/.pv/redis/{version}/
+// and ~/.pv/data/redis/{version}/.
 package redis
 
-// RedisPort is the TCP port pv binds redis-server to. Constant 6379 —
-// the upstream default and the value every Laravel app expects out of
-// the box. Single-version means there's no collision risk.
-const RedisPort = 6379
+import "fmt"
 
-// PortFor returns the TCP port redis-server should bind to.
-// Kept as a function (not just exposing the const) for parallel API
-// shape with mysql.PortFor / postgres.PortFor — callers don't have to
-// branch on which package they're talking to.
-func PortFor() int { return RedisPort }
+func PortFor(version string) int {
+	return redisPort(version)
+}
+
+func redisPort(version string) int {
+	major, minor := parseVersion(version)
+	return 6300 + major*100 + minor*10
+}
+
+func parseVersion(v string) (int, int) {
+	var major, minor int
+	fmt.Sscanf(v, "%d.%d", &major, &minor)
+	return major, minor
+}
