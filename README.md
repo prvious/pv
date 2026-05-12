@@ -156,14 +156,14 @@ pv link               # relinks with the new contract
 
 - The project's PHP version (from `composer.json` `require.php` when parseable, otherwise your global default)
 - A `postgresql:` or `mysql:` block when the matching engine is installed (use `--mysql` to prefer mysql when both are installed)
-- A `setup:` block with `cp .env.example .env`, `composer install`, `php artisan key:generate`, and `php artisan migrate` for Laravel projects (just `composer install` for generic PHP, empty for static sites)
-- A commented-out `aliases:` line you can uncomment to add extra hostnames
+- A `setup:` block with `cp .env.example .env`, optional `pv <engine>:db:create <name>`, `composer install`, `php artisan key:generate`, and `php artisan migrate` when a Laravel project has a generated database block (just `composer install` for generic PHP, empty for static sites)
+- An `aliases:` block with a commented example hostname you can uncomment or replace
 
 Common adjustments after `pv init`:
 
 - **No database**: remove the `postgresql:` / `mysql:` block and the `pv <engine>:db:create` + `php artisan migrate` lines from `setup:`.
 - **Custom migrate command**: replace `php artisan migrate` with whatever your team uses (e.g., `php artisan x-migrate` for multi-database setups).
-- **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates like `{{ .site_url }}`, `{{ .host }}`, `{{ .port }}`. See [the spec](docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md) for the full template variable reference.
+- **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates. Top-level `env:` exposes project vars like `{{ .site_url }}` and `{{ .tls_cert_path }}`; per-service `env:` maps expose service vars like `{{ .host }}` and `{{ .port }}`. See [the spec](docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md) for the full template variable reference.
 - **Aliases**: uncomment the `aliases:` line and add hostnames; each alias gets its own TLS cert.
 
 ## What's no longer automatic
@@ -171,7 +171,7 @@ Common adjustments after `pv init`:
 The following used to happen invisibly during `pv link` and related commands. After this release, they only happen if you declare them in `pv.yml`:
 
 - **Service binding from `.env` hints** (e.g., `DB_CONNECTION=pgsql` no longer auto-binds postgres) — declare the service in `pv.yml` instead.
-- **Laravel-shaped env writes** (`DB_HOST`, `DB_PORT`, `CACHE_STORE`, `SESSION_DRIVER`, `QUEUE_CONNECTION`, `FILESYSTEM_DISK`, `MAIL_MAILER`) — declare the keys in `pv.yml`'s `env:` blocks; values come from template variables like `{{ .host }}`, `{{ .port }}`.
+- **Laravel-shaped env writes** (`DB_HOST`, `DB_PORT`, `CACHE_STORE`, `SESSION_DRIVER`, `QUEUE_CONNECTION`, `FILESYSTEM_DISK`, `MAIL_MAILER`) — declare the keys in `pv.yml`'s `env:` blocks; service connection values come from per-service template variables like `{{ .host }}` and `{{ .port }}`.
 - **`.env.example` → `.env` copy** — put `cp .env.example .env` in `setup:`.
 - **Composer install, `key:generate`, migrations, Octane install** — put each in `setup:`.
 - **Database creation** — call `pv postgres:db:create <name>` (or `mysql`) from `setup:`.

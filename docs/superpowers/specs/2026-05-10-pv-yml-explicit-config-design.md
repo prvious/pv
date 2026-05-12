@@ -303,7 +303,7 @@ Code-level deletions land in PR 5. Exact file paths are verified during implemen
 | File / step | Disposition |
 |---|---|
 | `internal/automation/steps/detect_services.go` | Delete. The whole heuristic auto-detect dies. |
-| `internal/laravel/env.go` `DetectServicesStep`, `UpdateProjectEnvForMysql`, `UpdateProjectEnvForPostgres`, `UpdateProjectEnvForRedis`, `UpdateProjectEnvForBinaryService`, `ApplyFallbacks`, smart Laravel vars logic | Delete. Connection strings and smart vars are now user-declared. |
+| `internal/laravel/env.go` `DetectServicesStep`, `UpdateProjectEnvForMysql`, `UpdateProjectEnvForPostgres`, `UpdateProjectEnvForRedis`, `UpdateProjectEnvForBinaryService`, smart Laravel vars logic | Delete. Connection strings and smart vars are now user-declared. `ApplyFallbacks` survives for explicit uninstall fallback hooks. |
 | `internal/automation/steps/copy_env.go` (`CopyEnvStep`) | Delete. Users add `cp .env.example .env` to `setup:`. |
 | `internal/automation/steps/composer_install.go` (`ComposerInstallStep`) | Delete. Moves to `setup:`. |
 | `internal/automation/steps/generate_key.go` (`GenerateKeyStep`) | Delete. Moves to `setup:`. |
@@ -312,7 +312,7 @@ Code-level deletions land in PR 5. Exact file paths are verified during implemen
 | `internal/automation/steps/run_migrations.go` (`RunMigrationsStep`) | Delete. Moves to `setup:`. |
 | `internal/automation/steps/set_app_url.go` (`SetAppURLStep`) | Delete. Declared via top-level `env:` template. |
 | `internal/automation/steps/set_vite_tls.go` (`SetViteTLSStep`) | Delete. Declared via top-level `env:` template. |
-| `cmd/setup.go` (the `pv setup` command) | Strip the same hardcoded pipeline logic. `pv setup` after this change is a thin wrapper that re-runs `pv link`'s new pipeline against the cwd. |
+| `cmd/setup.go` (the `pv setup` command) | No PR 5 change. The command is the interactive setup wizard, not a hardcoded project pipeline runner. |
 
 The `internal/automation/pipeline.go` itself shrinks to just the steps pv owns (resolve PHP, start services, render+merge env, wire Caddy, run user `setup:`).
 
@@ -358,7 +358,7 @@ Pure additive. No runtime behavior change.
 This is the cut-over. `pv.yml` becomes mandatory for `pv link`.
 
 - Delete all the files listed in the "What's removed" table above.
-- Strip the equivalent hardcoded-pipeline logic from `cmd/setup.go`. `pv setup` after this PR is a thin wrapper that re-runs `pv link`'s new pipeline.
+- Leave `cmd/setup.go` alone; it is the interactive setup wizard, not a hardcoded project pipeline runner.
 - `pv link` without a `pv.yml` errors:
   ```
   no pv.yml found at <project>.

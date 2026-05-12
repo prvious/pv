@@ -63,10 +63,6 @@ pv link --name=myapp ~/Code/myapp`,
 			return fmt.Errorf("no pv.yml found at %s. Run `pv init` to generate one.", absPath)
 		}
 
-		if projectCfg.HasSetup() {
-			ui.Subtle("pv.yml setup: declared — legacy setup steps skipped")
-		}
-
 		name := linkName
 		if name == "" {
 			name = filepath.Base(absPath)
@@ -103,10 +99,7 @@ pv link --name=myapp ~/Code/myapp`,
 			phpVersion = v
 		}
 
-		var aliases []string
-		if projectCfg != nil {
-			aliases = projectCfg.Aliases
-		}
+		aliases := projectCfg.Aliases
 
 		// Register or update project.
 		if relink {

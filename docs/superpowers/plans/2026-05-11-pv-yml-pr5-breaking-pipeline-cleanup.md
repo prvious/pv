@@ -22,7 +22,7 @@
 | `internal/automation/steps/detect_services_test.go` | Entire file | — |
 | `internal/laravel/steps.go` | 8 step types: `DetectServicesStep`, `CopyEnvStep`, `ComposerInstallStep`, `GenerateKeyStep`, `InstallOctaneStep`, `CreateDatabaseStep`, `RunMigrationsStep`, `SetAppURLStep`, `SetViteTLSStep` (NOTE: 9 — the laravel DetectServicesStep is the 1st) | `isLaravel` helper |
 | `internal/laravel/steps_test.go` | Tests for all 9 deleted step types + the HasSetup short-circuit tests | `TestIsLaravel` |
-| `internal/laravel/env.go` | `SmartEnvVars`, `UpdateProjectEnvForPostgres`, `UpdateProjectEnvForMysql`, `UpdateProjectEnvForRedis` | `ApplyFallbacks`, `FallbackMapping` (called from `internal/svchooks/` on service removal) |
+| `internal/laravel/env.go` | `SmartEnvVars`, `UpdateProjectEnvForPostgres`, `UpdateProjectEnvForMysql`, `UpdateProjectEnvForRedis` | `ApplyFallbacks`, `FallbackMapping` (called from mailpit/rustfs uninstall fallback hooks) |
 | `internal/laravel/env_test.go` | Tests for the deleted UpdateProjectEnvFor* functions | `TestApplyFallbacks_*` |
 | `internal/laravel/artisan.go` | `KeyGenerate`, `OctaneInstall`, `Migrate` | `RunArtisan` (if used elsewhere — verify) |
 | `internal/laravel/composer.go` | `ComposerInstall` | — |
@@ -35,7 +35,7 @@
 | `cmd/setup.go` | Nothing — `pv setup` is a TUI wizard, not a pipeline runner | All logic |
 | `README.md` | — | New migration section |
 
-Approx ~1100 lines of Go deleted, ~50 lines added (the pv.yml guard + test fixtures + migration doc).
+Expected outcome: a large net deletion, plus the pv.yml guard, test fixture updates, and migration docs. Use the PR body for final diff stats.
 
 ---
 
@@ -183,7 +183,7 @@ EOF
 
 This deletes the LARAVEL-specific env writer that PR 2 kept gated on `HasAnyEnv()`. With pv.yml now mandatory and `ApplyPvYmlEnvStep` handling all env writes, this code is dead.
 
-`ApplyFallbacks` and `FallbackMapping` STAY (they're called from service-removal hooks in `internal/svchooks/`, not from the pipeline).
+`ApplyFallbacks` and `FallbackMapping` STAY (they're called from mailpit/rustfs uninstall fallback hooks, not from the pipeline).
 
 - [ ] **Step 3.1: Find every UpdateProjectEnvFor* caller outside the step**
 
@@ -271,7 +271,7 @@ pv.yml contract.
 - internal/laravel/env.go: SmartEnvVars, UpdateProjectEnvForPostgres,
   UpdateProjectEnvForMysql, UpdateProjectEnvForRedis deleted.
   ApplyFallbacks and FallbackMapping kept (still called from
-  internal/svchooks/ on service removal).
+  mailpit/rustfs uninstall fallback hooks).
 - internal/laravel/steps_test.go + env_test.go: tests for the
   deleted symbols removed.
 - cmd/link.go: pipeline entry removed.
@@ -684,14 +684,14 @@ pv link               # relinks with the new contract
 
 - The project's PHP version (from `composer.json` `require.php` when parseable, otherwise your global default)
 - A `postgresql:` or `mysql:` block when the matching engine is installed (use `--mysql` to prefer mysql when both are installed)
-- A `setup:` block with `cp .env.example .env`, `composer install`, `php artisan key:generate`, and `php artisan migrate` for Laravel projects (just `composer install` for generic PHP)
-- A commented-out `aliases:` line you can uncomment to add extra hostnames
+- A `setup:` block with `cp .env.example .env`, optional `pv <engine>:db:create <name>`, `composer install`, `php artisan key:generate`, and `php artisan migrate` when a Laravel project has a generated database block (just `composer install` for generic PHP)
+- An `aliases:` block with a commented example hostname you can uncomment or replace
 
 Common adjustments after `pv init`:
 
 - **No database**: remove the `postgresql:` / `mysql:` block and the `pv <engine>:db:create` + `php artisan migrate` lines from `setup:`.
 - **Custom migrate command**: replace `php artisan migrate` with whatever your team uses (e.g., `php artisan x-migrate` for multi-database setups).
-- **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates like `{{ .site_url }}`, `{{ .host }}`, `{{ .port }}`, etc. See the spec at `docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md` for the full template variable reference.
+- **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates. Top-level `env:` exposes project vars like `{{ .site_url }}` and `{{ .tls_cert_path }}`; per-service `env:` maps expose service vars like `{{ .host }}` and `{{ .port }}`. See the spec at `docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md` for the full template variable reference.
 - **Aliases**: uncomment the `aliases:` line and add hostnames for sites that should serve from the same project (each alias gets its own TLS cert).
 
 ## What's no longer automatic
@@ -785,7 +785,7 @@ git log --oneline main..HEAD
 git diff --stat main..HEAD | tail -3
 ```
 
-Expected: 7 commits (one plan + Tasks 1-7 implementation = 8 — but the plan is on this branch as the first commit so 1 plan + 7 implementation = 8). Diff stat should show net deletions in the thousand-line range.
+Expected: branch has the plan commit plus implementation commits, and diff stat should show net deletions in the thousand-line range.
 
 - [ ] **Step 8.4: Open the PR**
 
@@ -804,10 +804,10 @@ Deleted:
 - **10 `Automation` struct fields** (`DetectServices`, `ServiceEnvUpdate`, `CopyEnv`, `ComposerInstall`, `GenerateKey`, `InstallOctane`, `CreateDatabase`, `RunMigrations`, `SetAppURL`, `SetViteTLS`) and their `LookupGate` cases. Old `~/.pv/settings.yml` files that carry these keys deserialize cleanly (Go ignores unknown fields).
 
 Survived:
-- `ApplyFallbacks` and `FallbackMapping` in `internal/laravel/env.go` — still called from `internal/svchooks/` on service removal.
+- `ApplyFallbacks` and `FallbackMapping` in `internal/laravel/env.go` — still called from mailpit/rustfs uninstall fallback hooks.
 - The 4 shared binding helpers (`findServiceByName`, `bindProjectService`, `bindProjectPostgres`, `bindProjectMysql`) — moved to `apply_pvyml_services.go` in the first commit before the auto-detect file was deleted.
 
-7 commits, net ~1100-line deletion. README gains a "Migrating from pre-pv.yml versions" section pointing at `pv init`.
+README gains a "Migrating from pre-pv.yml versions" section pointing at `pv init`.
 
 ## Migration story (in the README under the new section)
 
@@ -856,8 +856,7 @@ PRBODY
 
 **Deliberate notes for future readers:**
 - **Old settings.yml files with deprecated fields**: yaml.Unmarshal silently ignores unknown fields, so users carrying `~/.pv/settings.yml` from a pre-PR-5 install boot up fine. No explicit migration error. README's "What's no longer automatic" section covers the change.
-- **`ApplyFallbacks` / `FallbackMapping` survive** because they're called from `internal/svchooks/` when a service is removed from a project. That's a separate code path from the pipeline; it stays intact.
-- **`internal/svchooks/`** — verify during implementation that nothing in svchooks calls a soon-to-be-deleted helper. If it does (likely doesn't, but possible), update svchooks accordingly.
+- **`ApplyFallbacks` / `FallbackMapping` survive** because they're called from mailpit/rustfs uninstall fallback hooks. That's a separate code path from the pipeline; it stays intact.
 
 ## Open questions
 
