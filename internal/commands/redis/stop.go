@@ -8,12 +8,14 @@ import (
 )
 
 var stopCmd = &cobra.Command{
-	Use:     "redis:stop",
+	Use:     "redis:stop [version]",
 	GroupID: "redis",
 	Short:   "Mark Redis as wanted-stopped",
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := r.SetWanted(r.WantedStopped); err != nil {
+		version := resolveVersion(args)
+
+		if err := r.SetWanted(version, r.WantedStopped); err != nil {
 			return err
 		}
 		ui.Success("Redis marked stopped.")

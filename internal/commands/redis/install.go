@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"fmt"
+
 	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
@@ -8,34 +10,32 @@ import (
 )
 
 var installCmd = &cobra.Command{
-	Use:     "redis:install",
+	Use:     "redis:install [version]",
 	GroupID: "redis",
 	Short:   "Install (or re-install) Redis",
-	Long:    "Downloads the Redis binary and registers it as wanted-running. No version arg — single-version service.",
-	Example: `pv redis:install`,
-	Args:    cobra.NoArgs,
+	Long:    "Downloads the Redis binary and registers it as wanted-running.",
+	Example: `pv redis:install
+  pv redis:install 8.6`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Already installed → idempotent: re-mark wanted=running and
-		// signal the daemon. Same friendly contract postgres/mysql use.
-		if r.IsInstalled() {
-			if err := r.SetWanted(r.WantedRunning); err != nil {
+		version := resolveVersion(args)
+
+		if r.IsInstalled(version) {
+			if err := r.SetWanted(version, r.WantedRunning); err != nil {
 				return err
 			}
-			ui.Success("Redis already installed — marked as wanted running.")
+			ui.Success(fmt.Sprintf("Redis %s already installed — marked as wanted running.", version))
 			return signalDaemon()
 		}
 
-		// Run the download/extract pipeline.
-		if err := downloadCmd.RunE(downloadCmd, nil); err != nil {
+		if err := downloadCmd.RunE(downloadCmd, []string{version}); err != nil {
 			return err
 		}
-		ui.Success("Redis installed.")
+		ui.Success(fmt.Sprintf("Redis %s installed.", version))
 		return signalDaemon()
 	},
 }
 
-// signalDaemon nudges the running pv daemon to reconcile, or no-ops with
-// a friendly note if the daemon isn't up.
 func signalDaemon() error {
 	if !server.IsRunning() {
 		ui.Subtle("daemon not running — redis will start on next `pv start`")

@@ -12,13 +12,15 @@ import (
 var logsFollow bool
 
 var logsCmd = &cobra.Command{
-	Use:     "redis:logs",
+	Use:     "redis:logs [version]",
 	GroupID: "redis",
 	Short:   "Tail the Redis log file",
-	Long:    "Reads ~/.pv/logs/redis.log. With -f / --follow, tails the file like `tail -f`.",
-	Args:    cobra.NoArgs,
+	Long:    "Reads ~/.pv/logs/redis-{version}.log. With -f / --follow, tails the file like `tail -f`.",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := config.RedisLogPath()
+		version := resolveVersion(args)
+
+		path := config.RedisLogPathV(version)
 		if logsFollow {
 			c := exec.Command("tail", "-f", path)
 			c.Stdout = os.Stdout

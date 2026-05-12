@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"fmt"
+
 	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
@@ -8,16 +10,18 @@ import (
 )
 
 var startCmd = &cobra.Command{
-	Use:     "redis:start",
+	Use:     "redis:start [version]",
 	GroupID: "redis",
 	Short:   "Mark Redis as wanted-running",
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !r.IsInstalled() {
-			ui.Subtle("Redis is not installed (run `pv redis:install`).")
+		version := resolveVersion(args)
+
+		if !r.IsInstalled(version) {
+			ui.Subtle(fmt.Sprintf("Redis %s is not installed (run `pv redis:install`).", version))
 			return nil
 		}
-		if err := r.SetWanted(r.WantedRunning); err != nil {
+		if err := r.SetWanted(version, r.WantedRunning); err != nil {
 			return err
 		}
 		ui.Success("Redis marked running.")

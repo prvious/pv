@@ -14,17 +14,19 @@ import (
 var uninstallForce bool
 
 var uninstallCmd = &cobra.Command{
-	Use:     "redis:uninstall",
+	Use:     "redis:uninstall [version]",
 	GroupID: "redis",
 	Short:   "Stop, remove the binary, and (with --force) DELETE the data directory",
 	Long: "Stops the supervised process and removes the binary tree at " +
 		"~/.pv/redis/. With --force, also removes the data directory at " +
 		"~/.pv/data/redis/ (deletes dump.rdb). Unbinds every linked project.",
 	Example: `pv redis:uninstall --force`,
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !r.IsInstalled() {
-			ui.Subtle("Redis is not installed.")
+		version := resolveVersion(args)
+
+		if !r.IsInstalled(version) {
+			ui.Subtle(fmt.Sprintf("Redis %s is not installed.", version))
 			return nil
 		}
 		if !uninstallForce {
@@ -42,34 +44,28 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		if err := r.SetWanted(r.WantedStopped); err != nil {
+		if err := r.SetWanted(version, r.WantedStopped); err != nil {
 			return err
 		}
 		if server.IsRunning() {
 			if err := server.SignalDaemon(); err != nil {
 				return fmt.Errorf("signal daemon: %w", err)
 			}
-			if err := r.WaitStopped(10 * time.Second); err != nil {
+			if err := r.WaitStopped(version, 10*time.Second); err != nil {
 				return fmt.Errorf("waiting for redis to stop: %w", err)
 			}
 		}
 
 		if err := ui.Step("Uninstalling Redis...", func() (string, error) {
-			if err := r.Uninstall(uninstallForce); err != nil {
+			if err := r.Uninstall(version, uninstallForce); err != nil {
 				return "", err
 			}
-			return "Uninstalled Redis", nil
+			return fmt.Sprintf("Uninstalled Redis %s", version), nil
 		}); err != nil {
 			return err
 		}
 
-		// NOTE: Uninstall handles the registry unbind internally. We do NOT
-		// re-save the registry here — registry.Save calls config.EnsureDirs
-		// and any subsequent EnsureDirs call after Uninstall ran would have
-		// historically recreated RedisDir/RedisDataDir. Even now that those
-		// are no longer in EnsureDirs, a redundant Save is just churn.
-
-		ui.Success("Redis uninstalled.")
+		ui.Success(fmt.Sprintf("Redis %s uninstalled.", version))
 		return nil
 	},
 }
