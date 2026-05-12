@@ -23,8 +23,34 @@ type ProjectServices struct {
 	Mail     bool   `json:"mail,omitempty"`
 	MySQL    string `json:"mysql,omitempty"`
 	Postgres string `json:"postgres,omitempty"`
-	Redis    bool   `json:"redis,omitempty"`
+	Redis    string `json:"redis,omitempty"`
 	S3       bool   `json:"s3,omitempty"`
+}
+
+func (ps *ProjectServices) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if rawRedis, ok := raw["redis"]; ok {
+		var b bool
+		if err := json.Unmarshal(rawRedis, &b); err == nil {
+			if b {
+				raw["redis"] = json.RawMessage(`"8.6"`)
+			} else {
+				delete(raw, "redis")
+			}
+		}
+	}
+
+	fixed, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	type psAlias ProjectServices
+	return json.Unmarshal(fixed, (*psAlias)(ps))
 }
 
 type Project struct {
@@ -201,7 +227,7 @@ func (r *Registry) ProjectsUsingService(serviceName string) []string {
 				names = append(names, p.Name)
 			}
 		case "redis":
-			if p.Services.Redis {
+			if p.Services.Redis != "" {
 				names = append(names, p.Name)
 			}
 		case "s3":
@@ -227,7 +253,7 @@ func (r *Registry) UnbindService(serviceName string) {
 		case "postgres":
 			r.Projects[i].Services.Postgres = ""
 		case "redis":
-			r.Projects[i].Services.Redis = false
+			r.Projects[i].Services.Redis = ""
 		case "s3":
 			r.Projects[i].Services.S3 = false
 		}
@@ -245,6 +271,22 @@ func (r *Registry) UnbindPostgresMajor(major string) {
 		}
 		if r.Projects[i].Services.Postgres == major {
 			r.Projects[i].Services.Postgres = ""
+		}
+	}
+}
+
+// UnbindRedisVersion clears Services.Redis on every project bound to the
+// given version. Projects bound to other versions are unaffected.
+// Tighter than UnbindService("redis") — that would clear all redis bindings
+// regardless of version, which is wrong when only one of several installed
+// versions is being removed.
+func (r *Registry) UnbindRedisVersion(version string) {
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		if r.Projects[i].Services.Redis == version {
+			r.Projects[i].Services.Redis = ""
 		}
 	}
 }

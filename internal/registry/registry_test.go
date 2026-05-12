@@ -555,7 +555,7 @@ func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: true}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6"}},
 			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 			{Name: "app3", Path: "/c"},
 		},
@@ -781,6 +781,43 @@ func TestUnbindMysqlVersion(t *testing.T) {
 	for _, p := range r.Projects {
 		if p.Name == "d" && p.Services != nil {
 			t.Errorf("project d.Services should remain nil, got %+v", p.Services)
+		}
+	}
+}
+
+func TestUnbindRedisVersion(t *testing.T) {
+	r := &Registry{
+		Services: map[string]*ServiceInstance{},
+		Projects: []Project{
+			{Name: "a", Services: &ProjectServices{Redis: "8.6"}},
+			{Name: "b", Services: &ProjectServices{Redis: "7.4"}},
+			{Name: "c", Services: &ProjectServices{Redis: "8.6"}},
+			{Name: "d", Services: nil},
+		},
+	}
+	r.UnbindRedisVersion("8.6")
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"a", ""},
+		{"b", "7.4"},
+		{"c", ""},
+	}
+	for _, tc := range cases {
+		for _, p := range r.Projects {
+			if p.Name == tc.name {
+				if p.Services == nil {
+					t.Errorf("%s: Services is nil", tc.name)
+				} else if p.Services.Redis != tc.want {
+					t.Errorf("%s: Redis = %q, want %q", tc.name, p.Services.Redis, tc.want)
+				}
+			}
+		}
+	}
+	for _, p := range r.Projects {
+		if p.Name == "d" && p.Services != nil {
+			t.Error("project d: Services should be nil")
 		}
 	}
 }
