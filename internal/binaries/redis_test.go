@@ -13,7 +13,7 @@ func TestRedisURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RedisURL: %v", err)
 	}
-	want := "https://github.com/prvious/pv/releases/download/artifacts/redis-mac-arm64.tar.gz"
+	want := "https://github.com/prvious/pv/releases/download/artifacts/redis-mac-arm64-8.6.tar.gz"
 	if got != want {
 		t.Errorf("RedisURL = %q, want %q", got, want)
 	}

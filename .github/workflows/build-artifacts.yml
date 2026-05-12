@@ -539,23 +539,34 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout pv (for scripts/test-redis-bundle.sh)
-        uses: actions/checkout@v4
+      - name: Set Redis version
+        run: |
+          echo "REDIS_VERSION_MINOR=8.6" >> "$GITHUB_ENV"
 
-      - name: Resolve latest stable version
-        id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Resolve latest Redis patch for minor
         run: |
           set -euo pipefail
-          TAG=$(gh api repos/redis/redis/releases/latest --jq '.tag_name')
-          echo "Resolved Redis → $TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          MINOR="${REDIS_VERSION_MINOR}"
+          TAG=$(
+            git ls-remote --tags --refs https://github.com/redis/redis.git "refs/tags/${MINOR}.*" \
+              | awk -F'/' '{print $NF}' \
+              | sort -V \
+              | tail -n1
+          )
+          if [ -z "${TAG}" ]; then
+            echo "::error::Could not resolve a Redis tag for minor ${MINOR}"
+            exit 1
+          fi
+          echo "Resolved Redis ${MINOR}.x → ${TAG}"
+          echo "REDIS_TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Checkout pv (for scripts/test-redis-bundle.sh)
+        uses: actions/checkout@v4
 
       - name: Download source
         run: |
           set -euo pipefail
-          TAG="${{ steps.resolve.outputs.tag }}"
+          TAG="$REDIS_TAG"
           URL="https://github.com/redis/redis/archive/refs/tags/${TAG}.tar.gz"
           echo "Downloading $URL"
           curl -fsSL -o redis-src.tar.gz "$URL"
@@ -593,13 +604,13 @@ jobs:
           bash scripts/test-redis-bundle.sh staging
 
       - name: Package
-        run: tar -czf redis-mac-arm64.tar.gz -C staging redis-server redis-cli
+        run: tar -czf "redis-mac-arm64-${REDIS_VERSION_MINOR}.tar.gz" -C staging redis-server redis-cli
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: redis-mac-arm64
-          path: redis-mac-arm64.tar.gz
+          name: redis-mac-arm64-${{ env.REDIS_VERSION_MINOR }}
+          path: redis-mac-arm64-${{ env.REDIS_VERSION_MINOR }}.tar.gz
           compression-level: 0
 
   release:
@@ -712,9 +723,10 @@ jobs:
             exit 1
           fi
 
-          # Redis: single artifact (no version matrix).
-          if [ ! -d "artifacts/redis-mac-arm64" ]; then
-            echo "::error::Missing redis artifact"
+          # Redis: single artifact (versioned by minor, currently 8.6).
+          redis_dirs=(artifacts/redis-mac-arm64-*)
+          if [ ${#redis_dirs[@]} -ne 1 ]; then
+            echo "::error::Expected 1 redis bundle (8.6), found ${#redis_dirs[@]}"
             exit 1
           fi
 
@@ -743,7 +755,9 @@ jobs:
           cp artifacts/rustfs-mac-arm64/* "release/"
           chmod +x "release/rustfs-mac-arm64"
           # Redis tarball: copy as-is (no chmod needed).
-          cp artifacts/redis-mac-arm64/* "release/"
+          for dir in "${redis_dirs[@]}"; do
+            cp "$dir"/* "release/"
+          done
           ls -la release/
 
       - name: Upload to artifacts release
