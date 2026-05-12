@@ -1,15 +1,16 @@
 package redis
 
 import (
-	"github.com/prvious/pv/internal/config"
+	r "github.com/prvious/pv/internal/redis"
 	"github.com/spf13/cobra"
 )
 
-func resolveVersion(args []string) string {
+func resolveVersion(args []string) (string, error) {
+	version := ""
 	if len(args) > 0 {
-		return args[0]
+		version = args[0]
 	}
-	return config.RedisDefaultVersion()
+	return r.ResolveVersion(version)
 }
 
 func Register(parent *cobra.Command) {

@@ -16,7 +16,10 @@ var downloadCmd = &cobra.Command{
 	Hidden:  true,
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		client := &http.Client{Timeout: 5 * time.Minute}
 		return ui.StepProgress("Downloading Redis...",

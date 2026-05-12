@@ -172,7 +172,7 @@ func (m *ServerManager) RunningVersions() []string {
 //     gated on the registry Enabled flag.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
-//  4. internal/redis:    single-version, on-disk + state.json driven.
+//  4. internal/redis:    versioned, on-disk + state.json driven.
 //
 // The diff/start/stop loop is shared across all four sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
@@ -242,9 +242,9 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	}
 
 	// Source 4 — redis, per-version, filesystem + state.json.
-	redisVersions, err := redis.WantedVersions()
-	if err != nil {
-		startErrors = append(startErrors, fmt.Sprintf("redis: wanted: %v", err))
+	redisVersions, redisErr := redis.WantedVersions()
+	if redisErr != nil {
+		startErrors = append(startErrors, fmt.Sprintf("redis: wanted: %v", redisErr))
 	}
 	for _, version := range redisVersions {
 		proc, err := redis.BuildSupervisorProcess(version)
@@ -258,7 +258,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	// Diff: stop unneeded. If the postgres source failed, skip postgres-
 	// prefixed keys — a transient state.json read error shouldn't kill
 	// running postgres processes (the wanted set is incomplete, not empty).
-	// Same transient-error guard for mysql.
+	// Same transient-error guard for mysql and redis.
 	for _, supKey := range m.supervisor.SupervisedNames() {
 		if _, ok := wanted[supKey]; ok {
 			continue
@@ -267,6 +267,9 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			continue
 		}
 		if myErr != nil && strings.HasPrefix(supKey, "mysql-") {
+			continue
+		}
+		if redisErr != nil && strings.HasPrefix(supKey, "redis-") {
 			continue
 		}
 		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {

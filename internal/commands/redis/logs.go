@@ -18,7 +18,10 @@ var logsCmd = &cobra.Command{
 	Long:    "Reads ~/.pv/logs/redis-{version}.log. With -f / --follow, tails the file like `tail -f`.",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		path := config.RedisLogPathV(version)
 		if logsFollow {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/prvious/pv/internal/automation"
-	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
@@ -14,11 +13,10 @@ import (
 // ApplyPvYmlServicesStep binds the services declared in a project's
 // pv.yml into the registry.
 //
-// For version-bearing services (postgres, mysql), errors if the
-// declared version isn't installed. For single-version services
-// (redis, mailpit, rustfs), errors if the service isn't installed
-// — pv.yml should fail loud, never silently bind a service that
-// won't be there.
+// For version-bearing services (postgres, mysql, redis), errors if the
+// declared version isn't supported or installed. For single-version services
+// (mailpit, rustfs), errors if the service isn't installed — pv.yml should
+// fail loud, never silently bind a service that won't be there.
 type ApplyPvYmlServicesStep struct{}
 
 var _ automation.Step = (*ApplyPvYmlServicesStep)(nil)
@@ -61,7 +59,10 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	if cfg.Redis != nil {
-		version := config.RedisDefaultVersion()
+		version, err := redis.ResolveVersion(cfg.Redis.Version)
+		if err != nil {
+			return "", err
+		}
 		if !redis.IsInstalled(version) {
 			return "", fmt.Errorf("pv.yml redis %s is not installed — run `pv redis:install %s`", version, version)
 		}

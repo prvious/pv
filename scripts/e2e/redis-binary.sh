@@ -43,26 +43,26 @@ YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-redis-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
 
 echo "==> Verify binary tree exists"
-test -x "$HOME/.pv/redis/redis-server" || { echo "FAIL: redis-server binary missing"; exit 1; }
-test -x "$HOME/.pv/redis/redis-cli" || { echo "FAIL: redis-cli binary missing"; exit 1; }
+test -x "$HOME/.pv/redis/8.6/redis-server" || { echo "FAIL: redis-server binary missing"; exit 1; }
+test -x "$HOME/.pv/redis/8.6/redis-cli" || { echo "FAIL: redis-cli binary missing"; exit 1; }
 echo "OK: redis binary tree present"
 
-echo "==> Wait for port 6379 to accept connections"
-wait_for_tcp 127.0.0.1 6379 30 || { echo "FAIL: 6379 not reachable"; exit 1; }
-echo "OK: 6379 reachable"
+echo "==> Wait for port 7160 to accept connections"
+wait_for_tcp 127.0.0.1 7160 30 || { echo "FAIL: 7160 not reachable"; exit 1; }
+echo "OK: 7160 reachable"
 
-echo "==> Verify daemon-status.json lists redis"
-grep -q '"redis"' "$HOME/.pv/daemon-status.json" || { echo "FAIL: redis missing from daemon-status.json"; exit 1; }
+echo "==> Verify daemon-status.json lists redis-8.6"
+grep -q '"redis-8.6"' "$HOME/.pv/daemon-status.json" || { echo "FAIL: redis-8.6 missing from daemon-status.json"; exit 1; }
 echo "OK: daemon-status.json advertises redis"
 
 echo "==> redis-cli PING"
-PING=$("$HOME/.pv/redis/redis-cli" -h 127.0.0.1 -p 6379 PING | tr -d '[:space:]')
+PING=$("$HOME/.pv/redis/8.6/redis-cli" -h 127.0.0.1 -p 7160 PING | tr -d '[:space:]')
 [ "$PING" = "PONG" ] || { echo "FAIL: PING returned '$PING', want 'PONG'"; exit 1; }
 echo "OK: PING returned PONG"
 
 echo "==> redis-cli SET/GET roundtrip"
-"$HOME/.pv/redis/redis-cli" -h 127.0.0.1 -p 6379 SET pv_e2e_key "hello-world" >/dev/null
-GOT=$("$HOME/.pv/redis/redis-cli" -h 127.0.0.1 -p 6379 GET pv_e2e_key)
+"$HOME/.pv/redis/8.6/redis-cli" -h 127.0.0.1 -p 7160 SET pv_e2e_key "hello-world" >/dev/null
+GOT=$("$HOME/.pv/redis/8.6/redis-cli" -h 127.0.0.1 -p 7160 GET pv_e2e_key)
 [ "$GOT" = "hello-world" ] || { echo "FAIL: GET returned '$GOT', want 'hello-world'"; exit 1; }
 echo "OK: SET/GET roundtrip"
 
@@ -76,38 +76,38 @@ grep -q "REDIS_HOST=127.0.0.1" "$ENVTEST_DIR/.env" || {
     cat "$ENVTEST_DIR/.env";
     exit 1;
 }
-grep -q "REDIS_PORT=6379" "$ENVTEST_DIR/.env" || { echo "FAIL: missing REDIS_PORT=6379"; exit 1; }
+grep -q "REDIS_PORT=7160" "$ENVTEST_DIR/.env" || { echo "FAIL: missing REDIS_PORT=7160"; exit 1; }
 grep -q "REDIS_PASSWORD=null" "$ENVTEST_DIR/.env" || { echo "FAIL: missing REDIS_PASSWORD=null"; exit 1; }
 echo "OK: linked project .env has REDIS_*"
 
 echo "==> redis:list shows the row"
 LIST=$(sudo -E pv redis:list 2>&1)
-echo "$LIST" | strip_ansi | grep -q "6379" || { echo "FAIL: list missing port 6379"; echo "$LIST"; exit 1; }
+echo "$LIST" | strip_ansi | grep -q "7160" || { echo "FAIL: list missing port 7160"; echo "$LIST"; exit 1; }
 echo "OK: redis:list shows the row"
 
 echo "==> redis:stop"
 sudo -E pv redis:stop
 for i in $(seq 1 10); do
-    if ! nc -z 127.0.0.1 6379 2>/dev/null; then break; fi
+    if ! nc -z 127.0.0.1 7160 2>/dev/null; then break; fi
     sleep 1
 done
-if nc -z 127.0.0.1 6379 2>/dev/null; then echo "FAIL: 6379 still answering after stop"; exit 1; fi
+if nc -z 127.0.0.1 7160 2>/dev/null; then echo "FAIL: 7160 still answering after stop"; exit 1; fi
 echo "OK: redis stopped"
 
 echo "==> redis:start"
 sudo -E pv redis:start
-wait_for_tcp 127.0.0.1 6379 30 || { echo "FAIL: 6379 not reachable after start"; exit 1; }
+wait_for_tcp 127.0.0.1 7160 30 || { echo "FAIL: 7160 not reachable after start"; exit 1; }
 echo "OK: redis back online"
 
 echo "==> redis:uninstall --force"
 sudo -E pv redis:uninstall --force
-test ! -d "$HOME/.pv/redis" || { echo "FAIL: redis binary tree not removed"; exit 1; }
-test ! -d "$HOME/.pv/data/redis" || { echo "FAIL: redis data dir not removed"; exit 1; }
+test ! -d "$HOME/.pv/redis/8.6" || { echo "FAIL: redis 8.6 binary tree not removed"; exit 1; }
+test ! -d "$HOME/.pv/data/redis/8.6" || { echo "FAIL: redis 8.6 data dir not removed"; exit 1; }
 echo "OK: redis fully removed"
 
-echo "==> daemon-status.json no longer lists redis"
+echo "==> daemon-status.json no longer lists redis-8.6"
 sleep 2
-grep -q '"redis"' "$HOME/.pv/daemon-status.json" && { echo "FAIL: redis still in daemon-status after uninstall"; exit 1; } || true
+grep -q '"redis-8.6"' "$HOME/.pv/daemon-status.json" && { echo "FAIL: redis-8.6 still in daemon-status after uninstall"; exit 1; } || true
 echo "OK: redis cleared from daemon-status"
 
 echo "==> pv stop"

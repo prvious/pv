@@ -37,6 +37,17 @@ func stageMysqlBinary(t *testing.T, version string) {
 	}
 }
 
+func stageRedisBinary(t *testing.T, version string) {
+	t.Helper()
+	versionDir := config.RedisVersionDir(version)
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", versionDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "redis-server"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage redis-server: %v", err)
+	}
+}
+
 func TestApplyPvYmlServices_BindsPostgresFromConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	stagePostgresBinary(t, "18")
@@ -145,6 +156,59 @@ func TestApplyPvYmlServices_ErrorsWhenMysqlNotInstalled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pv mysql:install 8.4") {
 		t.Errorf("err = %v; want it to include `pv mysql:install 8.4`", err)
+	}
+}
+
+func TestApplyPvYmlServices_BindsRedisDefaultVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageRedisBinary(t, config.RedisDefaultVersion())
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Redis: &config.ServiceConfig{},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reg.Projects[0].Services == nil || reg.Projects[0].Services.Redis != config.RedisDefaultVersion() {
+		t.Errorf("Redis binding = %+v, want version=%s", reg.Projects[0].Services, config.RedisDefaultVersion())
+	}
+}
+
+func TestApplyPvYmlServices_RejectsUnsupportedRedisVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageRedisBinary(t, config.RedisDefaultVersion())
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Redis: &config.ServiceConfig{Version: "7.4"},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error for unsupported redis version")
+	}
+	if !strings.Contains(err.Error(), "unsupported redis version") {
+		t.Errorf("err = %v; want unsupported redis version", err)
 	}
 }
 

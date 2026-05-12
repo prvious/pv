@@ -353,3 +353,47 @@ func TestReconcileBinaryServices_StopsRemovedRedis(t *testing.T) {
 		t.Error("expected redis stopped after wanted flipped to stopped")
 	}
 }
+
+func TestReconcileBinaryServices_KeepsRedisRunningWhenWantedDiscoveryFails(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	if err := os.MkdirAll(config.RedisVersionDir("8.6"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisVersionDir("8.6"), "redis-server"),
+		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake redis-server: %v\n%s", err, out)
+	}
+	if err := redis.SetWanted("8.6", redis.WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sup := supervisor.New()
+	mgr := NewServerManager(nil, sup)
+	defer sup.StopAll(2 * time.Second)
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !sup.IsRunning("redis-8.6") {
+		t.Fatal("expected redis running after first reconcile")
+	}
+
+	if err := os.Remove(config.StatePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(config.StatePath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.reconcileBinaryServices(context.Background()); err == nil {
+		t.Fatal("reconcileBinaryServices: want error when redis wanted discovery fails")
+	}
+	if !sup.IsRunning("redis-8.6") {
+		t.Error("redis-8.6 should remain running when wanted discovery fails")
+	}
+}

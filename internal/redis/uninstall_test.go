@@ -80,3 +80,29 @@ func TestUninstall_UnbindsProjects(t *testing.T) {
 		t.Errorf("project should have Redis unbound after uninstall")
 	}
 }
+
+func TestUninstall_PropagatesRegistryLoadError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	setupInstalledRedis(t, "8.6")
+
+	if err := os.MkdirAll(filepath.Dir(config.RegistryPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(config.RegistryPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Uninstall("8.6", false); err == nil {
+		t.Fatal("Uninstall: want registry load error")
+	}
+	if _, err := os.Stat(config.RedisVersionDir("8.6")); err != nil {
+		t.Fatalf("redis binary dir should remain after registry error: %v", err)
+	}
+	st, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Versions["8.6"].Wanted != WantedStopped {
+		t.Fatalf("redis state should remain stopped after registry error, got %#v", st.Versions["8.6"])
+	}
+}

@@ -15,6 +15,9 @@ func Install(client *http.Client, version string) error {
 }
 
 func InstallProgress(client *http.Client, version string, progress binaries.ProgressFunc) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	if err := config.EnsureDirs(); err != nil {
 		return err
 	}

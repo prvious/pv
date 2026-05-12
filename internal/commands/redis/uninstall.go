@@ -18,12 +18,15 @@ var uninstallCmd = &cobra.Command{
 	GroupID: "redis",
 	Short:   "Stop, remove the binary, and (with --force) DELETE the data directory",
 	Long: "Stops the supervised process and removes the binary tree at " +
-		"~/.pv/redis/. With --force, also removes the data directory at " +
-		"~/.pv/data/redis/ (deletes dump.rdb). Unbinds every linked project.",
+		"~/.pv/redis/{version}/. With --force, also removes the data directory at " +
+		"~/.pv/data/redis/{version}/ (deletes dump.rdb). Unbinds linked projects using that version.",
 	Example: `pv redis:uninstall --force`,
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if !r.IsInstalled(version) {
 			ui.Subtle(fmt.Sprintf("Redis %s is not installed.", version))

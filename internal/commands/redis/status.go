@@ -15,7 +15,10 @@ var statusCmd = &cobra.Command{
 	Short:   "Show Redis status",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if !r.IsInstalled(version) {
 			ui.Subtle(fmt.Sprintf("Redis %s is not installed.", version))

@@ -127,6 +127,33 @@ func TestApplyPvYmlEnv_RendersRedisEnv(t *testing.T) {
 	}
 }
 
+func TestApplyPvYmlEnv_RejectsUnsupportedRedisVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: projDir,
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Redis: &config.ServiceConfig{
+				Version: "7.4",
+				Env: map[string]string{
+					"REDIS_PORT": "{{ .port }}",
+				},
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error for unsupported redis version")
+	}
+	if !strings.Contains(err.Error(), "unsupported redis version") {
+		t.Errorf("err = %v; want unsupported redis version", err)
+	}
+}
+
 func TestApplyPvYmlEnv_ShouldRunFalseWithoutEnv(t *testing.T) {
 	ctx := &automation.Context{
 		ProjectConfig: &config.ProjectConfig{PHP: "8.4"},

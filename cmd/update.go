@@ -109,10 +109,19 @@ var updateCmd = &cobra.Command{
 			}
 		}
 
-		// Update redis. Skip if not installed — redis is opt-in via
-		// `pv redis:install`.
-		redisVersion := config.RedisDefaultVersion()
-		if r.IsInstalled(redisVersion) {
+		// Update each installed redis version. Skip if not installed — redis is
+		// opt-in via `pv redis:install`.
+		if versions, err := redisVersionsForUpdate(); err == nil {
+			for _, redisVersion := range versions {
+				if err := rediscmd.RunUpdate([]string{redisVersion}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("Redis %s update failed: %v", redisVersion, err))
+					}
+					failures = append(failures, "Redis "+redisVersion)
+				}
+			}
+		} else if r.IsInstalled(config.RedisDefaultVersion()) {
+			redisVersion := config.RedisDefaultVersion()
 			if err := rediscmd.RunUpdate([]string{redisVersion}); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
 					ui.Fail(fmt.Sprintf("Redis %s update failed: %v", redisVersion, err))
@@ -208,6 +217,21 @@ var updateCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func redisVersionsForUpdate() ([]string, error) {
+	installed, err := r.InstalledVersions()
+	if err != nil {
+		return nil, err
+	}
+	versions := make([]string, 0, len(installed))
+	for _, version := range installed {
+		if err := r.ValidateVersion(version); err != nil {
+			continue
+		}
+		versions = append(versions, version)
+	}
+	return versions, nil
 }
 
 // selfUpdate checks for a new pv version, downloads it, and re-execs.

@@ -69,6 +69,9 @@ func SaveState(s State) error {
 }
 
 func SetWanted(version, wanted string) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	if wanted != WantedRunning && wanted != WantedStopped {
 		return fmt.Errorf("redis: invalid wanted state %q (want %q or %q)", wanted, WantedRunning, WantedStopped)
 	}
@@ -81,6 +84,9 @@ func SetWanted(version, wanted string) error {
 }
 
 func RemoveVersion(version string) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	s, err := LoadState()
 	if err != nil {
 		return err

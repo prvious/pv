@@ -16,6 +16,9 @@ func Update(client *http.Client, version string) error {
 }
 
 func UpdateProgress(client *http.Client, version string, progress binaries.ProgressFunc) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	if !IsInstalled(version) {
 		return fmt.Errorf("redis-%s is not installed", version)
 	}

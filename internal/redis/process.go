@@ -13,6 +13,9 @@ import (
 )
 
 func BuildSupervisorProcess(version string) (supervisor.Process, error) {
+	if err := ValidateVersion(version); err != nil {
+		return supervisor.Process{}, err
+	}
 	binPath := ServerBinary(version)
 	if _, err := os.Stat(binPath); err != nil {
 		return supervisor.Process{}, fmt.Errorf("redis-%s: not installed (run pv redis:install %s)", version, version)

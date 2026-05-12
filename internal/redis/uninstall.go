@@ -10,9 +10,21 @@ import (
 )
 
 func Uninstall(version string, force bool) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	if isInstalledOnDisk(version) {
 		_ = SetWanted(version, WantedStopped)
 		_ = WaitStopped(version, 10*time.Second)
+	}
+
+	reg, err := registry.Load()
+	if err != nil {
+		return err
+	}
+	reg.UnbindRedisVersion(version)
+	if err := reg.Save(); err != nil {
+		return err
 	}
 
 	if err := RemoveVersion(version); err != nil {
@@ -21,10 +33,6 @@ func Uninstall(version string, force bool) error {
 	if vs, err := binaries.LoadVersions(); err == nil {
 		delete(vs.Versions, "redis-"+version)
 		_ = vs.Save()
-	}
-	if reg, err := registry.Load(); err == nil {
-		reg.UnbindRedisVersion(version)
-		_ = reg.Save()
 	}
 
 	if err := os.RemoveAll(config.RedisVersionDir(version)); err != nil {

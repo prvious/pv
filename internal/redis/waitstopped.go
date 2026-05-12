@@ -7,6 +7,9 @@ import (
 )
 
 func WaitStopped(version string, timeout time.Duration) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
 	addr := fmt.Sprintf("127.0.0.1:%d", PortFor(version))
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

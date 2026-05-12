@@ -18,7 +18,10 @@ var installCmd = &cobra.Command{
   pv redis:install 8.6`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if r.IsInstalled(version) {
 			if err := r.SetWanted(version, r.WantedRunning); err != nil {

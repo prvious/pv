@@ -13,7 +13,10 @@ var stopCmd = &cobra.Command{
 	Short:   "Mark Redis as wanted-stopped",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if err := r.SetWanted(version, r.WantedStopped); err != nil {
 			return err

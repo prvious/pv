@@ -33,3 +33,29 @@ func TestParseRedisVersion_Garbage(t *testing.T) {
 		t.Error("expected error for garbage input")
 	}
 }
+
+func TestValidateVersionRejectsUnsupportedVersions(t *testing.T) {
+	for _, version := range []string{"", "7.4", "banana", "8.6/evil"} {
+		t.Run(version, func(t *testing.T) {
+			if err := ValidateVersion(version); err == nil {
+				t.Fatalf("ValidateVersion(%q): want error", version)
+			}
+		})
+	}
+}
+
+func TestSetWantedRejectsUnsupportedVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	if err := SetWanted("7.4", WantedRunning); err == nil {
+		t.Fatal("SetWanted unsupported version: want error")
+	}
+
+	st, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Versions) != 0 {
+		t.Fatalf("state versions = %#v, want empty", st.Versions)
+	}
+}

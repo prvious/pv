@@ -28,8 +28,8 @@ type ProjectConfig struct {
 }
 
 // ServiceConfig declares a backing service a project depends on.
-// Version is required for postgresql and mysql (multi-version aware);
-// optional and ignored for redis, mailpit, rustfs (single bundled version).
+// Version is required for postgresql and mysql. Redis accepts only pv's
+// supported bundled version; mailpit and rustfs ignore Version.
 type ServiceConfig struct {
 	Version string            `yaml:"version,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`

@@ -16,7 +16,10 @@ var restartCmd = &cobra.Command{
 	Short:   "Stop and start Redis",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if !r.IsInstalled(version) {
 			return fmt.Errorf("redis %s is not installed", version)

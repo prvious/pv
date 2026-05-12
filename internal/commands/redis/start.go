@@ -15,10 +15,13 @@ var startCmd = &cobra.Command{
 	Short:   "Mark Redis as wanted-running",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := resolveVersion(args)
+		version, err := resolveVersion(args)
+		if err != nil {
+			return err
+		}
 
 		if !r.IsInstalled(version) {
-			ui.Subtle(fmt.Sprintf("Redis %s is not installed (run `pv redis:install`).", version))
+			ui.Subtle(fmt.Sprintf("Redis %s is not installed (run `pv redis:install %s`).", version, version))
 			return nil
 		}
 		if err := r.SetWanted(version, r.WantedRunning); err != nil {

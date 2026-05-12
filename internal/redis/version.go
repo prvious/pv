@@ -5,11 +5,30 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/prvious/pv/internal/config"
 )
 
 var redisVersionRE = regexp.MustCompile(`v=(\d+\.\d+\.\d+)\b`)
 
+func ResolveVersion(version string) (string, error) {
+	if version == "" {
+		version = config.RedisDefaultVersion()
+	}
+	return version, ValidateVersion(version)
+}
+
+func ValidateVersion(version string) error {
+	if version != config.RedisDefaultVersion() {
+		return fmt.Errorf("unsupported redis version %q (supported: %s)", version, config.RedisDefaultVersion())
+	}
+	return nil
+}
+
 func ProbeVersion(version string) (string, error) {
+	if err := ValidateVersion(version); err != nil {
+		return "", err
+	}
 	binPath := ServerBinary(version)
 	out, err := exec.Command(binPath, "--version").Output()
 	if err != nil {
