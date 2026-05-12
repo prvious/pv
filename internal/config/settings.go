@@ -26,22 +26,12 @@ type Defaults struct {
 // Automation controls which link-time steps run automatically.
 type Automation struct {
 	InstallPHPVersion AutoMode `yaml:"install_php_version,omitempty"`
-	ComposerInstall   AutoMode `yaml:"composer_install,omitempty"`
-	CopyEnv           AutoMode `yaml:"copy_env,omitempty"`
-	GenerateKey       AutoMode `yaml:"generate_key,omitempty"`
-	SetAppURL         AutoMode `yaml:"set_app_url,omitempty"`
-	SetViteTLS        AutoMode `yaml:"set_vite_tls,omitempty"`
-	InstallOctane     AutoMode `yaml:"install_octane,omitempty"`
-	CreateDatabase    AutoMode `yaml:"create_database,omitempty"`
-	RunMigrations     AutoMode `yaml:"run_migrations,omitempty"`
-	ServiceEnvUpdate  AutoMode `yaml:"update_env_on_service,omitempty"`
 	ServiceFallback   AutoMode `yaml:"service_fallback,omitempty"`
 
 	// Hidden gates — not shown in setup wizard, configurable via pv.yml.
 	GenerateSiteConfig AutoMode `yaml:"generate_site_config,omitempty"`
 	GenerateCaddyfile  AutoMode `yaml:"generate_caddyfile,omitempty"`
 	GenerateTLSCert    AutoMode `yaml:"generate_tls_cert,omitempty"`
-	DetectServices     AutoMode `yaml:"detect_services,omitempty"`
 	ApplyPvYmlServices AutoMode `yaml:"apply_pvyml_services,omitempty"`
 	ApplyPvYmlEnv      AutoMode `yaml:"apply_pvyml_env,omitempty"`
 	ApplySetup         AutoMode `yaml:"apply_setup,omitempty"`
@@ -58,20 +48,10 @@ var validTLD = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 func DefaultAutomation() Automation {
 	return Automation{
 		InstallPHPVersion:  AutoOn,
-		ComposerInstall:    AutoOn,
-		CopyEnv:            AutoOn,
-		GenerateKey:        AutoOn,
-		SetAppURL:          AutoOn,
-		SetViteTLS:         AutoOn,
-		InstallOctane:      AutoAsk,
-		CreateDatabase:     AutoOn,
-		RunMigrations:      AutoAsk,
-		ServiceEnvUpdate:   AutoOn,
 		ServiceFallback:    AutoOn,
 		GenerateSiteConfig: AutoOn,
 		GenerateCaddyfile:  AutoOn,
 		GenerateTLSCert:    AutoOn,
-		DetectServices:     AutoOn,
 		ApplyPvYmlServices: AutoOn,
 		ApplyPvYmlEnv:      AutoOn,
 		ApplySetup:         AutoOn,
@@ -89,33 +69,6 @@ func applyAutomationDefaults(a *Automation) {
 	if !validAutoMode(a.InstallPHPVersion) {
 		a.InstallPHPVersion = d.InstallPHPVersion
 	}
-	if !validAutoMode(a.ComposerInstall) {
-		a.ComposerInstall = d.ComposerInstall
-	}
-	if !validAutoMode(a.CopyEnv) {
-		a.CopyEnv = d.CopyEnv
-	}
-	if !validAutoMode(a.GenerateKey) {
-		a.GenerateKey = d.GenerateKey
-	}
-	if !validAutoMode(a.SetAppURL) {
-		a.SetAppURL = d.SetAppURL
-	}
-	if !validAutoMode(a.SetViteTLS) {
-		a.SetViteTLS = d.SetViteTLS
-	}
-	if !validAutoMode(a.InstallOctane) {
-		a.InstallOctane = d.InstallOctane
-	}
-	if !validAutoMode(a.CreateDatabase) {
-		a.CreateDatabase = d.CreateDatabase
-	}
-	if !validAutoMode(a.RunMigrations) {
-		a.RunMigrations = d.RunMigrations
-	}
-	if !validAutoMode(a.ServiceEnvUpdate) {
-		a.ServiceEnvUpdate = d.ServiceEnvUpdate
-	}
 	if !validAutoMode(a.ServiceFallback) {
 		a.ServiceFallback = d.ServiceFallback
 	}
@@ -127,9 +80,6 @@ func applyAutomationDefaults(a *Automation) {
 	}
 	if !validAutoMode(a.GenerateTLSCert) {
 		a.GenerateTLSCert = d.GenerateTLSCert
-	}
-	if !validAutoMode(a.DetectServices) {
-		a.DetectServices = d.DetectServices
 	}
 	if !validAutoMode(a.ApplyPvYmlServices) {
 		a.ApplyPvYmlServices = d.ApplyPvYmlServices

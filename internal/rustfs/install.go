@@ -14,9 +14,9 @@ import (
 	"github.com/prvious/pv/internal/ui"
 )
 
-// Install downloads the rustfs binary, registers it, retroactively binds
-// it to existing Laravel projects, writes their .env vars, and signals
-// the daemon to reconcile. Idempotent on already-registered.
+// Install downloads the rustfs binary, registers it, and signals the daemon
+// to reconcile. Idempotent on already-registered. Project .env files are
+// only updated by `pv link` reading pv.yml — never by service install.
 func Install() error {
 	reg, err := registry.Load()
 	if err != nil {
@@ -63,13 +63,6 @@ func Install() error {
 	if err := reg.Save(); err != nil {
 		return fmt.Errorf("cannot save registry: %w", err)
 	}
-
-	BindToAllProjects(reg)
-	if err := reg.Save(); err != nil {
-		return fmt.Errorf("cannot save registry after binding: %w", err)
-	}
-
-	UpdateLinkedProjectsEnv(reg)
 
 	if err := caddy.GenerateServiceSiteConfigs(reg); err != nil {
 		ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))

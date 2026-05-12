@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
-	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +16,18 @@ func writeDefaultSettings(t *testing.T) {
 	s := config.DefaultSettings()
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save settings error = %v", err)
+	}
+}
+
+// writeTestPvYml drops a minimal pv.yml into projDir so cmd/link's
+// pv.yml-required guard is satisfied. Tests that want a specific
+// pv.yml shape should write their own.
+func writeTestPvYml(t *testing.T, projDir string) {
+	t.Helper()
+	body := `php: "8.4"
+`
+	if err := os.WriteFile(filepath.Join(projDir, "pv.yml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write pv.yml: %v", err)
 	}
 }
 
@@ -44,6 +55,7 @@ func TestLink_ExplicitPathAndName(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	projDir := t.TempDir()
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "myapp"})
@@ -102,6 +114,7 @@ func TestLink_RelinkPreservesServices(t *testing.T) {
 	writeDefaultSettings(t)
 
 	projDir := t.TempDir()
+	writeTestPvYml(t, projDir)
 
 	// First link.
 	cmd1 := newLinkCmd()
@@ -218,6 +231,8 @@ func TestLink_RelinkUpdatesPath(t *testing.T) {
 
 	projDir1 := t.TempDir()
 	projDir2 := t.TempDir()
+	writeTestPvYml(t, projDir1)
+	writeTestPvYml(t, projDir2)
 
 	// First link to projDir1.
 	cmd1 := newLinkCmd()
@@ -264,6 +279,7 @@ func TestLink_DetectsLaravel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "laratest"})
@@ -293,6 +309,7 @@ func TestLink_DetectsStatic(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projDir, "index.html"), []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "statictest"})
@@ -315,6 +332,7 @@ func TestLink_DetectsEmptyAsUnknown(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	projDir := t.TempDir()
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "emptytest"})
@@ -340,6 +358,7 @@ func TestLink_DefaultsToBasename(t *testing.T) {
 	if err := os.MkdirAll(projDir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir})
@@ -367,6 +386,7 @@ func TestLink_CreatesCaddySnippetForLaravel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "laravelcaddy"})
@@ -393,6 +413,7 @@ func TestLink_NoCaddySnippetForUnknown(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	projDir := t.TempDir()
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "emptyproj"})
@@ -418,6 +439,7 @@ func TestLink_CreatesCaddyfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projDir, "index.html"), []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "caddyfiletest"})
@@ -439,8 +461,7 @@ func TestLink_CreatesCaddyfile(t *testing.T) {
 }
 
 // scaffoldLaravelProject creates a minimal Laravel project directory for testing.
-// It creates composer.json, .env.example, and a vendor/ dir (to prevent
-// ComposerInstallStep from trying to run the real composer binary).
+// It creates composer.json and a pre-existing .env.
 func scaffoldLaravelProject(t *testing.T, name string) string {
 	t.Helper()
 	projDir := filepath.Join(t.TempDir(), name)
@@ -451,64 +472,11 @@ func scaffoldLaravelProject(t *testing.T, name string) string {
 	if err := os.WriteFile(filepath.Join(projDir, "composer.json"), []byte(composerJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	envExample := "APP_NAME=Laravel\nAPP_KEY=\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n"
-	if err := os.WriteFile(filepath.Join(projDir, ".env.example"), []byte(envExample), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Create vendor/ so ComposerInstallStep is skipped (no real composer in tests).
-	if err := os.MkdirAll(filepath.Join(projDir, "vendor"), 0755); err != nil {
+	envContent := "APP_NAME=Laravel\nAPP_KEY=\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n"
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return projDir
-}
-
-func TestLink_AutomationCopiesEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "envtest")
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "envtest"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	// .env should have been created by CopyEnvStep.
-	envPath := filepath.Join(projDir, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		t.Fatal(".env was not created by automation pipeline")
-	}
-
-	env, err := projectenv.ReadDotEnv(envPath)
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	if env["APP_NAME"] != "Laravel" {
-		t.Errorf("APP_NAME = %q, want %q", env["APP_NAME"], "Laravel")
-	}
-}
-
-func TestLink_AutomationSetsAppURL(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "urltest")
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "urltest"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	want := "https://urltest.test"
-	if env["APP_URL"] != want {
-		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
-	}
 }
 
 func TestLink_AutomationSkippedForNonLaravel(t *testing.T) {
@@ -526,6 +494,7 @@ func TestLink_AutomationSkippedForNonLaravel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projDir, "index.php"), []byte("<?php echo 'hi';"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestPvYml(t, projDir)
 
 	cmd := newLinkCmd()
 	cmd.SetArgs([]string{"link", projDir, "--name", "plainphp"})
@@ -544,6 +513,7 @@ func TestLink_AutomationRedetectsOctane(t *testing.T) {
 	writeDefaultSettings(t)
 
 	projDir := scaffoldLaravelProject(t, "octanetest")
+	writeTestPvYml(t, projDir)
 
 	// Simulate Octane: add octane to composer.json and pre-create the worker file
 	// (since artisan octane:install can't run in tests).
@@ -574,39 +544,6 @@ func TestLink_AutomationRedetectsOctane(t *testing.T) {
 	}
 	if p.Type != "laravel-octane" {
 		t.Errorf("Type = %q, want %q", p.Type, "laravel-octane")
-	}
-}
-
-func TestLink_AutomationLoadsExistingEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	writeDefaultSettings(t)
-
-	projDir := scaffoldLaravelProject(t, "existingenv")
-
-	// Pre-create .env so CopyEnvStep is skipped but the file is loaded into context.
-	envContent := "APP_NAME=Existing\nAPP_KEY=base64:existingkey\nAPP_URL=http://localhost\n"
-	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := newLinkCmd()
-	cmd.SetArgs([]string{"link", projDir, "--name", "existingenv"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("link command error = %v", err)
-	}
-
-	// SetAppURLStep should have updated APP_URL even with pre-existing .env.
-	env, err := projectenv.ReadDotEnv(filepath.Join(projDir, ".env"))
-	if err != nil {
-		t.Fatalf("failed to read .env: %v", err)
-	}
-	want := "https://existingenv.test"
-	if env["APP_URL"] != want {
-		t.Errorf("APP_URL = %q, want %q", env["APP_URL"], want)
-	}
-	// APP_KEY should remain unchanged (GenerateKeyStep skipped because key is set).
-	if env["APP_KEY"] != "base64:existingkey" {
-		t.Errorf("APP_KEY = %q, want %q", env["APP_KEY"], "base64:existingkey")
 	}
 }
 
@@ -726,5 +663,24 @@ func TestLink_SkipsInstallWhenVersionIsGlobal(t *testing.T) {
 	}
 	if p.PHP != "8.4" {
 		t.Errorf("PHP = %q, want %q", p.PHP, "8.4")
+	}
+}
+
+func TestLink_RefusesWithoutPvYml(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeDefaultSettings(t)
+
+	projDir := t.TempDir()
+	// Intentionally NO pv.yml.
+
+	cmd := newLinkCmd()
+	cmd.SetArgs([]string{"link", projDir})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute: want error when no pv.yml, got nil")
+	}
+	if !strings.Contains(err.Error(), "pv init") {
+		t.Errorf("err = %v; want it to suggest `pv init`", err)
 	}
 }

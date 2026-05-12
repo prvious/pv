@@ -17,16 +17,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Create a minimal linked Laravel project so we can assert .env injection.
+# Install mailpit BEFORE pv link so ApplyPvYmlServicesStep finds it
+# (PR 5 deleted the retroactive-bind path; binding now happens at link time
+# via pv.yml).
+echo "==> mailpit:install"
+sudo -E pv mailpit:install || { echo "FAIL: pv mailpit:install failed"; exit 1; }
+
+# Now link a Laravel project that declares mailpit + env template in pv.yml.
+# pv link's ApplyPvYmlEnvStep will render the templates and write MAIL_*
+# into the project's .env (the path that replaced the deleted retroactive
+# bind on `pv mailpit:install`).
 ENVTEST_DIR=$(mktemp -d)
 echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
 mkdir -p "$ENVTEST_DIR/public"
 echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
 echo "MAIL_MAILER=log" > "$ENVTEST_DIR/.env"
+cat > "$ENVTEST_DIR/pv.yml" << 'YMLEOF'
+php: "8.4"
+mailpit:
+  env:
+    MAIL_MAILER: smtp
+    MAIL_HOST: "{{ .smtp_host }}"
+    MAIL_PORT: "{{ .smtp_port }}"
+YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
-
-echo "==> mailpit:install"
-sudo -E pv mailpit:install || { echo "FAIL: pv mailpit:install failed"; exit 1; }
 
 echo "==> Verify mailpit binary exists"
 test -x "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not installed"; exit 1; }
@@ -56,9 +70,12 @@ echo "==> Verify SMTP port 1025 is reachable"
 nc -z 127.0.0.1 1025 || { echo "FAIL: SMTP port 1025 not reachable after mailpit:install"; exit 1; }
 echo "OK: SMTP port 1025 reachable"
 
-echo "==> Verify linked project .env got MAIL_MAILER=smtp"
+echo "==> Verify linked project .env got MAIL_MAILER=smtp via pv.yml env template"
+# ApplyPvYmlEnvStep wrote MAIL_MAILER=smtp during `pv link` from the
+# pv.yml mailpit.env block. Replaces the deleted retroactive-bind path
+# that used to fire on `pv mailpit:install` for already-linked projects.
 grep -q "MAIL_MAILER=smtp" "$ENVTEST_DIR/.env" || {
-    echo "FAIL: linked project .env should have MAIL_MAILER=smtp after mailpit:install";
+    echo "FAIL: linked project .env should have MAIL_MAILER=smtp after pv link";
     echo "  actual .env contents:";
     cat "$ENVTEST_DIR/.env";
     exit 1;

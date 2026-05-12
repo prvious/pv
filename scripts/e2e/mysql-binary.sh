@@ -18,19 +18,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Pre-link a Laravel project so the mysql binding flow is exercised.
-ENVTEST_DIR=$(mktemp -d)
-echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
-mkdir -p "$ENVTEST_DIR/public"
-echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
-echo "DB_CONNECTION=mysql" > "$ENVTEST_DIR/.env"
-sudo -E pv link "$ENVTEST_DIR" --name e2e-mysql-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
-
+# Install mysql 8.4 BEFORE pv link so ApplyPvYmlServicesStep finds it
+# (PR 5 deleted the retroactive-bind path; binding now happens at link time
+# via pv.yml).
 echo "==> mysql:install 8.4"
 sudo -E pv mysql:install 8.4 || { echo "FAIL: mysql:install 8.4"; exit 1; }
 
 echo "==> mysql:install 9.7"
 sudo -E pv mysql:install 9.7 || { echo "FAIL: mysql:install 9.7"; exit 1; }
+
+# Now link a Laravel project that declares mysql 8.4 + env template in pv.yml.
+# pv link's ApplyPvYmlEnvStep will render the templates and write DB_PORT
+# into the project's .env (the path that replaced the deleted retroactive
+# bind on `pv mysql:install`).
+ENVTEST_DIR=$(mktemp -d)
+echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
+mkdir -p "$ENVTEST_DIR/public"
+echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
+echo "DB_CONNECTION=mysql" > "$ENVTEST_DIR/.env"
+cat > "$ENVTEST_DIR/pv.yml" << 'YMLEOF'
+php: "8.4"
+mysql:
+  version: "8.4"
+  env:
+    DB_CONNECTION: mysql
+    DB_HOST: "{{ .host }}"
+    DB_PORT: "{{ .port }}"
+YMLEOF
+sudo -E pv link "$ENVTEST_DIR" --name e2e-mysql-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
 
 echo "==> Verify both binary trees exist"
 test -x "$HOME/.pv/mysql/8.4/bin/mysqld" || { echo "FAIL: mysql 8.4 binary missing"; exit 1; }
@@ -65,7 +80,10 @@ SEEN_ON_97=$("$HOME/.pv/mysql/9.7/bin/mysql" --socket=/tmp/pv-mysql-9.7.sock -u 
 [ -z "$SEEN_ON_97" ] || { echo "FAIL: e2e_my84_only leaked to mysql 9.7"; exit 1; }
 echo "OK: cross-version isolation confirmed"
 
-echo "==> Verify linked project got DB_PORT for the first-installed version (8.4 → 33084)"
+echo "==> Verify linked project got DB_PORT via pv.yml env template (mysql 8.4 → 33084)"
+# ApplyPvYmlEnvStep renders mysql.env.DB_PORT against {{ .port }} during
+# `pv link`. This replaces the deleted retroactive-bind path that used to
+# fire on `pv mysql:install` for already-linked projects.
 grep -q "DB_PORT=33084" "$ENVTEST_DIR/.env" || {
     echo "FAIL: linked project .env should have DB_PORT=33084";
     echo "  actual .env contents:";

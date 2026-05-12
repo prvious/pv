@@ -24,6 +24,19 @@ func stagePostgresBinary(t *testing.T, major string) {
 	}
 }
 
+// stageMysqlBinary writes a stub mysqld at ~/.pv/mysql/<version>/bin/mysqld
+// so mysql.IsInstalled(version) returns true.
+func stageMysqlBinary(t *testing.T, version string) {
+	t.Helper()
+	bin := config.MysqlBinDir(version)
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", bin, err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "mysqld"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage mysqld: %v", err)
+	}
+}
+
 func TestApplyPvYmlServices_BindsPostgresFromConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	stagePostgresBinary(t, "18")

@@ -200,33 +200,6 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.InstallPHPVersion != AutoOn {
 		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
 	}
-	if a.ComposerInstall != AutoOn {
-		t.Errorf("ComposerInstall = %q, want %q", a.ComposerInstall, AutoOn)
-	}
-	if a.CopyEnv != AutoOn {
-		t.Errorf("CopyEnv = %q, want %q", a.CopyEnv, AutoOn)
-	}
-	if a.GenerateKey != AutoOn {
-		t.Errorf("GenerateKey = %q, want %q", a.GenerateKey, AutoOn)
-	}
-	if a.SetAppURL != AutoOn {
-		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
-	}
-	if a.SetViteTLS != AutoOn {
-		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
-	}
-	if a.InstallOctane != AutoAsk {
-		t.Errorf("InstallOctane = %q, want %q", a.InstallOctane, AutoAsk)
-	}
-	if a.CreateDatabase != AutoOn {
-		t.Errorf("CreateDatabase = %q, want %q", a.CreateDatabase, AutoOn)
-	}
-	if a.RunMigrations != AutoAsk {
-		t.Errorf("RunMigrations = %q, want %q", a.RunMigrations, AutoAsk)
-	}
-	if a.ServiceEnvUpdate != AutoOn {
-		t.Errorf("ServiceEnvUpdate = %q, want %q", a.ServiceEnvUpdate, AutoOn)
-	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
@@ -239,18 +212,13 @@ func TestDefaultSettings_HasAutomationDefaults(t *testing.T) {
 	if a.GenerateTLSCert != AutoOn {
 		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
 	}
-	if a.DetectServices != AutoOn {
-		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
-	}
 }
 
 func TestSettings_AutomationRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	s := DefaultSettings()
-	s.Automation.ComposerInstall = AutoOff
-	s.Automation.InstallOctane = AutoOn
-	s.Automation.RunMigrations = AutoOff
+	s.Automation.ServiceFallback = AutoOff
 
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -261,18 +229,12 @@ func TestSettings_AutomationRoundTrip(t *testing.T) {
 		t.Fatalf("LoadSettings() error = %v", err)
 	}
 
-	if loaded.Automation.ComposerInstall != AutoOff {
-		t.Errorf("ComposerInstall = %q, want %q", loaded.Automation.ComposerInstall, AutoOff)
-	}
-	if loaded.Automation.InstallOctane != AutoOn {
-		t.Errorf("InstallOctane = %q, want %q", loaded.Automation.InstallOctane, AutoOn)
-	}
-	if loaded.Automation.RunMigrations != AutoOff {
-		t.Errorf("RunMigrations = %q, want %q", loaded.Automation.RunMigrations, AutoOff)
+	if loaded.Automation.ServiceFallback != AutoOff {
+		t.Errorf("ServiceFallback = %q, want %q", loaded.Automation.ServiceFallback, AutoOff)
 	}
 	// Verify unmodified fields kept their defaults
-	if loaded.Automation.CopyEnv != AutoOn {
-		t.Errorf("CopyEnv = %q, want %q", loaded.Automation.CopyEnv, AutoOn)
+	if loaded.Automation.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q", loaded.Automation.InstallPHPVersion, AutoOn)
 	}
 }
 
@@ -296,33 +258,6 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	if a.InstallPHPVersion != AutoOn {
 		t.Errorf("InstallPHPVersion = %q, want %q", a.InstallPHPVersion, AutoOn)
 	}
-	if a.ComposerInstall != AutoOn {
-		t.Errorf("ComposerInstall = %q, want %q", a.ComposerInstall, AutoOn)
-	}
-	if a.CopyEnv != AutoOn {
-		t.Errorf("CopyEnv = %q, want %q", a.CopyEnv, AutoOn)
-	}
-	if a.GenerateKey != AutoOn {
-		t.Errorf("GenerateKey = %q, want %q", a.GenerateKey, AutoOn)
-	}
-	if a.SetAppURL != AutoOn {
-		t.Errorf("SetAppURL = %q, want %q", a.SetAppURL, AutoOn)
-	}
-	if a.SetViteTLS != AutoOn {
-		t.Errorf("SetViteTLS = %q, want %q", a.SetViteTLS, AutoOn)
-	}
-	if a.InstallOctane != AutoAsk {
-		t.Errorf("InstallOctane = %q, want %q", a.InstallOctane, AutoAsk)
-	}
-	if a.CreateDatabase != AutoOn {
-		t.Errorf("CreateDatabase = %q, want %q", a.CreateDatabase, AutoOn)
-	}
-	if a.RunMigrations != AutoAsk {
-		t.Errorf("RunMigrations = %q, want %q", a.RunMigrations, AutoAsk)
-	}
-	if a.ServiceEnvUpdate != AutoOn {
-		t.Errorf("ServiceEnvUpdate = %q, want %q", a.ServiceEnvUpdate, AutoOn)
-	}
 	if a.ServiceFallback != AutoOn {
 		t.Errorf("ServiceFallback = %q, want %q", a.ServiceFallback, AutoOn)
 	}
@@ -335,9 +270,6 @@ func TestLoadSettings_MissingAutomationGetsDefaults(t *testing.T) {
 	if a.GenerateTLSCert != AutoOn {
 		t.Errorf("GenerateTLSCert = %q, want %q", a.GenerateTLSCert, AutoOn)
 	}
-	if a.DetectServices != AutoOn {
-		t.Errorf("DetectServices = %q, want %q", a.DetectServices, AutoOn)
-	}
 }
 
 func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
@@ -347,7 +279,7 @@ func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
 	if err := EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(SettingsPath(), []byte("automation:\n    composer_install: banana\n    copy_env: \"false\"\n"), 0644); err != nil {
+	if err := os.WriteFile(SettingsPath(), []byte("automation:\n    install_php_version: banana\n    service_fallback: \"false\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -356,12 +288,12 @@ func TestLoadSettings_InvalidAutoModeResetToDefault(t *testing.T) {
 		t.Fatalf("LoadSettings() error = %v", err)
 	}
 	// "banana" is invalid → should be reset to default ("true").
-	if loaded.Automation.ComposerInstall != AutoOn {
-		t.Errorf("ComposerInstall = %q, want %q (invalid value should reset to default)", loaded.Automation.ComposerInstall, AutoOn)
+	if loaded.Automation.InstallPHPVersion != AutoOn {
+		t.Errorf("InstallPHPVersion = %q, want %q (invalid value should reset to default)", loaded.Automation.InstallPHPVersion, AutoOn)
 	}
 	// "false" is valid → should be preserved.
-	if loaded.Automation.CopyEnv != AutoOff {
-		t.Errorf("CopyEnv = %q, want %q", loaded.Automation.CopyEnv, AutoOff)
+	if loaded.Automation.ServiceFallback != AutoOff {
+		t.Errorf("ServiceFallback = %q, want %q", loaded.Automation.ServiceFallback, AutoOff)
 	}
 }
 

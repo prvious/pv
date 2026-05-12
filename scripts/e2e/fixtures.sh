@@ -5,10 +5,12 @@ source "$(dirname "$0")/helpers.sh"
 # 1. Static site
 mkdir -p /tmp/e2e-static
 echo '<h1>static works</h1>' > /tmp/e2e-static/index.html
+echo 'php: "8.4"' > /tmp/e2e-static/pv.yml
 
 # 2. PHP site (resolves to global 8.4 via composer constraint)
 mkdir -p /tmp/e2e-php/public
 echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-php/composer.json
+echo 'php: "8.4"' > /tmp/e2e-php/pv.yml
 cat > /tmp/e2e-php/public/index.php << 'PHPEOF'
 <?php echo "php works";
 PHPEOF
@@ -16,6 +18,7 @@ PHPEOF
 # 3. Laravel site (resolves to global 8.4)
 mkdir -p /tmp/e2e-laravel/public
 echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > /tmp/e2e-laravel/composer.json
+echo 'php: "8.4"' > /tmp/e2e-laravel/pv.yml
 cat > /tmp/e2e-laravel/public/index.php << 'PHPEOF'
 <?php echo "laravel works";
 PHPEOF
@@ -23,6 +26,7 @@ PHPEOF
 # 4. Laravel Octane site (resolves to global 8.4, detected via octane + worker file)
 mkdir -p /tmp/e2e-octane/public
 echo '{"require":{"php":"^8.2","laravel/framework":"^11.0","laravel/octane":"^2.0"}}' > /tmp/e2e-octane/composer.json
+echo 'php: "8.4"' > /tmp/e2e-octane/pv.yml
 cat > /tmp/e2e-octane/public/frankenphp-worker.php << 'PHPEOF'
 <?php
 ignore_user_abort(true);
@@ -47,6 +51,7 @@ PHPEOF
 # 6. Dynamic site (linked while server running, resolves to global 8.4)
 mkdir -p /tmp/e2e-dynamic/public
 echo '{"require":{"php":"^8.0"}}' > /tmp/e2e-dynamic/composer.json
+echo 'php: "8.4"' > /tmp/e2e-dynamic/pv.yml
 cat > /tmp/e2e-dynamic/public/index.php << 'PHPEOF'
 <?php echo "dynamic works";
 PHPEOF

@@ -18,19 +18,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Pre-link a Laravel project so the postgres binding flow is exercised.
-ENVTEST_DIR=$(mktemp -d)
-echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
-mkdir -p "$ENVTEST_DIR/public"
-echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
-echo "DB_CONNECTION=pgsql" > "$ENVTEST_DIR/.env"
-sudo -E pv link "$ENVTEST_DIR" --name e2e-postgres-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
-
+# Install postgres 17 BEFORE pv link so ApplyPvYmlServicesStep finds it
+# (PR 5 deleted the retroactive-bind path; binding now happens at link time
+# via pv.yml).
 echo "==> postgres:install 17"
 sudo -E pv postgres:install 17 || { echo "FAIL: postgres:install 17"; exit 1; }
 
 echo "==> postgres:install 18"
 sudo -E pv postgres:install 18 || { echo "FAIL: postgres:install 18"; exit 1; }
+
+# Now link a Laravel project that declares postgres 17 + env template in
+# pv.yml. pv link's ApplyPvYmlEnvStep will render the templates and write
+# DB_PORT into the project's .env (the path that replaced the deleted
+# retroactive bind on `pv postgres:install`).
+ENVTEST_DIR=$(mktemp -d)
+echo '{"require":{"php":"^8.2","laravel/framework":"^11.0"}}' > "$ENVTEST_DIR/composer.json"
+mkdir -p "$ENVTEST_DIR/public"
+echo '<?php echo "test";' > "$ENVTEST_DIR/public/index.php"
+echo "DB_CONNECTION=pgsql" > "$ENVTEST_DIR/.env"
+cat > "$ENVTEST_DIR/pv.yml" << 'YMLEOF'
+php: "8.4"
+postgresql:
+  version: "17"
+  env:
+    DB_CONNECTION: pgsql
+    DB_HOST: "{{ .host }}"
+    DB_PORT: "{{ .port }}"
+YMLEOF
+sudo -E pv link "$ENVTEST_DIR" --name e2e-postgres-env >/dev/null 2>&1 || { echo "FAIL: pv link"; exit 1; }
 
 echo "==> Verify both binary trees exist"
 test -x "$HOME/.pv/postgres/17/bin/postgres" || { echo "FAIL: PG 17 binary missing"; exit 1; }
@@ -69,11 +84,11 @@ SEEN_ON_18=$("$HOME/.pv/postgres/18/bin/psql" -h 127.0.0.1 -p 54018 -U postgres 
 [ "$SEEN_ON_18" = "1" ] || { echo "FAIL: e2e_pg18_only not visible on PG 18"; exit 1; }
 echo "OK: cross-major isolation confirmed"
 
-echo "==> Verify linked project got DB_PORT for the first-installed major (17 → 54017)"
-# Retroactive bind on postgres:install is conservative: it binds to the
-# just-installed major if the project has no postgres binding yet, and
-# skips projects already bound. We installed 17 first, so the project
-# binds to 17 and stays there even after installing 18.
+echo "==> Verify linked project got DB_PORT via pv.yml env template (PG 17 → 54017)"
+# ApplyPvYmlEnvStep renders postgresql.env.DB_PORT against {{ .port }} during
+# `pv link`. This replaces the deleted retroactive-bind path that used to
+# fire on `pv postgres:install` for already-linked projects. The pv.yml
+# pins postgresql.version to "17", so DB_PORT resolves to 54017.
 grep -q "DB_PORT=54017" "$ENVTEST_DIR/.env" || {
     echo "FAIL: linked project .env should have DB_PORT=54017";
     echo "  actual .env contents:";

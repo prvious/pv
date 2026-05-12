@@ -51,14 +51,6 @@ var automationItems = []struct {
 	set   func(*config.Automation, config.AutoMode)
 }{
 	{"Auto install missing PHP version", func(a *config.Automation) config.AutoMode { return a.InstallPHPVersion }, func(a *config.Automation, m config.AutoMode) { a.InstallPHPVersion = m }},
-	{"Run composer install", func(a *config.Automation) config.AutoMode { return a.ComposerInstall }, func(a *config.Automation, m config.AutoMode) { a.ComposerInstall = m }},
-	{"Copy .env.example to .env", func(a *config.Automation) config.AutoMode { return a.CopyEnv }, func(a *config.Automation, m config.AutoMode) { a.CopyEnv = m }},
-	{"Generate APP_KEY", func(a *config.Automation) config.AutoMode { return a.GenerateKey }, func(a *config.Automation, m config.AutoMode) { a.GenerateKey = m }},
-	{"Set APP_URL to project domain", func(a *config.Automation) config.AutoMode { return a.SetAppURL }, func(a *config.Automation, m config.AutoMode) { a.SetAppURL = m }},
-	{"Configure Laravel Octane", func(a *config.Automation) config.AutoMode { return a.InstallOctane }, func(a *config.Automation, m config.AutoMode) { a.InstallOctane = m }},
-	{"Create project database", func(a *config.Automation) config.AutoMode { return a.CreateDatabase }, func(a *config.Automation, m config.AutoMode) { a.CreateDatabase = m }},
-	{"Run database migrations", func(a *config.Automation) config.AutoMode { return a.RunMigrations }, func(a *config.Automation, m config.AutoMode) { a.RunMigrations = m }},
-	{"Update .env when services change", func(a *config.Automation) config.AutoMode { return a.ServiceEnvUpdate }, func(a *config.Automation, m config.AutoMode) { a.ServiceEnvUpdate = m }},
 	{"Reset .env on service stop", func(a *config.Automation) config.AutoMode { return a.ServiceFallback }, func(a *config.Automation, m config.AutoMode) { a.ServiceFallback = m }},
 }
 

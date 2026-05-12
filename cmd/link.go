@@ -11,7 +11,6 @@ import (
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/detection"
-	"github.com/prvious/pv/internal/laravel"
 	"github.com/prvious/pv/internal/phpenv"
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
@@ -60,9 +59,8 @@ pv link --name=myapp ~/Code/myapp`,
 		if err != nil {
 			return fmt.Errorf("cannot read pv.yml: %w", err)
 		}
-
-		if projectCfg.HasSetup() {
-			ui.Subtle("pv.yml setup: declared — legacy setup steps skipped")
+		if projectCfg == nil {
+			return fmt.Errorf("no pv.yml found at %s. Run `pv init` to generate one.", absPath)
 		}
 
 		name := linkName
@@ -101,10 +99,7 @@ pv link --name=myapp ~/Code/myapp`,
 			phpVersion = v
 		}
 
-		var aliases []string
-		if projectCfg != nil {
-			aliases = projectCfg.Aliases
-		}
+		aliases := projectCfg.Aliases
 
 		// Register or update project.
 		if relink {
@@ -144,21 +139,11 @@ pv link --name=myapp ~/Code/myapp`,
 		// Run the full pipeline.
 		allSteps := []automation.Step{
 			&steps.InstallPHPStep{},
-			&laravel.CopyEnvStep{},
-			&laravel.ComposerInstallStep{},
-			&laravel.GenerateKeyStep{},
-			&laravel.InstallOctaneStep{},
 			&steps.GenerateSiteConfigStep{},
 			&steps.GenerateCaddyfileStep{},
 			&steps.GenerateTLSCertStep{},
 			&steps.ApplyPvYmlServicesStep{},
-			&steps.DetectServicesStep{},
-			&laravel.DetectServicesStep{},
 			&steps.ApplyPvYmlEnvStep{},
-			&laravel.SetAppURLStep{},
-			&laravel.SetViteTLSStep{},
-			&laravel.CreateDatabaseStep{},
-			&laravel.RunMigrationsStep{},
 			&steps.ApplySetupStep{},
 		}
 		if err := automation.RunPipeline(allSteps, ctx); err != nil {

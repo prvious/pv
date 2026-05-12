@@ -123,35 +123,6 @@ func TestUninstall_DeleteData(t *testing.T) {
 	}
 }
 
-func TestBindToAllProjects_SetsFlagOnLaravelProjects(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	reg := &registry.Registry{
-		Projects: []registry.Project{
-			{Name: "laravel-app", Path: "/tmp/laravel-app", Type: "laravel"},
-			{Name: "octane-app", Path: "/tmp/octane-app", Type: "laravel-octane"},
-			{Name: "static-app", Path: "/tmp/static-app", Type: "static"},
-		},
-	}
-
-	BindToAllProjects(reg)
-
-	laravel := reg.Find("laravel-app")
-	if laravel.Services == nil || !laravel.Services.S3 {
-		t.Errorf("laravel project: expected Services.S3 = true, got %+v", laravel.Services)
-	}
-
-	octane := reg.Find("octane-app")
-	if octane.Services == nil || !octane.Services.S3 {
-		t.Errorf("laravel-octane project: expected Services.S3 = true, got %+v", octane.Services)
-	}
-
-	static := reg.Find("static-app")
-	if static.Services != nil && static.Services.S3 {
-		t.Errorf("static project: expected Services.S3 unchanged (false/nil), got %+v", static.Services)
-	}
-}
-
 func TestApplyFallbacksToLinkedProjects_RewritesEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

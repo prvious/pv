@@ -49,7 +49,7 @@ func TestRunPipeline_SkipsWhenShouldRunFalse(t *testing.T) {
 
 	step := &stubStep{
 		label:     "skip me",
-		gate:      "composer_install",
+		gate:      "install_php_version",
 		shouldRun: false,
 		result:    "done",
 	}
@@ -70,14 +70,14 @@ func TestRunPipeline_SkipsWhenGateOff(t *testing.T) {
 	}
 
 	step := &stubStep{
-		label:     "composer install",
-		gate:      "composer_install",
+		label:     "set app url",
+		gate:      "install_php_version",
 		shouldRun: true,
-		result:    "installed",
+		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.ComposerInstall = config.AutoOff
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoOff
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
 		t.Fatalf("RunPipeline() error = %v", err)
@@ -94,14 +94,14 @@ func TestRunPipeline_RunsWhenGateOn(t *testing.T) {
 	}
 
 	step := &stubStep{
-		label:     "composer install",
-		gate:      "composer_install",
+		label:     "set app url",
+		gate:      "install_php_version",
 		shouldRun: true,
-		result:    "installed",
+		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.ComposerInstall = config.AutoOn
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoOn
 
 	if err := RunPipeline([]Step{step}, ctx); err != nil {
 		t.Fatalf("RunPipeline() error = %v", err)
@@ -118,14 +118,14 @@ func TestRunPipeline_AskTreatedAsOffWhenNonInteractive(t *testing.T) {
 	}
 
 	step := &stubStep{
-		label:     "run migrations",
-		gate:      "run_migrations",
+		label:     "set app url",
+		gate:      "install_php_version",
 		shouldRun: true,
-		result:    "migrated",
+		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.RunMigrations = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force non-interactive
 	origIsInteractive := isInteractiveFunc
@@ -147,14 +147,14 @@ func TestRunPipeline_AskRunsWhenConfirmed(t *testing.T) {
 	}
 
 	step := &stubStep{
-		label:     "run migrations",
-		gate:      "run_migrations",
+		label:     "set app url",
+		gate:      "install_php_version",
 		shouldRun: true,
-		result:    "migrated",
+		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.RunMigrations = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force interactive + confirm yes
 	origIsInteractive := isInteractiveFunc
@@ -180,14 +180,14 @@ func TestRunPipeline_AskSkipsWhenDenied(t *testing.T) {
 	}
 
 	step := &stubStep{
-		label:     "run migrations",
-		gate:      "run_migrations",
+		label:     "set app url",
+		gate:      "install_php_version",
 		shouldRun: true,
-		result:    "migrated",
+		result:    "set",
 	}
 
 	ctx := defaultCtx()
-	ctx.Settings.Automation.RunMigrations = config.AutoAsk
+	ctx.Settings.Automation.InstallPHPVersion = config.AutoAsk
 
 	// Force interactive + confirm no
 	origIsInteractive := isInteractiveFunc
@@ -228,20 +228,10 @@ func TestLookupGate(t *testing.T) {
 		want config.AutoMode
 	}{
 		{"install_php_version", a.InstallPHPVersion},
-		{"composer_install", a.ComposerInstall},
-		{"copy_env", a.CopyEnv},
-		{"generate_key", a.GenerateKey},
-		{"set_app_url", a.SetAppURL},
-		{"set_vite_tls", a.SetViteTLS},
-		{"install_octane", a.InstallOctane},
-		{"create_database", a.CreateDatabase},
-		{"run_migrations", a.RunMigrations},
-		{"update_env_on_service", a.ServiceEnvUpdate},
 		{"service_fallback", a.ServiceFallback},
 		{"generate_site_config", a.GenerateSiteConfig},
 		{"generate_caddyfile", a.GenerateCaddyfile},
 		{"generate_tls_cert", a.GenerateTLSCert},
-		{"detect_services", a.DetectServices},
 		{"apply_pvyml_services", a.ApplyPvYmlServices},
 		{"apply_pvyml_env", a.ApplyPvYmlEnv},
 		{"apply_setup", a.ApplySetup},
@@ -266,14 +256,14 @@ func TestRunPipeline_AbortOnCriticalFailure(t *testing.T) {
 
 	criticalStep := &stubStep{
 		label:     "critical step",
-		gate:      "composer_install",
+		gate:      "install_php_version",
 		shouldRun: true,
 		critical:  true,
 		err:       fmt.Errorf("critical failure"),
 	}
 	nextStep := &stubStep{
 		label:     "next step",
-		gate:      "copy_env",
+		gate:      "service_fallback",
 		shouldRun: true,
 		result:    "done",
 	}
@@ -296,14 +286,14 @@ func TestRunPipeline_ContinuesOnNonCriticalFailure(t *testing.T) {
 
 	failStep := &stubStep{
 		label:     "non-critical step",
-		gate:      "composer_install",
+		gate:      "install_php_version",
 		shouldRun: true,
 		critical:  false,
 		err:       fmt.Errorf("non-critical failure"),
 	}
 	nextStep := &stubStep{
 		label:     "next step",
-		gate:      "copy_env",
+		gate:      "service_fallback",
 		shouldRun: true,
 		result:    "done",
 	}
