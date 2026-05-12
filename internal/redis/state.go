@@ -10,55 +10,55 @@ import (
 
 const stateKey = "redis"
 
-// Wanted-state values for State.Wanted. Bare strings would let typos
-// silently persist (and be silently read as "not running"), so callers
-// go through SetWanted which validates against this set.
 const (
 	WantedRunning = "running"
 	WantedStopped = "stopped"
 )
 
-// State is the redis slice of ~/.pv/data/state.json.
-//
-// Note the shape is FLAT (no Versions map) — redis is single-version, so
-// a per-version sub-record would just add a layer of indirection over a
-// single record. Compare with internal/mysql/state.go which uses a
-// Versions map to disambiguate 8.0/8.4/9.7.
-//
-// On-disk JSON shape:
-//
-//	{
-//	  "redis": { "wanted": "running" }
-//	}
-type State struct {
+type VersionState struct {
 	Wanted string `json:"wanted"`
 }
 
-// LoadState reads the redis slice. Missing or empty → zero-value state.
-// A corrupt slice is treated as empty with a one-time stderr warning,
-// the same posture postgres/mysql take — recovery is `redis:start`.
+type State struct {
+	Versions map[string]VersionState `json:"versions"`
+}
+
 func LoadState() (State, error) {
 	all, err := state.Load()
 	if err != nil {
-		return State{}, err
+		return State{Versions: map[string]VersionState{}}, err
 	}
 	raw, ok := all[stateKey]
 	if !ok {
-		return State{}, nil
+		return State{Versions: map[string]VersionState{}}, nil
 	}
 	var s State
 	if err := json.Unmarshal(raw, &s); err != nil {
 		fmt.Fprintf(os.Stderr, "redis: state slice corrupt (%v); treating as empty\n", err)
-		return State{}, nil
+		return State{Versions: map[string]VersionState{}}, nil
+	}
+	if s.Versions == nil {
+		s.Versions = map[string]VersionState{}
+	}
+	if len(s.Versions) == 0 {
+		var old struct {
+			Wanted string `json:"wanted"`
+		}
+		if err := json.Unmarshal(raw, &old); err == nil && old.Wanted != "" {
+			s.Versions["8.6"] = VersionState{Wanted: old.Wanted}
+			_ = SaveState(s)
+		}
 	}
 	return s, nil
 }
 
-// SaveState writes the redis slice, preserving other services' slices.
 func SaveState(s State) error {
 	all, err := state.Load()
 	if err != nil {
 		return err
+	}
+	if s.Versions == nil {
+		s.Versions = map[string]VersionState{}
 	}
 	payload, err := json.Marshal(s)
 	if err != nil {
@@ -68,20 +68,27 @@ func SaveState(s State) error {
 	return state.Save(all)
 }
 
-// SetWanted updates the wanted-state and persists. Rejects values
-// outside the WantedRunning/WantedStopped set so a typo can't silently
-// persist garbage that IsWanted will later read as "not running" (and
-// stop the process).
-func SetWanted(wanted string) error {
+func SetWanted(version, wanted string) error {
 	if wanted != WantedRunning && wanted != WantedStopped {
 		return fmt.Errorf("redis: invalid wanted state %q (want %q or %q)", wanted, WantedRunning, WantedStopped)
 	}
-	return SaveState(State{Wanted: wanted})
+	s, err := LoadState()
+	if err != nil {
+		return err
+	}
+	s.Versions[version] = VersionState{Wanted: wanted}
+	return SaveState(s)
 }
 
-// RemoveState drops the redis entry from state.json entirely. Used by
-// `redis:uninstall` so a fresh install doesn't inherit a stale wanted
-// flag from before.
+func RemoveVersion(version string) error {
+	s, err := LoadState()
+	if err != nil {
+		return err
+	}
+	delete(s.Versions, version)
+	return SaveState(s)
+}
+
 func RemoveState() error {
 	all, err := state.Load()
 	if err != nil {

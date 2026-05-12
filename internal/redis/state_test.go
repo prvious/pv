@@ -4,51 +4,66 @@ import (
 	"testing"
 )
 
-func TestState_RoundTrip(t *testing.T) {
+func TestLoadState_MissingReturnsEmptyVersions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	// Empty home → empty state.
 	s, err := LoadState()
 	if err != nil {
-		t.Fatalf("LoadState: %v", err)
+		t.Fatal(err)
 	}
-	if s.Wanted != "" {
-		t.Errorf("LoadState on empty home: Wanted = %q, want empty", s.Wanted)
+	if s.Versions == nil {
+		t.Error("Versions map should not be nil")
 	}
-
-	if err := SetWanted(WantedRunning); err != nil {
-		t.Fatalf("SetWanted: %v", err)
-	}
-
-	s, err = LoadState()
-	if err != nil {
-		t.Fatalf("LoadState after SetWanted: %v", err)
-	}
-	if s.Wanted != WantedRunning {
-		t.Errorf("LoadState.Wanted = %q, want %q", s.Wanted, WantedRunning)
+	if len(s.Versions) != 0 {
+		t.Error("expected empty versions")
 	}
 }
 
-func TestSetWanted_InvalidRejected(t *testing.T) {
+func TestSetWanted_Roundtrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := SetWanted("not-a-real-state"); err == nil {
-		t.Error("SetWanted should reject unknown values")
+	if err := SetWanted("8.6", WantedRunning); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Versions["8.6"].Wanted != WantedRunning {
+		t.Errorf("wanted = %q", s.Versions["8.6"].Wanted)
+	}
+}
+
+func TestSetWanted_RejectsInvalid(t *testing.T) {
+	if err := SetWanted("8.6", "invalid"); err == nil {
+		t.Error("expected error for invalid wanted state")
+	}
+}
+
+func TestRemoveVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	SetWanted("8.6", WantedRunning)
+	if err := RemoveVersion("8.6"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Versions["8.6"]; ok {
+		t.Error("version should be removed")
 	}
 }
 
 func TestRemoveState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := SetWanted(WantedRunning); err != nil {
-		t.Fatalf("SetWanted: %v", err)
-	}
+	SetWanted("8.6", WantedRunning)
 	if err := RemoveState(); err != nil {
-		t.Fatalf("RemoveState: %v", err)
+		t.Fatal(err)
 	}
 	s, err := LoadState()
 	if err != nil {
-		t.Fatalf("LoadState after RemoveState: %v", err)
+		t.Fatal(err)
 	}
-	if s.Wanted != "" {
-		t.Errorf("LoadState.Wanted after RemoveState = %q, want empty", s.Wanted)
+	if len(s.Versions) != 0 {
+		t.Error("expected empty after RemoveState")
 	}
 }
