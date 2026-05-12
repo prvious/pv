@@ -164,6 +164,7 @@ Common adjustments after `pv init`:
 - **No database**: remove the `postgresql:` / `mysql:` block and the `pv <engine>:db:create` + `php artisan migrate` lines from `setup:`.
 - **Custom migrate command**: replace `php artisan migrate` with whatever your team uses (e.g., `php artisan x-migrate` for multi-database setups).
 - **Custom env keys**: add to the top-level `env:` block or per-service `env:` map. Values can be plain strings or templates. Top-level `env:` exposes project vars like `{{ .site_url }}` and `{{ .tls_cert_path }}`; per-service `env:` maps expose service vars like `{{ .host }}` and `{{ .port }}`. See [the spec](docs/superpowers/specs/2026-05-10-pv-yml-explicit-config-design.md) for the full template variable reference.
+- **pv-managed labels**: keys written from `pv.yml` are labeled with `# pv-managed` in `.env`. Removing a key from `pv.yml` stops future pv updates for that key, but leaves the existing `.env` line for you to edit or remove.
 - **Aliases**: uncomment the `aliases:` line and add hostnames; each alias gets its own TLS cert.
 
 ## What's no longer automatic
@@ -185,7 +186,7 @@ The following used to happen invisibly during `pv link` and related commands. Af
     VITE_DEV_SERVER_CERT: "{{ .tls_cert_path }}"
   ```
 
-The trade-off: a one-time `pv init` per project in exchange for never seeing a mystery `.env` write again.
+The trade-off: a one-time `pv init` per project in exchange for explicit, labeled `.env` writes.
 
 ## Architecture
 

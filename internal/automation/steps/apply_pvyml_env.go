@@ -15,7 +15,7 @@ import (
 
 // ApplyPvYmlEnvStep renders pv.yml's top-level env: and per-service
 // env: templates against their respective variable maps and merges
-// the rendered keys into the project's .env via MergeDotEnv.
+// the rendered keys into the project's .env with pv-managed markers.
 //
 // Runs when ctx.ProjectConfig.HasAnyEnv(). For version-bearing
 // services (postgres/mysql), probes the installed binary to populate
@@ -99,7 +99,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	envPath := filepath.Join(ctx.ProjectPath, ".env")
 	backupPath := filepath.Join(ctx.ProjectPath, ".pv-backup")
-	if err := projectenv.MergeDotEnv(envPath, backupPath, rendered); err != nil {
+	if err := projectenv.MergeManagedDotEnv(envPath, backupPath, rendered); err != nil {
 		return "", fmt.Errorf("merge .env: %w", err)
 	}
 	return fmt.Sprintf("wrote %d key(s) to .env", len(rendered)), nil

@@ -53,6 +53,39 @@ func TestApplyPvYmlEnv_RendersTopLevelEnv(t *testing.T) {
 	}
 }
 
+func TestApplyPvYmlEnv_LabelsRenderedKeysAsManaged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte("APP_URL=http://old.test\nCUSTOM_THING=keep-me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: projDir,
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Env: map[string]string{
+				"APP_URL": "{{ .site_url }}",
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# pv-managed\nAPP_URL=https://myapp.test\nCUSTOM_THING=keep-me\n"
+	if string(body) != want {
+		t.Errorf(".env = %q, want %q", string(body), want)
+	}
+}
+
 func TestApplyPvYmlEnv_RendersRedisEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

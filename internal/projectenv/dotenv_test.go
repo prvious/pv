@@ -127,3 +127,120 @@ func TestMergeDotEnv_NewFile(t *testing.T) {
 		t.Error("DB_HOST not written")
 	}
 }
+
+func TestMergeManagedDotEnv_AppendsNewKeyWithMarker(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+
+	if err := os.WriteFile(envPath, []byte("CUSTOM_THING=keep-me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MergeManagedDotEnv(envPath, "", map[string]string{"APP_URL": "https://myapp.test"})
+	if err != nil {
+		t.Fatalf("MergeManagedDotEnv() error = %v", err)
+	}
+
+	result, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "CUSTOM_THING=keep-me\n# pv-managed\nAPP_URL=https://myapp.test\n"
+	if string(result) != want {
+		t.Errorf(".env = %q, want %q", string(result), want)
+	}
+}
+
+func TestMergeManagedDotEnv_UpdatesExistingKeyWithMarker(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+
+	if err := os.WriteFile(envPath, []byte("APP_URL=http://old.test\nCUSTOM_THING=keep-me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MergeManagedDotEnv(envPath, "", map[string]string{"APP_URL": "https://myapp.test"})
+	if err != nil {
+		t.Fatalf("MergeManagedDotEnv() error = %v", err)
+	}
+
+	result, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# pv-managed\nAPP_URL=https://myapp.test\nCUSTOM_THING=keep-me\n"
+	if string(result) != want {
+		t.Errorf(".env = %q, want %q", string(result), want)
+	}
+}
+
+func TestMergeManagedDotEnv_DoesNotDuplicateMarker(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+
+	if err := os.WriteFile(envPath, []byte("# pv-managed\nAPP_URL=http://old.test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MergeManagedDotEnv(envPath, "", map[string]string{"APP_URL": "https://myapp.test"})
+	if err != nil {
+		t.Fatalf("MergeManagedDotEnv() error = %v", err)
+	}
+
+	result, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# pv-managed\nAPP_URL=https://myapp.test\n"
+	if string(result) != want {
+		t.Errorf(".env = %q, want %q", string(result), want)
+	}
+}
+
+func TestMergeManagedDotEnv_LeavesRemovedManagedKeyUntouched(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+
+	original := "# pv-managed\nAPP_URL=https://myapp.test\nCUSTOM_THING=keep-me\n"
+	if err := os.WriteFile(envPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MergeManagedDotEnv(envPath, "", map[string]string{"DB_HOST": "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("MergeManagedDotEnv() error = %v", err)
+	}
+
+	result, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := original + "# pv-managed\nDB_HOST=127.0.0.1\n"
+	if string(result) != want {
+		t.Errorf(".env = %q, want %q", string(result), want)
+	}
+}
+
+func TestMergeManagedDotEnv_CreatesBackup(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	backupPath := filepath.Join(dir, ".pv-backup")
+
+	original := "APP_URL=http://old.test\n"
+	if err := os.WriteFile(envPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := MergeManagedDotEnv(envPath, backupPath, map[string]string{"APP_URL": "https://myapp.test"})
+	if err != nil {
+		t.Fatalf("MergeManagedDotEnv() error = %v", err)
+	}
+
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(backup) != original {
+		t.Errorf("backup = %q, want %q", string(backup), original)
+	}
+}

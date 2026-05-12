@@ -251,7 +251,7 @@ Other types get analogous templates. `pv init` refuses to overwrite an existing 
 
 ### Conflict policy
 
-- pv.yml is the source of truth. Templated env values overwrite existing `.env` values on every `pv link`. A user who edits a pv-managed key in `.env` will see their edit clobbered on next link; the right place to change that value is pv.yml (either the literal, or by overriding the template result).
+- pv.yml is the source of truth while a key remains declared there. Templated env values overwrite existing `.env` values on every `pv link` and are labeled with `# pv-managed`. A user who edits a currently declared pv-managed key in `.env` will see their edit clobbered on next link; the right place to change that value is pv.yml (either the literal, or by overriding the template result).
 - `.pv-backup` is written before any merge (current `MergeDotEnv` behavior).
 - Keys not declared in pv.yml are untouched. Comments and blank lines are preserved (current behavior).
 
@@ -261,25 +261,18 @@ Unlink is administrative — it removes the project from pv's registry and tears
 
 - Unlink is often temporary (the project is being archived, moved, or will be re-linked later). Clobbering env values forces the user to re-derive them on next link.
 - Env values written by pv are still valid strings; they just point at services that aren't running for this project. A re-link refreshes them from pv.yml anyway.
-- Anything destructive must be invoked explicitly. Users who want to drop databases / buckets call `pv postgres:db:drop` etc. themselves; users who want to clear pv-managed env keys edit pv.yml + relink (covered by managed-key tracking below).
+- Anything destructive must be invoked explicitly. Users who want to drop databases / buckets call `pv postgres:db:drop` etc. themselves; users who want to clear pv-managed env keys remove them from pv.yml, relink to stop future updates, then edit or remove the existing `.env` lines manually.
 
-### Removing a key from pv.yml — managed-key tracking
+### Removing a key from pv.yml — managed labels
 
-Between PR 5 (when pv.yml becomes mandatory) and PR 6, removing a key from pv.yml leaves the old value sitting in `.env` as a dead var. PR 6 closes this gap by recording which keys pv has written, and removing the corresponding `.env` line when its declaration disappears from pv.yml.
+PR 6 labels keys pv writes from pv.yml with an adjacent comment:
 
-Two viable mechanisms; final choice is made during PR 6 design:
+```dotenv
+# pv-managed
+APP_URL=https://myapp.test
+```
 
-1. Sentinel-comment block in `.env`:
-   ```
-   # pv-managed:start
-   DB_HOST=127.0.0.1
-   DB_PORT=5418
-   # pv-managed:end
-   ```
-   Simple but reorders managed keys to a block.
-2. Separate `.pv-state` file mapping project → managed keys. Keeps `.env` untouched in layout. Adds a state file the user shouldn't edit.
-
-Both are workable. The tradeoff is visibility (sentinel-comment is in the user's face) vs `.env` cleanliness (state file leaves `.env` alone).
+Removing a key from pv.yml does not delete the existing `.env` line. It stops future pv updates for that key; the user owns cleanup.
 
 ### Service installed check
 
@@ -367,18 +360,18 @@ This is the cut-over. `pv.yml` becomes mandatory for `pv link`.
 - README + CLAUDE.md updates. Add a migration guide ("if you were on pv ≤ X, run `pv init` in each linked project, review the generated pv.yml, commit it") to README.
 - E2E tests updated to cover the new flow. Old auto-detect e2e tests deleted.
 
-### PR 6 — `.env` managed-key tracking
+### PR 6 — `.env` managed labels
 
-Closes the dead-var gap from PR 5.
+Makes pv.yml-driven `.env` writes visible without hidden state or automatic cleanup.
 
-- Implement the tracking mechanism (sentinel comments vs `.pv-state` — decided in this PR's design).
-- On `pv link`, compare the previously-tracked managed-key set against the newly-rendered set. Keys that disappeared from pv.yml are removed from `.env`.
-- Tests for: add key + relink writes it, remove key from pv.yml + relink removes it, manually-edited (non-pv-managed) keys are never touched.
+- Label keys written from pv.yml with an adjacent `# pv-managed` comment.
+- On `pv link`, update currently declared pv.yml env keys and preserve/add their labels.
+- Do not delete keys that disappear from pv.yml; removing a key from pv.yml stops future pv updates and leaves cleanup to the user.
+- Tests for: add key + relink writes the label, update existing key adds or preserves the label, removing a key from pv.yml does not delete it, manually-edited non-pv keys are never touched.
 
 ## Open questions
 
 The following are deliberately not nailed down in this spec and are settled inside the relevant PR's implementation:
 
-1. **Managed-key tracking mechanism** — sentinel comments in `.env` vs separate `.pv-state` file. Decided in PR 6.
-2. **Exact `pv init` output per project type** beyond Laravel. Decided in PR 4 alongside detection tests.
-3. **Whether `pv setup` keeps its own command after PR 5**, or is merged into `pv link --force-rerun-setup`. Decided in PR 5; preserving the command is the lower-risk default.
+1. **Exact `pv init` output per project type** beyond Laravel. Decided in PR 4 alongside detection tests.
+2. **Whether `pv setup` keeps its own command after PR 5**, or is merged into `pv link --force-rerun-setup`. Decided in PR 5; preserving the command is the lower-risk default.
