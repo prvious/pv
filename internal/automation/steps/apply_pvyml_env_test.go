@@ -118,8 +118,8 @@ func TestApplyPvYmlEnv_RendersRedisEnv(t *testing.T) {
 	s := string(body)
 	for _, want := range []string{
 		"REDIS_HOST=127.0.0.1",
-		"REDIS_PORT=6379",
-		"REDIS_URL=redis://127.0.0.1:6379",
+		"REDIS_PORT=7160",
+		"REDIS_URL=redis://127.0.0.1:7160",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf(".env missing %q\n%s", want, s)
