@@ -8,9 +8,8 @@ import (
 
 const redisMinorVersion = "8.6"
 
-// Redis descriptor. Single-version — there is no version arg; the URL
-// resolves to the rolling artifacts-release asset which always carries
-// the latest GA upstream redis.
+// Redis descriptor. Single supported minor — the URL resolves to the
+// artifacts-release asset for redisMinorVersion.
 var Redis = Binary{
 	Name:         "redis",
 	DisplayName:  "Redis",
