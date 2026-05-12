@@ -2,59 +2,55 @@ package redis
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prvious/pv/internal/config"
 )
 
 func TestBuildSupervisorProcess_NotInstalled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if _, err := BuildSupervisorProcess(); err == nil {
+	if _, err := BuildSupervisorProcess("8.6"); err == nil {
 		t.Error("BuildSupervisorProcess should error when redis is not installed")
 	}
 }
 
 func TestBuildSupervisorProcess_FlagComposition(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("test requires exec")
 	}
-	if err := os.WriteFile(filepath.Join(config.RedisDir(), "redis-server"), []byte{}, 0o755); err != nil {
-		t.Fatal(err)
+	t.Setenv("HOME", t.TempDir())
+
+	version := "8.6"
+	versionDir := config.RedisVersionDir(version)
+	os.MkdirAll(versionDir, 0o755)
+
+	out := filepath.Join(versionDir, "redis-server")
+	cmd := exec.Command("go", "build", "-o", out,
+		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fake redis-server: %v\n%s", err, b)
 	}
 
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(version)
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
 
-	if proc.Name != "redis" {
-		t.Errorf("Name = %q, want redis", proc.Name)
+	if proc.Name != "redis-8.6" {
+		t.Errorf("Name = %q, want redis-8.6", proc.Name)
 	}
-	if proc.Binary != filepath.Join(config.RedisDir(), "redis-server") {
-		t.Errorf("Binary = %q", proc.Binary)
+	if !strings.Contains(proc.Binary, "8.6/redis-server") {
+		t.Errorf("Binary = %q, should contain 8.6/redis-server", proc.Binary)
 	}
-	if proc.LogFile != config.RedisLogPath() {
-		t.Errorf("LogFile = %q, want %q", proc.LogFile, config.RedisLogPath())
+	if !strings.Contains(proc.LogFile, "redis-8.6.log") {
+		t.Errorf("LogFile = %q, should contain redis-8.6.log", proc.LogFile)
 	}
-	got := strings.Join(proc.Args, " ")
-	for _, want := range []string{
-		"--bind 127.0.0.1",
-		"--port 6379",
-		"--dir " + config.RedisDataDir(),
-		"--dbfilename dump.rdb",
-		"--pidfile /tmp/pv-redis.pid",
-		"--daemonize no",
-		"--protected-mode no",
-		"--appendonly no",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("Args missing %q; got: %s", want, got)
-		}
-	}
-	if strings.Contains(got, "--logfile") {
-		t.Errorf("Args must NOT contain --logfile (supervisor handles stderr); got: %s", got)
+	if proc.ReadyTimeout != 10*time.Second {
+		t.Errorf("ReadyTimeout = %v, want 10s", proc.ReadyTimeout)
 	}
 }

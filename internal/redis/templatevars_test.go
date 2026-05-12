@@ -1,22 +1,19 @@
 package redis
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestTemplateVars(t *testing.T) {
-	got := TemplateVars()
-
-	if got["host"] != "127.0.0.1" {
-		t.Errorf("host = %q, want 127.0.0.1", got["host"])
+	vars := TemplateVars("8.6")
+	if vars["host"] != "127.0.0.1" {
+		t.Errorf("host = %q", vars["host"])
 	}
-	if got["port"] != "6379" {
-		t.Errorf("port = %q, want 6379", got["port"])
+	if vars["port"] != "7160" {
+		t.Errorf("port = %q", vars["port"])
 	}
-	if got["password"] != "" {
-		t.Errorf("password = %q, want empty", got["password"])
+	if vars["password"] != "" {
+		t.Errorf("password = %q", vars["password"])
 	}
-	if got["url"] != "redis://127.0.0.1:6379" {
-		t.Errorf("url = %q, want redis://127.0.0.1:6379", got["url"])
+	if vars["url"] != "redis://127.0.0.1:7160" {
+		t.Errorf("url = %q", vars["url"])
 	}
 }

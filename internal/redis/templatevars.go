@@ -5,14 +5,9 @@ import (
 	"strconv"
 )
 
-// TemplateVars returns the variables available inside a pv.yml
-// `redis.env:` block. Redis is single-version with a fixed port, so
-// no parameters are needed.
-//
-// Keys: host, port, password, url.
-func TemplateVars() map[string]string {
+func TemplateVars(version string) map[string]string {
 	const host = "127.0.0.1"
-	port := PortFor()
+	port := PortFor(version)
 	return map[string]string{
 		"host":     host,
 		"port":     strconv.Itoa(port),

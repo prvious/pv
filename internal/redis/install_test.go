@@ -14,11 +14,6 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
-// makeFakeRedisTarball returns a minimal redis-like tarball with
-// redis-server (a stub that handles --version) and redis-cli.
-// Layout: flat — files at the tarball root, no `bin/` subdir, matching
-// the Task 1 verification of the artifact layout. If the artifact later
-// changes shape, update this helper and Install in lockstep.
 func makeFakeRedisTarball(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -31,9 +26,6 @@ func makeFakeRedisTarball(t *testing.T) []byte {
 		}
 		tw.Write([]byte(body))
 	}
-	// redis-server stub: handles --version (Task 8 ProbeVersion calls
-	// this). For the install path we only need ProbeVersion to succeed
-	// — long-run is exercised by process_test.go via the Go fake.
 	redisServerStub := `#!/bin/sh
 for a in "$@"; do
   case "$a" in
@@ -60,33 +52,31 @@ func TestInstall_HappyPath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PV_REDIS_URL_OVERRIDE", srv.URL)
 
-	if err := Install(http.DefaultClient); err != nil {
+	version := "8.6"
+
+	if err := Install(http.DefaultClient, version); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// Binaries on disk.
 	for _, want := range []string{"redis-server", "redis-cli"} {
-		p := filepath.Join(config.RedisDir(), want)
+		p := filepath.Join(config.RedisVersionDir(version), want)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("missing %s: %v", want, err)
 		}
 	}
 
-	// Data dir present.
-	if _, err := os.Stat(config.RedisDataDir()); err != nil {
+	if _, err := os.Stat(config.RedisDataDirV(version)); err != nil {
 		t.Errorf("data dir missing: %v", err)
 	}
 
-	// State recorded as wanted=running.
 	st, _ := LoadState()
-	if st.Wanted != WantedRunning {
-		t.Errorf("state.Wanted = %q, want running", st.Wanted)
+	if st.Versions[version].Wanted != WantedRunning {
+		t.Errorf("version %s wanted = %q, want %q", version, st.Versions[version].Wanted, WantedRunning)
 	}
 
-	// Version recorded in versions.json under key redis.
 	vs, _ := binaries.LoadVersions()
-	if got := vs.Get("redis"); got == "" {
-		t.Errorf("versions.json redis not recorded")
+	if got := vs.Get("redis-" + version); got == "" {
+		t.Errorf("versions.json redis-%s not recorded", version)
 	}
 }
 
@@ -100,15 +90,17 @@ func TestInstall_AlreadyInstalled_Idempotent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PV_REDIS_URL_OVERRIDE", srv.URL)
 
-	if err := Install(http.DefaultClient); err != nil {
+	version := "8.6"
+
+	if err := Install(http.DefaultClient, version); err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
-	if err := Install(http.DefaultClient); err != nil {
+	if err := Install(http.DefaultClient, version); err != nil {
 		t.Fatalf("second Install (idempotent): %v", err)
 	}
 
 	st, _ := LoadState()
-	if st.Wanted != WantedRunning {
+	if st.Versions[version].Wanted != WantedRunning {
 		t.Errorf("idempotent re-install did not preserve wanted=running")
 	}
 }

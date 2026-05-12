@@ -7,8 +7,8 @@ func TestPortFor(t *testing.T) {
 		version string
 		want    int
 	}{
-		{"7.4", 6740},
-		{"8.6", 6860},
+		{"7.4", 7040},
+		{"8.6", 7160},
 	}
 	for _, tc := range tests {
 		got := PortFor(tc.version)
