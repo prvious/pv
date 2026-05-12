@@ -241,13 +241,17 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		wanted["mysql-"+version] = proc
 	}
 
-	// Source 4 — redis, single-version, filesystem + state.json.
-	if redis.IsWanted() {
-		proc, err := redis.BuildSupervisorProcess()
+	// Source 4 — redis, per-version, filesystem + state.json.
+	redisVersions, err := redis.WantedVersions()
+	if err != nil {
+		startErrors = append(startErrors, fmt.Sprintf("redis: wanted: %v", err))
+	}
+	for _, version := range redisVersions {
+		proc, err := redis.BuildSupervisorProcess(version)
 		if err != nil {
-			startErrors = append(startErrors, fmt.Sprintf("redis: build: %v", err))
+			startErrors = append(startErrors, fmt.Sprintf("redis-%s: build: %v", version, err))
 		} else {
-			wanted["redis"] = proc
+			wanted["redis-"+version] = proc
 		}
 	}
 

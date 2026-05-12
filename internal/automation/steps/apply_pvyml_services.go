@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
@@ -60,10 +61,11 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	if cfg.Redis != nil {
-		if !redis.IsInstalled() {
-			return "", fmt.Errorf("pv.yml redis is not installed — run `pv redis:install`")
+		version := config.RedisDefaultVersion()
+		if !redis.IsInstalled(version) {
+			return "", fmt.Errorf("pv.yml redis %s is not installed — run `pv redis:install %s`", version, version)
 		}
-		bindProjectService(ctx.Registry, ctx.ProjectName, "redis", "redis")
+		bindProjectRedis(ctx.Registry, ctx.ProjectName, version)
 		count++
 	}
 
@@ -105,14 +107,25 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 			reg.Projects[i].Services = &registry.ProjectServices{}
 		}
 		switch svcType {
-		case "redis":
-			reg.Projects[i].Services.Redis = true
 		case "mail":
 			reg.Projects[i].Services.Mail = true
 		case "s3":
 			reg.Projects[i].Services.S3 = true
 		}
 		break
+	}
+}
+
+func bindProjectRedis(reg *registry.Registry, projectName, version string) {
+	for i := range reg.Projects {
+		if reg.Projects[i].Name != projectName {
+			continue
+		}
+		if reg.Projects[i].Services == nil {
+			reg.Projects[i].Services = &registry.ProjectServices{}
+		}
+		reg.Projects[i].Services.Redis = version
+		return
 	}
 }
 

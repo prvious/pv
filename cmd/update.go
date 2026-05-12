@@ -16,6 +16,7 @@ import (
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mailpit"
 	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
@@ -108,14 +109,15 @@ var updateCmd = &cobra.Command{
 			}
 		}
 
-		// Update redis (single-version). Skip if not installed — redis is
-		// opt-in via `pv redis:install`.
-		if r.IsInstalled() {
-			if err := rediscmd.RunUpdate(nil); err != nil {
+		// Update redis. Skip if not installed — redis is opt-in via
+		// `pv redis:install`.
+		redisVersion := config.RedisDefaultVersion()
+		if r.IsInstalled(redisVersion) {
+			if err := rediscmd.RunUpdate([]string{redisVersion}); err != nil {
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Fail(fmt.Sprintf("Redis update failed: %v", err))
+					ui.Fail(fmt.Sprintf("Redis %s update failed: %v", redisVersion, err))
 				}
-				failures = append(failures, "Redis")
+				failures = append(failures, "Redis "+redisVersion)
 			}
 		}
 

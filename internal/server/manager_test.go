@@ -291,13 +291,13 @@ func TestReconcileBinaryServices_StartsWantedRedis(t *testing.T) {
 	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisDir(), "redis-server"),
+	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisVersionDir("8.6"), "redis-server"),
 		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build fake redis-server: %v\n%s", err, out)
 	}
 
-	if err := redis.SetWanted(redis.WantedRunning); err != nil {
+	if err := redis.SetWanted("8.6", redis.WantedRunning); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,8 +309,8 @@ func TestReconcileBinaryServices_StartsWantedRedis(t *testing.T) {
 		t.Fatalf("reconcileBinaryServices: %v", err)
 	}
 
-	if !sup.IsRunning("redis") {
-		t.Error("expected redis to be supervised after reconcile")
+	if !sup.IsRunning("redis-8.6") {
+		t.Error("expected redis-8.6 to be supervised after reconcile")
 	}
 }
 
@@ -323,12 +323,12 @@ func TestReconcileBinaryServices_StopsRemovedRedis(t *testing.T) {
 	if err := os.MkdirAll(config.RedisDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisDir(), "redis-server"),
+	cmd := exec.Command("go", "build", "-o", filepath.Join(config.RedisVersionDir("8.6"), "redis-server"),
 		filepath.Join("..", "..", "internal", "redis", "testdata", "fake-redis-server.go"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build fake redis-server: %v\n%s", err, out)
 	}
-	if err := redis.SetWanted(redis.WantedRunning); err != nil {
+	if err := redis.SetWanted("8.6", redis.WantedRunning); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,17 +339,17 @@ func TestReconcileBinaryServices_StopsRemovedRedis(t *testing.T) {
 	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !sup.IsRunning("redis") {
+	if !sup.IsRunning("redis-8.6") {
 		t.Fatal("expected redis running after first reconcile")
 	}
 
-	if err := redis.SetWanted(redis.WantedStopped); err != nil {
+	if err := redis.SetWanted("8.6", redis.WantedStopped); err != nil {
 		t.Fatal(err)
 	}
 	if err := mgr.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if sup.IsRunning("redis") {
+	if sup.IsRunning("redis-8.6") {
 		t.Error("expected redis stopped after wanted flipped to stopped")
 	}
 }

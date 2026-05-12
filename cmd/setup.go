@@ -68,7 +68,7 @@ var setupCmd = &cobra.Command{
 		toolOpts := []selectOption{
 			{label: "Mago (PHP linter & formatter)", value: "mago", selected: isExecutable(config.BinDir() + "/mago")},
 			{label: "MySQL 8.4 (LTS, native binary)", value: "mysql-8.4", selected: mysql.IsInstalled("8.4")},
-			{label: "Redis (native binary)", value: "redis", selected: redis.IsInstalled()},
+			{label: "Redis (native binary)", value: "redis", selected: redis.IsInstalled(config.RedisDefaultVersion())},
 		}
 
 		// Service options.

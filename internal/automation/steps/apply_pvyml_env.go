@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
@@ -78,7 +79,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// redis.env
 	if cfg.Redis != nil && len(cfg.Redis.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Redis.Env, redis.TemplateVars(), "redis.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Redis.Env, redis.TemplateVars(config.RedisDefaultVersion()), "redis.env"); err != nil {
 			return "", err
 		}
 	}

@@ -232,13 +232,14 @@ var uninstallCmd = &cobra.Command{
 			}
 		}
 
-		// Redis uninstall (single-version). Removes data dir, binary, state.
+		// Redis uninstall. Removes data dir, binary, state.
 		// User has already consented to a full pv uninstall.
-		if r.IsInstalled() {
-			if err := rediscmd.UninstallForce(); err != nil {
+		redisVersion := config.RedisDefaultVersion()
+		if r.IsInstalled(redisVersion) {
+			if err := rediscmd.UninstallForce(redisVersion); err != nil {
 				hadFailures = true
 				if !errors.Is(err, ui.ErrAlreadyPrinted) {
-					ui.Fail(fmt.Sprintf("redis uninstall failed: %v", err))
+					ui.Fail(fmt.Sprintf("redis %s uninstall failed: %v", redisVersion, err))
 				}
 			}
 		}
