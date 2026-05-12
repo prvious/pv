@@ -252,6 +252,35 @@ func RedisLogPath() string {
 	return filepath.Join(LogsDir(), "redis.log")
 }
 
+// RedisDefaultVersion returns the single version pv ships for redis.
+// Currently "8.6" — update when the artifacts pipeline bumps.
+func RedisDefaultVersion() string { return "8.6" }
+
+// RedisVersionDir returns ~/.pv/redis/{version}/ — the binary root
+// for a specific version. Mirrors PostgresVersionDir / MysqlVersionDir.
+func RedisVersionDir(version string) string {
+	return filepath.Join(PvDir(), "redis", version)
+}
+
+// RedisDataDirV returns ~/.pv/data/redis/{version}/ — the data root
+// for a specific version. Note: old RedisDataDir() (no version) is
+// deprecated; renamed to RedisDataRoot() for the parent.
+func RedisDataDirV(version string) string {
+	return filepath.Join(DataDir(), "redis", version)
+}
+
+// RedisLogPathV returns ~/.pv/logs/redis-{version}.log.
+func RedisLogPathV(version string) string {
+	return filepath.Join(LogsDir(), "redis-"+version+".log")
+}
+
+// RedisDataRoot returns ~/.pv/data/redis/ — the parent of versioned
+// data dirs. Used when iterating installed versions; callers should
+// prefer RedisDataDirV for per-version paths.
+func RedisDataRoot() string {
+	return filepath.Join(DataDir(), "redis")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),
