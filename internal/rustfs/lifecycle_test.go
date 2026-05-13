@@ -138,7 +138,7 @@ func TestApplyFallbacksToLinkedProjects_RewritesEnv(t *testing.T) {
 				Name:     "myapp",
 				Path:     projectDir,
 				Type:     "laravel",
-				Services: &registry.ProjectServices{S3: true},
+				Services: &registry.ProjectServices{S3: "latest"},
 			},
 		},
 	}

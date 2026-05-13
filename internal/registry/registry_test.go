@@ -555,9 +555,9 @@ func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6"}},
-			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
-			{Name: "app3", Path: "/c"},
+		{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6", Mail: "latest", S3: "latest"}},
+		{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
+		{Name: "app3", Path: "/c"},
 		},
 	}
 
@@ -575,13 +575,23 @@ func TestProjectsUsingService(t *testing.T) {
 	if len(pgProjects) != 0 {
 		t.Errorf("expected 0 postgres projects, got %d", len(pgProjects))
 	}
+
+	mailProjects := r.ProjectsUsingService("mail")
+	if len(mailProjects) != 1 {
+		t.Errorf("expected 1 mail project, got %d", len(mailProjects))
+	}
+
+	s3Projects := r.ProjectsUsingService("s3")
+	if len(s3Projects) != 1 {
+		t.Errorf("expected 1 s3 project, got %d", len(s3Projects))
+	}
 }
 
 func TestUnbindService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4"}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Mail: "latest", S3: "latest"}},
 			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 		},
 	}
@@ -589,6 +599,18 @@ func TestUnbindService(t *testing.T) {
 	for _, p := range r.Projects {
 		if p.Services != nil && p.Services.MySQL != "" {
 			t.Errorf("project %s still has MySQL binding", p.Name)
+		}
+	}
+	r.UnbindService("mail")
+	for _, p := range r.Projects {
+		if p.Services != nil && p.Services.Mail != "" {
+			t.Errorf("project %s still has Mail binding", p.Name)
+		}
+	}
+	r.UnbindService("s3")
+	for _, p := range r.Projects {
+		if p.Services != nil && p.Services.S3 != "" {
+			t.Errorf("project %s still has S3 binding", p.Name)
 		}
 	}
 }
@@ -828,6 +850,7 @@ func TestUnbindMailVersion(t *testing.T) {
 			{Name: "a", Services: &ProjectServices{Mail: "latest"}},
 			{Name: "b", Services: &ProjectServices{Mail: "future"}},
 			{Name: "c", Services: &ProjectServices{Mail: "latest"}},
+			{Name: "d"},
 		},
 	}
 
@@ -835,6 +858,9 @@ func TestUnbindMailVersion(t *testing.T) {
 
 	cases := map[string]string{"a": "", "b": "future", "c": ""}
 	for _, p := range r.Projects {
+		if p.Services == nil {
+			continue
+		}
 		if got := p.Services.Mail; got != cases[p.Name] {
 			t.Errorf("%s: Mail = %q, want %q", p.Name, got, cases[p.Name])
 		}
@@ -847,6 +873,7 @@ func TestUnbindS3Version(t *testing.T) {
 			{Name: "a", Services: &ProjectServices{S3: "latest"}},
 			{Name: "b", Services: &ProjectServices{S3: "future"}},
 			{Name: "c", Services: &ProjectServices{S3: "latest"}},
+			{Name: "d"},
 		},
 	}
 
@@ -854,6 +881,9 @@ func TestUnbindS3Version(t *testing.T) {
 
 	cases := map[string]string{"a": "", "b": "future", "c": ""}
 	for _, p := range r.Projects {
+		if p.Services == nil {
+			continue
+		}
 		if got := p.Services.S3; got != cases[p.Name] {
 			t.Errorf("%s: S3 = %q, want %q", p.Name, got, cases[p.Name])
 		}

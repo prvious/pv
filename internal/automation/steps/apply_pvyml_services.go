@@ -109,9 +109,9 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 		}
 		switch svcType {
 		case "mail":
-			reg.Projects[i].Services.Mail = true
+			reg.Projects[i].Services.Mail = "latest"
 		case "s3":
-			reg.Projects[i].Services.S3 = true
+			reg.Projects[i].Services.S3 = "latest"
 		}
 		break
 	}
