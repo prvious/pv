@@ -6,8 +6,8 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/prvious/pv/internal/caddy"
-	pkg "github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/registry"
+	pkg "github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
