@@ -25,10 +25,12 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("%s %s is not installed", pkg.Binary().Name, resolved)
 		}
 		wasRunning := false
-		if st, err := pkg.LoadState(); err == nil {
-			if entry, ok := st.Versions[resolved]; ok && entry.Wanted == pkg.WantedRunning {
-				wasRunning = true
-			}
+		st, err := pkg.LoadState()
+		if err != nil {
+			return fmt.Errorf("load rustfs state: %w", err)
+		}
+		if entry, ok := st.Versions[resolved]; ok && entry.Wanted == pkg.WantedRunning {
+			wasRunning = true
 		}
 		if err := pkg.SetWanted(resolved, pkg.WantedStopped); err != nil {
 			return err

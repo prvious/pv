@@ -15,7 +15,7 @@ var installCmd = &cobra.Command{
 	Use:     "rustfs:install [version]",
 	GroupID: "rustfs",
 	Short:   "Install RustFS (S3-compatible storage) and start it",
-	Long:    "Downloads the RustFS binary, registers it as a supervised service, and signals the daemon to start it.",
+	Long:    "Downloads the RustFS binary, sets it as wanted-running, and signals the daemon to start it.",
 	Example: `pv rustfs:install
 pv s3:install`,
 	Args: cobra.MaximumNArgs(1),
@@ -44,7 +44,7 @@ pv s3:install`,
 		}); err != nil {
 			return err
 		}
-		if err := caddy.GenerateServiceSiteConfigs(nil); err != nil {
+		if err := caddy.GenerateServiceSiteConfigs(); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
 		}
 		if err := signalDaemon(pkg.DisplayName()); err != nil {

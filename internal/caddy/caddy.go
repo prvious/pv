@@ -307,8 +307,7 @@ func GenerateAllConfigs(projects []registry.Project, globalPHP string) error {
 	}
 
 	// Generate service console reverse proxy configs (*.pv.{tld}).
-	reg, _ := registry.Load()
-	if err := GenerateServiceSiteConfigs(reg); err != nil {
+	if err := GenerateServiceSiteConfigs(); err != nil {
 		return err
 	}
 
@@ -346,7 +345,7 @@ func ActiveVersions(projects []registry.Project, globalPHP string) map[string]bo
 
 // GenerateServiceSiteConfigs generates Caddy reverse_proxy configs for service
 // web consoles under *.pv.{tld} (e.g. s3.pv.test -> S3 console on :9001).
-func GenerateServiceSiteConfigs(reg *registry.Registry) error {
+func GenerateServiceSiteConfigs() error {
 	settings, err := config.LoadSettings()
 	if err != nil {
 		return err
@@ -356,57 +355,56 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 		return err
 	}
 
-	routeSets := [][]WebRoute{}
-	if rustfsRoutesEnabled() {
-		var routes []WebRoute
-		for _, r := range rustfs.WebRoutes() {
-			routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
-		}
-		routeSets = append(routeSets, routes)
+	var routes []WebRoute
+	if serviceRoutesEnabled(rustfs.IsInstalled, rustfs.DefaultVersion, rustfs.WantedVersions) {
+		routes = append(routes, rustfsWebRoutes()...)
 	}
-	if mailpitRoutesEnabled() {
-		var routes []WebRoute
-		for _, r := range mailpit.WebRoutes() {
-			routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
-		}
-		routeSets = append(routeSets, routes)
+	if serviceRoutesEnabled(mailpit.IsInstalled, mailpit.DefaultVersion, mailpit.WantedVersions) {
+		routes = append(routes, mailpitWebRoutes()...)
 	}
 
-	for _, routes := range routeSets {
-		for _, route := range routes {
-			var buf bytes.Buffer
-			if err := tmpl.Execute(&buf, serviceConsoleData{Subdomain: route.Subdomain, TLD: settings.Defaults.TLD, Port: route.Port}); err != nil {
-				return err
-			}
-			outPath := filepath.Join(config.SitesDir(), "_svc-"+route.Subdomain+".caddy")
-			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-				return err
-			}
+	for _, route := range routes {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, serviceConsoleData{Subdomain: route.Subdomain, TLD: settings.Defaults.TLD, Port: route.Port}); err != nil {
+			return err
+		}
+		outPath := filepath.Join(config.SitesDir(), "_svc-"+route.Subdomain+".caddy")
+		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func rustfsRoutesEnabled() bool {
-	if rustfs.IsInstalled(rustfs.DefaultVersion()) {
+func serviceRoutesEnabled(
+	isInstalled func(string) bool,
+	defaultVersion func() string,
+	wantedVersions func() ([]string, error),
+) bool {
+	if isInstalled(defaultVersion()) {
 		return true
 	}
-	versions, err := rustfs.WantedVersions()
+	versions, err := wantedVersions()
 	if err != nil {
 		return false
 	}
-	return slices.Contains(versions, rustfs.DefaultVersion())
+	return slices.Contains(versions, defaultVersion())
 }
 
-func mailpitRoutesEnabled() bool {
-	if mailpit.IsInstalled(mailpit.DefaultVersion()) {
-		return true
+func rustfsWebRoutes() []WebRoute {
+	var routes []WebRoute
+	for _, r := range rustfs.WebRoutes() {
+		routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 	}
-	versions, err := mailpit.WantedVersions()
-	if err != nil {
-		return false
+	return routes
+}
+
+func mailpitWebRoutes() []WebRoute {
+	var routes []WebRoute
+	for _, r := range mailpit.WebRoutes() {
+		routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 	}
-	return slices.Contains(versions, mailpit.DefaultVersion())
+	return routes
 }
 
 // GenerateAllSiteConfigs generates site configs for all projects (single-version mode).

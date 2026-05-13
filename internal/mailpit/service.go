@@ -33,9 +33,9 @@ func WebRoutes() []WebRoute {
 	return []WebRoute{{Subdomain: "mail", Port: consolePort}}
 }
 
-func EnvVars(version, _ string) map[string]string {
+func EnvVars(version, _ string) (map[string]string, error) {
 	if err := ValidateVersion(version); err != nil {
-		return map[string]string{}
+		return nil, err
 	}
 	return map[string]string{
 		"MAIL_MAILER":   "smtp",
@@ -43,7 +43,7 @@ func EnvVars(version, _ string) map[string]string {
 		"MAIL_PORT":     "1025",
 		"MAIL_USERNAME": "",
 		"MAIL_PASSWORD": "",
-	}
+	}, nil
 }
 
 func BuildSupervisorProcess(version string) (supervisor.Process, error) {

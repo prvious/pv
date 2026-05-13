@@ -302,7 +302,10 @@ func TestApplyPvYmlServices_BindsMailpitDefaultVersion(t *testing.T) {
 	if _, err := step.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if reg.Projects[0].Services == nil || reg.Projects[0].Services.Mail != mailpit.DefaultVersion() {
+	if reg.Projects[0].Services == nil {
+		t.Fatalf("Services is nil")
+	}
+	if reg.Projects[0].Services.Mail != mailpit.DefaultVersion() {
 		t.Fatalf("Mail = %q, want %q", reg.Projects[0].Services.Mail, mailpit.DefaultVersion())
 	}
 }
@@ -356,7 +359,10 @@ func TestApplyPvYmlServices_BindsRustfsDefaultVersion(t *testing.T) {
 	if _, err := step.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if reg.Projects[0].Services == nil || reg.Projects[0].Services.S3 != rustfs.DefaultVersion() {
+	if reg.Projects[0].Services == nil {
+		t.Fatalf("Services is nil")
+	}
+	if reg.Projects[0].Services.S3 != rustfs.DefaultVersion() {
 		t.Fatalf("S3 = %q, want %q", reg.Projects[0].Services.S3, rustfs.DefaultVersion())
 	}
 }

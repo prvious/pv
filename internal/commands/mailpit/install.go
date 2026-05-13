@@ -15,7 +15,7 @@ var installCmd = &cobra.Command{
 	Use:     "mailpit:install [version]",
 	GroupID: "mailpit",
 	Short:   "Install Mailpit (SMTP catcher + web UI) and start it",
-	Long:    "Downloads the Mailpit binary, registers it as a supervised service, and signals the daemon to start it.",
+	Long:    "Downloads the Mailpit binary, sets it as wanted-running, and signals the daemon to start it.",
 	Example: `pv mailpit:install
 pv mail:install`,
 	Args: cobra.MaximumNArgs(1),
@@ -44,7 +44,7 @@ pv mail:install`,
 		}); err != nil {
 			return err
 		}
-		if err := caddy.GenerateServiceSiteConfigs(nil); err != nil {
+		if err := caddy.GenerateServiceSiteConfigs(); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not generate service site config: %v", err))
 		}
 		if err := signalDaemon(pkg.DisplayName()); err != nil {

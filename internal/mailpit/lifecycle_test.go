@@ -174,3 +174,37 @@ func TestValidateVersion_RejectsNonLatest(t *testing.T) {
 		t.Fatal("expected non-latest mailpit version to fail")
 	}
 }
+
+func TestUninstall_KeepsDataDirByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dataDir := config.ServiceDataDir("mail", "latest")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	sentinel := filepath.Join(dataDir, "mailpit.db")
+	if err := os.WriteFile(sentinel, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	if err := Uninstall(DefaultVersion(), false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("data directory must be preserved without --force; sentinel missing: %v", err)
+	}
+}
+
+func TestEnvVars_RejectsInvalidVersion(t *testing.T) {
+	_, err := EnvVars("bad-version", "anyproject")
+	if err == nil {
+		t.Fatal("EnvVars: expected error for invalid version")
+	}
+}
+
+func TestBuildSupervisorProcess_RejectsInvalidVersion(t *testing.T) {
+	_, err := BuildSupervisorProcess("bad-version")
+	if err == nil {
+		t.Fatal("BuildSupervisorProcess: expected error for invalid version")
+	}
+}

@@ -84,7 +84,11 @@ var updateCmd = &cobra.Command{
 		// artifact and atomically swaps in the new binary tree. Failures are
 		// surfaced via ui.Fail and counted in the failures list — same shape
 		// as PHP / Mago / Composer above.
-		if majors, err := pg.InstalledMajors(); err == nil {
+		majors, err := pg.InstalledMajors()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed postgres majors: %v", err))
+			failures = append(failures, "PostgreSQL (list failed)")
+		} else {
 			for _, major := range majors {
 				if err := postgresCmds.RunUpdate([]string{major}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
@@ -97,7 +101,11 @@ var updateCmd = &cobra.Command{
 
 		// Update each installed mysql version. Mirrors the postgres pass — fetches
 		// the rolling artifact and atomic-replaces the binary tree per version.
-		if versions, err := my.InstalledVersions(); err == nil {
+		versions, err := my.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed mysql versions: %v", err))
+			failures = append(failures, "MySQL (list failed)")
+		} else {
 			for _, version := range versions {
 				if err := mysqlCmds.RunUpdate([]string{version}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
@@ -149,8 +157,12 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Step 4: Update binary-service binaries.
-		if versions, err := rustfs.InstalledVersions(); err == nil {
-			for _, version := range versions {
+		rustfsVersions, err := rustfs.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed rustfs versions: %v", err))
+			failures = append(failures, "RustFS (list failed)")
+		} else {
+			for _, version := range rustfsVersions {
 				if err := rustfsCmds.RunUpdate([]string{version}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("RustFS %s update failed: %v", version, err))
@@ -160,8 +172,12 @@ var updateCmd = &cobra.Command{
 			}
 		}
 
-		if versions, err := mailpit.InstalledVersions(); err == nil {
-			for _, version := range versions {
+		mailpitVersions, err := mailpit.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed mailpit versions: %v", err))
+			failures = append(failures, "Mailpit (list failed)")
+		} else {
+			for _, version := range mailpitVersions {
 				if err := mailpitCmds.RunUpdate([]string{version}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
 						ui.Fail(fmt.Sprintf("Mailpit %s update failed: %v", version, err))

@@ -313,6 +313,9 @@ func (r *Registry) UnbindMysqlVersion(version string) {
 // regardless of version, which is wrong when only one of several installed
 // versions is being removed.
 func (r *Registry) UnbindMailVersion(version string) {
+	if version == "" {
+		return
+	}
 	for i := range r.Projects {
 		if r.Projects[i].Services == nil {
 			continue
@@ -329,6 +332,9 @@ func (r *Registry) UnbindMailVersion(version string) {
 // regardless of version, which is wrong when only one of several installed
 // versions is being removed.
 func (r *Registry) UnbindS3Version(version string) {
+	if version == "" {
+		return
+	}
 	for i := range r.Projects {
 		if r.Projects[i].Services == nil {
 			continue

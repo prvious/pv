@@ -36,9 +36,9 @@ func WebRoutes() []WebRoute {
 	}
 }
 
-func EnvVars(version, projectName string) map[string]string {
+func EnvVars(version, projectName string) (map[string]string, error) {
 	if err := ValidateVersion(version); err != nil {
-		return map[string]string{}
+		return nil, err
 	}
 	return map[string]string{
 		"AWS_ACCESS_KEY_ID":           "rstfsadmin",
@@ -47,7 +47,7 @@ func EnvVars(version, projectName string) map[string]string {
 		"AWS_BUCKET":                  projectName,
 		"AWS_ENDPOINT":                "http://127.0.0.1:9000",
 		"AWS_USE_PATH_STYLE_ENDPOINT": "true",
-	}
+	}, nil
 }
 
 func BuildSupervisorProcess(version string) (supervisor.Process, error) {

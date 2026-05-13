@@ -230,7 +230,11 @@ var uninstallCmd = &cobra.Command{
 
 		// Postgres uninstall (per installed major). Removes data dirs, binaries,
 		// state. User has already consented to a full pv uninstall.
-		if majors, err := pg.InstalledMajors(); err == nil {
+		majors, err := pg.InstalledMajors()
+		if err != nil {
+			hadFailures = true
+			ui.Fail(fmt.Sprintf("list installed postgres majors: %v", err))
+		} else {
 			for _, major := range majors {
 				if err := postgresCmds.UninstallForce(major); err != nil {
 					hadFailures = true
@@ -243,7 +247,11 @@ var uninstallCmd = &cobra.Command{
 
 		// Mysql uninstall (per installed version). Removes data dirs, binaries,
 		// state. User has already consented to a full pv uninstall.
-		if versions, err := my.InstalledVersions(); err == nil {
+		versions, err := my.InstalledVersions()
+		if err != nil {
+			hadFailures = true
+			ui.Fail(fmt.Sprintf("list installed mysql versions: %v", err))
+		} else {
 			for _, version := range versions {
 				if err := mysqlCmds.UninstallForce(version); err != nil {
 					hadFailures = true

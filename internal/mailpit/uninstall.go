@@ -14,8 +14,12 @@ func Uninstall(version string, force bool) error {
 	if err := ValidateVersion(version); err != nil {
 		return err
 	}
-	_ = SetWanted(version, WantedStopped)
-	_ = WaitStopped(version, 30*time.Second)
+	if err := SetWanted(version, WantedStopped); err != nil {
+		return fmt.Errorf("stop mailpit %s: %w", version, err)
+	}
+	if err := WaitStopped(version, 30*time.Second); err != nil {
+		return fmt.Errorf("wait for mailpit %s to stop: %w", version, err)
+	}
 
 	binPath, err := BinaryPath(version)
 	if err != nil {
@@ -32,7 +36,9 @@ func Uninstall(version string, force bool) error {
 	}
 	if vs, err := binaries.LoadVersions(); err == nil {
 		delete(vs.Versions, Binary().Name)
-		_ = vs.Save()
+		if err := vs.Save(); err != nil {
+			return fmt.Errorf("save versions state: %w", err)
+		}
 	}
 	if force {
 		if err := os.RemoveAll(config.ServiceDataDir(ServiceKey(), version)); err != nil {

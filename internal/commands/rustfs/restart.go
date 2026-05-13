@@ -20,6 +20,9 @@ var restartCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if !pkg.IsInstalled(resolved) {
+			return fmt.Errorf("%s %s is not installed", pkg.Binary().Name, resolved)
+		}
 		if err := pkg.SetWanted(resolved, pkg.WantedStopped); err != nil {
 			return err
 		}

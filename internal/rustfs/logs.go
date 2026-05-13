@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// TailLog writes the contents of the service log file for the given
+// version to stdout. If follow is true, it polls the file every
+// 250 ms and continues writing new content until ctx is cancelled.
 func TailLog(ctx context.Context, version string, follow bool) error {
 	if err := ValidateVersion(version); err != nil {
 		return err

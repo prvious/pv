@@ -38,7 +38,10 @@ func TestWebRoutes(t *testing.T) {
 // TestEnvVars_MatchesDockerKeys: linked projects rely on these exact .env
 // keys; the binary migration must not silently change them.
 func TestEnvVars_MatchesDockerKeys(t *testing.T) {
-	vars := EnvVars(DefaultVersion(), "myproject")
+	vars, err := EnvVars(DefaultVersion(), "myproject")
+	if err != nil {
+		t.Fatalf("EnvVars: %v", err)
+	}
 	wantKeys := []string{
 		"AWS_ACCESS_KEY_ID",
 		"AWS_SECRET_ACCESS_KEY",

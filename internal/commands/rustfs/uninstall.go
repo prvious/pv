@@ -64,7 +64,7 @@ var uninstallCmd = &cobra.Command{
 		if err := pkg.Uninstall(resolved, true); err != nil {
 			return err
 		}
-		if err := caddy.GenerateServiceSiteConfigs(nil); err != nil {
+		if err := caddy.GenerateServiceSiteConfigs(); err != nil {
 			ui.Subtle(fmt.Sprintf("Could not regenerate service site config: %v", err))
 		}
 		ui.Success(fmt.Sprintf("%s %s uninstalled.", pkg.DisplayName(), resolved))

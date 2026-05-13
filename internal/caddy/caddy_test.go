@@ -518,9 +518,7 @@ func TestGenerateServiceSiteConfigs(t *testing.T) {
 		t.Fatalf("write mailpit: %v", err)
 	}
 
-	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-
-	if err := GenerateServiceSiteConfigs(reg); err != nil {
+	if err := GenerateServiceSiteConfigs(); err != nil {
 		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
 	}
 
@@ -582,9 +580,7 @@ func TestGenerateServiceSiteConfigs(t *testing.T) {
 func TestGenerateServiceSiteConfigs_Empty(t *testing.T) {
 	scaffold(t)
 
-	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-
-	if err := GenerateServiceSiteConfigs(reg); err != nil {
+	if err := GenerateServiceSiteConfigs(); err != nil {
 		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
 	}
 

@@ -38,7 +38,10 @@ func TestWebRoutes(t *testing.T) {
 // old Docker Mail service produced so linked projects do not need .env
 // rewrites post-migration.
 func TestMailpit_EnvVars_Golden(t *testing.T) {
-	got := EnvVars(DefaultVersion(), "anyproject")
+	got, err := EnvVars(DefaultVersion(), "anyproject")
+	if err != nil {
+		t.Fatalf("EnvVars: %v", err)
+	}
 	want := map[string]string{
 		"MAIL_MAILER":   "smtp",
 		"MAIL_HOST":     "127.0.0.1",

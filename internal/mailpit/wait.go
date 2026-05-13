@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// WaitStopped polls the Mailpit TCP port until it refuses connections
+// or the timeout expires. It returns nil as soon as the port is
+// unreachable, or an error if the timeout is exceeded.
 func WaitStopped(version string, timeout time.Duration) error {
 	if err := ValidateVersion(version); err != nil {
 		return err

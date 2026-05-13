@@ -167,13 +167,14 @@ func (m *ServerManager) RunningVersions() []string {
 }
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
-// set computed from four sources:
+// set computed from five sources:
 //  1. internal/rustfs:   singleton version-shaped service.
+//     1b. internal/mailpit: singleton version-shaped service.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
 //  4. internal/redis:    versioned, on-disk + state.json driven.
 //
-// The diff/start/stop loop is shared across all four sources.
+// The diff/start/stop loop is shared across all five sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	if m.supervisor == nil {
 		return nil
