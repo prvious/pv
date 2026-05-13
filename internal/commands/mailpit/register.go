@@ -41,13 +41,21 @@ func aliasCommand(c *cobra.Command, fromPrefix, toPrefix string) *cobra.Command 
 	return &clone
 }
 
-// Convenience wrappers for orchestrators (mirrors postgres/php/composer).
-func RunInstall() error {
-	return installCmd.RunE(installCmd, nil)
+func RunInstall(args []string) error {
+	return installCmd.RunE(installCmd, args)
 }
-func RunUpdate() error {
-	return updateCmd.RunE(updateCmd, nil)
+
+func RunUpdate(args []string) error {
+	return updateCmd.RunE(updateCmd, args)
 }
-func RunUninstall() error {
-	return uninstallCmd.RunE(uninstallCmd, nil)
+
+func RunUninstall(args []string) error {
+	return uninstallCmd.RunE(uninstallCmd, args)
+}
+
+func UninstallForce(version string) error {
+	prev := uninstallForce
+	uninstallForce = true
+	defer func() { uninstallForce = prev }()
+	return uninstallCmd.RunE(uninstallCmd, []string{version})
 }

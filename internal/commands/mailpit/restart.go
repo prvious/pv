@@ -1,24 +1,40 @@
 package mailpit
 
 import (
+	"fmt"
 	"time"
 
 	pkg "github.com/prvious/pv/internal/mailpit"
+	"github.com/prvious/pv/internal/server"
+	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var restartCmd = &cobra.Command{
-	Use:     "mailpit:restart",
+	Use:     "mailpit:restart [version]",
 	GroupID: "mailpit",
 	Short:   "Stop then start Mailpit (toggles wanted state, daemon reconciles)",
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedStopped); err != nil {
+		resolved, err := pkg.ResolveVersion(argVersion(args))
+		if err != nil {
 			return err
 		}
-		if err := pkg.WaitStopped(pkg.DefaultVersion(), 30*time.Second); err != nil {
+		if err := pkg.SetWanted(resolved, pkg.WantedStopped); err != nil {
 			return err
 		}
-		return pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedRunning)
+		if server.IsRunning() {
+			if err := server.SignalDaemon(); err != nil {
+				return fmt.Errorf("signal daemon: %w", err)
+			}
+			if err := pkg.WaitStopped(resolved, 30*time.Second); err != nil {
+				return err
+			}
+		}
+		if err := pkg.SetWanted(resolved, pkg.WantedRunning); err != nil {
+			return err
+		}
+		ui.Success(fmt.Sprintf("%s %s restarted.", pkg.DisplayName(), resolved))
+		return signalDaemon(pkg.DisplayName())
 	},
 }
