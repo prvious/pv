@@ -45,10 +45,10 @@ echo "OK: rustfs binary at ~/.pv/internal/bin/rustfs"
 
 echo "==> Verify daemon-status.json lists rustfs"
 for i in $(seq 1 20); do
-    if grep -q '"rustfs"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    if grep -q '"rustfs-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
     sleep 1
 done
-grep -q '"rustfs"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
+grep -q '"rustfs-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain rustfs entry";
     cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;

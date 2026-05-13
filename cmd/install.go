@@ -260,9 +260,9 @@ func isKnownBinaryAddon(name string) bool {
 func installBinaryService(name string) error {
 	switch name {
 	case "s3":
-		return rustfscmd.RunInstall()
+		return rustfscmd.RunInstall(nil)
 	case "mail":
-		return mailpitcmd.RunInstall()
+		return mailpitcmd.RunInstall(nil)
 	default:
 		return fmt.Errorf("unknown binary service %q", name)
 	}

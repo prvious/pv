@@ -8,7 +8,10 @@ import "strconv"
 // ConsolePort() accessors so a future port change updates one source.
 //
 // Keys: smtp_host, smtp_port, http_host, http_port.
-func TemplateVars() map[string]string {
+func TemplateVars(version string) map[string]string {
+	if err := ValidateVersion(version); err != nil {
+		return map[string]string{}
+	}
 	return map[string]string{
 		"smtp_host": "127.0.0.1",
 		"smtp_port": strconv.Itoa(Port()),

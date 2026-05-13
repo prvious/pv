@@ -20,11 +20,11 @@ type ServiceInstance struct {
 }
 
 type ProjectServices struct {
-	Mail     bool   `json:"mail,omitempty"`
+	Mail     string `json:"mail,omitempty"`
 	MySQL    string `json:"mysql,omitempty"`
 	Postgres string `json:"postgres,omitempty"`
 	Redis    string `json:"redis,omitempty"`
-	S3       bool   `json:"s3,omitempty"`
+	S3       string `json:"s3,omitempty"`
 }
 
 func (ps *ProjectServices) UnmarshalJSON(data []byte) error {
@@ -215,7 +215,7 @@ func (r *Registry) ProjectsUsingService(serviceName string) []string {
 		}
 		switch serviceName {
 		case "mail":
-			if p.Services.Mail {
+			if p.Services.Mail != "" {
 				names = append(names, p.Name)
 			}
 		case "mysql":
@@ -231,7 +231,7 @@ func (r *Registry) ProjectsUsingService(serviceName string) []string {
 				names = append(names, p.Name)
 			}
 		case "s3":
-			if p.Services.S3 {
+			if p.Services.S3 != "" {
 				names = append(names, p.Name)
 			}
 		}
@@ -247,7 +247,7 @@ func (r *Registry) UnbindService(serviceName string) {
 		}
 		switch serviceName {
 		case "mail":
-			r.Projects[i].Services.Mail = false
+			r.Projects[i].Services.Mail = ""
 		case "mysql":
 			r.Projects[i].Services.MySQL = ""
 		case "postgres":
@@ -255,7 +255,7 @@ func (r *Registry) UnbindService(serviceName string) {
 		case "redis":
 			r.Projects[i].Services.Redis = ""
 		case "s3":
-			r.Projects[i].Services.S3 = false
+			r.Projects[i].Services.S3 = ""
 		}
 	}
 }
@@ -303,6 +303,44 @@ func (r *Registry) UnbindMysqlVersion(version string) {
 		}
 		if r.Projects[i].Services.MySQL == version {
 			r.Projects[i].Services.MySQL = ""
+		}
+	}
+}
+
+// UnbindMailVersion clears Services.Mail on every project bound to the
+// given version. Projects bound to other versions are unaffected.
+// Tighter than UnbindService("mail") — that would clear all mail bindings
+// regardless of version, which is wrong when only one of several installed
+// versions is being removed.
+func (r *Registry) UnbindMailVersion(version string) {
+	if version == "" {
+		return
+	}
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		if r.Projects[i].Services.Mail == version {
+			r.Projects[i].Services.Mail = ""
+		}
+	}
+}
+
+// UnbindS3Version clears Services.S3 on every project bound to the
+// given version. Projects bound to other versions are unaffected.
+// Tighter than UnbindService("s3") — that would clear all s3 bindings
+// regardless of version, which is wrong when only one of several installed
+// versions is being removed.
+func (r *Registry) UnbindS3Version(version string) {
+	if version == "" {
+		return
+	}
+	for i := range r.Projects {
+		if r.Projects[i].Services == nil {
+			continue
+		}
+		if r.Projects[i].Services.S3 == version {
+			r.Projects[i].Services.S3 = ""
 		}
 	}
 }

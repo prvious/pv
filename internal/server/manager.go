@@ -10,12 +10,12 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
-	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
+	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -167,49 +167,48 @@ func (m *ServerManager) RunningVersions() []string {
 }
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
-// set computed from four sources:
-//  1. registry: single-version services (rustfs via "s3", mailpit via "mail"),
-//     gated on the registry Enabled flag.
+// set computed from five sources:
+//  1. internal/rustfs:   singleton version-shaped service.
+//     1b. internal/mailpit: singleton version-shaped service.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
 //  4. internal/redis:    versioned, on-disk + state.json driven.
 //
-// The diff/start/stop loop is shared across all four sources.
+// The diff/start/stop loop is shared across all five sources.
 func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	if m.supervisor == nil {
 		return nil
-	}
-
-	reg, err := registry.Load()
-	if err != nil {
-		return fmt.Errorf("reconcile binary: load registry: %w", err)
 	}
 
 	// wanted: supervisorKey -> buildable supervisor.Process.
 	wanted := map[string]supervisor.Process{}
 	var startErrors []string
 
-	// Source 1a — rustfs.
-	if entry := reg.Services["s3"]; entry != nil {
-		if entry.Enabled == nil || *entry.Enabled {
-			proc, err := rustfsproc.BuildSupervisorProcess()
-			if err != nil {
-				startErrors = append(startErrors, fmt.Sprintf("s3: build: %v", err))
-			} else {
-				wanted[rustfsproc.Binary().Name] = proc
-			}
+	// Source 1a - rustfs, singleton version-shaped service.
+	rustfsVersions, rustfsErr := rustfs.WantedVersions()
+	if rustfsErr != nil {
+		startErrors = append(startErrors, fmt.Sprintf("rustfs: wanted: %v", rustfsErr))
+	}
+	for _, version := range rustfsVersions {
+		proc, err := rustfs.BuildSupervisorProcess(version)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("rustfs-%s: build: %v", version, err))
+		} else {
+			wanted["rustfs-"+version] = proc
 		}
 	}
 
-	// Source 1b — mailpit.
-	if entry := reg.Services["mail"]; entry != nil {
-		if entry.Enabled == nil || *entry.Enabled {
-			proc, err := mailpitproc.BuildSupervisorProcess()
-			if err != nil {
-				startErrors = append(startErrors, fmt.Sprintf("mail: build: %v", err))
-			} else {
-				wanted[mailpitproc.Binary().Name] = proc
-			}
+	// Source 1b - mailpit, singleton version-shaped service.
+	mailpitVersions, mailpitErr := mailpit.WantedVersions()
+	if mailpitErr != nil {
+		startErrors = append(startErrors, fmt.Sprintf("mailpit: wanted: %v", mailpitErr))
+	}
+	for _, version := range mailpitVersions {
+		proc, err := mailpit.BuildSupervisorProcess(version)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("mailpit-%s: build: %v", version, err))
+		} else {
+			wanted["mailpit-"+version] = proc
 		}
 	}
 
@@ -270,6 +269,12 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			continue
 		}
 		if redisErr != nil && strings.HasPrefix(supKey, "redis-") {
+			continue
+		}
+		if rustfsErr != nil && strings.HasPrefix(supKey, "rustfs-") {
+			continue
+		}
+		if mailpitErr != nil && strings.HasPrefix(supKey, "mailpit-") {
 			continue
 		}
 		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {

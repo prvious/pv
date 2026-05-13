@@ -115,11 +115,16 @@ func TestWatcher_Debounce(t *testing.T) {
 		t.Fatal("timed out waiting for debounced event")
 	}
 
-	// Wait a bit and confirm no more events arrive.
+	// fsnotify on macOS can batch and deliver events with latency. Allow
+	// time for any delayed events to arrive and be debounced before we
+	// assert the channel is silent.
+	time.Sleep(debounceDelay + 100*time.Millisecond)
+
+	// Confirm no more events arrive.
 	select {
 	case ev := <-w.Events():
 		t.Errorf("expected no more events after debounce, got %+v", ev)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 		// Good, no extra events.
 	}
 }

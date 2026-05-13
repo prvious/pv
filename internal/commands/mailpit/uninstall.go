@@ -2,10 +2,13 @@ package mailpit
 
 import (
 	"fmt"
+	"time"
 
 	"charm.land/huh/v2"
+	"github.com/prvious/pv/internal/caddy"
 	pkg "github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -13,25 +16,25 @@ import (
 var uninstallForce bool
 
 var uninstallCmd = &cobra.Command{
-	Use:     "mailpit:uninstall",
+	Use:     "mailpit:uninstall [version]",
 	GroupID: "mailpit",
 	Short:   "Stop, remove the binary, and DELETE the data directory",
 	Long:    "Stops the supervised process, removes the mailpit binary, deletes the data directory, and unbinds linked projects. Data deletion is irreversible.",
 	Example: `pv mailpit:uninstall --force`,
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reg, err := registry.Load()
+		resolved, err := pkg.ResolveVersion(argVersion(args))
 		if err != nil {
-			return fmt.Errorf("cannot load registry: %w", err)
+			return err
 		}
-		if _, ok := reg.Services["mail"]; !ok {
-			ui.Subtle("Mailpit is not installed.")
+		if !pkg.IsInstalled(resolved) {
+			ui.Subtle(fmt.Sprintf("%s %s is not installed.", pkg.DisplayName(), resolved))
 			return nil
 		}
 		if !uninstallForce {
 			confirmed := false
 			if err := huh.NewConfirm().
-				Title("Remove Mailpit and DELETE its data directory? This cannot be undone.").
+				Title(fmt.Sprintf("Remove %s %s and DELETE its data directory? This cannot be undone.", pkg.DisplayName(), resolved)).
 				Affirmative("Yes").
 				Negative("No").
 				Value(&confirmed).
@@ -42,10 +45,29 @@ var uninstallCmd = &cobra.Command{
 				return fmt.Errorf("aborted")
 			}
 		}
-		if err := pkg.Uninstall(true); err != nil {
+		if err := pkg.SetWanted(resolved, pkg.WantedStopped); err != nil {
 			return err
 		}
-		ui.Success("Mailpit uninstalled.")
+		if server.IsRunning() {
+			if err := server.SignalDaemon(); err != nil {
+				return fmt.Errorf("signal daemon: %w", err)
+			}
+			if err := pkg.WaitStopped(resolved, 30*time.Second); err != nil {
+				return err
+			}
+		}
+		reg, err := registry.Load()
+		if err != nil {
+			return err
+		}
+		pkg.ApplyFallbacksToLinkedProjects(reg)
+		if err := pkg.Uninstall(resolved, true); err != nil {
+			return err
+		}
+		if err := caddy.GenerateServiceSiteConfigs(); err != nil {
+			ui.Subtle(fmt.Sprintf("Could not regenerate service site config: %v", err))
+		}
+		ui.Success(fmt.Sprintf("%s %s uninstalled.", pkg.DisplayName(), resolved))
 		return nil
 	},
 }

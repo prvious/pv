@@ -9,23 +9,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
+	mailpitCmds "github.com/prvious/pv/internal/commands/mailpit"
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
+	rustfsCmds "github.com/prvious/pv/internal/commands/rustfs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mailpit"
 	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
 	pg "github.com/prvious/pv/internal/postgres"
 	r "github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/selfupdate"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -85,7 +84,11 @@ var updateCmd = &cobra.Command{
 		// artifact and atomically swaps in the new binary tree. Failures are
 		// surfaced via ui.Fail and counted in the failures list — same shape
 		// as PHP / Mago / Composer above.
-		if majors, err := pg.InstalledMajors(); err == nil {
+		majors, err := pg.InstalledMajors()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed postgres majors: %v", err))
+			failures = append(failures, "PostgreSQL (list failed)")
+		} else {
 			for _, major := range majors {
 				if err := postgresCmds.RunUpdate([]string{major}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
@@ -98,7 +101,11 @@ var updateCmd = &cobra.Command{
 
 		// Update each installed mysql version. Mirrors the postgres pass — fetches
 		// the rolling artifact and atomic-replaces the binary tree per version.
-		if versions, err := my.InstalledVersions(); err == nil {
+		versions, err := my.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed mysql versions: %v", err))
+			failures = append(failures, "MySQL (list failed)")
+		} else {
 			for _, version := range versions {
 				if err := mysqlCmds.RunUpdate([]string{version}); err != nil {
 					if !errors.Is(err, ui.ErrAlreadyPrinted) {
@@ -150,61 +157,32 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Step 4: Update binary-service binaries.
-		// registry.Load / LoadVersions return nil on a non-IsNotExist error
-		// (corrupt file, permissions), so both pointers must be checked
-		// before we dereference them.
-		reg, regErr := registry.Load()
-		if regErr != nil {
-			ui.Subtle(fmt.Sprintf("Skipping binary-service updates: cannot load registry: %v", regErr))
+		rustfsVersions, err := rustfs.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed rustfs versions: %v", err))
+			failures = append(failures, "RustFS (list failed)")
 		} else {
-			vs, vsErr := binaries.LoadVersions()
-			if vsErr != nil {
-				ui.Subtle(fmt.Sprintf("Skipping binary-service updates: cannot load versions state: %v", vsErr))
-			} else {
-				type binaryAddonInfo struct {
-					regKey string
-					bin    binaries.Binary
-					label  string
+			for _, version := range rustfsVersions {
+				if err := rustfsCmds.RunUpdate([]string{version}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("RustFS %s update failed: %v", version, err))
+					}
+					failures = append(failures, "RustFS "+version)
 				}
-				addons := []binaryAddonInfo{
-					{regKey: "mail", bin: mailpit.Binary(), label: mailpit.DisplayName()},
-					{regKey: "s3", bin: rustfs.Binary(), label: rustfs.DisplayName()},
-				}
+			}
+		}
 
-				var binaryUpdated []string
-				for _, a := range addons {
-					if _, registered := reg.Services[a.regKey]; !registered {
-						continue
+		mailpitVersions, err := mailpit.InstalledVersions()
+		if err != nil {
+			ui.Fail(fmt.Sprintf("list installed mailpit versions: %v", err))
+			failures = append(failures, "Mailpit (list failed)")
+		} else {
+			for _, version := range mailpitVersions {
+				if err := mailpitCmds.RunUpdate([]string{version}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("Mailpit %s update failed: %v", version, err))
 					}
-					latest, err := binaries.FetchLatestVersion(client, a.bin)
-					if err != nil {
-						ui.Subtle(fmt.Sprintf("Skipping %s: %v", a.label, err))
-						continue
-					}
-					if !binaries.NeedsUpdate(vs, a.bin, latest) {
-						continue
-					}
-					current := vs.Get(a.bin.Name)
-					if err := ui.Step(fmt.Sprintf("Updating %s %s -> %s", a.bin.DisplayName, current, latest), func() (string, error) {
-						if err := binaries.InstallBinary(client, a.bin, latest); err != nil {
-							return "", err
-						}
-						return fmt.Sprintf("Updated %s to %s", a.bin.DisplayName, latest), nil
-					}); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not update %s: %v", a.label, err))
-						continue
-					}
-					vs.Set(a.bin.Name, latest)
-					binaryUpdated = append(binaryUpdated, a.regKey)
-				}
-				if len(binaryUpdated) > 0 {
-					if err := vs.Save(); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not save versions state: %v", err))
-					}
-					if server.IsRunning() {
-						ui.Subtle(fmt.Sprintf("Updated binaries: %s. Run `pv restart` to load them.",
-							strings.Join(binaryUpdated, ", ")))
-					}
+					failures = append(failures, "Mailpit "+version)
 				}
 			}
 		}

@@ -4,10 +4,12 @@ import (
 	"fmt"
 
 	"github.com/prvious/pv/internal/automation"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 )
 
 // ApplyPvYmlServicesStep binds the services declared in a project's
@@ -71,35 +73,33 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	if cfg.Mailpit != nil {
-		if findServiceByName(ctx.Registry, "mail") == "" {
-			return "", fmt.Errorf("pv.yml mailpit is not installed — run `pv mailpit:install`")
+		version, err := mailpit.ResolveVersion(cfg.Mailpit.Version)
+		if err != nil {
+			return "", err
 		}
-		bindProjectService(ctx.Registry, ctx.ProjectName, "mail", "mailpit")
+		if !mailpit.IsInstalled(version) {
+			return "", fmt.Errorf("pv.yml mailpit %s is not installed - run `pv mailpit:install %s`", version, version)
+		}
+		bindProjectMail(ctx.Registry, ctx.ProjectName, version)
 		count++
 	}
 
 	if cfg.Rustfs != nil {
-		if findServiceByName(ctx.Registry, "s3") == "" {
-			return "", fmt.Errorf("pv.yml rustfs is not installed — run `pv rustfs:install`")
+		version, err := rustfs.ResolveVersion(cfg.Rustfs.Version)
+		if err != nil {
+			return "", err
 		}
-		bindProjectService(ctx.Registry, ctx.ProjectName, "s3", "rustfs")
+		if !rustfs.IsInstalled(version) {
+			return "", fmt.Errorf("pv.yml rustfs %s is not installed - run `pv rustfs:install %s`", version, version)
+		}
+		bindProjectS3(ctx.Registry, ctx.ProjectName, version)
 		count++
 	}
 
 	return fmt.Sprintf("bound %d service(s) from pv.yml", count), nil
 }
 
-func findServiceByName(reg *registry.Registry, name string) string {
-	for key := range reg.Services {
-		keyName, _ := registry.ParseServiceKey(key)
-		if keyName == name {
-			return key
-		}
-	}
-	return ""
-}
-
-func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey string) {
+func bindProjectMail(reg *registry.Registry, projectName, version string) {
 	for i := range reg.Projects {
 		if reg.Projects[i].Name != projectName {
 			continue
@@ -107,13 +107,21 @@ func bindProjectService(reg *registry.Registry, projectName, svcType, svcKey str
 		if reg.Projects[i].Services == nil {
 			reg.Projects[i].Services = &registry.ProjectServices{}
 		}
-		switch svcType {
-		case "mail":
-			reg.Projects[i].Services.Mail = true
-		case "s3":
-			reg.Projects[i].Services.S3 = true
+		reg.Projects[i].Services.Mail = version
+		return
+	}
+}
+
+func bindProjectS3(reg *registry.Registry, projectName, version string) {
+	for i := range reg.Projects {
+		if reg.Projects[i].Name != projectName {
+			continue
 		}
-		break
+		if reg.Projects[i].Services == nil {
+			reg.Projects[i].Services = &registry.ProjectServices{}
+		}
+		reg.Projects[i].Services.S3 = version
+		return
 	}
 }
 

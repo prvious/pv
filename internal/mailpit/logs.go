@@ -5,18 +5,20 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/prvious/pv/internal/config"
 )
 
-// TailLog tails ~/.pv/logs/<binary>.log to stdout. When follow is true,
-// the function blocks polling for new bytes every 250ms and exits when
-// ctx is cancelled (Ctrl-C). When follow is false, it dumps existing
-// content and returns.
-func TailLog(ctx context.Context, follow bool) error {
-	logPath := filepath.Join(config.PvDir(), "logs", Binary().Name+".log")
+// TailLog writes the contents of the service log file for the given
+// version to stdout. If follow is true, it polls the file every
+// 250 ms and continues writing new content until ctx is cancelled.
+func TailLog(ctx context.Context, version string, follow bool) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
+	logPath, err := LogPath(version)
+	if err != nil {
+		return err
+	}
 	f, err := os.Open(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {

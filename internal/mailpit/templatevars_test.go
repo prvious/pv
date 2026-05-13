@@ -5,7 +5,7 @@ import (
 )
 
 func TestTemplateVars(t *testing.T) {
-	got := TemplateVars()
+	got := TemplateVars(DefaultVersion())
 
 	if got["smtp_host"] != "127.0.0.1" {
 		t.Errorf("smtp_host = %q, want 127.0.0.1", got["smtp_host"])

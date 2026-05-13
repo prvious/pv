@@ -507,22 +507,18 @@ func TestGenerateCaddyfile(t *testing.T) {
 func TestGenerateServiceSiteConfigs(t *testing.T) {
 	scaffold(t)
 
-	reg := &registry.Registry{
-		Projects: []registry.Project{},
-		Services: map[string]*registry.ServiceInstance{
-			"s3": {
-				Image:       "rustfs/rustfs:latest",
-				Port:        9000,
-				ConsolePort: 9001,
-			},
-			"redis": {
-				Image: "redis:latest",
-				Port:  6379,
-			},
-		},
+	binDir := config.InternalBinDir()
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "rustfs"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write rustfs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "mailpit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write mailpit: %v", err)
 	}
 
-	if err := GenerateServiceSiteConfigs(reg); err != nil {
+	if err := GenerateServiceSiteConfigs(); err != nil {
 		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
 	}
 
@@ -557,8 +553,22 @@ func TestGenerateServiceSiteConfigs(t *testing.T) {
 		t.Errorf("expected 'reverse_proxy 127.0.0.1:9000', got:\n%s", apiContent)
 	}
 
-	// Redis has no web routes, so only _svc-s3 and _svc-s3-api should exist.
-	expected := map[string]bool{"_svc-s3.caddy": true, "_svc-s3-api.caddy": true}
+	// Mailpit has subdomain "mail", so _svc-mail.caddy should exist.
+	mailPath := filepath.Join(config.SitesDir(), "_svc-mail.caddy")
+	mailData, err := os.ReadFile(mailPath)
+	if err != nil {
+		t.Fatalf("expected _svc-mail.caddy to exist: %v", err)
+	}
+	mailContent := string(mailData)
+	if !strings.Contains(mailContent, "mail.pv.test {") {
+		t.Errorf("expected 'mail.pv.test {' in output, got:\n%s", mailContent)
+	}
+	if !strings.Contains(mailContent, "reverse_proxy 127.0.0.1:8025") {
+		t.Errorf("expected 'reverse_proxy 127.0.0.1:8025', got:\n%s", mailContent)
+	}
+
+	// Redis has no web routes, so only _svc-s3, _svc-s3-api and _svc-mail should exist.
+	expected := map[string]bool{"_svc-s3.caddy": true, "_svc-s3-api.caddy": true, "_svc-mail.caddy": true}
 	entries, _ := os.ReadDir(config.SitesDir())
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), "_svc-") && !expected[e.Name()] {
@@ -570,12 +580,7 @@ func TestGenerateServiceSiteConfigs(t *testing.T) {
 func TestGenerateServiceSiteConfigs_Empty(t *testing.T) {
 	scaffold(t)
 
-	reg := &registry.Registry{
-		Projects: []registry.Project{},
-		Services: map[string]*registry.ServiceInstance{},
-	}
-
-	if err := GenerateServiceSiteConfigs(reg); err != nil {
+	if err := GenerateServiceSiteConfigs(); err != nil {
 		t.Fatalf("GenerateServiceSiteConfigs() error = %v", err)
 	}
 

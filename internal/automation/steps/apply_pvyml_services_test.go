@@ -8,7 +8,9 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 )
 
 // stagePostgresBinary writes a stub postgres at ~/.pv/postgres/<major>/bin/postgres
@@ -45,6 +47,28 @@ func stageRedisBinary(t *testing.T, version string) {
 	}
 	if err := os.WriteFile(filepath.Join(versionDir, "redis-server"), []byte{}, 0o755); err != nil {
 		t.Fatalf("stage redis-server: %v", err)
+	}
+}
+
+func stageMailpitBinary(t *testing.T) {
+	t.Helper()
+	binDir := config.InternalBinDir()
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "mailpit"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage mailpit: %v", err)
+	}
+}
+
+func stageRustfsBinary(t *testing.T) {
+	t.Helper()
+	binDir := config.InternalBinDir()
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "rustfs"), []byte{}, 0o755); err != nil {
+		t.Fatalf("stage rustfs: %v", err)
 	}
 }
 
@@ -253,5 +277,119 @@ func TestApplyPvYmlServices_ShouldRunFalseWhenNoServicesDeclared(t *testing.T) {
 	step := &ApplyPvYmlServicesStep{}
 	if step.ShouldRun(ctx) {
 		t.Errorf("ShouldRun: want false when no services declared")
+	}
+}
+
+func TestApplyPvYmlServices_BindsMailpitDefaultVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageMailpitBinary(t)
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		ProjectType: "laravel",
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Mailpit: &config.ServiceConfig{},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reg.Projects[0].Services == nil {
+		t.Fatalf("Services is nil")
+	}
+	if reg.Projects[0].Services.Mail != mailpit.DefaultVersion() {
+		t.Fatalf("Mail = %q, want %q", reg.Projects[0].Services.Mail, mailpit.DefaultVersion())
+	}
+}
+
+func TestApplyPvYmlServices_ErrorsWhenMailpitNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Do NOT stage mailpit binary.
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Mailpit: &config.ServiceConfig{},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error when mailpit not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "pv mailpit:install") {
+		t.Errorf("err = %v; want it to include `pv mailpit:install`", err)
+	}
+}
+
+func TestApplyPvYmlServices_BindsRustfsDefaultVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageRustfsBinary(t)
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		ProjectType: "laravel",
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Rustfs: &config.ServiceConfig{},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reg.Projects[0].Services == nil {
+		t.Fatalf("Services is nil")
+	}
+	if reg.Projects[0].Services.S3 != rustfs.DefaultVersion() {
+		t.Fatalf("S3 = %q, want %q", reg.Projects[0].Services.S3, rustfs.DefaultVersion())
+	}
+}
+
+func TestApplyPvYmlServices_ErrorsWhenRustfsNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// Do NOT stage rustfs binary.
+
+	projDir := t.TempDir()
+	reg := &registry.Registry{
+		Services: map[string]*registry.ServiceInstance{},
+		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
+	}
+	ctx := &automation.Context{
+		ProjectName: "p",
+		ProjectPath: projDir,
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Rustfs: &config.ServiceConfig{},
+		},
+	}
+	step := &ApplyPvYmlServicesStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error when rustfs not installed, got nil")
+	}
+	if !strings.Contains(err.Error(), "pv rustfs:install") {
+		t.Errorf("err = %v; want it to include `pv rustfs:install`", err)
 	}
 }

@@ -1,48 +1,87 @@
 package mailpit
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
 	"github.com/prvious/pv/internal/binaries"
-	"github.com/prvious/pv/internal/caddy"
-	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
+	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
 const (
 	displayName = "Mail (Mailpit)"
+	serviceKey  = "mail"
+	port        = 1025
+	consolePort = 8025
 )
 
-// Binary returns the binaries.Binary descriptor for mailpit.
-// Delegates to the leaf proc package so that internal/server can import
-// proc directly without creating an import cycle through this package.
-func Binary() binaries.Binary { return mailpitproc.Binary() }
-
-func Port() int           { return mailpitproc.Port() }
-func ConsolePort() int    { return mailpitproc.ConsolePort() }
-func DisplayName() string { return displayName }
-func ServiceKey() string  { return mailpitproc.ServiceKey() }
-
-func WebRoutes() []caddy.WebRoute {
-	raw := mailpitproc.WebRoutes()
-	out := make([]caddy.WebRoute, len(raw))
-	for i, r := range raw {
-		out[i] = caddy.WebRoute{Subdomain: r.Subdomain, Port: r.Port}
-	}
-	return out
+type WebRoute struct {
+	Subdomain string
+	Port      int
 }
 
-func EnvVars(_ string) map[string]string {
+func Binary() binaries.Binary { return binaries.Mailpit }
+func Port() int               { return port }
+func ConsolePort() int        { return consolePort }
+func DisplayName() string     { return displayName }
+func ServiceKey() string      { return serviceKey }
+
+func WebRoutes() []WebRoute {
+	return []WebRoute{{Subdomain: "mail", Port: consolePort}}
+}
+
+func EnvVars(version, _ string) (map[string]string, error) {
+	if err := ValidateVersion(version); err != nil {
+		return nil, err
+	}
 	return map[string]string{
 		"MAIL_MAILER":   "smtp",
 		"MAIL_HOST":     "127.0.0.1",
 		"MAIL_PORT":     "1025",
 		"MAIL_USERNAME": "",
 		"MAIL_PASSWORD": "",
-	}
+	}, nil
 }
 
-// BuildSupervisorProcess returns the supervisor.Process for mailpit.
-// Delegates to proc.BuildSupervisorProcess so the build logic is defined
-// once in the leaf package.
-func BuildSupervisorProcess() (supervisor.Process, error) {
-	return mailpitproc.BuildSupervisorProcess()
+func BuildSupervisorProcess(version string) (supervisor.Process, error) {
+	if err := ValidateVersion(version); err != nil {
+		return supervisor.Process{}, err
+	}
+	binPath, err := BinaryPath(version)
+	if err != nil {
+		return supervisor.Process{}, err
+	}
+	dataDir := config.ServiceDataDir(serviceKey, version)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return supervisor.Process{}, fmt.Errorf("create data dir %s: %w", dataDir, err)
+	}
+	logFile, err := LogPath(version)
+	if err != nil {
+		return supervisor.Process{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		return supervisor.Process{}, fmt.Errorf("create log dir: %w", err)
+	}
+	rc := supervisor.HTTPReady(fmt.Sprintf("http://127.0.0.1:%d/livez", consolePort), 30*time.Second)
+	ready, err := supervisor.BuildReadyFunc(rc)
+	if err != nil {
+		return supervisor.Process{}, fmt.Errorf("mailpit: %w", err)
+	}
+	args := []string{
+		"--smtp", fmt.Sprintf(":%d", port),
+		"--listen", fmt.Sprintf(":%d", consolePort),
+		"--database", dataDir + "/mailpit.db",
+	}
+	return supervisor.Process{
+		Name:         Binary().Name + "-" + version,
+		Binary:       binPath,
+		Args:         args,
+		Env:          nil,
+		LogFile:      logFile,
+		Ready:        ready,
+		ReadyTimeout: rc.Timeout,
+	}, nil
 }

@@ -1,6 +1,7 @@
 package mailpit
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,59 +12,22 @@ import (
 	"github.com/prvious/pv/internal/registry"
 )
 
-func TestSetEnabled_NotRegistered(t *testing.T) {
+func TestUpdate_NotInstalled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-	if err := reg.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
 
-	err := SetEnabled(true)
+	client := &http.Client{}
+	err := Update(client, DefaultVersion())
 	if err == nil {
-		t.Fatal("expected error when service is not registered")
+		t.Fatal("expected error when service is not installed")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "not registered") || !strings.Contains(msg, "mailpit:install") {
-		t.Errorf("error should point user at mailpit:install; got %q", msg)
-	}
-}
-
-func TestUpdate_NotRegistered(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-	if err := reg.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	err := Update()
-	if err == nil {
-		t.Fatal("expected error when service is not registered")
-	}
-	if !strings.Contains(err.Error(), "not registered") {
-		t.Errorf("expected not-registered error; got %q", err)
-	}
-}
-
-func TestUninstall_NotRegistered(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	reg := &registry.Registry{Services: map[string]*registry.ServiceInstance{}}
-	if err := reg.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	err := Uninstall(false)
-	if err == nil {
-		t.Fatal("expected error when service is not registered")
-	}
-	if !strings.Contains(err.Error(), "not registered") {
-		t.Errorf("expected not-registered error; got %q", err)
+	if !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("expected not-installed error; got %q", err)
 	}
 }
 
 // TestUninstall_BinaryAlreadyRemoved verifies that an idempotent retry
 // after a previous run that left the registry intact but removed the
-// binary file completes successfully. This is the recoverable state
-// the step ordering (registry-removed-last) is designed to enable.
+// binary file completes successfully.
 func TestUninstall_BinaryAlreadyRemoved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -77,15 +41,15 @@ func TestUninstall_BinaryAlreadyRemoved(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	if err := Uninstall(false); err != nil {
+	if err := Uninstall(DefaultVersion(), false); err != nil {
 		t.Fatalf("Uninstall with no binary file should succeed: %v", err)
 	}
-	got, err := registry.Load()
+	st, err := LoadState()
 	if err != nil {
-		t.Fatalf("reload: %v", err)
+		t.Fatalf("LoadState: %v", err)
 	}
-	if _, ok := got.Services["mail"]; ok {
-		t.Error("registry entry should be removed after successful uninstall")
+	if _, ok := st.Versions[DefaultVersion()]; ok {
+		t.Error("version state should be removed after uninstall")
 	}
 }
 
@@ -115,7 +79,7 @@ func TestUninstall_DeleteData(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	if err := Uninstall(true); err != nil {
+	if err := Uninstall(DefaultVersion(), true); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
@@ -138,7 +102,7 @@ func TestApplyFallbacksToLinkedProjects_RewritesEnv(t *testing.T) {
 				Name:     "myapp",
 				Path:     projectDir,
 				Type:     "laravel",
-				Services: &registry.ProjectServices{Mail: true},
+				Services: &registry.ProjectServices{Mail: "latest"},
 			},
 		},
 	}
@@ -163,35 +127,84 @@ func TestApplyFallbacksToLinkedProjects_RewritesEnv(t *testing.T) {
 	}
 }
 
-// TestRestart_RoundTrip locks the contract that after Restart the
-// registry shows Enabled=true: the disable/enable toggle must persist
-// the second flip.
-func TestRestart_RoundTrip(t *testing.T) {
+func TestState_SetWantedWantedVersionsRemove(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	enabled := true
-	reg := &registry.Registry{
-		Services: map[string]*registry.ServiceInstance{
-			"mail": {Port: 1025, Enabled: &enabled},
-		},
+	if err := SetWanted(DefaultVersion(), WantedRunning); err != nil {
+		t.Fatalf("SetWanted running: %v", err)
 	}
-	if err := reg.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	if err := Restart(); err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-
-	got, err := registry.Load()
+	versions, err := WantedVersions()
 	if err != nil {
-		t.Fatalf("reload: %v", err)
+		t.Fatalf("WantedVersions: %v", err)
 	}
-	inst, ok := got.Services["mail"]
-	if !ok {
-		t.Fatal("mail entry missing from registry after Restart")
+	if len(versions) != 0 {
+		t.Fatalf("WantedVersions should ignore not-installed mailpit, got %v", versions)
 	}
-	if inst.Enabled == nil || !*inst.Enabled {
-		t.Errorf("Enabled should be true after Restart; got %v", inst.Enabled)
+
+	binPath := filepath.Join(config.InternalBinDir(), Binary().Name)
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	versions, err = WantedVersions()
+	if err != nil {
+		t.Fatalf("WantedVersions installed: %v", err)
+	}
+	if len(versions) != 1 || versions[0] != DefaultVersion() {
+		t.Fatalf("WantedVersions = %v, want [latest]", versions)
+	}
+
+	if err := RemoveVersion(DefaultVersion()); err != nil {
+		t.Fatalf("RemoveVersion: %v", err)
+	}
+	st, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if _, ok := st.Versions[DefaultVersion()]; ok {
+		t.Fatalf("state still contains latest after RemoveVersion: %#v", st.Versions)
+	}
+}
+
+func TestValidateVersion_RejectsNonLatest(t *testing.T) {
+	if err := ValidateVersion("1.0.0"); err == nil {
+		t.Fatal("expected non-latest mailpit version to fail")
+	}
+}
+
+func TestUninstall_KeepsDataDirByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dataDir := config.ServiceDataDir("mail", "latest")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	sentinel := filepath.Join(dataDir, "mailpit.db")
+	if err := os.WriteFile(sentinel, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	if err := Uninstall(DefaultVersion(), false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("data directory must be preserved without --force; sentinel missing: %v", err)
+	}
+}
+
+func TestEnvVars_RejectsInvalidVersion(t *testing.T) {
+	_, err := EnvVars("bad-version", "anyproject")
+	if err == nil {
+		t.Fatal("EnvVars: expected error for invalid version")
+	}
+}
+
+func TestBuildSupervisorProcess_RejectsInvalidVersion(t *testing.T) {
+	_, err := BuildSupervisorProcess("bad-version")
+	if err == nil {
+		t.Fatal("BuildSupervisorProcess: expected error for invalid version")
 	}
 }

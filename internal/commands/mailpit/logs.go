@@ -8,12 +8,16 @@ import (
 var logsFollow bool
 
 var logsCmd = &cobra.Command{
-	Use:     "mailpit:logs",
+	Use:     "mailpit:logs [version]",
 	GroupID: "mailpit",
 	Short:   "Tail the Mailpit log file",
-	Args:    cobra.NoArgs,
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.TailLog(cmd.Context(), logsFollow)
+		resolved, err := pkg.ResolveVersion(argVersion(args))
+		if err != nil {
+			return err
+		}
+		return pkg.TailLog(cmd.Context(), resolved, logsFollow)
 	},
 }
 

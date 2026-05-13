@@ -89,14 +89,14 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// mailpit.env
 	if cfg.Mailpit != nil && len(cfg.Mailpit.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(), "mailpit.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(mailpit.DefaultVersion()), "mailpit.env"); err != nil {
 			return "", err
 		}
 	}
 
 	// rustfs.env
 	if cfg.Rustfs != nil && len(cfg.Rustfs.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(), "rustfs.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(rustfs.DefaultVersion()), "rustfs.env"); err != nil {
 			return "", err
 		}
 	}
