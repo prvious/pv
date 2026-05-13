@@ -13,7 +13,7 @@ var logsCmd = &cobra.Command{
 	Short:   "Tail the Mailpit log file",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.TailLog(cmd.Context(), logsFollow)
+		return pkg.TailLog(cmd.Context(), pkg.DefaultVersion(), logsFollow)
 	},
 }
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
-	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
@@ -180,11 +180,6 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		return nil
 	}
 
-	reg, err := registry.Load()
-	if err != nil {
-		return fmt.Errorf("reconcile binary: load registry: %w", err)
-	}
-
 	// wanted: supervisorKey -> buildable supervisor.Process.
 	wanted := map[string]supervisor.Process{}
 	var startErrors []string
@@ -204,15 +199,17 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	}
 
 	// Source 1b — mailpit.
-	if entry := reg.Services["mail"]; entry != nil {
-		if entry.Enabled == nil || *entry.Enabled {
-			proc, err := mailpitproc.BuildSupervisorProcess()
-			if err != nil {
-				startErrors = append(startErrors, fmt.Sprintf("mail: build: %v", err))
-			} else {
-				wanted[mailpitproc.Binary().Name] = proc
-			}
+	mailpitVersions, mailpitErr := mailpit.WantedVersions()
+	if mailpitErr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile binary: mailpit.WantedVersions: %v\n", mailpitErr)
+	}
+	for _, version := range mailpitVersions {
+		proc, err := mailpit.BuildSupervisorProcess(version)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("mail-%s: build: %v", version, err))
+			continue
 		}
+		wanted[mailpit.Binary().Name+"-"+version] = proc
 	}
 
 	// Source 2 — postgres, multi-version.
@@ -275,6 +272,9 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			continue
 		}
 		if rustfsErr != nil && strings.HasPrefix(supKey, "rustfs-") {
+			continue
+		}
+		if mailpitErr != nil && strings.HasPrefix(supKey, "mailpit-") {
 			continue
 		}
 		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {

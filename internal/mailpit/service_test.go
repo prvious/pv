@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
 )
 
@@ -26,7 +25,7 @@ func TestPorts(t *testing.T) {
 }
 
 func TestWebRoutes(t *testing.T) {
-	want := []caddy.WebRoute{
+	want := []WebRoute{
 		{Subdomain: "mail", Port: 8025},
 	}
 	got := WebRoutes()
@@ -39,7 +38,7 @@ func TestWebRoutes(t *testing.T) {
 // old Docker Mail service produced so linked projects do not need .env
 // rewrites post-migration.
 func TestMailpit_EnvVars_Golden(t *testing.T) {
-	got := EnvVars("anyproject")
+	got := EnvVars(DefaultVersion(), "anyproject")
 	want := map[string]string{
 		"MAIL_MAILER":   "smtp",
 		"MAIL_HOST":     "127.0.0.1",
@@ -60,7 +59,7 @@ func TestMailpit_EnvVars_Golden(t *testing.T) {
 // from the --listen flag.
 func TestBuildSupervisorProcess_PinsBindAddresses(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -84,7 +83,7 @@ func TestBuildSupervisorProcess_PinsBindAddresses(t *testing.T) {
 
 func TestBuildSupervisorProcess_DatabaseUsesDataDir(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -105,7 +104,7 @@ func TestBuildSupervisorProcess_DatabaseUsesDataDir(t *testing.T) {
 
 func TestBuildSupervisorProcess_NoEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -116,7 +115,7 @@ func TestBuildSupervisorProcess_NoEnv(t *testing.T) {
 
 func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -131,21 +130,19 @@ func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 // TestBuildSupervisorProcess_NameAndPaths locks the process name, binary path,
 // and log file path so that a future rename of ServiceKey() or Binary().Name
 // cannot silently route to the wrong supervisor map entry. The supervisor map
-// in manager.go is keyed by proc.Name (= "mailpit"), NOT by ServiceKey()
+// in manager.go is keyed by proc.Name (= "mailpit-latest"), NOT by ServiceKey()
 // (= "mail"). A swap of the two would compile cleanly but break supervision
 // because the map lookup would miss.
 func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
 
-	// proc.Name must be "mailpit" (the binary name), NOT "mail" (the service key).
-	// The supervisor manager keyes its process map off proc.Name; using "mail"
-	// here would silently route to the wrong entry.
-	if proc.Name != "mailpit" {
-		t.Errorf("proc.Name = %q, want %q (not the service key %q)", proc.Name, "mailpit", "mail")
+	// proc.Name must be "mailpit-latest" (binary name + version), NOT "mail" (the service key).
+	if proc.Name != "mailpit-latest" {
+		t.Errorf("proc.Name = %q, want %q (not the service key %q)", proc.Name, "mailpit-latest", "mail")
 	}
 
 	wantBinarySuffix := "/.pv/internal/bin/mailpit"
@@ -153,7 +150,7 @@ func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
 	}
 
-	wantLogSuffix := "/.pv/logs/mailpit.log"
+	wantLogSuffix := "/.pv/logs/mailpit-latest.log"
 	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
 		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
 	}

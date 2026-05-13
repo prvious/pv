@@ -1,6 +1,9 @@
 package mailpit
 
 import (
+	"net/http"
+	"time"
+
 	pkg "github.com/prvious/pv/internal/mailpit"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +17,7 @@ var installCmd = &cobra.Command{
 pv mail:install`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.Install()
+		client := &http.Client{Timeout: 60 * time.Second}
+		return pkg.Install(client, pkg.DefaultVersion())
 	},
 }

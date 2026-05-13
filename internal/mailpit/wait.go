@@ -2,27 +2,23 @@ package mailpit
 
 import (
 	"fmt"
+	"net"
 	"time"
-
-	"github.com/prvious/pv/internal/server"
 )
 
-// WaitStopped polls until mailpit is no longer running. Called before
-// destructive on-disk ops and between the disable/enable halves of a
-// restart to avoid coalescing two reconcile signals into a no-op.
-func WaitStopped(timeout time.Duration) error {
-	binaryName := Binary().Name
+func WaitStopped(version string, timeout time.Duration) error {
+	if err := ValidateVersion(version); err != nil {
+		return err
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", Port())
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		snap, err := server.ReadDaemonStatus()
+		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err != nil {
 			return nil
 		}
-		st, ok := snap.Supervised[binaryName]
-		if !ok || !st.Running {
-			return nil
-		}
+		c.Close()
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("%s did not stop within %s", DisplayName(), timeout)
+	return fmt.Errorf("mailpit %s did not stop within %s", version, timeout)
 }

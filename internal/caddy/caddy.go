@@ -8,7 +8,7 @@ import (
 	"text/template"
 
 	"github.com/prvious/pv/internal/config"
-	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/rustfs"
 )
@@ -368,7 +368,7 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 			}
 		case "mail":
-			for _, r := range mailpitproc.WebRoutes() {
+			for _, r := range mailpit.WebRoutes() {
 				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 			}
 		default:
