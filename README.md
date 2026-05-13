@@ -244,7 +244,7 @@ internal/
   binaries/          # Binary download helpers
   selfupdate/        # pv self-update
   postgres/, mysql/, redis/  # Per-database lifecycle helpers
-  services/          # Binary-service registry (mail, s3)
+  rustfs/, mailpit/  # Native singleton service lifecycle helpers
   detection/         # Project type detection
   setup/             # Prerequisites, shell config
   ui/                # Terminal UI (lipgloss)

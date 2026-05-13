@@ -14,16 +14,20 @@ import (
 	"github.com/prvious/pv/internal/certs"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
+	mailpitCmds "github.com/prvious/pv/internal/commands/mailpit"
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
+	rustfsCmds "github.com/prvious/pv/internal/commands/rustfs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/daemon"
+	"github.com/prvious/pv/internal/mailpit"
 	my "github.com/prvious/pv/internal/mysql"
 	pg "github.com/prvious/pv/internal/postgres"
 	r "github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/setup"
 	"github.com/prvious/pv/internal/ui"
@@ -206,6 +210,24 @@ var uninstallCmd = &cobra.Command{
 		}
 
 		// Uninstall tools (each cleans up its own binary + PATH entry).
+		if rustfs.IsInstalled(rustfs.DefaultVersion()) {
+			if err := rustfsCmds.UninstallForce(rustfs.DefaultVersion()); err != nil {
+				hadFailures = true
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("rustfs uninstall failed: %v", err))
+				}
+			}
+		}
+
+		if mailpit.IsInstalled(mailpit.DefaultVersion()) {
+			if err := mailpitCmds.UninstallForce(mailpit.DefaultVersion()); err != nil {
+				hadFailures = true
+				if !errors.Is(err, ui.ErrAlreadyPrinted) {
+					ui.Fail(fmt.Sprintf("mailpit uninstall failed: %v", err))
+				}
+			}
+		}
+
 		// Postgres uninstall (per installed major). Removes data dirs, binaries,
 		// state. User has already consented to a full pv uninstall.
 		if majors, err := pg.InstalledMajors(); err == nil {

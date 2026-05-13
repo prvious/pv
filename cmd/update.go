@@ -9,23 +9,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/commands/composer"
 	"github.com/prvious/pv/internal/commands/mago"
+	mailpitCmds "github.com/prvious/pv/internal/commands/mailpit"
 	mysqlCmds "github.com/prvious/pv/internal/commands/mysql"
 	"github.com/prvious/pv/internal/commands/php"
 	postgresCmds "github.com/prvious/pv/internal/commands/postgres"
 	rediscmd "github.com/prvious/pv/internal/commands/redis"
+	rustfsCmds "github.com/prvious/pv/internal/commands/rustfs"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mailpit"
 	my "github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/packages"
 	pg "github.com/prvious/pv/internal/postgres"
 	r "github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/selfupdate"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -150,61 +149,24 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Step 4: Update binary-service binaries.
-		// registry.Load / LoadVersions return nil on a non-IsNotExist error
-		// (corrupt file, permissions), so both pointers must be checked
-		// before we dereference them.
-		reg, regErr := registry.Load()
-		if regErr != nil {
-			ui.Subtle(fmt.Sprintf("Skipping binary-service updates: cannot load registry: %v", regErr))
-		} else {
-			vs, vsErr := binaries.LoadVersions()
-			if vsErr != nil {
-				ui.Subtle(fmt.Sprintf("Skipping binary-service updates: cannot load versions state: %v", vsErr))
-			} else {
-				type binaryAddonInfo struct {
-					regKey string
-					bin    binaries.Binary
-					label  string
+		if versions, err := rustfs.InstalledVersions(); err == nil {
+			for _, version := range versions {
+				if err := rustfsCmds.RunUpdate([]string{version}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("RustFS %s update failed: %v", version, err))
+					}
+					failures = append(failures, "RustFS "+version)
 				}
-				addons := []binaryAddonInfo{
-					{regKey: "mail", bin: mailpit.Binary(), label: mailpit.DisplayName()},
-					{regKey: "s3", bin: rustfs.Binary(), label: rustfs.DisplayName()},
-				}
+			}
+		}
 
-				var binaryUpdated []string
-				for _, a := range addons {
-					if _, registered := reg.Services[a.regKey]; !registered {
-						continue
+		if versions, err := mailpit.InstalledVersions(); err == nil {
+			for _, version := range versions {
+				if err := mailpitCmds.RunUpdate([]string{version}); err != nil {
+					if !errors.Is(err, ui.ErrAlreadyPrinted) {
+						ui.Fail(fmt.Sprintf("Mailpit %s update failed: %v", version, err))
 					}
-					latest, err := binaries.FetchLatestVersion(client, a.bin)
-					if err != nil {
-						ui.Subtle(fmt.Sprintf("Skipping %s: %v", a.label, err))
-						continue
-					}
-					if !binaries.NeedsUpdate(vs, a.bin, latest) {
-						continue
-					}
-					current := vs.Get(a.bin.Name)
-					if err := ui.Step(fmt.Sprintf("Updating %s %s -> %s", a.bin.DisplayName, current, latest), func() (string, error) {
-						if err := binaries.InstallBinary(client, a.bin, latest); err != nil {
-							return "", err
-						}
-						return fmt.Sprintf("Updated %s to %s", a.bin.DisplayName, latest), nil
-					}); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not update %s: %v", a.label, err))
-						continue
-					}
-					vs.Set(a.bin.Name, latest)
-					binaryUpdated = append(binaryUpdated, a.regKey)
-				}
-				if len(binaryUpdated) > 0 {
-					if err := vs.Save(); err != nil {
-						ui.Subtle(fmt.Sprintf("Could not save versions state: %v", err))
-					}
-					if server.IsRunning() {
-						ui.Subtle(fmt.Sprintf("Updated binaries: %s. Run `pv restart` to load them.",
-							strings.Join(binaryUpdated, ", ")))
-					}
+					failures = append(failures, "Mailpit "+version)
 				}
 			}
 		}
