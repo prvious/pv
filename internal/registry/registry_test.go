@@ -821,3 +821,41 @@ func TestUnbindRedisVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestUnbindMailVersion(t *testing.T) {
+	r := &Registry{
+		Projects: []Project{
+			{Name: "a", Services: &ProjectServices{Mail: "latest"}},
+			{Name: "b", Services: &ProjectServices{Mail: "future"}},
+			{Name: "c", Services: &ProjectServices{Mail: "latest"}},
+		},
+	}
+
+	r.UnbindMailVersion("latest")
+
+	cases := map[string]string{"a": "", "b": "future", "c": ""}
+	for _, p := range r.Projects {
+		if got := p.Services.Mail; got != cases[p.Name] {
+			t.Errorf("%s: Mail = %q, want %q", p.Name, got, cases[p.Name])
+		}
+	}
+}
+
+func TestUnbindS3Version(t *testing.T) {
+	r := &Registry{
+		Projects: []Project{
+			{Name: "a", Services: &ProjectServices{S3: "latest"}},
+			{Name: "b", Services: &ProjectServices{S3: "future"}},
+			{Name: "c", Services: &ProjectServices{S3: "latest"}},
+		},
+	}
+
+	r.UnbindS3Version("latest")
+
+	cases := map[string]string{"a": "", "b": "future", "c": ""}
+	for _, p := range r.Projects {
+		if got := p.Services.S3; got != cases[p.Name] {
+			t.Errorf("%s: S3 = %q, want %q", p.Name, got, cases[p.Name])
+		}
+	}
+}
