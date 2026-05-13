@@ -1,6 +1,8 @@
 package rustfs
 
 import (
+	"time"
+
 	pkg "github.com/prvious/pv/internal/rustfs"
 	"github.com/spf13/cobra"
 )
@@ -11,6 +13,12 @@ var restartCmd = &cobra.Command{
 	Short:   "Stop then start RustFS (toggles wanted state, daemon reconciles)",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.Restart()
+		if err := pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedStopped); err != nil {
+			return err
+		}
+		if err := pkg.WaitStopped(pkg.DefaultVersion(), 30*time.Second); err != nil {
+			return err
+		}
+		return pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedRunning)
 	},
 }

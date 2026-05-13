@@ -96,7 +96,7 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// rustfs.env
 	if cfg.Rustfs != nil && len(cfg.Rustfs.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(), "rustfs.env"); err != nil {
+		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(rustfs.DefaultVersion()), "rustfs.env"); err != nil {
 			return "", err
 		}
 	}

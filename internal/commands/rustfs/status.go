@@ -1,6 +1,8 @@
 package rustfs
 
 import (
+	"fmt"
+
 	pkg "github.com/prvious/pv/internal/rustfs"
 	"github.com/spf13/cobra"
 )
@@ -11,6 +13,9 @@ var statusCmd = &cobra.Command{
 	Short:   "Show RustFS supervised state",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.PrintStatus()
+		if !pkg.IsInstalled(pkg.DefaultVersion()) {
+			return fmt.Errorf("RustFS is not installed")
+		}
+		return nil
 	},
 }

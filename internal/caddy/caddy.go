@@ -10,7 +10,7 @@ import (
 	"github.com/prvious/pv/internal/config"
 	mailpitproc "github.com/prvious/pv/internal/mailpit/proc"
 	"github.com/prvious/pv/internal/registry"
-	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
+	"github.com/prvious/pv/internal/rustfs"
 )
 
 // --- Template for service console reverse proxy (*.pv.{tld}) ---
@@ -364,7 +364,7 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 		var routes []WebRoute
 		switch svcName {
 		case "s3":
-			for _, r := range rustfsproc.WebRoutes() {
+			for _, r := range rustfs.WebRoutes() {
 				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 			}
 		case "mail":

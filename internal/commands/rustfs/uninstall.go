@@ -42,7 +42,7 @@ var uninstallCmd = &cobra.Command{
 				return fmt.Errorf("aborted")
 			}
 		}
-		if err := pkg.Uninstall(true); err != nil {
+		if err := pkg.Uninstall(pkg.DefaultVersion(), true); err != nil {
 			return err
 		}
 		ui.Success("RustFS uninstalled.")

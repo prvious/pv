@@ -11,6 +11,6 @@ var startCmd = &cobra.Command{
 	Short:   "Mark RustFS as wanted-running",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.SetEnabled(true)
+		return pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedRunning)
 	},
 }

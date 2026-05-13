@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prvious/pv/internal/caddy"
 	"github.com/prvious/pv/internal/config"
 )
 
@@ -26,7 +25,7 @@ func TestPorts(t *testing.T) {
 }
 
 func TestWebRoutes(t *testing.T) {
-	want := []caddy.WebRoute{
+	want := []WebRoute{
 		{Subdomain: "s3", Port: 9001},
 		{Subdomain: "s3-api", Port: 9000},
 	}
@@ -39,7 +38,7 @@ func TestWebRoutes(t *testing.T) {
 // TestEnvVars_MatchesDockerKeys: linked projects rely on these exact .env
 // keys; the binary migration must not silently change them.
 func TestEnvVars_MatchesDockerKeys(t *testing.T) {
-	vars := EnvVars("myproject")
+	vars := EnvVars(DefaultVersion(), "myproject")
 	wantKeys := []string{
 		"AWS_ACCESS_KEY_ID",
 		"AWS_SECRET_ACCESS_KEY",
@@ -63,7 +62,7 @@ func TestEnvVars_MatchesDockerKeys(t *testing.T) {
 
 func TestBuildSupervisorProcess_IncludesDataDir(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -81,7 +80,7 @@ func TestBuildSupervisorProcess_IncludesDataDir(t *testing.T) {
 // explicitly.
 func TestBuildSupervisorProcess_IncludesConsoleEnable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -99,7 +98,7 @@ func TestBuildSupervisorProcess_IncludesConsoleEnable(t *testing.T) {
 
 func TestBuildSupervisorProcess_EnvUsesAccessSecretKeys(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -122,7 +121,7 @@ func TestBuildSupervisorProcess_EnvUsesAccessSecretKeys(t *testing.T) {
 
 func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
@@ -141,13 +140,13 @@ func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 // would compile cleanly but break supervision.
 func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	proc, err := BuildSupervisorProcess()
+	proc, err := BuildSupervisorProcess(DefaultVersion())
 	if err != nil {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
 
-	if proc.Name != "rustfs" {
-		t.Errorf("proc.Name = %q, want %q", proc.Name, "rustfs")
+	if proc.Name != "rustfs-latest" {
+		t.Errorf("proc.Name = %q, want %q", proc.Name, "rustfs-latest")
 	}
 
 	wantBinarySuffix := "/.pv/internal/bin/rustfs"
@@ -155,7 +154,7 @@ func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
 	}
 
-	wantLogSuffix := "/.pv/logs/rustfs.log"
+	wantLogSuffix := "/.pv/logs/rustfs-latest.log"
 	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
 		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
 	}

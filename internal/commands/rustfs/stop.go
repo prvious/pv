@@ -11,6 +11,6 @@ var stopCmd = &cobra.Command{
 	Short:   "Mark RustFS as wanted-stopped",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return pkg.SetEnabled(false)
+		return pkg.SetWanted(pkg.DefaultVersion(), pkg.WantedStopped)
 	},
 }

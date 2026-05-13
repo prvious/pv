@@ -14,7 +14,7 @@ import (
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
-	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -80,18 +80,11 @@ func TestReconcile_SpawnsBinaryServices(t *testing.T) {
 	}
 	t.Setenv("HOME", t.TempDir())
 
-	// Seed a registry with s3 as a binary service.
-	enabled := true
-	reg := &registry.Registry{
-		Services: map[string]*registry.ServiceInstance{
-			"s3": {Port: 9000, ConsolePort: 9001, Enabled: &enabled},
-		},
-	}
-	if err := reg.Save(); err != nil {
+	stageFakeBinaryAsRustfs(t)
+
+	if err := rustfs.SetWanted(rustfs.DefaultVersion(), rustfs.WantedRunning); err != nil {
 		t.Fatal(err)
 	}
-
-	stageFakeBinaryAsRustfs(t)
 
 	sup := supervisor.New()
 	m := &ServerManager{supervisor: sup, secondaries: map[string]*FrankenPHP{}}
@@ -100,8 +93,8 @@ func TestReconcile_SpawnsBinaryServices(t *testing.T) {
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatalf("reconcileBinaryServices: %v", err)
 	}
-	if !sup.IsRunning("rustfs") {
-		t.Error("expected rustfs to be supervised after reconcile")
+	if !sup.IsRunning("rustfs-latest") {
+		t.Error("expected rustfs-latest to be supervised after reconcile")
 	}
 }
 
@@ -117,33 +110,25 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	defer sup.StopAll(2 * time.Second)
 
 	// Phase 1: enabled, should start.
-	enabled := true
-	reg1 := &registry.Registry{Services: map[string]*registry.ServiceInstance{
-		"s3": {Port: 9000, Enabled: &enabled},
-	}}
-	if err := reg1.Save(); err != nil {
+	if err := rustfs.SetWanted(rustfs.DefaultVersion(), rustfs.WantedRunning); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !sup.IsRunning("rustfs") {
-		t.Fatal("expected rustfs running after first reconcile")
+	if !sup.IsRunning("rustfs-latest") {
+		t.Fatal("expected rustfs-latest running after first reconcile")
 	}
 
 	// Phase 2: disabled, should stop.
-	disabled := false
-	reg2 := &registry.Registry{Services: map[string]*registry.ServiceInstance{
-		"s3": {Port: 9000, Enabled: &disabled},
-	}}
-	if err := reg2.Save(); err != nil {
+	if err := rustfs.SetWanted(rustfs.DefaultVersion(), rustfs.WantedStopped); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if sup.IsRunning("rustfs") {
-		t.Error("expected rustfs stopped after disabling via reconcile")
+	if sup.IsRunning("rustfs-latest") {
+		t.Error("expected rustfs-latest stopped after disabling via reconcile")
 	}
 }
 

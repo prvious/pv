@@ -15,7 +15,7 @@ import (
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
 	"github.com/prvious/pv/internal/registry"
-	rustfsproc "github.com/prvious/pv/internal/rustfs/proc"
+	"github.com/prvious/pv/internal/rustfs"
 	"github.com/prvious/pv/internal/supervisor"
 )
 
@@ -190,15 +190,17 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	var startErrors []string
 
 	// Source 1a — rustfs.
-	if entry := reg.Services["s3"]; entry != nil {
-		if entry.Enabled == nil || *entry.Enabled {
-			proc, err := rustfsproc.BuildSupervisorProcess()
-			if err != nil {
-				startErrors = append(startErrors, fmt.Sprintf("s3: build: %v", err))
-			} else {
-				wanted[rustfsproc.Binary().Name] = proc
-			}
+	rustfsVersions, rustfsErr := rustfs.WantedVersions()
+	if rustfsErr != nil {
+		fmt.Fprintf(os.Stderr, "reconcile binary: rustfs.WantedVersions: %v\n", rustfsErr)
+	}
+	for _, version := range rustfsVersions {
+		proc, err := rustfs.BuildSupervisorProcess(version)
+		if err != nil {
+			startErrors = append(startErrors, fmt.Sprintf("rustfs-%s: build: %v", version, err))
+			continue
 		}
+		wanted[rustfs.Binary().Name+"-"+version] = proc
 	}
 
 	// Source 1b — mailpit.
@@ -270,6 +272,9 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			continue
 		}
 		if redisErr != nil && strings.HasPrefix(supKey, "redis-") {
+			continue
+		}
+		if rustfsErr != nil && strings.HasPrefix(supKey, "rustfs-") {
 			continue
 		}
 		if err := m.supervisor.Stop(supKey, 10*time.Second); err != nil {

@@ -555,9 +555,9 @@ func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-		{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6", Mail: "latest", S3: "latest"}},
-		{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
-		{Name: "app3", Path: "/c"},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6", Mail: "latest", S3: "latest"}},
+			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
+			{Name: "app3", Path: "/c"},
 		},
 	}
 
