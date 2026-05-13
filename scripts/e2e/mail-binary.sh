@@ -48,10 +48,10 @@ echo "OK: mailpit binary at ~/.pv/internal/bin/mailpit"
 
 echo "==> Verify daemon-status.json lists mailpit"
 for i in $(seq 1 20); do
-    if grep -q '"mailpit"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    if grep -q '"mailpit-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
     sleep 1
 done
-grep -q '"mailpit"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
+grep -q '"mailpit-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain mailpit entry";
     cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;
