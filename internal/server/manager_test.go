@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/mysql"
 	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/redis"
@@ -74,6 +75,56 @@ func stageFakeBinaryAsRustfs(t *testing.T) {
 	}
 }
 
+// fakeMailpitBuildOnce caches the compiled fake-mailpit path across tests.
+var (
+	fakeMailpitPathOnce sync.Once
+	fakeMailpitPath     string
+	fakeMailpitErr      error
+)
+
+// compiledFakeMailpit compiles testdata/fake-mailpit/main.go once per test run.
+func compiledFakeMailpit(t *testing.T) string {
+	t.Helper()
+	fakeMailpitPathOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "pv-fake-mailpit-*")
+		if err != nil {
+			fakeMailpitErr = err
+			return
+		}
+		out := filepath.Join(dir, "fake-mailpit")
+		src := filepath.Join("testdata", "fake-mailpit", "main.go")
+		cmd := exec.Command("go", "build", "-o", out, src)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			fakeMailpitErr = err
+			t.Logf("go build output: %s", output)
+			return
+		}
+		fakeMailpitPath = out
+	})
+	if fakeMailpitErr != nil {
+		t.Fatalf("compile fake mailpit: %v", fakeMailpitErr)
+	}
+	return fakeMailpitPath
+}
+
+// stageFakeBinaryAsMailpit copies the compiled fake mailpit binary into
+// ~/.pv/internal/bin/mailpit so the supervisor finds it via the normal path.
+func stageFakeBinaryAsMailpit(t *testing.T) {
+	t.Helper()
+	src := compiledFakeMailpit(t)
+	binDir := config.InternalBinDir()
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "mailpit"), data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconcile_SpawnsBinaryServices(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
@@ -129,6 +180,30 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	}
 	if sup.IsRunning("rustfs-latest") {
 		t.Error("expected rustfs-latest stopped after disabling via reconcile")
+	}
+}
+
+func TestReconcile_SpawnsMailpit(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("fake binary helper not supported on %s", runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	stageFakeBinaryAsMailpit(t)
+
+	if err := mailpit.SetWanted(mailpit.DefaultVersion(), mailpit.WantedRunning); err != nil {
+		t.Fatalf("SetWanted mailpit: %v", err)
+	}
+
+	sup := supervisor.New()
+	m := &ServerManager{supervisor: sup, secondaries: map[string]*FrankenPHP{}}
+	defer m.supervisor.StopAll(2 * time.Second)
+
+	if err := m.reconcileBinaryServices(context.Background()); err != nil {
+		t.Fatalf("reconcileBinaryServices: %v", err)
+	}
+	if !sup.IsRunning("mailpit-latest") {
+		t.Error("expected mailpit-latest to be supervised after reconcile")
 	}
 }
 

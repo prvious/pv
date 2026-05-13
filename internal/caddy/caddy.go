@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"text/template"
 
 	"github.com/prvious/pv/internal/config"
@@ -306,11 +307,9 @@ func GenerateAllConfigs(projects []registry.Project, globalPHP string) error {
 	}
 
 	// Generate service console reverse proxy configs (*.pv.{tld}).
-	reg, err := registry.Load()
-	if err == nil && len(reg.Services) > 0 {
-		if err := GenerateServiceSiteConfigs(reg); err != nil {
-			return err
-		}
+	reg, _ := registry.Load()
+	if err := GenerateServiceSiteConfigs(reg); err != nil {
+		return err
 	}
 
 	// Generate main Caddyfile.
@@ -352,47 +351,62 @@ func GenerateServiceSiteConfigs(reg *registry.Registry) error {
 	if err != nil {
 		return err
 	}
-
 	tmpl, err := template.New("serviceConsole").Parse(serviceConsoleTmpl)
 	if err != nil {
 		return err
 	}
 
-	for key := range reg.Services {
-		svcName, _ := registry.ParseServiceKey(key)
-
+	routeSets := [][]WebRoute{}
+	if rustfsRoutesEnabled() {
 		var routes []WebRoute
-		switch svcName {
-		case "s3":
-			for _, r := range rustfs.WebRoutes() {
-				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
-			}
-		case "mail":
-			for _, r := range mailpit.WebRoutes() {
-				routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
-			}
-		default:
-			continue
+		for _, r := range rustfs.WebRoutes() {
+			routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
 		}
+		routeSets = append(routeSets, routes)
+	}
+	if mailpitRoutesEnabled() {
+		var routes []WebRoute
+		for _, r := range mailpit.WebRoutes() {
+			routes = append(routes, WebRoute{Subdomain: r.Subdomain, Port: r.Port})
+		}
+		routeSets = append(routeSets, routes)
+	}
 
+	for _, routes := range routeSets {
 		for _, route := range routes {
 			var buf bytes.Buffer
-			if err := tmpl.Execute(&buf, serviceConsoleData{
-				Subdomain: route.Subdomain,
-				TLD:       settings.Defaults.TLD,
-				Port:      route.Port,
-			}); err != nil {
+			if err := tmpl.Execute(&buf, serviceConsoleData{Subdomain: route.Subdomain, TLD: settings.Defaults.TLD, Port: route.Port}); err != nil {
 				return err
 			}
-
 			outPath := filepath.Join(config.SitesDir(), "_svc-"+route.Subdomain+".caddy")
-			if err := os.WriteFile(outPath, buf.Bytes(), 0644); err != nil {
+			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
 				return err
 			}
 		}
 	}
-
 	return nil
+}
+
+func rustfsRoutesEnabled() bool {
+	if rustfs.IsInstalled(rustfs.DefaultVersion()) {
+		return true
+	}
+	versions, err := rustfs.WantedVersions()
+	if err != nil {
+		return false
+	}
+	return slices.Contains(versions, rustfs.DefaultVersion())
+}
+
+func mailpitRoutesEnabled() bool {
+	if mailpit.IsInstalled(mailpit.DefaultVersion()) {
+		return true
+	}
+	versions, err := mailpit.WantedVersions()
+	if err != nil {
+		return false
+	}
+	return slices.Contains(versions, mailpit.DefaultVersion())
 }
 
 // GenerateAllSiteConfigs generates site configs for all projects (single-version mode).

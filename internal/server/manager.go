@@ -168,8 +168,7 @@ func (m *ServerManager) RunningVersions() []string {
 
 // reconcileBinaryServices brings supervisor state in line with the wanted
 // set computed from four sources:
-//  1. registry: single-version services (rustfs via "s3", mailpit via "mail"),
-//     gated on the registry Enabled flag.
+//  1. internal/rustfs:   singleton version-shaped service.
 //  2. internal/postgres: multi-version, on-disk + state.json driven.
 //  3. internal/mysql:    multi-version, on-disk + state.json driven.
 //  4. internal/redis:    versioned, on-disk + state.json driven.
@@ -184,32 +183,32 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 	wanted := map[string]supervisor.Process{}
 	var startErrors []string
 
-	// Source 1a — rustfs.
+	// Source 1a - rustfs, singleton version-shaped service.
 	rustfsVersions, rustfsErr := rustfs.WantedVersions()
 	if rustfsErr != nil {
-		fmt.Fprintf(os.Stderr, "reconcile binary: rustfs.WantedVersions: %v\n", rustfsErr)
+		startErrors = append(startErrors, fmt.Sprintf("rustfs: wanted: %v", rustfsErr))
 	}
 	for _, version := range rustfsVersions {
 		proc, err := rustfs.BuildSupervisorProcess(version)
 		if err != nil {
 			startErrors = append(startErrors, fmt.Sprintf("rustfs-%s: build: %v", version, err))
-			continue
+		} else {
+			wanted["rustfs-"+version] = proc
 		}
-		wanted[rustfs.Binary().Name+"-"+version] = proc
 	}
 
-	// Source 1b — mailpit.
+	// Source 1b - mailpit, singleton version-shaped service.
 	mailpitVersions, mailpitErr := mailpit.WantedVersions()
 	if mailpitErr != nil {
-		fmt.Fprintf(os.Stderr, "reconcile binary: mailpit.WantedVersions: %v\n", mailpitErr)
+		startErrors = append(startErrors, fmt.Sprintf("mailpit: wanted: %v", mailpitErr))
 	}
 	for _, version := range mailpitVersions {
 		proc, err := mailpit.BuildSupervisorProcess(version)
 		if err != nil {
-			startErrors = append(startErrors, fmt.Sprintf("mail-%s: build: %v", version, err))
-			continue
+			startErrors = append(startErrors, fmt.Sprintf("mailpit-%s: build: %v", version, err))
+		} else {
+			wanted["mailpit-"+version] = proc
 		}
-		wanted[mailpit.Binary().Name+"-"+version] = proc
 	}
 
 	// Source 2 — postgres, multi-version.
