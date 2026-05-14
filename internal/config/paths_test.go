@@ -314,6 +314,8 @@ func TestEnsureDirs(t *testing.T) {
 		ComposerCacheDir(),
 		InternalBinDir(),
 		PackagesDir(),
+		MailpitDir(),
+		RustfsDir(),
 	}
 	for _, dir := range dirs {
 		info, err := os.Stat(dir)
@@ -557,5 +559,45 @@ func TestEnsureDirs_DoesNotCreateRedisDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(RedisDataRoot()); !os.IsNotExist(err) {
 		t.Errorf("RedisDataRoot should NOT be created by EnsureDirs (got err=%v)", err)
+	}
+}
+
+func TestMailpitPaths(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+
+	if got, want := MailpitDir(), "/home/test/.pv/mailpit"; got != want {
+		t.Errorf("MailpitDir = %q, want %q", got, want)
+	}
+	if got, want := MailpitVersionDir("1"), "/home/test/.pv/mailpit/1"; got != want {
+		t.Errorf("MailpitVersionDir = %q, want %q", got, want)
+	}
+	if got, want := MailpitBinDir("1"), "/home/test/.pv/mailpit/1/bin"; got != want {
+		t.Errorf("MailpitBinDir = %q, want %q", got, want)
+	}
+	if got, want := MailpitDataDir("1"), "/home/test/.pv/data/mailpit/1"; got != want {
+		t.Errorf("MailpitDataDir = %q, want %q", got, want)
+	}
+	if got, want := MailpitLogPath("1"), "/home/test/.pv/logs/mailpit-1.log"; got != want {
+		t.Errorf("MailpitLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestRustfsPaths(t *testing.T) {
+	t.Setenv("HOME", "/home/test")
+
+	if got, want := RustfsDir(), "/home/test/.pv/rustfs"; got != want {
+		t.Errorf("RustfsDir = %q, want %q", got, want)
+	}
+	if got, want := RustfsVersionDir("1.0.0-beta"), "/home/test/.pv/rustfs/1.0.0-beta"; got != want {
+		t.Errorf("RustfsVersionDir = %q, want %q", got, want)
+	}
+	if got, want := RustfsBinDir("1.0.0-beta"), "/home/test/.pv/rustfs/1.0.0-beta/bin"; got != want {
+		t.Errorf("RustfsBinDir = %q, want %q", got, want)
+	}
+	if got, want := RustfsDataDir("1.0.0-beta"), "/home/test/.pv/data/rustfs/1.0.0-beta"; got != want {
+		t.Errorf("RustfsDataDir = %q, want %q", got, want)
+	}
+	if got, want := RustfsLogPath("1.0.0-beta"), "/home/test/.pv/logs/rustfs-1.0.0-beta.log"; got != want {
+		t.Errorf("RustfsLogPath = %q, want %q", got, want)
 	}
 }
