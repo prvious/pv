@@ -2,7 +2,7 @@ package rustfs
 
 import "fmt"
 
-const defaultVersion = "latest"
+const defaultVersion = "1.0.0-beta"
 
 func DefaultVersion() string { return defaultVersion }
 

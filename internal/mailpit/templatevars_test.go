@@ -20,3 +20,11 @@ func TestTemplateVars(t *testing.T) {
 		t.Errorf("http_port = %q, want 8025", got["http_port"])
 	}
 }
+
+func TestTemplateVars_RejectsLatest(t *testing.T) {
+	got := TemplateVars("latest")
+
+	if len(got) != 0 {
+		t.Errorf("TemplateVars(latest) = %#v, want empty map", got)
+	}
+}

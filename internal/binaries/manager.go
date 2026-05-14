@@ -37,9 +37,9 @@ func DownloadURL(b Binary, version string) (string, error) {
 	case "composer":
 		return composerURL(), nil
 	case "rustfs":
-		return rustfsURL(version)
+		return RustfsURL(version)
 	case "mailpit":
-		return mailpitURL(version)
+		return MailpitURL(version)
 	default:
 		return "", fmt.Errorf("unknown binary: %s", b.Name)
 	}

@@ -2,7 +2,7 @@ package mailpit
 
 import "fmt"
 
-const defaultVersion = "latest"
+const defaultVersion = "1"
 
 func DefaultVersion() string { return defaultVersion }
 

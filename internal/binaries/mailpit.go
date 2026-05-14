@@ -2,6 +2,7 @@ package binaries
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 )
 
@@ -12,17 +13,15 @@ var Mailpit = Binary{
 }
 
 var mailpitPlatformNames = map[string]map[string]string{
-	"darwin": {
-		"arm64": "darwin-arm64",
-		"amd64": "darwin-amd64",
-	},
-	"linux": {
-		"amd64": "linux-amd64",
-		"arm64": "linux-arm64",
-	},
+	"darwin": {"arm64": "mac-arm64"},
 }
 
-func mailpitArchiveName() (string, error) {
+// MailpitURL returns the pv artifact URL for Mailpit at the given version.
+func MailpitURL(version string) (string, error) {
+	if override := os.Getenv("PV_MAILPIT_URL_OVERRIDE"); override != "" {
+		return override, nil
+	}
+
 	archMap, ok := mailpitPlatformNames[runtime.GOOS]
 	if !ok {
 		return "", fmt.Errorf("unsupported OS for Mailpit: %s", runtime.GOOS)
@@ -31,13 +30,5 @@ func mailpitArchiveName() (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported architecture for Mailpit: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	return fmt.Sprintf("mailpit-%s.tar.gz", platform), nil
-}
-
-func mailpitURL(version string) (string, error) {
-	archive, err := mailpitArchiveName()
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("https://github.com/axllent/mailpit/releases/download/%s/%s", version, archive), nil
+	return fmt.Sprintf("https://github.com/prvious/pv/releases/download/artifacts/mailpit-%s-%s.tar.gz", platform, version), nil
 }

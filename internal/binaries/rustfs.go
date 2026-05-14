@@ -2,6 +2,7 @@ package binaries
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 )
 
@@ -11,22 +12,16 @@ var Rustfs = Binary{
 	NeedsExtract: true,
 }
 
-// rustfsPlatformNames maps GOOS/GOARCH to the platform suffix RustFS uses in
-// its release asset filenames. Linux releases publish -gnu (glibc) and -musl
-// variants; pv ships the -gnu variant for the broadest compatibility with
-// typical developer machines.
 var rustfsPlatformNames = map[string]map[string]string{
-	"darwin": {
-		"arm64": "macos-aarch64",
-		"amd64": "macos-x86_64",
-	},
-	"linux": {
-		"amd64": "linux-x86_64-gnu",
-		"arm64": "linux-aarch64-gnu",
-	},
+	"darwin": {"arm64": "mac-arm64"},
 }
 
-func rustfsArchiveName() (string, error) {
+// RustfsURL returns the pv artifact URL for RustFS at the given version.
+func RustfsURL(version string) (string, error) {
+	if override := os.Getenv("PV_RUSTFS_URL_OVERRIDE"); override != "" {
+		return override, nil
+	}
+
 	archMap, ok := rustfsPlatformNames[runtime.GOOS]
 	if !ok {
 		return "", fmt.Errorf("unsupported OS for RustFS: %s", runtime.GOOS)
@@ -35,13 +30,5 @@ func rustfsArchiveName() (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unsupported architecture for RustFS: %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
-	return fmt.Sprintf("rustfs-%s-latest.zip", platform), nil
-}
-
-func rustfsURL(version string) (string, error) {
-	archive, err := rustfsArchiveName()
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("https://github.com/rustfs/rustfs/releases/download/%s/%s", version, archive), nil
+	return fmt.Sprintf("https://github.com/prvious/pv/releases/download/artifacts/rustfs-%s-%s.tar.gz", platform, version), nil
 }

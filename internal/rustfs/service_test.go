@@ -148,30 +148,24 @@ func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
 
-	if proc.Name != "rustfs-latest" {
-		t.Errorf("proc.Name = %q, want %q", proc.Name, "rustfs-latest")
+	if proc.Name != "rustfs-1.0.0-beta" {
+		t.Errorf("proc.Name = %q, want %q", proc.Name, "rustfs-1.0.0-beta")
 	}
 
-	wantBinarySuffix := "/.pv/internal/bin/rustfs"
-	if !strings.HasSuffix(proc.Binary, wantBinarySuffix) {
-		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
+	if !strings.HasSuffix(proc.Binary, "/.pv/rustfs/1.0.0-beta/bin/rustfs") {
+		t.Errorf("proc.Binary = %q, want versioned rustfs binary path", proc.Binary)
 	}
 
-	wantLogSuffix := "/.pv/logs/rustfs-latest.log"
-	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
-		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
+	if !strings.HasSuffix(proc.LogFile, "/.pv/logs/rustfs-1.0.0-beta.log") {
+		t.Errorf("proc.LogFile = %q, want versioned rustfs log path", proc.LogFile)
 	}
 
-	dataDir := config.ServiceDataDir("s3", "latest")
-	info, err := os.Stat(dataDir)
-	if err != nil {
-		t.Errorf("data dir %q was not created: %v", dataDir, err)
-	} else if !info.IsDir() {
-		t.Errorf("data dir %q exists but is not a directory", dataDir)
+	if _, err := os.Stat(config.RustfsDataDir("1.0.0-beta")); err != nil {
+		t.Errorf("rustfs data dir was not created: %v", err)
 	}
 
 	logDir := config.LogsDir()
-	info, err = os.Stat(logDir)
+	info, err := os.Stat(logDir)
 	if err != nil {
 		t.Errorf("log dir %q was not created: %v", logDir, err)
 	} else if !info.IsDir() {

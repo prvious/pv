@@ -59,13 +59,13 @@ func installMago(client *http.Client, url string, progress ProgressFunc) error {
 
 func installRustfs(client *http.Client, url string, progress ProgressFunc) error {
 	internalBin := config.InternalBinDir()
-	archivePath := filepath.Join(internalBin, "rustfs.zip")
+	archivePath := filepath.Join(internalBin, "rustfs.tar.gz")
 	destPath := filepath.Join(internalBin, "rustfs")
 
 	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
 		return err
 	}
-	if err := ExtractZip(archivePath, destPath, "rustfs"); err != nil {
+	if err := ExtractTarGz(archivePath, destPath, "rustfs"); err != nil {
 		return err
 	}
 	os.Remove(archivePath)

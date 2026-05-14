@@ -132,7 +132,7 @@ func TestBuildSupervisorProcess_ReadyTimeoutSet(t *testing.T) {
 // TestBuildSupervisorProcess_NameAndPaths locks the process name, binary path,
 // and log file path so that a future rename of ServiceKey() or Binary().Name
 // cannot silently route to the wrong supervisor map entry. The supervisor map
-// in manager.go is keyed by proc.Name (= "mailpit-latest"), NOT by ServiceKey()
+// in manager.go is keyed by proc.Name (= "mailpit-1"), NOT by ServiceKey()
 // (= "mail"). A swap of the two would compile cleanly but break supervision
 // because the map lookup would miss.
 func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
@@ -142,25 +142,22 @@ func TestBuildSupervisorProcess_NameAndPaths(t *testing.T) {
 		t.Fatalf("BuildSupervisorProcess: %v", err)
 	}
 
-	// proc.Name must be "mailpit-latest" (binary name + version), NOT "mail" (the service key).
-	if proc.Name != "mailpit-latest" {
-		t.Errorf("proc.Name = %q, want %q (not the service key %q)", proc.Name, "mailpit-latest", "mail")
+	if proc.Name != "mailpit-1" {
+		t.Errorf("proc.Name = %q, want %q", proc.Name, "mailpit-1")
 	}
 
-	wantBinarySuffix := "/.pv/internal/bin/mailpit"
-	if !strings.HasSuffix(proc.Binary, wantBinarySuffix) {
-		t.Errorf("proc.Binary = %q, want suffix %q", proc.Binary, wantBinarySuffix)
+	if !strings.HasSuffix(proc.Binary, "/.pv/mailpit/1/bin/mailpit") {
+		t.Errorf("proc.Binary = %q, want versioned mailpit binary path", proc.Binary)
 	}
 
-	wantLogSuffix := "/.pv/logs/mailpit-latest.log"
-	if !strings.HasSuffix(proc.LogFile, wantLogSuffix) {
-		t.Errorf("proc.LogFile = %q, want suffix %q", proc.LogFile, wantLogSuffix)
+	if !strings.HasSuffix(proc.LogFile, "/.pv/logs/mailpit-1.log") {
+		t.Errorf("proc.LogFile = %q, want versioned mailpit log path", proc.LogFile)
 	}
 
-	dataDir := config.ServiceDataDir("mail", "latest")
+	dataDir := config.MailpitDataDir("1")
 	info, err := os.Stat(dataDir)
 	if err != nil {
-		t.Errorf("data dir %q was not created: %v", dataDir, err)
+		t.Errorf("mailpit data dir was not created: %v", err)
 	} else if !info.IsDir() {
 		t.Errorf("data dir %q exists but is not a directory", dataDir)
 	}

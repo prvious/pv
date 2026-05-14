@@ -113,3 +113,44 @@ func TestInstallBinary_Composer(t *testing.T) {
 		t.Error("composer is not executable")
 	}
 }
+
+func TestInstallRustfsExtractsTarGzArtifact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	archive := filepath.Join(t.TempDir(), "rustfs.tar.gz")
+	makeTarGz(t, archive, "bin/rustfs", "fake rustfs binary")
+	archiveBytes, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archiveBytes)
+	}))
+	defer srv.Close()
+
+	if err := config.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installRustfs(srv.Client(), srv.URL+"/rustfs.tar.gz", nil); err != nil {
+		t.Fatalf("installRustfs() error = %v", err)
+	}
+
+	destPath := filepath.Join(config.InternalBinDir(), "rustfs")
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("rustfs not installed: %v", err)
+	}
+	if string(got) != "fake rustfs binary" {
+		t.Fatalf("rustfs content = %q", got)
+	}
+	info, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Error("rustfs is not executable")
+	}
+}

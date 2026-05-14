@@ -2,52 +2,40 @@ package binaries
 
 import (
 	"runtime"
-	"strings"
 	"testing"
 )
 
-func TestMailpitURL_CurrentPlatform(t *testing.T) {
-	url, err := mailpitURL("v1.29.6")
+func TestMailpitURL(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("mailpit binaries only published for darwin/arm64 in v1")
+	}
+	t.Setenv("PV_MAILPIT_URL_OVERRIDE", "")
+	url, err := MailpitURL("1")
 	if err != nil {
-		t.Fatalf("unexpected error for %s/%s: %v", runtime.GOOS, runtime.GOARCH, err)
+		t.Fatalf("MailpitURL: %v", err)
 	}
-	if !strings.HasPrefix(url, "https://github.com/axllent/mailpit/releases/download/v1.29.6/") {
-		t.Errorf("URL = %q; missing expected prefix", url)
-	}
-	if !strings.HasSuffix(url, ".tar.gz") {
-		t.Errorf("URL = %q; expected .tar.gz suffix", url)
+	want := "https://github.com/prvious/pv/releases/download/artifacts/mailpit-mac-arm64-1.tar.gz"
+	if url != want {
+		t.Fatalf("MailpitURL = %q, want %q", url, want)
 	}
 }
 
-func TestMailpitArchiveName_AllPlatforms(t *testing.T) {
-	tests := []struct {
-		goos, goarch, want string
-	}{
-		{"darwin", "arm64", "mailpit-darwin-arm64.tar.gz"},
-		{"darwin", "amd64", "mailpit-darwin-amd64.tar.gz"},
-		{"linux", "amd64", "mailpit-linux-amd64.tar.gz"},
-		{"linux", "arm64", "mailpit-linux-arm64.tar.gz"},
+func TestMailpitURL_Override(t *testing.T) {
+	t.Setenv("PV_MAILPIT_URL_OVERRIDE", "http://example.test/mailpit.tar.gz")
+	url, err := MailpitURL("1")
+	if err != nil {
+		t.Fatalf("MailpitURL override: %v", err)
 	}
-	for _, tc := range tests {
-		archMap, ok := mailpitPlatformNames[tc.goos]
-		if !ok {
-			t.Errorf("no entry for GOOS=%s", tc.goos)
-			continue
-		}
-		platform, ok := archMap[tc.goarch]
-		if !ok {
-			t.Errorf("no entry for GOARCH=%s on %s", tc.goarch, tc.goos)
-			continue
-		}
-		got := "mailpit-" + platform + ".tar.gz"
-		if got != tc.want {
-			t.Errorf("%s/%s: got %q, want %q", tc.goos, tc.goarch, got, tc.want)
-		}
+	if url != "http://example.test/mailpit.tar.gz" {
+		t.Fatalf("MailpitURL override = %q", url)
 	}
 }
 
 func TestDownloadURL_MailpitCase(t *testing.T) {
-	url, err := DownloadURL(Mailpit, "v1.29.6")
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("mailpit binaries only published for darwin/arm64 in v1")
+	}
+	url, err := DownloadURL(Mailpit, "1")
 	if err != nil {
 		t.Fatalf("DownloadURL returned error: %v", err)
 	}
