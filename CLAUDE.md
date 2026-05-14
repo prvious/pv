@@ -1,197 +1,50 @@
-# CLAUDE.md
+# Repository Instructions
 
-Instructions for working in this codebase. See `README.md` for architecture overview.
+## Project
 
-## What is pv
+- `pv` is a Go Cobra CLI for local PHP dev: FrankenPHP, versioned PHP, Composer/Mago, `.test` HTTPS, and native supervised services. No Docker or VM layer.
+- Use Go for repo logic. Do not add Python/Ruby/Node/etc. dependencies; test fakes that need binaries should be small Go `main` packages under `internal/.../testdata/` and built with `go build`.
+- When working on Go code, always activate the repo-local `golang-pro` and `modern-go` skills first.
 
-`pv` is a local dev server manager powered by FrankenPHP. Go + cobra CLI. Manages PHP versions, serves projects under `.test` domains with HTTPS, supervises backing services as native binaries (no Docker, no VM).
+## Commands
 
-## This is a Go codebase — use Go
+- Build: `go build -o pv .`
+- Build with a version: `go build -ldflags "-X github.com/prvious/pv/cmd.version=1.0.0"`
+- Focused tests: `go test ./internal/registry/` or `go test ./cmd/ -run TestLink`
+- Before handing off Go changes: `gofmt -w .`, `go vet ./...`, `go build ./...`, `go test ./...`
 
-**NEVER** reach for Python, Ruby, Node/JavaScript, Perl, or any other scripting language to achieve something that can be done in Go. This is a Go codebase; the only runtime dependency should be `go` itself.
+## Architecture
 
-**In particular, this applies to:**
+- Entry point is `main.go` -> `cmd.Execute()`; `cmd/root.go` wraps the Cobra root with Fang.
+- `cmd/` holds core/orchestrator commands plus thin registration shims. Group commands live in `internal/commands/<group>/` with `Register(parent *cobra.Command)` and exported `Run*` wrappers for orchestrators.
+- Tool/service commands use `tool:action`; core commands (`link`, `start`, `stop`, etc.) are plain.
+- Current service groups are first-class commands: `postgres:*` (`pg:*` alias), `mysql:*`, `redis:*`, `rustfs:*` (`s3:*` alias), and `mailpit:*` (`mail:*` alias). Add new services the same way; do not introduce a generic `service:*` group.
+- Lifecycle implementation belongs in `internal/{phpenv,binaries,tools,postgres,mysql,redis,rustfs,mailpit,...}`, not in Cobra wrappers. `install`, `update`, and `uninstall` delegate to per-tool/service `Run*` helpers.
+- `pv.yml` is the project contract; `pv init` generates it. Do not reintroduce hidden service/env setup based on `.env` hints.
 
-- **Test helpers and fakes.** If a test needs a stand-in binary (e.g., something that binds a TCP port), write it as a small Go `main` under `internal/.../testdata/` and compile it with `go build` from the test. Do **not** shell out to `python3 -c '...'`, inline a Ruby one-liner, etc.
-- **Build / release automation.** Prefer Go programs or plain shell. Do not introduce scripting-language dependencies.
-- **One-off utilities, migration scripts, codegen.** Write them in Go.
+## Tools And Storage
 
-**Shell (`bash`) is acceptable** for genuine glue code — orchestrating external commands, wiring CI steps (`scripts/e2e/*.sh`). Anything doing real logic should be Go.
+- Managed tools follow `:download`, `:path`, `:install`, `:update`, `:uninstall`; `:install` delegates to `:download`, and exposure uses `internal/tools`.
+- Real binaries never go in `~/.pv/bin/`; that directory is only shims and symlinks. Use `config.InternalBinDir()` for private binaries and `config.BinDir()` for PATH entries.
+- PHP installs currently live under `~/.pv/php/{ver}/`; use `config.PhpVersionDir()` and `config.PortForVersion()` instead of hardcoding paths or port math.
 
-**Why:** contributors must be able to build and test this repo with only `go` installed. A test or tool that silently depends on `python3` passes locally, passes on CI today, and breaks the moment a runner image or developer machine doesn't ship that interpreter. This has already bitten us once; don't repeat it.
+## CLI UI
 
-## Build & test
+- Fang owns help, errors, spacing, and `--version`; production commands should use `RunE`, return errors, and not set `SilenceUsage`/`SilenceErrors`.
+- New user-facing status output should use `internal/ui` helpers and stderr. Use stdout only for commands intentionally meant for piping, such as `pv env` and logs.
+- Use `charm.land/huh/v2` for prompts and `charm.land/lipgloss/v2` for styling; never import `github.com/charmbracelet/lipgloss`.
 
-```bash
-go build -o pv .              # build
-go test ./...                  # all tests
-go test ./internal/registry/   # one package
-go test ./cmd/ -run TestLink   # pattern match
-```
+## Testing
 
-Build version is set via `go build -ldflags "-X github.com/prvious/pv/cmd.version=1.0.0"` — defaults to `"dev"`.
+- Tests that touch pv state must isolate HOME with `t.Setenv("HOME", t.TempDir())`.
+- Do not use `t.Parallel()` in tests that call `t.Setenv` or mutate pv/Cobra globals.
+- Cobra tests should build a fresh command tree per test; do not mutate the package-level `rootCmd`.
+- Registry changes are in-memory until `Save()`; tests usually `Load()` -> mutate -> `Save()`.
+- E2E lives in `scripts/e2e/` and `.github/workflows/e2e.yml` on macOS. Use it for real binaries, network, DNS, HTTPS, or sudo behavior.
+- Source `scripts/e2e/helpers.sh` in E2E scripts; captured Lipgloss output needs `strip_ansi` before assertions.
 
-## Lint & format
+## CI And Releases
 
-Run after every change, before committing:
-
-```bash
-gofmt -w .                     # format all files
-go vet ./...                   # catch common mistakes
-go build ./...                 # verify compilation
-go test ./...                  # run tests
-```
-
-**Hard rules:**
-1. All code must be `gofmt`-formatted. No exceptions.
-2. `go vet` must pass clean. Fix all warnings before committing.
-3. Imports must be alphabetically ordered within each group (stdlib, then external). `gofmt` does not sort imports — manually keep them ordered.
-
-## Command conventions
-
-- **Colon-namespaced**: tool/service/daemon commands use `tool:action` format (e.g., `mago:install`, `postgres:start`, `daemon:enable`). Core commands (`link`, `start`, `stop`) are plain.
-- **Subpackage layout**: tool/service/daemon commands live in `internal/commands/<group>/` (e.g., `internal/commands/mago/install.go`). Each group has a `register.go` with a `Register(parent *cobra.Command)` function that wires all commands onto rootCmd. Bridge files in `cmd/` (e.g., `cmd/mago.go`) call `Register(rootCmd)` in `init()`.
-- **Core/orchestrator commands** (`install`, `update`, `uninstall`, `link`, `start`, `stop`, etc.) remain in `cmd/` as flat files.
-- **Cross-package calls**: `register.go` exports `Run*()` helpers (e.g., `php.RunInstall(args)`) for orchestrators to call sub-tool RunE functions.
-- **Always use `RunE`** (not `Run`) so errors propagate.
-
-## Tool command rules
-
-Every managed tool (php, mago, composer) follows a strict five-command pattern. When adding a new tool, create all five:
-
-| Command | What it does | Where logic lives |
-|---------|-------------|-------------------|
-| `:download` | Fetches binary to private storage | `internal/binaries/` or `internal/phpenv/` |
-| `:path` | Exposes/unexposes from PATH (supports `--remove`) | `internal/tools/` |
-| `:install` | Orchestrates `:download` then `tools.Expose()` | `internal/commands/<group>/` — delegates only |
-| `:update` | Redownloads, re-exposes if `tools.IsExposed()` | `internal/commands/<group>/` + `internal/` |
-| `:uninstall` | Unexposes + removes binary files | `internal/commands/<group>/` + `internal/tools/` |
-
-**Hard rules:**
-1. `:install` MUST delegate to `:download` RunE — never inline download logic in `cmd/`.
-2. Download logic lives in `internal/binaries/` or `internal/phpenv/`, never in `cmd/`.
-3. Exposure logic lives in `internal/tools/` — use `tools.Expose()` / `tools.Unexpose()`.
-4. `:update` uses `tools.IsExposed()` (not `AutoExpose`) to decide re-exposure — handles manually-exposed tools correctly.
-5. New tools must be registered in `internal/tools/tool.go`'s `All` map with correct `ExposureType` and `AutoExpose`.
-
-## Orchestrator commands
-
-`install`, `update`, and `uninstall` are thin orchestrators. They call per-tool `:install`/`:update`/`:uninstall` RunE functions. They MUST NOT contain download, exposure, or cleanup logic — that belongs in the per-tool commands.
-
-- `pv update` self-updates the pv binary first (via `syscall.Exec` re-exec with `--no-self-update`), then delegates to each tool's `:update`.
-- `pv restart` delegates to `daemon:restart` in daemon mode, otherwise reloads config via admin API.
-
-## Binary storage rules
-
-- `~/.pv/bin/` — user PATH. **Only** shims and symlinks go here. Never place real binaries.
-- `~/.pv/internal/bin/` — private storage. Real binaries (mago, composer.phar) live here.
-- `~/.pv/php/{ver}/` — versioned PHP binaries (php, frankenphp) live here.
-- Use `config.InternalBinDir()` for private storage paths, `config.BinDir()` for PATH entries.
-
-## UI rules
-
-### Stack overview
-
-The CLI uses a layered Charm stack:
-- **fang** (`charm.land/fang/v2`) — wraps Cobra. Handles help pages, usage text, error display (with `ERROR` badge), version flag, and command spacing. Configured in `cmd/root.go` via `fang.Execute()`.
-- **huh** (`charm.land/huh/v2`) — interactive forms (multi-select, text input, confirm). Used for `setup` wizard and any future interactive prompts.
-- **lipgloss** (`charm.land/lipgloss/v2`) — low-level styling. Used inside `internal/ui/` helpers. Never import v1 (`github.com/charmbracelet/lipgloss`).
-- **`internal/ui/`** — spinners, progress bars, status output (✓/✗), tables, trees. All user-facing status output goes through these helpers.
-
-### What fang handles (do NOT reimplement)
-
-- **Help/usage text** — fang styles it. Never set `Long` to replicate usage info. Put usage examples in the `Example` field (fang syntax-highlights them).
-- **Error display** — fang shows errors with a styled `ERROR` badge. Never manually print errors and `os.Exit(1)`. Return `error` from `RunE` and let fang handle it.
-- **`SilenceUsage` / `SilenceErrors`** — fang sets these globally. Never set them on individual commands.
-- **Spacing/padding** — fang manages whitespace around help and error output. Don't add `fmt.Fprintln(os.Stderr)` for visual spacing around errors.
-- **Version flag** — provided via `fang.WithVersion()`. Don't add a manual `--version` flag.
-
-### What `internal/ui/` handles (always use these)
-
-- **Long operations**: `ui.Step(label, fn)` — spinner, then `✓ result` or `✗ error`.
-- **Downloads**: `ui.StepProgress(label, fn)` — progress bar with percentage.
-- **Multi-step commands**: `ui.Header(version)` at start, `ui.Footer(start, docsURL)` at end.
-- **Lists/tables**: `ui.Table(headers, rows)` or `ui.Tree(items)`.
-- **One-liners**: `ui.Success(text)`, `ui.Fail(text)`, `ui.Subtle(text)`.
-- All output goes to `os.Stderr` (stdout is reserved for machine-readable output like `pv env`).
-
-### Error handling pattern
-
-- **Simple errors**: return `fmt.Errorf(...)` — fang displays it with styled `ERROR` badge.
-- **After `ui.Step` / `ui.StepProgress`**: these already print `✗` on failure and return `ui.ErrAlreadyPrinted`. The custom fang error handler in `cmd/root.go` skips re-display for this sentinel.
-- **Never use the sandwich pattern**: don't do `fmt.Fprintln` + `ui.Fail()` + `cmd.SilenceUsage = true` + `return ErrAlreadyPrinted`. Just return the error.
-
-### Interactive forms
-
-- Use **huh** (`charm.land/huh/v2`) for any interactive user input (multi-select, text fields, confirmations).
-- Never use raw `fmt.Scan` / `bufio.Scanner` for interactive input.
-
-### Hard don'ts
-
-1. **Errors**: always `return fmt.Errorf(...)` — fang displays them. Never `fmt.Print` an error manually.
-2. **Status output**: use `ui.*` helpers (`ui.Success`, `ui.Fail`, `ui.Subtle`, `ui.Step`, etc.) — never raw `fmt.Print*` for new code. Legacy uses remain in older commands.
-3. Never import lipgloss v1 (`github.com/charmbracelet/lipgloss`). Always use `charm.land/lipgloss/v2`.
-4. Never set `SilenceUsage` or `SilenceErrors` on commands — fang owns this.
-5. Never add `--version` flags — fang provides this.
-6. Put usage examples in `Example:` field, not `Long:` — fang syntax-highlights `Example`.
-7. Don't add `fmt.Fprintln(os.Stderr)` for blank-line spacing around errors — fang handles spacing.
-
-## Import cycle: phpenv ↔ tools
-
-`phpenv` and `tools` cannot import each other. This is resolved via callback:
-- `phpenv.ExposeFunc` is a `func(name string) error` variable
-- `phpenv/shim.go` init() wires it to `tools.Expose()`
-- When adding new cross-package dependencies, use the same callback pattern — don't create import cycles.
-
-## Testing conventions
-
-- **Filesystem isolation**: always use `t.Setenv("HOME", t.TempDir())` — never touch the real home dir.
-- **Cmd tests**: build fresh cobra command trees per test to avoid state leaking.
-- **Registry**: in-memory + explicit save. `Load()` → mutate → `Save()`.
-- **E2E tests**: live in `scripts/e2e/`, run on GitHub Actions (macOS). Source `scripts/e2e/helpers.sh`. Use these for anything needing real binaries, network, DNS, or HTTPS. Add new phases to `.github/workflows/e2e.yml`.
-
-## CI workflows
-
-### Dispatching `build-artifacts.yml` manually
-
-A full dispatch runs the FrankenPHP matrix (3 PHP versions, ~30 min each), Postgres (17 + 18), MySQL (8.0 + 8.4 + 9.7), Mailpit, RustFS, and Redis. That's significant macOS runner time per push and almost always more than the change under test needs.
-
-**Always pass `skip_*` flags scoped to the change.** Infer from context — don't run families unrelated to the work:
-
-| Working on… | Dispatch with |
-|---|---|
-| MySQL artifacts / `mysql:` job / `scripts/test-mysql-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
-| Postgres artifacts / `postgres:` job / `scripts/test-postgres-bundle.sh` | `-f skip_frankenphp=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
-| FrankenPHP build / `static-php-cli` extensions | `-f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true` |
-| Mailpit artifacts / `mailpit:` job / `scripts/test-mailpit-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_rustfs=true -f skip_redis=true` |
-| RustFS artifacts / `rustfs:` job / `scripts/test-rustfs-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_redis=true` |
-| Redis artifacts / `redis:` job / `scripts/test-redis-bundle.sh` | `-f skip_frankenphp=true -f skip_postgres=true -f skip_mysql=true -f skip_mailpit=true -f skip_rustfs=true` |
-| Release-job wiring / artifacts upload logic | run the family that produces the artifacts in question; skip the others |
-| Truly cross-cutting (e.g. concurrency-group changes) | no skips — needs the full matrix |
-
-If the affected family is ambiguous from the diff, ask before dispatching. Never dispatch with no skip flags "just to be safe" — that's the failure mode this convention exists to prevent.
-
-Example (MySQL-only dispatch):
-
-```bash
-gh workflow run build-artifacts.yml --ref <branch> \
-  -f skip_frankenphp=true -f skip_postgres=true \
-  -f skip_mailpit=true -f skip_rustfs=true -f skip_redis=true
-```
-
-The `release` job is gated on all six skip flags being false, so a partial dispatch never publishes a half-baked release.
-
-## Multi-version PHP
-
-- Main FrankenPHP serves on :443/:80, proxies non-global versions via `reverse_proxy`.
-- Secondary FrankenPHP per version on high port: `8000 + major*100 + minor*10` (8.3 → 8830).
-- Version resolution order: `pv.yml` `php` field → `composer.json` require.php → global default.
-
-## Services
-
-All backing services are native binaries supervised by the pv daemon — there is no Docker layer and no `service:*` command group.
-
-- **First-class command groups**: postgres (`postgres:*`), mysql (`mysql:*`), redis (`redis:*`), rustfs (`rustfs:*` with `s3:*` alias), mailpit (`mailpit:*` with `mail:*` alias). Each exposes the standard lifecycle: `install`, `uninstall`, `update`, `start`, `stop`, `restart`, `status`, `logs`.
-- **Per-tool packages**: `internal/commands/{postgres,mysql,redis,rustfs,mailpit}/` are thin cobra wrappers. Database-specific lifecycle helpers live in `internal/{postgres,mysql,redis}/`.
-- **Binary services with shared shape** (s3 / mail): registered in `internal/services/` (the `BinaryService` interface). Shared lifecycle logic lives in `internal/svchooks/` (binding, install/update/uninstall, enable/disable, status, logs).
-- **Supervision**: the daemon (`internal/supervisor/`) starts/stops binaries and tracks readiness. Services do not boot a VM or talk to a container engine.
+- Manual `build-artifacts.yml` dispatches are expensive; pass `skip_*` for unaffected families. The full run builds FrankenPHP/PHP CLI 8.3/8.4/8.5, Postgres 17/18, MySQL 8.0/8.4/9.7, Mailpit, RustFS, and Redis.
+- If the affected artifact family is ambiguous, ask first; never run all artifact jobs "just to be safe".
+- `release-pv.yml` publishes the `pv` binary on `v*` tags via GoReleaser. The rolling `artifacts` release is produced only by a full `build-artifacts.yml` run on `main`.
