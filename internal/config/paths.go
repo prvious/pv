@@ -239,18 +239,6 @@ func RedisDir() string {
 	return filepath.Join(PvDir(), "redis")
 }
 
-// RedisDataDir returns the parent root for versioned redis-server data dirs.
-// Prefer RedisDataDirV for per-version data paths.
-func RedisDataDir() string {
-	return filepath.Join(DataDir(), "redis")
-}
-
-// RedisLogPath returns the legacy unversioned supervisor log file for redis.
-// Prefer RedisLogPathV for new per-version callers.
-func RedisLogPath() string {
-	return filepath.Join(LogsDir(), "redis.log")
-}
-
 // RedisDefaultVersion returns the currently supported bundled redis version.
 // Currently "8.6" — update when the artifacts pipeline bumps.
 func RedisDefaultVersion() string { return "8.6" }
@@ -262,8 +250,7 @@ func RedisVersionDir(version string) string {
 }
 
 // RedisDataDirV returns ~/.pv/data/redis/{version}/ — the data root
-// for a specific version. Note: old RedisDataDir() (no version) is
-// deprecated; renamed to RedisDataRoot() for the parent.
+// for a specific version.
 func RedisDataDirV(version string) string {
 	return filepath.Join(DataDir(), "redis", version)
 }
