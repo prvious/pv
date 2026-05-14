@@ -35,9 +35,9 @@ func TestWebRoutes(t *testing.T) {
 	}
 }
 
-// TestEnvVars_MatchesDockerKeys: linked projects rely on these exact .env
-// keys; the binary migration must not silently change them.
-func TestEnvVars_MatchesDockerKeys(t *testing.T) {
+// TestEnvVars_MatchesLaravelS3Keys: linked projects rely on these exact .env
+// keys when RustFS is bound through pv.yml.
+func TestEnvVars_MatchesLaravelS3Keys(t *testing.T) {
 	vars, err := EnvVars(DefaultVersion(), "myproject")
 	if err != nil {
 		t.Fatalf("EnvVars: %v", err)

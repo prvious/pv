@@ -34,9 +34,8 @@ func TestWebRoutes(t *testing.T) {
 	}
 }
 
-// TestMailpit_EnvVars_Golden is pinned against the exact keys/values the
-// old Docker Mail service produced so linked projects do not need .env
-// rewrites post-migration.
+// TestMailpit_EnvVars_Golden pins the exact keys/values linked projects get
+// when Mailpit is bound through pv.yml.
 func TestMailpit_EnvVars_Golden(t *testing.T) {
 	got, err := EnvVars(DefaultVersion(), "anyproject")
 	if err != nil {

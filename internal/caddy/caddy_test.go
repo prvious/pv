@@ -615,7 +615,7 @@ func TestGenerateSiteConfig_IncludesAliases(t *testing.T) {
 	}
 }
 
-func TestGenerateSiteConfig_NoAliasesPreservesLegacy(t *testing.T) {
+func TestGenerateSiteConfig_NoAliasesUsesDefaultHosts(t *testing.T) {
 	scaffold(t)
 
 	projDir := t.TempDir()
@@ -630,34 +630,6 @@ func TestGenerateSiteConfig_NoAliasesPreservesLegacy(t *testing.T) {
 	}
 	cfg := readSiteConfig(t, "myapp")
 	if !strings.Contains(cfg, "myapp.test, *.myapp.test {") {
-		t.Errorf("legacy two-host line missing\n%s", cfg)
-	}
-}
-
-func TestGenerateAllSiteConfigs(t *testing.T) {
-	scaffold(t)
-
-	projects := []registry.Project{
-		{Name: "app1", Path: t.TempDir(), Type: "laravel"},
-		{Name: "app2", Path: t.TempDir(), Type: "static"},
-		{Name: "app3", Path: t.TempDir(), Type: ""},
-	}
-
-	if err := GenerateAllSiteConfigs(projects); err != nil {
-		t.Fatalf("GenerateAllSiteConfigs() error = %v", err)
-	}
-
-	// app1 and app2 should have config files
-	for _, name := range []string{"app1", "app2"} {
-		path := filepath.Join(config.SitesDir(), name+".caddy")
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("expected %s.caddy to exist", name)
-		}
-	}
-
-	// app3 (unknown) should not have a config file
-	path := filepath.Join(config.SitesDir(), "app3.caddy")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("expected no file for unknown type project app3")
+		t.Errorf("default two-host line missing\n%s", cfg)
 	}
 }

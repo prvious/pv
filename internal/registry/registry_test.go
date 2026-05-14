@@ -1,10 +1,8 @@
 package registry
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
@@ -454,100 +452,24 @@ func TestFindService(t *testing.T) {
 	}
 }
 
-func TestFindService_FuzzyMatch(t *testing.T) {
+func TestFindService_RequiresExactVersionedKey(t *testing.T) {
 	r := &Registry{Services: make(map[string]*ServiceInstance)}
 	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
 
-	// Fuzzy match by name prefix.
 	svc, err := r.FindService("mysql")
 	if err != nil {
-		t.Fatalf("FindService(mysql) error = %v", err)
+		t.Fatalf("FindService(mysql) unexpected error = %v", err)
 	}
-	if svc == nil {
-		t.Fatal("FindService(mysql) returned nil, want fuzzy match for mysql:8.4")
-	}
-	if svc.Port != 33000 {
-		t.Errorf("Port = %d, want 33000", svc.Port)
+	if svc != nil {
+		t.Fatal("FindService(mysql) should require exact versioned key")
 	}
 
-	// Exact match still works.
 	svc, err = r.FindService("mysql:8.4")
 	if err != nil {
 		t.Fatalf("FindService(mysql:8.4) error = %v", err)
 	}
 	if svc == nil {
 		t.Fatal("FindService(mysql:8.4) returned nil")
-	}
-
-	// No match returns nil.
-	svc, err = r.FindService("postgres")
-	if err != nil {
-		t.Fatalf("FindService(postgres) unexpected error = %v", err)
-	}
-	if svc != nil {
-		t.Error("FindService(postgres) should return nil")
-	}
-}
-
-func TestFindService_Ambiguous(t *testing.T) {
-	r := &Registry{Services: make(map[string]*ServiceInstance)}
-	_ = r.AddService("mysql:8.0", &ServiceInstance{Image: "mysql:8.0", Port: 33000})
-	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
-
-	_, err := r.FindService("mysql")
-	if err == nil {
-		t.Fatal("FindService(mysql) should return ambiguity error when multiple versions exist")
-	}
-}
-
-func TestResolveServiceKey_Exact(t *testing.T) {
-	r := &Registry{Services: make(map[string]*ServiceInstance)}
-	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
-
-	key, err := r.ResolveServiceKey("mysql:8.4")
-	if err != nil {
-		t.Fatalf("ResolveServiceKey() error = %v", err)
-	}
-	if key != "mysql:8.4" {
-		t.Errorf("key = %q, want %q", key, "mysql:8.4")
-	}
-}
-
-func TestResolveServiceKey_Prefix(t *testing.T) {
-	r := &Registry{Services: make(map[string]*ServiceInstance)}
-	_ = r.AddService("postgres:18-alpine", &ServiceInstance{Image: "postgres:18-alpine", Port: 54018})
-
-	key, err := r.ResolveServiceKey("postgres")
-	if err != nil {
-		t.Fatalf("ResolveServiceKey() error = %v", err)
-	}
-	if key != "postgres:18-alpine" {
-		t.Errorf("key = %q, want %q", key, "postgres:18-alpine")
-	}
-}
-
-func TestResolveServiceKey_NoMatch(t *testing.T) {
-	r := &Registry{Services: make(map[string]*ServiceInstance)}
-	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
-
-	key, err := r.ResolveServiceKey("redis")
-	if err != nil {
-		t.Fatalf("ResolveServiceKey() error = %v", err)
-	}
-	// Returns original key when not found.
-	if key != "redis" {
-		t.Errorf("key = %q, want %q", key, "redis")
-	}
-}
-
-func TestResolveServiceKey_Ambiguous(t *testing.T) {
-	r := &Registry{Services: make(map[string]*ServiceInstance)}
-	_ = r.AddService("mysql:8.0", &ServiceInstance{Image: "mysql:8.0", Port: 33000})
-	_ = r.AddService("mysql:8.4", &ServiceInstance{Image: "mysql:8.4", Port: 33000})
-
-	_, err := r.ResolveServiceKey("mysql")
-	if err == nil {
-		t.Fatal("expected error for ambiguous match, got nil")
 	}
 }
 
@@ -702,53 +624,6 @@ func TestServiceSaveLoad_RoundTrip(t *testing.T) {
 	}
 	if loaded.Services["redis"].Port != 6379 {
 		t.Errorf("redis port = %d, want 6379", loaded.Services["redis"].Port)
-	}
-}
-
-func TestServiceInstance_JSON_WithEnabled(t *testing.T) {
-	enabled := true
-	si := ServiceInstance{
-		Port:        9000,
-		ConsolePort: 9001,
-		Enabled:     &enabled,
-	}
-	data, err := json.Marshal(si)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var back ServiceInstance
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatal(err)
-	}
-	if back.Port != 9000 {
-		t.Errorf("Port round-trip: got %d", back.Port)
-	}
-	if back.ConsolePort != 9001 {
-		t.Errorf("ConsolePort round-trip: got %d", back.ConsolePort)
-	}
-	if back.Enabled == nil || *back.Enabled != true {
-		t.Errorf("Enabled round-trip: got %v", back.Enabled)
-	}
-}
-
-func TestServiceInstance_JSON_OldFormat_DefaultsToNilEnabled(t *testing.T) {
-	// Entries written by earlier pv versions do not include Enabled.
-	blob := []byte(`{"image":"redis:7","port":6379}`)
-	var si ServiceInstance
-	if err := json.Unmarshal(blob, &si); err != nil {
-		t.Fatal(err)
-	}
-	if si.Enabled != nil {
-		t.Errorf("old entry should deserialize with nil Enabled; got %v", si.Enabled)
-	}
-}
-
-func TestServiceInstance_JSON_EmptyFields_Omitted(t *testing.T) {
-	si := ServiceInstance{Image: "redis:7", Port: 6379}
-	data, _ := json.Marshal(si)
-	s := string(data)
-	if strings.Contains(s, "enabled") {
-		t.Errorf("expected enabled to be omitted when nil; got %s", s)
 	}
 }
 

@@ -1,8 +1,6 @@
 package redis
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestLoadState_MissingReturnsEmptyVersions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
