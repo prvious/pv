@@ -407,17 +407,6 @@ func mailpitWebRoutes() []WebRoute {
 	return routes
 }
 
-// GenerateAllSiteConfigs generates site configs for all projects (single-version mode).
-// This is the backward-compatible version that doesn't handle multi-version.
-func GenerateAllSiteConfigs(projects []registry.Project) error {
-	for _, p := range projects {
-		if err := GenerateSiteConfig(p, ""); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // --- Helpers ---
 
 func writeConfig(dir string, p registry.Project, settings *config.Settings, rootPath, tmplStr string, port int) error {

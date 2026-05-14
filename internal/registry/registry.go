@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 
 	"github.com/prvious/pv/internal/config"
 )
@@ -14,9 +12,6 @@ type ServiceInstance struct {
 	Image       string `json:"image,omitempty"`
 	Port        int    `json:"port"`
 	ConsolePort int    `json:"console_port,omitempty"`
-	// Enabled — nil means enabled (back-compat with pre-migration registries).
-	// A non-nil false means "registered but stopped".
-	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type ProjectServices struct {
@@ -25,32 +20,6 @@ type ProjectServices struct {
 	Postgres string `json:"postgres,omitempty"`
 	Redis    string `json:"redis,omitempty"`
 	S3       string `json:"s3,omitempty"`
-}
-
-func (ps *ProjectServices) UnmarshalJSON(data []byte) error {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-
-	if rawRedis, ok := raw["redis"]; ok {
-		var b bool
-		if err := json.Unmarshal(rawRedis, &b); err == nil {
-			if b {
-				raw["redis"] = json.RawMessage(`"8.6"`)
-			} else {
-				delete(raw, "redis")
-			}
-		}
-	}
-
-	fixed, err := json.Marshal(raw)
-	if err != nil {
-		return err
-	}
-
-	type psAlias ProjectServices
-	return json.Unmarshal(fixed, (*psAlias)(ps))
 }
 
 type Project struct {
@@ -167,39 +136,9 @@ func (r *Registry) RemoveService(key string) error {
 	return nil
 }
 
-// FindService looks up a service by exact key first (e.g. "mysql:8.4"),
-// then falls back to matching by service name prefix (e.g. "mysql" matches "mysql:8.4").
-// Returns an error if the key is ambiguous (matches multiple services).
+// FindService looks up a service by exact registry key.
 func (r *Registry) FindService(key string) (*ServiceInstance, error) {
-	resolved, err := r.ResolveServiceKey(key)
-	if err != nil {
-		return nil, err
-	}
-	return r.Services[resolved], nil
-}
-
-// ResolveServiceKey returns the full registry key for a service, supporting
-// both exact keys ("mysql:8.4") and name-only lookups ("mysql").
-// Returns an error if the name prefix matches multiple registered services.
-func (r *Registry) ResolveServiceKey(key string) (string, error) {
-	if _, ok := r.Services[key]; ok {
-		return key, nil
-	}
-	var matches []string
-	for k := range r.Services {
-		if strings.HasPrefix(k, key+":") {
-			matches = append(matches, k)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return key, nil
-	case 1:
-		return matches[0], nil
-	default:
-		sort.Strings(matches)
-		return key, fmt.Errorf("ambiguous service %q matches multiple: %s (specify the full key)", key, strings.Join(matches, ", "))
-	}
+	return r.Services[key], nil
 }
 
 func (r *Registry) ListServices() map[string]*ServiceInstance {

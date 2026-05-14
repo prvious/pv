@@ -31,10 +31,9 @@ func TestUpdate_NotInstalled(t *testing.T) {
 func TestUninstall_BinaryAlreadyRemoved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	enabled := true
 	reg := &registry.Registry{
 		Services: map[string]*registry.ServiceInstance{
-			"mail": {Port: 1025, Enabled: &enabled},
+			"mail": {Port: 1025},
 		},
 	}
 	if err := reg.Save(); err != nil {
@@ -69,10 +68,9 @@ func TestUninstall_DeleteData(t *testing.T) {
 		t.Fatalf("write sentinel: %v", err)
 	}
 
-	enabled := true
 	reg := &registry.Registry{
 		Services: map[string]*registry.ServiceInstance{
-			"mail": {Port: 1025, Enabled: &enabled},
+			"mail": {Port: 1025},
 		},
 	}
 	if err := reg.Save(); err != nil {

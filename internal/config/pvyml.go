@@ -89,8 +89,7 @@ func (p *ProjectConfig) HasServices() bool {
 
 // HasAnyEnv reports whether pv.yml declares any env keys — either the
 // top-level Env map or any service's Env map. Used to decide whether
-// the new pv.yml-driven env writer runs and the legacy Laravel
-// writer skips.
+// the pv.yml-driven env writer runs and the Laravel fallback writer skips.
 func (p *ProjectConfig) HasAnyEnv() bool {
 	if p == nil {
 		return false

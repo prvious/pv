@@ -57,7 +57,7 @@ func TestLoadProjectConfig_SingleQuoted(t *testing.T) {
 func TestLoadProjectConfig_WithComment(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ProjectConfigFilename)
-	if err := os.WriteFile(path, []byte("php: \"8.3\" # pinned for legacy\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("php: \"8.3\" # pinned for project\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

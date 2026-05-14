@@ -40,15 +40,6 @@ func LoadState() (State, error) {
 	if s.Versions == nil {
 		s.Versions = map[string]VersionState{}
 	}
-	if len(s.Versions) == 0 {
-		var old struct {
-			Wanted string `json:"wanted"`
-		}
-		if err := json.Unmarshal(raw, &old); err == nil && old.Wanted != "" {
-			s.Versions["8.6"] = VersionState{Wanted: old.Wanted}
-			_ = SaveState(s)
-		}
-	}
 	return s, nil
 }
 
