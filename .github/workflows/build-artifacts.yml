@@ -485,7 +485,10 @@ jobs:
       - name: Repack
         run: |
           set -euo pipefail
-          tar -czf "mailpit-mac-arm64-${MAILPIT_VERSION_MAJOR}.tar.gz" -C staging mailpit
+          mkdir -p package/bin
+          cp staging/mailpit package/bin/mailpit
+          printf "%s\n" "${{ steps.resolve.outputs.tag }}" > package/VERSION
+          tar -czf "mailpit-mac-arm64-${MAILPIT_VERSION_MAJOR}.tar.gz" -C package bin VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -546,14 +549,19 @@ jobs:
       - name: Smoke test
         run: bash scripts/test-rustfs-bundle.sh staging/rustfs
 
-      - name: Rename binary
-        run: mv staging/rustfs "rustfs-mac-arm64-${RUSTFS_VERSION_MAJOR}"
+      - name: Repack
+        run: |
+          set -euo pipefail
+          mkdir -p package/bin
+          cp staging/rustfs package/bin/rustfs
+          printf "%s\n" "${RUSTFS_TAG}" > package/VERSION
+          tar -czf "rustfs-mac-arm64-${RUSTFS_VERSION_MAJOR}.tar.gz" -C package bin VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_MAJOR }}
-          path: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_MAJOR }}
+          path: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_MAJOR }}.tar.gz
           compression-level: 0
 
   redis:
@@ -779,11 +787,9 @@ jobs:
           for dir in "${mailpit_dirs[@]}"; do
             cp "$dir"/* "release/"
           done
-          # RustFS binary: bare binary (like FrankenPHP).
+          # RustFS tarball: copy as-is (no chmod needed).
           for dir in "${rustfs_dirs[@]}"; do
-            name=$(basename "$dir")
             cp "$dir"/* "release/"
-            chmod +x "release/${name}"
           done
           # Redis tarball: copy as-is (no chmod needed).
           for dir in "${redis_dirs[@]}"; do
