@@ -5,6 +5,7 @@
 - `pv` is a Go Cobra CLI for local PHP dev: FrankenPHP, versioned PHP, Composer/Mago, `.test` HTTPS, and native supervised services. No Docker or VM layer.
 - Use Go for repo logic. Do not add Python/Ruby/Node/etc. dependencies; test fakes that need binaries should be small Go `main` packages under `internal/.../testdata/` and built with `go build`.
 - When working on Go code, always activate the repo-local `golang-pro` and `modern-go` skills first.
+- This project is still in Prototyping stages. we do NOT care about backwards compatibility. we do NOT have any users. for the people testing simply unistall and installing again when new version comes out is the only way to safely update
 
 ## Commands
 
