@@ -1,7 +1,13 @@
 package main
 
-import "github.com/prvious/pv/cmd"
+import (
+	"os"
+
+	"github.com/prvious/pv/internal/cli"
+)
 
 func main() {
-	cmd.Execute()
+	if err := cli.Run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		os.Exit(1)
+	}
 }

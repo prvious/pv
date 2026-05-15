@@ -64,7 +64,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.3"
           cache-dependency-path: |
             go.sum
             caddy/go.sum
@@ -179,7 +179,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout pv (for scripts/test-postgres-bundle.sh)
+      - name: Checkout pv (for legacy/prototype/scripts/test-postgres-bundle.sh)
         uses: actions/checkout@v4
 
       - name: Resolve latest patch version from theseus-rs
@@ -288,7 +288,7 @@ jobs:
           echo "All Mach-O files reference only relative or system paths."
 
       - name: Integration test (initdb + extensions + pgbench + amcheck + dump roundtrip)
-        run: bash scripts/test-postgres-bundle.sh "$STAGING"
+        run: bash legacy/prototype/scripts/test-postgres-bundle.sh "$STAGING"
 
       - name: Strip docs
         run: rm -rf "$STAGING/share/doc"
@@ -338,7 +338,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout pv (for scripts/test-mysql-bundle.sh)
+      - name: Checkout pv (for legacy/prototype/scripts/test-mysql-bundle.sh)
         uses: actions/checkout@v4
 
       - name: Download Oracle tarball
@@ -412,7 +412,7 @@ jobs:
           echo "All Mach-O files reference only @loader_path / system paths."
 
       - name: Smoke test
-        run: bash scripts/test-mysql-bundle.sh "$STAGING"
+        run: bash legacy/prototype/scripts/test-mysql-bundle.sh "$STAGING"
 
       - name: Structural sanity checks
         run: |
@@ -447,7 +447,7 @@ jobs:
       - name: Set Mailpit version
         run: echo "MAILPIT_VERSION_MAJOR=1" >> "$GITHUB_ENV"
 
-      - name: Checkout pv (for scripts/test-mailpit-bundle.sh)
+      - name: Checkout pv (for legacy/prototype/scripts/test-mailpit-bundle.sh)
         uses: actions/checkout@v4
 
       - name: Resolve latest release
@@ -487,7 +487,7 @@ jobs:
           staging/mailpit version || true
 
       - name: Smoke test
-        run: bash scripts/test-mailpit-bundle.sh staging/mailpit
+        run: bash legacy/prototype/scripts/test-mailpit-bundle.sh staging/mailpit
 
       - name: Repack
         run: |
@@ -523,7 +523,7 @@ jobs:
       - name: Set RustFS version line
         run: echo "RUSTFS_VERSION_LINE=1.0.0-beta" >> "$GITHUB_ENV"
 
-      - name: Checkout pv (for scripts/test-rustfs-bundle.sh)
+      - name: Checkout pv (for legacy/prototype/scripts/test-rustfs-bundle.sh)
         uses: actions/checkout@v4
 
       - name: Resolve latest RustFS patch for version line
@@ -563,7 +563,7 @@ jobs:
           staging/rustfs --version
 
       - name: Smoke test
-        run: bash scripts/test-rustfs-bundle.sh staging/rustfs
+        run: bash legacy/prototype/scripts/test-rustfs-bundle.sh staging/rustfs
 
       - name: Repack
         run: |
@@ -617,7 +617,7 @@ jobs:
           echo "Resolved Redis ${MINOR}.x → ${TAG}"
           echo "REDIS_TAG=${TAG}" >> "$GITHUB_ENV"
 
-      - name: Checkout pv (for scripts/test-redis-bundle.sh)
+      - name: Checkout pv (for legacy/prototype/scripts/test-redis-bundle.sh)
         uses: actions/checkout@v4
 
       - name: Download source
@@ -658,7 +658,7 @@ jobs:
           cp "$SRC_DIR/src/redis-server" staging/
           cp "$SRC_DIR/src/redis-cli" staging/
           chmod +x staging/redis-server staging/redis-cli
-          bash scripts/test-redis-bundle.sh staging
+          bash legacy/prototype/scripts/test-redis-bundle.sh staging
 
       - name: Package
         run: tar -czf "redis-mac-arm64-${REDIS_VERSION_MINOR}.tar.gz" -C staging redis-server redis-cli
