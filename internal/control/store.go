@@ -11,22 +11,27 @@ import (
 )
 
 const (
-	ResourceMago = "mago"
+	ResourceComposer = "composer"
+	ResourceMago     = "mago"
+	ResourcePHP      = "php"
 
-	StateReady  = "ready"
-	StateFailed = "failed"
+	StateBlocked = "blocked"
+	StateReady   = "ready"
+	StateFailed  = "failed"
 )
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 type DesiredResource struct {
-	Resource string `json:"resource"`
-	Version  string `json:"version"`
+	Resource       string `json:"resource"`
+	Version        string `json:"version"`
+	RuntimeVersion string `json:"runtime_version,omitempty"`
 }
 
 type ObservedStatus struct {
 	Resource          string `json:"resource"`
 	DesiredVersion    string `json:"desired_version"`
+	RuntimeVersion    string `json:"runtime_version,omitempty"`
 	State             string `json:"state"`
 	LastReconcileTime string `json:"last_reconcile_time"`
 	LastError         string `json:"last_error,omitempty"`
@@ -56,10 +61,7 @@ func (s *FileStore) PutDesired(ctx context.Context, desired DesiredResource) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if desired.Resource == "" {
-		return errors.New("desired resource is required")
-	}
-	if err := ValidateVersion(desired.Version); err != nil {
+	if err := validateDesiredResource(desired); err != nil {
 		return err
 	}
 
@@ -119,6 +121,19 @@ func ValidateVersion(version string) error {
 		return fmt.Errorf("invalid version %q", version)
 	}
 	return nil
+}
+
+func validateDesiredResource(desired DesiredResource) error {
+	if desired.Resource == "" {
+		return errors.New("desired resource is required")
+	}
+	if err := ValidateVersion(desired.Version); err != nil {
+		return err
+	}
+	if desired.RuntimeVersion == "" {
+		return nil
+	}
+	return ValidateVersion(desired.RuntimeVersion)
 }
 
 type snapshot struct {
