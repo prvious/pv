@@ -7,8 +7,30 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 )
+
+const defaultVersion = "8.4"
+
+func DefaultVersion() string { return defaultVersion }
+
+func ResolveVersion(version string) (string, error) {
+	if version == "" {
+		return DefaultVersion(), nil
+	}
+	if err := ValidateVersion(version); err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
+func ValidateVersion(version string) error {
+	if !binaries.IsValidMysqlVersion(version) {
+		return fmt.Errorf("unsupported mysql version %q (want one of 8.0, 8.4, 9.7)", version)
+	}
+	return nil
+}
 
 // mysqldVersionRE pulls the patch-level version string out of
 // `mysqld --version` output. Real-world examples:

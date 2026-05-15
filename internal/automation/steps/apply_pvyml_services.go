@@ -15,9 +15,8 @@ import (
 // ApplyPvYmlServicesStep binds the services declared in a project's
 // pv.yml into the registry.
 //
-// For version-bearing services (postgres, mysql, redis), errors if the
-// declared version isn't supported or installed. For single-version services
-// (mailpit, rustfs), errors if the service isn't installed — pv.yml should
+// Each declared service resolves to an explicit supported version before
+// binding. Errors if that resolved version isn't installed — pv.yml should
 // fail loud, never silently bind a service that won't be there.
 type ApplyPvYmlServicesStep struct{}
 
@@ -37,9 +36,9 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	count := 0
 
 	if cfg.Postgresql != nil {
-		major := cfg.Postgresql.Version
-		if major == "" {
-			return "", fmt.Errorf("pv.yml postgresql: version is required")
+		major, err := postgres.ResolveVersion(cfg.Postgresql.Version)
+		if err != nil {
+			return "", err
 		}
 		if !postgres.IsInstalled(major) {
 			return "", fmt.Errorf("pv.yml postgresql %q is not installed — run `pv postgres:install %s`", major, major)
@@ -49,9 +48,9 @@ func (s *ApplyPvYmlServicesStep) Run(ctx *automation.Context) (string, error) {
 	}
 
 	if cfg.Mysql != nil {
-		version := cfg.Mysql.Version
-		if version == "" {
-			return "", fmt.Errorf("pv.yml mysql: version is required")
+		version, err := mysql.ResolveVersion(cfg.Mysql.Version)
+		if err != nil {
+			return "", err
 		}
 		if !mysql.IsInstalled(version) {
 			return "", fmt.Errorf("pv.yml mysql %q is not installed — run `pv mysql:install %s`", version, version)
