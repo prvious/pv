@@ -14,7 +14,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "rustfs:update [version]",
 	GroupID: "rustfs",
-	Short:   "Re-download the RustFS binary for a version",
+	Short:   "Refresh the RustFS version-line artifact",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resolved, err := pkg.ResolveVersion(argVersion(args))

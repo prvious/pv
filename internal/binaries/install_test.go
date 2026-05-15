@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
@@ -114,44 +115,27 @@ func TestInstallBinary_Composer(t *testing.T) {
 	}
 }
 
-func TestInstallRustfsExtractsTarGzArtifact(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+func TestInstallBinaryProgress_RejectsServiceBinaries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PV_RUSTFS_URL_OVERRIDE", "http://127.0.0.1:1/rustfs.tar.gz")
+	t.Setenv("PV_MAILPIT_URL_OVERRIDE", "http://127.0.0.1:1/mailpit.tar.gz")
 
-	archive := filepath.Join(t.TempDir(), "rustfs.tar.gz")
-	makeTarGz(t, archive, "bin/rustfs", "fake rustfs binary")
-	archiveBytes, err := os.ReadFile(archive)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(archiveBytes)
-	}))
-	defer srv.Close()
-
-	if err := config.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := installRustfs(srv.Client(), srv.URL+"/rustfs.tar.gz", nil); err != nil {
-		t.Fatalf("installRustfs() error = %v", err)
-	}
-
-	binDir := config.InternalBinDir()
-	destPath := filepath.Join(binDir, "rustfs")
-	got, err := os.ReadFile(destPath)
-	if err != nil {
-		t.Fatalf("rustfs not installed: %v", err)
-	}
-	if string(got) != "fake rustfs binary" {
-		t.Fatalf("rustfs content = %q", got)
-	}
-	info, err := os.Stat(destPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0111 == 0 {
-		t.Error("rustfs is not executable")
+	for _, tc := range []struct {
+		name    string
+		binary  Binary
+		version string
+	}{
+		{name: "rustfs", binary: Rustfs, version: "1.0.0-beta"},
+		{name: "mailpit", binary: Mailpit, version: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := InstallBinaryProgress(&http.Client{}, tc.binary, tc.version, nil)
+			if err == nil {
+				t.Fatal("InstallBinaryProgress: want service lifecycle error")
+			}
+			if !strings.Contains(err.Error(), "service lifecycle") {
+				t.Fatalf("InstallBinaryProgress error = %v; want service lifecycle", err)
+			}
+		})
 	}
 }

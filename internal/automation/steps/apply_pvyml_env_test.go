@@ -8,6 +8,8 @@ import (
 
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mysql"
+	"github.com/prvious/pv/internal/postgres"
 )
 
 func TestApplyPvYmlEnv_RendersTopLevelEnv(t *testing.T) {
@@ -124,6 +126,122 @@ func TestApplyPvYmlEnv_RendersRedisEnv(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf(".env missing %q\n%s", want, s)
 		}
+	}
+}
+
+func TestApplyPvYmlEnv_ResolvesDefaultPostgresVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	writeExecutable(t, filepath.Join(config.PostgresBinDir(postgres.DefaultVersion()), "pg_config"), "#!/bin/sh\necho 'PostgreSQL 18.2'\n")
+
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: projDir,
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Postgresql: &config.ServiceConfig{
+				Env: map[string]string{
+					"PG_VERSION": "{{ .version }}",
+				},
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "PG_VERSION=18.2") {
+		t.Errorf(".env missing resolved postgres version\n%s", body)
+	}
+}
+
+func TestApplyPvYmlEnv_ResolvesDefaultMysqlVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	writeExecutable(t, filepath.Join(config.MysqlBinDir(mysql.DefaultVersion()), "mysqld"), "#!/bin/sh\necho 'mysqld  Ver 8.4.9 for macos15 on arm64 (MySQL Community Server - GPL)'\n")
+
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: projDir,
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Mysql: &config.ServiceConfig{
+				Env: map[string]string{
+					"MYSQL_VERSION": "{{ .version }}",
+				},
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	if _, err := step.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "MYSQL_VERSION=8.4.9") {
+		t.Errorf(".env missing resolved mysql version\n%s", body)
+	}
+}
+
+func TestApplyPvYmlEnv_RejectsUnsupportedMailpitVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: t.TempDir(),
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Mailpit: &config.ServiceConfig{
+				Version: "2",
+				Env: map[string]string{
+					"MAIL_HOST": "{{ .smtp_host }}",
+				},
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error for unsupported mailpit version")
+	}
+	if !strings.Contains(err.Error(), "unsupported version") {
+		t.Errorf("err = %v; want unsupported version", err)
+	}
+}
+
+func TestApplyPvYmlEnv_RejectsUnsupportedRustfsVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	ctx := &automation.Context{
+		ProjectName: "myapp",
+		ProjectPath: t.TempDir(),
+		TLD:         "test",
+		ProjectConfig: &config.ProjectConfig{
+			Rustfs: &config.ServiceConfig{
+				Version: "2.0.0",
+				Env: map[string]string{
+					"S3_ENDPOINT": "{{ .endpoint }}",
+				},
+			},
+		},
+	}
+	step := &ApplyPvYmlEnvStep{}
+	_, err := step.Run(ctx)
+	if err == nil {
+		t.Fatal("Run: want error for unsupported rustfs version")
+	}
+	if !strings.Contains(err.Error(), "unsupported version") {
+		t.Errorf("err = %v; want unsupported version", err)
 	}
 }
 
@@ -251,5 +369,15 @@ func TestApplyPvYmlEnv_ErrorsOnDuplicateKeyAcrossScopes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate env key") {
 		t.Errorf("err = %v; want it to contain 'duplicate env key'", err)
+	}
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir executable dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write executable: %v", err)
 	}
 }

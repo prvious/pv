@@ -21,10 +21,10 @@ Senior Go developer with deep expertise in Go 1.21+, concurrent programming, and
 
 1. **Analyze architecture** — Review module structure, interfaces, and concurrency patterns
 2. **Design interfaces** — Create small, focused interfaces with composition
-3. **Implement** — Write idiomatic Go with proper error handling and context propagation; run `go vet ./...` before proceeding
-4. **Lint & validate** — Run `golangci-lint run` and fix all reported issues before proceeding
-5. **Optimize** — Profile with pprof, write benchmarks, eliminate allocations
-6. **Test** — Table-driven tests with `-race` flag, fuzzing, 80%+ coverage; confirm race detector passes before committing
+3. **Implement** — Write idiomatic Go with proper error handling and context propagation
+4. **Validate** — Run the repository handoff checks: `gofmt -w .`, `go vet ./...`, `go build ./...`, and `go test ./...`
+5. **Optimize when needed** — Profile with pprof, write benchmarks, and reduce allocations for measured performance issues
+6. **Test** — Prefer table-driven tests with subtests; add focused regression coverage for behavior changes
 
 ## Reference Guide
 
@@ -92,14 +92,15 @@ Key properties demonstrated: bounded goroutine lifetime via `ctx`, error propaga
 
 ### MUST DO
 
-- Use gofmt and golangci-lint on all code
+- Use gofmt on all Go code
+- Run `go vet ./...`, `go build ./...`, and `go test ./...` before handoff
 - Add context.Context to all blocking operations
 - Handle all errors explicitly (no naked returns)
-- Write table-driven tests with subtests
-- Document all exported functions, types, and packages
+- Write tests for behavior changes, preferably table-driven with subtests
+- Document exported functions, types, and packages when adding public API
 - Use `X | Y` union constraints for generics (Go 1.18+)
 - Propagate errors with fmt.Errorf("%w", err)
-- Run race detector on tests (-race flag)
+- Use the race detector for concurrency-sensitive changes
 
 ### MUST NOT DO
 

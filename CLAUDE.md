@@ -26,7 +26,7 @@
 ## Tools And Storage
 
 - Managed tools follow `:download`, `:path`, `:install`, `:update`, `:uninstall`; `:install` delegates to `:download`, and exposure uses `internal/tools`.
-- Real binaries never go in `~/.pv/bin/`; that directory is only shims and symlinks. Use `config.InternalBinDir()` for private binaries and `config.BinDir()` for PATH entries.
+- Real binaries never go in `~/.pv/bin/`; that directory is only shims and symlinks. Managed service binaries live under service-specific version roots (for example `~/.pv/mailpit/{ver}/bin/`). Use `config.InternalBinDir()` for private helper tool binaries and `config.BinDir()` for PATH entries.
 - PHP installs currently live under `~/.pv/php/{ver}/`; use `config.PhpVersionDir()` and `config.PortForVersion()` instead of hardcoding paths or port math.
 
 ## CLI UI

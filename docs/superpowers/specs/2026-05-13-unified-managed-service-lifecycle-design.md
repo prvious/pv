@@ -134,9 +134,10 @@ Preferred Mailpit/RustFS archive layout:
 ```text
 bin/mailpit
 bin/rustfs
+VERSION
 ```
 
-The installer extracts the archive into the service version root. Service packages then know where their executable is located.
+The installer extracts the archive into the service version root. Service packages then know where their executable is located, and the top-level `VERSION` file records the resolved upstream release tag stored in `versions.json`.
 
 ## Filesystem layout
 

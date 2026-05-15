@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
@@ -25,6 +26,91 @@ func TestUpdate_NotInstalled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not installed") {
 		t.Errorf("expected not-installed error; got %q", err)
+	}
+}
+
+func TestInstall_VersionedArchiveRecordsMetadataAndWantedState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeRustfsArchive(t, w, map[string]string{
+			"bin/rustfs": "#!/bin/sh\necho fake rustfs\n",
+			"VERSION":    "1.0.0-beta.7\n",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("PV_RUSTFS_URL_OVERRIDE", srv.URL)
+
+	if err := Install(srv.Client(), DefaultVersion()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	binPath := filepath.Join(config.RustfsBinDir(DefaultVersion()), Binary().Name)
+	info, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatalf("installed binary missing: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("installed binary is not executable: %v", info.Mode())
+	}
+	if _, err := os.Stat(config.RustfsDataDir(DefaultVersion())); err != nil {
+		t.Fatalf("data dir missing: %v", err)
+	}
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions: %v", err)
+	}
+	if got := vs.Get("rustfs-" + DefaultVersion()); got != "1.0.0-beta.7" {
+		t.Fatalf("recorded artifact version = %q, want 1.0.0-beta.7", got)
+	}
+	wanted, err := WantedVersions()
+	if err != nil {
+		t.Fatalf("WantedVersions: %v", err)
+	}
+	if len(wanted) != 1 || wanted[0] != DefaultVersion() {
+		t.Fatalf("WantedVersions = %v, want [%s]", wanted, DefaultVersion())
+	}
+}
+
+func TestInstall_RequiresArtifactVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "missing VERSION",
+			files: map[string]string{
+				"bin/rustfs": "#!/bin/sh\necho fake rustfs\n",
+			},
+		},
+		{
+			name: "empty VERSION",
+			files: map[string]string{
+				"bin/rustfs": "#!/bin/sh\necho fake rustfs\n",
+				"VERSION":    " \n\t",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeRustfsArchive(t, w, tc.files)
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("PV_RUSTFS_URL_OVERRIDE", srv.URL)
+
+			err := Install(srv.Client(), DefaultVersion())
+			if err == nil {
+				t.Fatal("Install: want error for missing artifact VERSION")
+			}
+			if !strings.Contains(err.Error(), "rustfs artifact VERSION") {
+				t.Fatalf("Install error = %v; want artifact VERSION", err)
+			}
+			if _, statErr := os.Stat(config.RustfsVersionDir(DefaultVersion())); !os.IsNotExist(statErr) {
+				t.Fatalf("version dir should not be installed after VERSION error; stat err=%v", statErr)
+			}
+		})
 	}
 }
 
@@ -142,7 +228,7 @@ func TestSwapVersionDir_RestoresOldInstallWhenStagingRenameFails(t *testing.T) {
 	}
 
 	missingStagingDir := versionDir + ".new"
-	if err := swapVersionDir(versionDir, missingStagingDir); err == nil {
+	if err := binaries.SwapVersionDir(versionDir, missingStagingDir); err == nil {
 		t.Fatal("expected swap to fail when staging dir is missing")
 	}
 
@@ -179,6 +265,47 @@ func TestUninstall_DeleteData(t *testing.T) {
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Errorf("data directory must be deleted; sentinel still exists (err=%v)", err)
+	}
+}
+
+func TestUninstall_RemovesVersionRootAndVersionsState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	versionDir := config.RustfsVersionDir(DefaultVersion())
+	binPath := filepath.Join(versionDir, "bin", Binary().Name)
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "VERSION"), []byte("1.0.0-beta.7\n"), 0o644); err != nil {
+		t.Fatalf("write VERSION: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "sentinel"), []byte("leftover"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions: %v", err)
+	}
+	vs.Set("rustfs-"+DefaultVersion(), "1.0.0-beta.7")
+	if err := vs.Save(); err != nil {
+		t.Fatalf("Save versions: %v", err)
+	}
+
+	if err := Uninstall(DefaultVersion(), false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(versionDir); !os.IsNotExist(err) {
+		t.Fatalf("version root should be removed; stat err=%v", err)
+	}
+	loaded, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions after uninstall: %v", err)
+	}
+	if got := loaded.Get("rustfs-" + DefaultVersion()); got != "" {
+		t.Fatalf("versions state still has rustfs entry %q", got)
 	}
 }
 

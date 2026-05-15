@@ -14,7 +14,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "mailpit:update [version]",
 	GroupID: "mailpit",
-	Short:   "Re-download the Mailpit binary for a version",
+	Short:   "Refresh the Mailpit version-line artifact",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resolved, err := pkg.ResolveVersion(argVersion(args))

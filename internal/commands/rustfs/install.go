@@ -15,7 +15,7 @@ var installCmd = &cobra.Command{
 	Use:     "rustfs:install [version]",
 	GroupID: "rustfs",
 	Short:   "Install RustFS (S3-compatible storage) and start it",
-	Long:    "Downloads the RustFS binary, sets it as wanted-running, and signals the daemon to start it.",
+	Long:    "Downloads the versioned RustFS artifact, sets it as wanted-running, and signals the daemon to start it.",
 	Example: `pv rustfs:install
 pv s3:install`,
 	Args: cobra.MaximumNArgs(1),

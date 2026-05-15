@@ -256,7 +256,7 @@ build:
 
 # Run tests
 test:
-	$(GO) test -v -race -coverprofile=coverage.out ./...
+	$(GO) test -v ./...
 
 # Run tests with coverage report
 test-coverage: test
@@ -264,12 +264,11 @@ test-coverage: test
 
 # Run linters
 lint:
-	golangci-lint run ./...
+	$(GO) vet ./...
 
 # Format code
 fmt:
-	$(GO) fmt ./...
-	goimports -w .
+	gofmt -w .
 
 # Run the application
 run:

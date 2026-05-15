@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prvious/pv/internal/binaries"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/projectenv"
 	"github.com/prvious/pv/internal/registry"
@@ -25,6 +26,91 @@ func TestUpdate_NotInstalled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not installed") {
 		t.Errorf("expected not-installed error; got %q", err)
+	}
+}
+
+func TestInstall_VersionedArchiveRecordsMetadataAndWantedState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeMailpitArchive(t, w, map[string]string{
+			"bin/mailpit": "#!/bin/sh\necho fake mailpit\n",
+			"VERSION":     "v1.23.1\n",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("PV_MAILPIT_URL_OVERRIDE", srv.URL)
+
+	if err := Install(srv.Client(), DefaultVersion()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	binPath := filepath.Join(config.MailpitBinDir(DefaultVersion()), Binary().Name)
+	info, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatalf("installed binary missing: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("installed binary is not executable: %v", info.Mode())
+	}
+	if _, err := os.Stat(config.MailpitDataDir(DefaultVersion())); err != nil {
+		t.Fatalf("data dir missing: %v", err)
+	}
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions: %v", err)
+	}
+	if got := vs.Get("mailpit-" + DefaultVersion()); got != "v1.23.1" {
+		t.Fatalf("recorded artifact version = %q, want v1.23.1", got)
+	}
+	wanted, err := WantedVersions()
+	if err != nil {
+		t.Fatalf("WantedVersions: %v", err)
+	}
+	if len(wanted) != 1 || wanted[0] != DefaultVersion() {
+		t.Fatalf("WantedVersions = %v, want [%s]", wanted, DefaultVersion())
+	}
+}
+
+func TestInstall_RequiresArtifactVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "missing VERSION",
+			files: map[string]string{
+				"bin/mailpit": "#!/bin/sh\necho fake mailpit\n",
+			},
+		},
+		{
+			name: "empty VERSION",
+			files: map[string]string{
+				"bin/mailpit": "#!/bin/sh\necho fake mailpit\n",
+				"VERSION":     " \n\t",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeMailpitArchive(t, w, tc.files)
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("PV_MAILPIT_URL_OVERRIDE", srv.URL)
+
+			err := Install(srv.Client(), DefaultVersion())
+			if err == nil {
+				t.Fatal("Install: want error for missing artifact VERSION")
+			}
+			if !strings.Contains(err.Error(), "mailpit artifact VERSION") {
+				t.Fatalf("Install error = %v; want artifact VERSION", err)
+			}
+			if _, statErr := os.Stat(config.MailpitVersionDir(DefaultVersion())); !os.IsNotExist(statErr) {
+				t.Fatalf("version dir should not be installed after VERSION error; stat err=%v", statErr)
+			}
+		})
 	}
 }
 
@@ -142,7 +228,7 @@ func TestSwapVersionDir_RestoresOldInstallWhenStagingRenameFails(t *testing.T) {
 	}
 
 	missingStagingDir := versionDir + ".new"
-	if err := swapVersionDir(versionDir, missingStagingDir); err == nil {
+	if err := binaries.SwapVersionDir(versionDir, missingStagingDir); err == nil {
 		t.Fatal("expected swap to fail when staging dir is missing")
 	}
 
@@ -182,6 +268,47 @@ func TestUninstall_BinaryAlreadyRemoved(t *testing.T) {
 	}
 	if _, ok := st.Versions[DefaultVersion()]; ok {
 		t.Error("version state should be removed after uninstall")
+	}
+}
+
+func TestUninstall_RemovesVersionRootAndVersionsState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	versionDir := config.MailpitVersionDir(DefaultVersion())
+	binPath := filepath.Join(versionDir, "bin", Binary().Name)
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "VERSION"), []byte("v1.23.1\n"), 0o644); err != nil {
+		t.Fatalf("write VERSION: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "sentinel"), []byte("leftover"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	vs, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions: %v", err)
+	}
+	vs.Set("mailpit-"+DefaultVersion(), "v1.23.1")
+	if err := vs.Save(); err != nil {
+		t.Fatalf("Save versions: %v", err)
+	}
+
+	if err := Uninstall(DefaultVersion(), false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(versionDir); !os.IsNotExist(err) {
+		t.Fatalf("version root should be removed; stat err=%v", err)
+	}
+	loaded, err := binaries.LoadVersions()
+	if err != nil {
+		t.Fatalf("LoadVersions after uninstall: %v", err)
+	}
+	if got := loaded.Get("mailpit-" + DefaultVersion()); got != "" {
+		t.Fatalf("versions state still has mailpit entry %q", got)
 	}
 }
 

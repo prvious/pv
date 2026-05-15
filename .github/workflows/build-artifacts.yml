@@ -457,6 +457,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(gh api repos/axllent/mailpit/releases/latest --jq '.tag_name')
+          case "$TAG" in
+            v${MAILPIT_VERSION_MAJOR}.*|${MAILPIT_VERSION_MAJOR}.*) ;;
+            *)
+              echo "::error::Resolved Mailpit tag ${TAG} does not match supported major ${MAILPIT_VERSION_MAJOR}"
+              exit 1
+              ;;
+          esac
           echo "Resolved Mailpit → $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -490,6 +497,15 @@ jobs:
           printf "%s\n" "${{ steps.resolve.outputs.tag }}" > package/VERSION
           tar -czf "mailpit-mac-arm64-${MAILPIT_VERSION_MAJOR}.tar.gz" -C package bin VERSION
 
+      - name: Validate repacked artifact
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          tar -xzf "mailpit-mac-arm64-${MAILPIT_VERSION_MAJOR}.tar.gz" -C verify
+          test -x verify/bin/mailpit
+          test -s verify/VERSION
+          test "$(cat verify/VERSION)" = "${{ steps.resolve.outputs.tag }}"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -504,29 +520,29 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Set RustFS version
-        run: echo "RUSTFS_VERSION_MAJOR=1.0.0-beta" >> "$GITHUB_ENV"
+      - name: Set RustFS version line
+        run: echo "RUSTFS_VERSION_LINE=1.0.0-beta" >> "$GITHUB_ENV"
 
       - name: Checkout pv (for scripts/test-rustfs-bundle.sh)
         uses: actions/checkout@v4
 
-      - name: Resolve latest RustFS patch for major
+      - name: Resolve latest RustFS patch for version line
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          MAJOR="${RUSTFS_VERSION_MAJOR}"
+          VERSION_LINE="${RUSTFS_VERSION_LINE}"
           TAG=$(
             gh api 'repos/rustfs/rustfs/releases?per_page=100' --paginate \
-              --jq '.[] | .tag_name as $tag | select($tag | startswith(env.RUSTFS_VERSION_MAJOR + ".")) | select(any(.assets[]?; .name == ("rustfs-macos-aarch64-v" + $tag + ".zip"))) | $tag' \
+              --jq '.[] | .tag_name as $tag | select($tag | startswith(env.RUSTFS_VERSION_LINE + ".")) | select(any(.assets[]?; .name == ("rustfs-macos-aarch64-v" + $tag + ".zip"))) | $tag' \
               | sort -V \
               | tail -n1
           )
           if [ -z "${TAG}" ]; then
-            echo "::error::Could not resolve a RustFS release for major ${MAJOR} with a macOS arm64 asset"
+            echo "::error::Could not resolve a RustFS release for version line ${VERSION_LINE} with a macOS arm64 asset"
             exit 1
           fi
-          echo "Resolved RustFS ${MAJOR}.x → ${TAG}"
+          echo "Resolved RustFS ${VERSION_LINE}.x → ${TAG}"
           echo "RUSTFS_TAG=${TAG}" >> "$GITHUB_ENV"
 
       - name: Download release
@@ -555,13 +571,22 @@ jobs:
           mkdir -p package/bin
           cp staging/rustfs package/bin/rustfs
           printf "%s\n" "${RUSTFS_TAG}" > package/VERSION
-          tar -czf "rustfs-mac-arm64-${RUSTFS_VERSION_MAJOR}.tar.gz" -C package bin VERSION
+          tar -czf "rustfs-mac-arm64-${RUSTFS_VERSION_LINE}.tar.gz" -C package bin VERSION
+
+      - name: Validate repacked artifact
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          tar -xzf "rustfs-mac-arm64-${RUSTFS_VERSION_LINE}.tar.gz" -C verify
+          test -x verify/bin/rustfs
+          test -s verify/VERSION
+          test "$(cat verify/VERSION)" = "${RUSTFS_TAG}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_MAJOR }}
-          path: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_MAJOR }}.tar.gz
+          name: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_LINE }}
+          path: rustfs-mac-arm64-${{ env.RUSTFS_VERSION_LINE }}.tar.gz
           compression-level: 0
 
   redis:
@@ -750,7 +775,7 @@ jobs:
             exit 1
           fi
 
-          # RustFS: single artifact (versioned by major, currently 1.0.0-beta).
+          # RustFS: single artifact (versioned by version line, currently 1.0.0-beta).
           rustfs_dirs=(artifacts/rustfs-mac-arm64-*)
           if [ ${#rustfs_dirs[@]} -ne 1 ]; then
             echo "::error::Expected 1 rustfs bundle (1.0.0-beta), found ${#rustfs_dirs[@]}"
