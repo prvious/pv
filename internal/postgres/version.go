@@ -9,6 +9,29 @@ import (
 	"github.com/prvious/pv/internal/config"
 )
 
+const defaultVersion = "18"
+
+func DefaultVersion() string { return defaultVersion }
+
+func ResolveVersion(version string) (string, error) {
+	if version == "" {
+		return DefaultVersion(), nil
+	}
+	if err := ValidateVersion(version); err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
+func ValidateVersion(version string) error {
+	switch version {
+	case "17", "18":
+		return nil
+	default:
+		return fmt.Errorf("unsupported postgres version %q (want one of 17, 18)", version)
+	}
+}
+
 // ProbeVersion runs `<bin>/pg_config --version` and returns the version
 // component (e.g. "17.5" from "PostgreSQL 17.5"). The major argument
 // selects the install root; the answer may be a patch within that major.

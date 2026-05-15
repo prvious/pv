@@ -68,7 +68,7 @@ var uninstallCmd = &cobra.Command{
 			ui.Subtle(fmt.Sprintf("Could not regenerate service site config: %v", err))
 		}
 		ui.Success(fmt.Sprintf("%s %s uninstalled.", pkg.DisplayName(), resolved))
-		return nil
+		return signalDaemon(pkg.DisplayName())
 	},
 }
 

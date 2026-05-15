@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
@@ -111,5 +112,30 @@ func TestInstallBinary_Composer(t *testing.T) {
 	}
 	if info.Mode().Perm()&0111 == 0 {
 		t.Error("composer is not executable")
+	}
+}
+
+func TestInstallBinaryProgress_RejectsServiceBinaries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PV_RUSTFS_URL_OVERRIDE", "http://127.0.0.1:1/rustfs.tar.gz")
+	t.Setenv("PV_MAILPIT_URL_OVERRIDE", "http://127.0.0.1:1/mailpit.tar.gz")
+
+	for _, tc := range []struct {
+		name    string
+		binary  Binary
+		version string
+	}{
+		{name: "rustfs", binary: Rustfs, version: "1.0.0-beta"},
+		{name: "mailpit", binary: Mailpit, version: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := InstallBinaryProgress(&http.Client{}, tc.binary, tc.version, nil)
+			if err == nil {
+				t.Fatal("InstallBinaryProgress: want service lifecycle error")
+			}
+			if !strings.Contains(err.Error(), "service lifecycle") {
+				t.Fatalf("InstallBinaryProgress error = %v; want service lifecycle", err)
+			}
+		})
 	}
 }

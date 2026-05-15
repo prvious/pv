@@ -23,3 +23,9 @@ func TestTemplateVars(t *testing.T) {
 		t.Errorf("use_path_style = %q, want true", got["use_path_style"])
 	}
 }
+
+func TestTemplateVars_RejectsLatest(t *testing.T) {
+	if got := TemplateVars("latest"); len(got) != 0 {
+		t.Fatalf("TemplateVars(latest) = %v, want empty map", got)
+	}
+}

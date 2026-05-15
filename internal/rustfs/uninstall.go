@@ -21,12 +21,8 @@ func Uninstall(version string, force bool) error {
 		return fmt.Errorf("wait for rustfs %s to stop: %w", version, err)
 	}
 
-	binPath, err := BinaryPath(version)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(binPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove rustfs binary: %w", err)
+	if err := os.RemoveAll(config.RustfsVersionDir(version)); err != nil {
+		return fmt.Errorf("remove rustfs version dir: %w", err)
 	}
 	if logPath, err := LogPath(version); err == nil {
 		_ = os.Remove(logPath)
@@ -35,13 +31,13 @@ func Uninstall(version string, force bool) error {
 		return err
 	}
 	if vs, err := binaries.LoadVersions(); err == nil {
-		delete(vs.Versions, Binary().Name)
+		delete(vs.Versions, "rustfs-"+version)
 		if err := vs.Save(); err != nil {
 			return fmt.Errorf("save versions state: %w", err)
 		}
 	}
 	if force {
-		if err := os.RemoveAll(config.ServiceDataDir(ServiceKey(), version)); err != nil {
+		if err := os.RemoveAll(config.RustfsDataDir(version)); err != nil {
 			return fmt.Errorf("cannot delete data: %w", err)
 		}
 	}

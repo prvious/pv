@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultVersion = "8.4"
-
 var installCmd = &cobra.Command{
 	Use:     "mysql:install [version]",
 	GroupID: "mysql",
@@ -23,9 +21,13 @@ pv mysql:install
 pv mysql:install 9.7`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		version := defaultVersion
+		arg := ""
 		if len(args) > 0 {
-			version = args[0]
+			arg = args[0]
+		}
+		version, err := my.ResolveVersion(arg)
+		if err != nil {
+			return err
 		}
 
 		// Already installed → idempotent: re-mark wanted=running and

@@ -48,11 +48,15 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// postgresql.env
 	if cfg.Postgresql != nil && len(cfg.Postgresql.Env) > 0 {
-		full, err := postgres.ProbeVersion(cfg.Postgresql.Version)
+		version, err := postgres.ResolveVersion(cfg.Postgresql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe postgres %q: %w", cfg.Postgresql.Version, err)
+			return "", err
 		}
-		vars, err := postgres.TemplateVars(cfg.Postgresql.Version, full)
+		full, err := postgres.ProbeVersion(version)
+		if err != nil {
+			return "", fmt.Errorf("probe postgres %q: %w", version, err)
+		}
+		vars, err := postgres.TemplateVars(version, full)
 		if err != nil {
 			return "", fmt.Errorf("postgres template vars: %w", err)
 		}
@@ -63,11 +67,15 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// mysql.env
 	if cfg.Mysql != nil && len(cfg.Mysql.Env) > 0 {
-		full, err := mysql.ProbeVersion(cfg.Mysql.Version)
+		version, err := mysql.ResolveVersion(cfg.Mysql.Version)
 		if err != nil {
-			return "", fmt.Errorf("probe mysql %q: %w", cfg.Mysql.Version, err)
+			return "", err
 		}
-		vars, err := mysql.TemplateVars(cfg.Mysql.Version, full)
+		full, err := mysql.ProbeVersion(version)
+		if err != nil {
+			return "", fmt.Errorf("probe mysql %q: %w", version, err)
+		}
+		vars, err := mysql.TemplateVars(version, full)
 		if err != nil {
 			return "", fmt.Errorf("mysql template vars: %w", err)
 		}
@@ -89,14 +97,22 @@ func (s *ApplyPvYmlEnvStep) Run(ctx *automation.Context) (string, error) {
 
 	// mailpit.env
 	if cfg.Mailpit != nil && len(cfg.Mailpit.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(mailpit.DefaultVersion()), "mailpit.env"); err != nil {
+		version, err := mailpit.ResolveVersion(cfg.Mailpit.Version)
+		if err != nil {
+			return "", err
+		}
+		if err := renderIntoMap(rendered, cfg.Mailpit.Env, mailpit.TemplateVars(version), "mailpit.env"); err != nil {
 			return "", err
 		}
 	}
 
 	// rustfs.env
 	if cfg.Rustfs != nil && len(cfg.Rustfs.Env) > 0 {
-		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(rustfs.DefaultVersion()), "rustfs.env"); err != nil {
+		version, err := rustfs.ResolveVersion(cfg.Rustfs.Version)
+		if err != nil {
+			return "", err
+		}
+		if err := renderIntoMap(rendered, cfg.Rustfs.Env, rustfs.TemplateVars(version), "rustfs.env"); err != nil {
 			return "", err
 		}
 	}

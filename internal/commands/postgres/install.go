@@ -9,8 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultMajor = "18"
-
 var installCmd = &cobra.Command{
 	Use:     "postgres:install [major]",
 	GroupID: "postgres",
@@ -23,9 +21,13 @@ pv postgres:install
 pv postgres:install 17`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		major := defaultMajor
+		version := ""
 		if len(args) > 0 {
-			major = args[0]
+			version = args[0]
+		}
+		major, err := pg.ResolveVersion(version)
+		if err != nil {
+			return err
 		}
 
 		// If already on disk, refresh runtime state (conf overrides, hba,

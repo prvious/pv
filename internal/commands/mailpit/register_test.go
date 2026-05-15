@@ -1,9 +1,13 @@
 package mailpit
 
 import (
+	"io"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
+	pkg "github.com/prvious/pv/internal/mailpit"
 	"github.com/spf13/cobra"
 )
 
@@ -82,4 +86,51 @@ func TestRegister_AliasShareImplementation(t *testing.T) {
 			t.Errorf("alias %q RunE differs from canonical %q (clone broken)", alias, canonical)
 		}
 	}
+}
+
+func TestStopSignalsThroughNoDaemonHelper(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	output := captureStderr(t, func() {
+		if err := stopCmd.RunE(stopCmd, []string{pkg.DefaultVersion()}); err != nil {
+			t.Fatalf("stop RunE error = %v", err)
+		}
+	})
+
+	if strings.Contains(output, "will start") {
+		t.Fatalf("stderr = %q, must not promise service will start", output)
+	}
+	if !strings.Contains(output, "daemon not running; changes will apply on next `pv start`") {
+		t.Fatalf("stderr = %q, want neutral no-daemon signal message", output)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	original := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = original
+	})
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+	os.Stderr = original
+
+	return string(out)
 }

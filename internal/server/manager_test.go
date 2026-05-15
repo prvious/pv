@@ -58,11 +58,11 @@ func compiledFakeBinary(t *testing.T) string {
 }
 
 // stageFakeBinaryAsRustfs copies the compiled fake binary into
-// ~/.pv/internal/bin/rustfs so the supervisor finds it via the normal path.
+// ~/.pv/rustfs/<version>/bin/rustfs so the supervisor finds it via the normal path.
 func stageFakeBinaryAsRustfs(t *testing.T) {
 	t.Helper()
 	src := compiledFakeBinary(t)
-	binDir := config.InternalBinDir()
+	binDir := config.RustfsBinDir(rustfs.DefaultVersion())
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +108,11 @@ func compiledFakeMailpit(t *testing.T) string {
 }
 
 // stageFakeBinaryAsMailpit copies the compiled fake mailpit binary into
-// ~/.pv/internal/bin/mailpit so the supervisor finds it via the normal path.
+// ~/.pv/mailpit/1/bin/mailpit so the supervisor finds it via the normal path.
 func stageFakeBinaryAsMailpit(t *testing.T) {
 	t.Helper()
 	src := compiledFakeMailpit(t)
-	binDir := config.InternalBinDir()
+	binDir := config.MailpitBinDir(mailpit.DefaultVersion())
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +144,8 @@ func TestReconcile_SpawnsBinaryServices(t *testing.T) {
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatalf("reconcileBinaryServices: %v", err)
 	}
-	if !sup.IsRunning("rustfs-latest") {
-		t.Error("expected rustfs-latest to be supervised after reconcile")
+	if !sup.IsRunning("rustfs-1.0.0-beta") {
+		t.Error("expected rustfs-1.0.0-beta to be supervised after reconcile")
 	}
 }
 
@@ -167,8 +167,8 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !sup.IsRunning("rustfs-latest") {
-		t.Fatal("expected rustfs-latest running after first reconcile")
+	if !sup.IsRunning("rustfs-1.0.0-beta") {
+		t.Fatal("expected rustfs-1.0.0-beta running after first reconcile")
 	}
 
 	// Phase 2: disabled, should stop.
@@ -178,8 +178,8 @@ func TestReconcile_StopsDisabledBinaryServices(t *testing.T) {
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if sup.IsRunning("rustfs-latest") {
-		t.Error("expected rustfs-latest stopped after disabling via reconcile")
+	if sup.IsRunning("rustfs-1.0.0-beta") {
+		t.Error("expected rustfs-1.0.0-beta stopped after disabling via reconcile")
 	}
 }
 
@@ -202,8 +202,8 @@ func TestReconcile_SpawnsMailpit(t *testing.T) {
 	if err := m.reconcileBinaryServices(context.Background()); err != nil {
 		t.Fatalf("reconcileBinaryServices: %v", err)
 	}
-	if !sup.IsRunning("mailpit-latest") {
-		t.Error("expected mailpit-latest to be supervised after reconcile")
+	if !sup.IsRunning("mailpit-1") {
+		t.Error("expected mailpit-1 to be supervised after reconcile")
 	}
 }
 

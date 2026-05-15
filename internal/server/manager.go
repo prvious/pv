@@ -194,7 +194,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		if err != nil {
 			startErrors = append(startErrors, fmt.Sprintf("rustfs-%s: build: %v", version, err))
 		} else {
-			wanted["rustfs-"+version] = proc
+			wanted[proc.Name] = proc
 		}
 	}
 
@@ -208,7 +208,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		if err != nil {
 			startErrors = append(startErrors, fmt.Sprintf("mailpit-%s: build: %v", version, err))
 		} else {
-			wanted["mailpit-"+version] = proc
+			wanted[proc.Name] = proc
 		}
 	}
 
@@ -223,7 +223,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			startErrors = append(startErrors, fmt.Sprintf("postgres-%s: build: %v", major, err))
 			continue
 		}
-		wanted["postgres-"+major] = proc
+		wanted[proc.Name] = proc
 	}
 
 	// Source 3 — mysql, multi-version.
@@ -237,7 +237,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 			startErrors = append(startErrors, fmt.Sprintf("mysql-%s: build: %v", version, err))
 			continue
 		}
-		wanted["mysql-"+version] = proc
+		wanted[proc.Name] = proc
 	}
 
 	// Source 4 — redis, per-version, filesystem + state.json.
@@ -250,7 +250,7 @@ func (m *ServerManager) reconcileBinaryServices(ctx context.Context) error {
 		if err != nil {
 			startErrors = append(startErrors, fmt.Sprintf("redis-%s: build: %v", version, err))
 		} else {
-			wanted["redis-"+version] = proc
+			wanted[proc.Name] = proc
 		}
 	}
 

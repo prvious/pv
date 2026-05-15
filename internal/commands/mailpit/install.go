@@ -15,7 +15,7 @@ var installCmd = &cobra.Command{
 	Use:     "mailpit:install [version]",
 	GroupID: "mailpit",
 	Short:   "Install Mailpit (SMTP catcher + web UI) and start it",
-	Long:    "Downloads the Mailpit binary, sets it as wanted-running, and signals the daemon to start it.",
+	Long:    "Downloads the versioned Mailpit artifact, sets it as wanted-running, and signals the daemon to start it.",
 	Example: `pv mailpit:install
 pv mail:install`,
 	Args: cobra.MaximumNArgs(1),

@@ -267,6 +267,46 @@ func RedisDataRoot() string {
 	return filepath.Join(DataDir(), "redis")
 }
 
+func MailpitDir() string {
+	return filepath.Join(PvDir(), "mailpit")
+}
+
+func MailpitVersionDir(version string) string {
+	return filepath.Join(MailpitDir(), version)
+}
+
+func MailpitBinDir(version string) string {
+	return filepath.Join(MailpitVersionDir(version), "bin")
+}
+
+func MailpitDataDir(version string) string {
+	return filepath.Join(DataDir(), "mailpit", version)
+}
+
+func MailpitLogPath(version string) string {
+	return filepath.Join(LogsDir(), "mailpit-"+version+".log")
+}
+
+func RustfsDir() string {
+	return filepath.Join(PvDir(), "rustfs")
+}
+
+func RustfsVersionDir(version string) string {
+	return filepath.Join(RustfsDir(), version)
+}
+
+func RustfsBinDir(version string) string {
+	return filepath.Join(RustfsVersionDir(version), "bin")
+}
+
+func RustfsDataDir(version string) string {
+	return filepath.Join(DataDir(), "rustfs", version)
+}
+
+func RustfsLogPath(version string) string {
+	return filepath.Join(LogsDir(), "rustfs-"+version+".log")
+}
+
 func EnsureDirs() error {
 	dirs := []string{
 		ConfigDir(),
@@ -281,6 +321,8 @@ func EnsureDirs() error {
 		InternalBinDir(),
 		PackagesDir(),
 		MysqlDir(),
+		MailpitDir(),
+		RustfsDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {

@@ -43,15 +43,15 @@ YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-mail-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> Verify mailpit binary exists"
-test -x "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not installed"; exit 1; }
-echo "OK: mailpit binary at ~/.pv/internal/bin/mailpit"
+test -x "$HOME/.pv/mailpit/1/bin/mailpit" || { echo "FAIL: mailpit binary not installed"; exit 1; }
+echo "OK: mailpit binary at ~/.pv/mailpit/1/bin/mailpit"
 
 echo "==> Verify daemon-status.json lists mailpit"
 for i in $(seq 1 20); do
-    if grep -q '"mailpit-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    if grep -q '"mailpit-1"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
     sleep 1
 done
-grep -q '"mailpit-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
+grep -q '"mailpit-1"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain mailpit entry";
     cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;
@@ -112,8 +112,8 @@ echo "OK: mail:* alias works"
 
 echo "==> mailpit:uninstall --force"
 sudo -E pv mailpit:uninstall --force
-test ! -f "$HOME/.pv/internal/bin/mailpit" || { echo "FAIL: mailpit binary not deleted after uninstall"; exit 1; }
-test ! -d "$HOME/.pv/services/mail/latest/data" || { echo "FAIL: data dir not deleted after uninstall"; exit 1; }
+test ! -f "$HOME/.pv/mailpit/1/bin/mailpit" || { echo "FAIL: mailpit binary not deleted after uninstall"; exit 1; }
+test ! -d "$HOME/.pv/data/mailpit/1" || { echo "FAIL: data dir not deleted after uninstall"; exit 1; }
 echo "OK: binary and data removed"
 
 echo "==> pv stop"

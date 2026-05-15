@@ -21,6 +21,11 @@ func InstallBinaryProgress(client *http.Client, b Binary, version string, progre
 		return err
 	}
 
+	switch b.Name {
+	case "rustfs", "mailpit":
+		return fmt.Errorf("%s is managed by its service lifecycle", b.DisplayName)
+	}
+
 	url, err := DownloadURL(b, version)
 	if err != nil {
 		return err
@@ -31,10 +36,6 @@ func InstallBinaryProgress(client *http.Client, b Binary, version string, progre
 		return installComposer(client, url, b, version, progress)
 	case "mago":
 		return installMago(client, url, progress)
-	case "rustfs":
-		return installRustfs(client, url, progress)
-	case "mailpit":
-		return installMailpit(client, url, progress)
 	default:
 		return fmt.Errorf("unknown binary: %s", b.Name)
 	}
@@ -56,37 +57,6 @@ func installMago(client *http.Client, url string, progress ProgressFunc) error {
 	os.Remove(archivePath)
 	return MakeExecutable(destPath)
 }
-
-func installRustfs(client *http.Client, url string, progress ProgressFunc) error {
-	internalBin := config.InternalBinDir()
-	archivePath := filepath.Join(internalBin, "rustfs.zip")
-	destPath := filepath.Join(internalBin, "rustfs")
-
-	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
-		return err
-	}
-	if err := ExtractZip(archivePath, destPath, "rustfs"); err != nil {
-		return err
-	}
-	os.Remove(archivePath)
-	return MakeExecutable(destPath)
-}
-
-func installMailpit(client *http.Client, url string, progress ProgressFunc) error {
-	internalBin := config.InternalBinDir()
-	archivePath := filepath.Join(internalBin, "mailpit.tar.gz")
-	destPath := filepath.Join(internalBin, "mailpit")
-
-	if err := DownloadProgress(client, url, archivePath, progress); err != nil {
-		return err
-	}
-	if err := ExtractTarGz(archivePath, destPath, "mailpit"); err != nil {
-		return err
-	}
-	os.Remove(archivePath)
-	return MakeExecutable(destPath)
-}
-
 func installComposer(client *http.Client, url string, b Binary, version string, progress ProgressFunc) error {
 	destPath := config.ComposerPharPath()
 

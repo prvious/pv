@@ -58,7 +58,7 @@ func BuildSupervisorProcess(version string) (supervisor.Process, error) {
 	if err != nil {
 		return supervisor.Process{}, err
 	}
-	dataDir := config.ServiceDataDir(serviceKey, version)
+	dataDir := config.RustfsDataDir(version)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return supervisor.Process{}, fmt.Errorf("create data dir %s: %w", dataDir, err)
 	}

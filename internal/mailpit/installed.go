@@ -11,14 +11,14 @@ func BinaryPath(version string) (string, error) {
 	if err := ValidateVersion(version); err != nil {
 		return "", err
 	}
-	return filepath.Join(config.InternalBinDir(), Binary().Name), nil
+	return filepath.Join(config.MailpitBinDir(version), Binary().Name), nil
 }
 
 func LogPath(version string) (string, error) {
 	if err := ValidateVersion(version); err != nil {
 		return "", err
 	}
-	return filepath.Join(config.LogsDir(), Binary().Name+"-"+version+".log"), nil
+	return config.MailpitLogPath(version), nil
 }
 
 func IsInstalled(version string) bool {

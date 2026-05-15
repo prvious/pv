@@ -14,7 +14,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "mailpit:update [version]",
 	GroupID: "mailpit",
-	Short:   "Re-download the Mailpit binary at the latest version",
+	Short:   "Refresh the Mailpit version-line artifact",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resolved, err := pkg.ResolveVersion(argVersion(args))
@@ -58,9 +58,6 @@ var updateCmd = &cobra.Command{
 			}
 		}
 		ui.Success(fmt.Sprintf("%s %s updated.", pkg.DisplayName(), resolved))
-		if server.IsRunning() {
-			return server.SignalDaemon()
-		}
-		return nil
+		return signalDaemon(pkg.DisplayName())
 	},
 }

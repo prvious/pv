@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/prvious/pv/internal/config"
+	"github.com/prvious/pv/internal/mailpit"
 	"github.com/prvious/pv/internal/registry"
+	"github.com/prvious/pv/internal/rustfs"
 )
 
 func scaffold(t *testing.T) string {
@@ -507,14 +509,18 @@ func TestGenerateCaddyfile(t *testing.T) {
 func TestGenerateServiceSiteConfigs(t *testing.T) {
 	scaffold(t)
 
-	binDir := config.InternalBinDir()
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
+	rustfsBinDir := config.RustfsBinDir(rustfs.DefaultVersion())
+	if err := os.MkdirAll(rustfsBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir rustfs bin dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "rustfs"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(rustfsBinDir, "rustfs"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write rustfs: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "mailpit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	mailpitBinDir := config.MailpitBinDir(mailpit.DefaultVersion())
+	if err := os.MkdirAll(mailpitBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir mailpit bin dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mailpitBinDir, "mailpit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write mailpit: %v", err)
 	}
 

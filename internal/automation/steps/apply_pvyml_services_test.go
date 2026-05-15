@@ -9,6 +9,8 @@ import (
 	"github.com/prvious/pv/internal/automation"
 	"github.com/prvious/pv/internal/config"
 	"github.com/prvious/pv/internal/mailpit"
+	"github.com/prvious/pv/internal/mysql"
+	"github.com/prvious/pv/internal/postgres"
 	"github.com/prvious/pv/internal/registry"
 	"github.com/prvious/pv/internal/rustfs"
 )
@@ -52,7 +54,7 @@ func stageRedisBinary(t *testing.T, version string) {
 
 func stageMailpitBinary(t *testing.T) {
 	t.Helper()
-	binDir := config.InternalBinDir()
+	binDir := config.MailpitBinDir(mailpit.DefaultVersion())
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", binDir, err)
 	}
@@ -63,7 +65,7 @@ func stageMailpitBinary(t *testing.T) {
 
 func stageRustfsBinary(t *testing.T) {
 	t.Helper()
-	binDir := config.InternalBinDir()
+	binDir := config.RustfsBinDir(rustfs.DefaultVersion())
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", binDir, err)
 	}
@@ -236,29 +238,47 @@ func TestApplyPvYmlServices_RejectsUnsupportedRedisVersion(t *testing.T) {
 	}
 }
 
-func TestApplyPvYmlServices_ErrorsWhenPostgresVersionEmpty(t *testing.T) {
+func TestApplyPvYmlServices_BindsPostgresDefaultVersion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	stagePostgresBinary(t, postgres.DefaultVersion())
 
-	projDir := t.TempDir()
-	reg := &registry.Registry{
-		Services: map[string]*registry.ServiceInstance{},
-		Projects: []registry.Project{{Name: "p", Path: projDir, Type: "laravel"}},
-	}
+	reg := &registry.Registry{Projects: []registry.Project{{Name: "app", Path: t.TempDir()}}}
 	ctx := &automation.Context{
-		ProjectName: "p",
-		ProjectPath: projDir,
+		ProjectName: "app",
 		Registry:    reg,
 		ProjectConfig: &config.ProjectConfig{
-			Postgresql: &config.ServiceConfig{}, // no Version
+			Postgresql: &config.ServiceConfig{},
 		},
 	}
-	step := &ApplyPvYmlServicesStep{}
-	_, err := step.Run(ctx)
-	if err == nil {
-		t.Fatal("Run: want error when postgres version is empty, got nil")
+
+	_, err := (&ApplyPvYmlServicesStep{}).Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(err.Error(), "version is required") {
-		t.Errorf("err = %v; want it to include `version is required`", err)
+	if got := reg.Projects[0].Services.Postgres; got != postgres.DefaultVersion() {
+		t.Fatalf("Postgres binding = %q, want %q", got, postgres.DefaultVersion())
+	}
+}
+
+func TestApplyPvYmlServices_BindsMysqlDefaultVersion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stageMysqlBinary(t, mysql.DefaultVersion())
+
+	reg := &registry.Registry{Projects: []registry.Project{{Name: "app", Path: t.TempDir()}}}
+	ctx := &automation.Context{
+		ProjectName: "app",
+		Registry:    reg,
+		ProjectConfig: &config.ProjectConfig{
+			Mysql: &config.ServiceConfig{},
+		},
+	}
+
+	_, err := (&ApplyPvYmlServicesStep{}).Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := reg.Projects[0].Services.MySQL; got != mysql.DefaultVersion() {
+		t.Fatalf("MySQL binding = %q, want %q", got, mysql.DefaultVersion())
 	}
 }
 
