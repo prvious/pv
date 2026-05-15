@@ -14,7 +14,7 @@ import (
 var updateCmd = &cobra.Command{
 	Use:     "rustfs:update [version]",
 	GroupID: "rustfs",
-	Short:   "Re-download the RustFS binary at the latest version",
+	Short:   "Re-download the RustFS binary for a version",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resolved, err := pkg.ResolveVersion(argVersion(args))
@@ -58,9 +58,6 @@ var updateCmd = &cobra.Command{
 			}
 		}
 		ui.Success(fmt.Sprintf("%s %s updated.", pkg.DisplayName(), resolved))
-		if server.IsRunning() {
-			return server.SignalDaemon()
-		}
-		return nil
+		return signalDaemon(pkg.DisplayName())
 	},
 }

@@ -138,7 +138,8 @@ func TestInstallRustfsExtractsTarGzArtifact(t *testing.T) {
 		t.Fatalf("installRustfs() error = %v", err)
 	}
 
-	destPath := filepath.Join(config.InternalBinDir(), "rustfs")
+	binDir := config.InternalBinDir()
+	destPath := filepath.Join(binDir, "rustfs")
 	got, err := os.ReadFile(destPath)
 	if err != nil {
 		t.Fatalf("rustfs not installed: %v", err)

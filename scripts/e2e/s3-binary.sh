@@ -40,15 +40,15 @@ YMLEOF
 sudo -E pv link "$ENVTEST_DIR" --name e2e-s3-env >/dev/null 2>&1 || { echo "FAIL: pv link for env test"; exit 1; }
 
 echo "==> Verify rustfs binary exists"
-test -x "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not installed"; exit 1; }
-echo "OK: rustfs binary at ~/.pv/internal/bin/rustfs"
+test -x "$HOME/.pv/rustfs/1.0.0-beta/bin/rustfs" || { echo "FAIL: rustfs binary not installed"; exit 1; }
+echo "OK: rustfs binary at ~/.pv/rustfs/1.0.0-beta/bin/rustfs"
 
 echo "==> Verify daemon-status.json lists rustfs"
 for i in $(seq 1 20); do
-    if grep -q '"rustfs-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
+    if grep -q '"rustfs-1.0.0-beta"' "$HOME/.pv/daemon-status.json" 2>/dev/null; then break; fi
     sleep 1
 done
-grep -q '"rustfs-latest"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
+grep -q '"rustfs-1.0.0-beta"' "$HOME/.pv/daemon-status.json" 2>/dev/null || {
     echo "FAIL: daemon-status.json does not contain rustfs entry";
     cat "$HOME/.pv/daemon-status.json" 2>/dev/null || echo "(file missing)";
     exit 1;
@@ -105,8 +105,8 @@ echo "OK: s3:* alias works"
 
 echo "==> rustfs:uninstall --force"
 sudo -E pv rustfs:uninstall --force
-test ! -f "$HOME/.pv/internal/bin/rustfs" || { echo "FAIL: rustfs binary not deleted after uninstall"; exit 1; }
-test ! -d "$HOME/.pv/services/s3/latest/data" || { echo "FAIL: data dir not deleted after uninstall"; exit 1; }
+test ! -f "$HOME/.pv/rustfs/1.0.0-beta/bin/rustfs" || { echo "FAIL: rustfs binary not deleted after uninstall"; exit 1; }
+test ! -d "$HOME/.pv/data/rustfs/1.0.0-beta" || { echo "FAIL: data dir not deleted after uninstall"; exit 1; }
 echo "OK: binary and data removed"
 
 echo "==> pv stop"

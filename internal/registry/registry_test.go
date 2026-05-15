@@ -477,7 +477,7 @@ func TestProjectsUsingService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6", Mail: "latest", S3: "latest"}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Redis: "8.6", Mail: "1", S3: "1.0.0-beta"}},
 			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 			{Name: "app3", Path: "/c"},
 		},
@@ -513,7 +513,7 @@ func TestUnbindService(t *testing.T) {
 	r := &Registry{
 		Services: make(map[string]*ServiceInstance),
 		Projects: []Project{
-			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Mail: "latest", S3: "latest"}},
+			{Name: "app1", Path: "/a", Services: &ProjectServices{MySQL: "8.4", Mail: "1", S3: "1.0.0-beta"}},
 			{Name: "app2", Path: "/b", Services: &ProjectServices{MySQL: "8.4"}},
 		},
 	}
@@ -722,14 +722,14 @@ func TestUnbindRedisVersion(t *testing.T) {
 func TestUnbindMailVersion(t *testing.T) {
 	r := &Registry{
 		Projects: []Project{
-			{Name: "a", Services: &ProjectServices{Mail: "latest"}},
+			{Name: "a", Services: &ProjectServices{Mail: "1"}},
 			{Name: "b", Services: &ProjectServices{Mail: "future"}},
-			{Name: "c", Services: &ProjectServices{Mail: "latest"}},
+			{Name: "c", Services: &ProjectServices{Mail: "1"}},
 			{Name: "d"},
 		},
 	}
 
-	r.UnbindMailVersion("latest")
+	r.UnbindMailVersion("1")
 
 	cases := map[string]string{"a": "", "b": "future", "c": ""}
 	for _, p := range r.Projects {
@@ -745,14 +745,14 @@ func TestUnbindMailVersion(t *testing.T) {
 func TestUnbindS3Version(t *testing.T) {
 	r := &Registry{
 		Projects: []Project{
-			{Name: "a", Services: &ProjectServices{S3: "latest"}},
+			{Name: "a", Services: &ProjectServices{S3: "1.0.0-beta"}},
 			{Name: "b", Services: &ProjectServices{S3: "future"}},
-			{Name: "c", Services: &ProjectServices{S3: "latest"}},
+			{Name: "c", Services: &ProjectServices{S3: "1.0.0-beta"}},
 			{Name: "d"},
 		},
 	}
 
-	r.UnbindS3Version("latest")
+	r.UnbindS3Version("1.0.0-beta")
 
 	cases := map[string]string{"a": "", "b": "future", "c": ""}
 	for _, p := range r.Projects {

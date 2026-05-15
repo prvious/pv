@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	pkg "github.com/prvious/pv/internal/rustfs"
-	"github.com/prvious/pv/internal/server"
 	"github.com/prvious/pv/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -23,9 +22,6 @@ var stopCmd = &cobra.Command{
 			return err
 		}
 		ui.Success(fmt.Sprintf("%s %s marked stopped.", pkg.DisplayName(), resolved))
-		if server.IsRunning() {
-			return server.SignalDaemon()
-		}
-		return nil
+		return signalDaemon(pkg.DisplayName())
 	},
 }

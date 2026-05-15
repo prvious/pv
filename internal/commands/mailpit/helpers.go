@@ -10,7 +10,7 @@ import (
 
 func signalDaemon(serviceName string) error {
 	if !server.IsRunning() {
-		ui.Subtle(fmt.Sprintf("daemon not running - %s will start on next `pv start`", serviceName))
+		ui.Subtle(fmt.Sprintf("daemon not running; changes will apply on next `pv start` for %s", serviceName))
 		return nil
 	}
 	return server.SignalDaemon()
