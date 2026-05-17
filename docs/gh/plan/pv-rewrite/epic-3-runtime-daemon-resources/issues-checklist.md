@@ -218,9 +218,9 @@ Blocks:
 ## Acceptance Criteria
 
 - [ ] Postgres has version-line desired state, data/log paths, process definition, readiness, env values, and status.
-- [ ] Postgres database commands are explicit.
+- [ ] Postgres `db:create`, `db:drop`, and `db:list` commands are explicit.
 - [ ] MySQL has version-line desired state, initialization, socket/PID behavior, privileges, process definition, readiness, env values, and status.
-- [ ] MySQL database commands are explicit.
+- [ ] MySQL `db:create`, `db:drop`, and `db:list` commands are explicit.
 - [ ] Shared mechanics are extracted only where both resources prove the same shape.
 ```
 
@@ -470,7 +470,7 @@ commands so that setup is reviewable and scriptable.
 ## Acceptance Criteria
 
 - [ ] Postgres exposes host, port, database, username, password, and URL values as applicable.
-- [ ] Database create/drop/list commands are explicit.
+- [ ] Database create, drop, and list commands are explicit.
 - [ ] Commands target the declared resource.
 - [ ] Missing resource errors are clear.
 ```

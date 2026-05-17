@@ -2,8 +2,8 @@
 
 ## Module Roles
 
-The exact package names can change during implementation, but the roles should
-stay stable.
+The package names below are the planned rewrite package roles and should stay
+stable unless the architecture document is updated first.
 
 | Module | Responsibility |
 | --- | --- |

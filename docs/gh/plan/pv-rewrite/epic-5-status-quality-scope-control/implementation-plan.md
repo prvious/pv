@@ -21,6 +21,24 @@ go build ./...
 go test ./...
 ```
 
+## Implementation Contract
+
+Execute the published leaf issues in dependency order and keep planning-file
+changes separate from Go status implementation when possible.
+
+| Issue range | Required output |
+| --- | --- |
+| #196-#201 | Aggregate status model, providers, rendering, targeted views, and status tests. |
+| #202-#205 | `post-mvp-backlog.md`, `mvp-scope-checklist.md`, and backlog/scope QA checks. |
+
+Non-negotiable decisions:
+
+- Status providers return data; they do not render UI.
+- Normalized states are exactly `healthy`, `stopped`, `missing_install`, `blocked`, `crashed`, `failed`, `partial`, and `unknown`.
+- Targeted status views are exactly `project`, `runtime`, `resource`, and `gateway` for MVP.
+- Secret-like values are redacted from all human status output.
+- Deferred backlog entries are not MVP implementation tasks.
+
 ## Suggested Package Ownership
 
 - `internal/status` owns aggregate status models, state normalization, and
@@ -44,8 +62,7 @@ to do next.
    failed, partially reconciled, and unknown.
 4. Add log path, last error, last reconcile time, and next action fields.
 5. Add `pv status` aggregation.
-6. Add targeted status views where useful, such as project, runtime, resource,
-   and gateway views.
+6. Add targeted status views for `project`, `runtime`, `resource`, and `gateway`.
 7. Define stable human rendering.
 8. Define pipeable output only when intentionally supported.
 9. Add tests across representative resource and project states.
@@ -63,13 +80,13 @@ into active execution.
 
 ### Implementation Sequence
 
-1. Create post-MVP backlog document under the rewrite planning package.
+1. Maintain `docs/gh/plan/pv-rewrite/post-mvp-backlog.md`.
 2. Populate omitted capabilities from the PRD and planning discussions.
 3. For each deferred capability, record deferral reason and reconsideration
    trigger.
-4. Add MVP scope checklist to planning docs or PR checklist.
-5. Add a validation issue/test that checks backlog completeness and scope
-   guardrails before release.
+4. Maintain `docs/gh/plan/pv-rewrite/mvp-scope-checklist.md`.
+5. Use test issue #205 to check backlog completeness and scope guardrails before
+   release.
 
 ### Acceptance Notes
 

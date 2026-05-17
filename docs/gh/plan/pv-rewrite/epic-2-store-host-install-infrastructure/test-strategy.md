@@ -66,6 +66,17 @@ go build ./...
 go test ./...
 ```
 
+## Test Issue Contract
+
+Use `test-issues-checklist.md` as the execution checklist. Epic 2 has exactly
+two test issues:
+
+- #135 validates path layout, schema version, migrations, and the contract-version decision.
+- #141 validates planner graph, bounded downloads, install execution, shims, persistence, and signaling.
+
+Epic 2 tests use fake adapters only. No test downloads artifacts, starts daemon
+processes, or installs real resources.
+
 ## Exit Criteria
 
 - All Epic 2 tests pass.

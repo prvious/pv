@@ -19,10 +19,10 @@ out of the MVP.
 
 - `pv status` reports desired state, observed state, failures, logs, and next
   actions.
-- Status supports healthy, stopped, missing install, blocked, crashed, failed,
-  and partially reconciled states where applicable.
+- Status supports the normalized MVP states: healthy, stopped, missing install,
+  blocked, crashed, failed, partial, and unknown.
 - Human status remains stable and scriptable.
-- Targeted status views are available where they reduce noise.
+- Targeted status views are available for project, runtime, resource, and gateway.
 - Post-MVP backlog records omitted capabilities, deferral reasons, and
   reconsideration triggers.
 - MVP scope checklist is part of planning/review flow.

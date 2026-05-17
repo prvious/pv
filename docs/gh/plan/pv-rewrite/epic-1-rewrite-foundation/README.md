@@ -22,7 +22,12 @@ These are reference material only. Execute from this planning package.
 ## Documents
 
 - `project-plan.md` - Epic 1 work hierarchy, milestones, estimates, and risks.
+- `arch.md` - Epic 1 architecture specification.
+- `technical-breakdown.md` - module roles, flows, and boundaries.
 - `implementation-plan.md` - task-by-task implementation sequence.
 - `issues-checklist.md` - GitHub issue bodies for the Epic 1 hierarchy.
 - `test-strategy.md` - Epic 1 test strategy and test issue plan.
+- `test-issues-checklist.md` - concrete test coverage for #122 and #127.
 - `qa-plan.md` - Epic 1 quality gates and acceptance checklist.
+- `prototype-isolation-root-scaffold/prd.md` - Feature 1.1 PRD.
+- `first-desired-state-resource-tracer/prd.md` - Feature 1.2 PRD.

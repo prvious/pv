@@ -213,14 +213,14 @@ Add schema versioning and applied migration records to the machine-owned store.
 ```markdown
 ## Enabler Description
 
-Represent `pv.yml` contract versioning now or explicitly defer it with a clear
-documented path.
+Record the `pv.yml` contract versioning decision: new rewrite contracts use
+top-level `version: 1`, and Epic 4 issue #171 implements parser validation.
 
 ## Acceptance Criteria
 
-- [ ] Decision is documented.
-- [ ] If implemented now, the model includes contract version.
-- [ ] If deferred, the owning future issue and expected location are documented.
+- [ ] Decision is documented as top-level `version: 1`.
+- [ ] Epic 4 issue #171 is named as the parser/validation owner.
+- [ ] Epic 2 does not add full contract parser code.
 ```
 
 ### User Story: Prevent Ambiguous Storage Locations

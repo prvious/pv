@@ -272,11 +272,12 @@ Blocked by:
 ```markdown
 ## Enabler Description
 
-Add the versioned project contract schema and parser for `pv.yml`.
+Add the versioned project contract schema and parser for `pv.yml`, requiring
+top-level `version: 1` for new rewrite contracts.
 
 ## Acceptance Criteria
 
-- [ ] Parser reads contract version.
+- [ ] Parser reads top-level `version: 1`.
 - [ ] Parser validates PHP version, service declarations, aliases, and setup commands.
 - [ ] Unknown or unsupported fields return clear errors.
 - [ ] Tests cover valid and invalid contracts.
@@ -438,7 +439,7 @@ next actions so that partial setup is easy to recover from.
 - [ ] Missing declared services produce actionable errors.
 - [ ] Missing runtime/tool installs produce actionable errors.
 - [ ] Setup stops on first failed command.
-- [ ] Failure status is persisted where applicable.
+- [ ] Failure status is persisted for link, setup, gateway, and helper failures that affect project observed state.
 ```
 
 ### Test: Link Env And Setup Behavior

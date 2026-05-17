@@ -9,10 +9,17 @@ post-MVP backlog.
 ## Documents
 
 - `project-plan.md` - Epic 5 work hierarchy, dependencies, risks, and done rules.
+- `arch.md` - Epic 5 architecture specification.
+- `technical-breakdown.md` - status model, command contract, and scope-control file contracts.
 - `implementation-plan.md` - implementation sequence and package guidance.
 - `issues-checklist.md` - GitHub issue bodies and publishing tracker.
 - `test-strategy.md` - focused test strategy for status and scope control.
+- `test-issues-checklist.md` - concrete test coverage for #201 and #205.
 - `qa-plan.md` - review gates and manual QA expectations.
+- `desired-observed-status-ux/prd.md` - Feature 5.1 PRD.
+- `post-mvp-backlog/prd.md` - Feature 5.2 PRD.
+- `../post-mvp-backlog.md` - deferred capability backlog.
+- `../mvp-scope-checklist.md` - MVP boundary checklist.
 
 ## Legacy Reference
 

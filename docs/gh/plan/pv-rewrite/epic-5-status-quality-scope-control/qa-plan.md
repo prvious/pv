@@ -11,6 +11,7 @@
 | Targeted views | Targeted status views reuse aggregate data and produce actionable errors. |
 | Backlog | Each deferred capability has reason and trigger. |
 | Final QA | MVP acceptance criteria map to tests or manual QA evidence. |
+| Planning docs | `arch.md`, `technical-breakdown.md`, feature PRDs, and `test-issues-checklist.md` are present. |
 
 ## Manual QA Checklist
 
@@ -32,6 +33,7 @@
 - [ ] Deferred backlog items are not prerequisites for MVP issues.
 - [ ] Scope checklist is referenced from planning docs.
 - [ ] Final QA evidence covers all epic acceptance criteria.
+- [ ] Test implementation follows `test-issues-checklist.md`.
 
 ## Required Verification
 

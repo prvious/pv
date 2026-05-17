@@ -22,6 +22,30 @@ Before changing Go code:
 - Activate `modern-go`.
 - Before each commit, run `go-simplifier` on changed Go code.
 
+## Implementation Contract
+
+Execute the published leaf issues in this order. Do not merge adjacent issues
+unless the issue checklist is updated first.
+
+| Issue | Task | Required output |
+| --- | --- | --- |
+| #119 | Task 1 | Prototype builds from `legacy/prototype`. |
+| #120 | Task 2 | Fresh root module and `internal/cli` seam exist. |
+| #121 | Task 2 | `help`, `version`, and unknown command behavior are tested. |
+| #122 | Verification | Root/prototype build and CLI tests pass. |
+| #123 | Task 4 | Desired and observed store seam exists. |
+| #124 | Task 6 | Exact tracer command is `mago:install <version>`. |
+| #125 | Task 5 | Mago controller reconciles through fake installer seam. |
+| #126 | Task 7 | `status` reports no desired, pending, ready, and failed states. |
+| #127 | Verification | Control-plane tracer tests pass without real downloads. |
+
+Non-negotiable decisions:
+
+- The first tracer resource is Mago.
+- The first tracer command is `mago:install <version>`.
+- Epic 1 does not introduce daemon, supervisor, SQLite, Laravel, PHP, Composer,
+  gateway, databases, Redis, Mailpit, or RustFS.
+
 ## Task 1: Move Prototype Into `legacy/prototype`
 
 **Files likely affected:**
@@ -84,7 +108,7 @@ Before changing Go code:
 
 - `docs/gh/plan/pv-rewrite/README.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/**`
-- optional root rewrite working doc
+- `CONTEXT.md`
 
 **Steps:**
 
@@ -156,7 +180,7 @@ Before changing Go code:
 
 **Steps:**
 
-1. Add `mago:install <version>` or equivalent first tracer command.
+1. Add `mago:install <version>` as the first tracer command.
 2. Validate argument count and version.
 3. Write desired state only.
 4. Do not install directly from the command.

@@ -42,43 +42,78 @@ safe; continue with the missing labels.
 
 For Epic 1, use the focused package first:
 
+- `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/technical-breakdown.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/project-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/implementation-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/test-issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/qa-plan.md`
 
 For Epic 2, use:
 
+- `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/technical-breakdown.md`
 - `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/project-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/implementation-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/test-issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/qa-plan.md`
 
 For Epic 3, use:
 
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/technical-breakdown.md`
 - `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/project-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/implementation-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/test-issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/qa-plan.md`
 
 For Epic 4, use:
 
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/technical-breakdown.md`
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/project-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/implementation-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/test-issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/qa-plan.md`
 
 For Epic 5, use:
 
+- `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/technical-breakdown.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/project-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/implementation-plan.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/test-issues-checklist.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/qa-plan.md`
+- `docs/gh/plan/pv-rewrite/post-mvp-backlog.md`
+- `docs/gh/plan/pv-rewrite/mvp-scope-checklist.md`
+- `docs/gh/plan/pv-rewrite/issue-label-audit.md`
+
+Feature PRDs to review before publishing or updating feature issues:
+
+- `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/prototype-isolation-root-scaffold/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/first-desired-state-resource-tracer/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/store-filesystem-guardrails/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-2-store-host-install-infrastructure/scriptable-install-planner/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/php-runtime-composer-tooling/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/daemon-supervisor-mailpit/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/stateful-database-resources/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-3-runtime-daemon-resources/cache-mail-object-storage-resources/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/project-contract-init/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/link-env-setup/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/gateway-open/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/laravel-helper-commands/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/desired-observed-status-ux/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/post-mvp-backlog/prd.md`
 
 ## Legacy Superseded Comment
 

@@ -64,9 +64,9 @@ Legacy references: #109, #113.
 ## Acceptance Criteria
 
 - [ ] `pv status` reports desired state, observed state, failures, logs, and next actions.
-- [ ] Status covers healthy, stopped, missing install, blocked, crashed, failed, and partially reconciled states where applicable.
+- [ ] Status covers healthy, stopped, missing install, blocked, crashed, failed, partial, and unknown states.
 - [ ] Status output remains stable and scriptable.
-- [ ] Targeted status views are available where useful.
+- [ ] Targeted status views are available for project, runtime, resource, and gateway.
 - [ ] Post-MVP backlog records omitted capabilities.
 - [ ] Backlog entries include deferral reasons and reconsideration triggers.
 - [ ] MVP scope checklist is part of planning or review flow.
@@ -118,7 +118,7 @@ Blocks:
 
 ## Acceptance Criteria
 
-- [ ] Aggregate status includes projects, runtimes, tools, resources, gateway, daemon, and supervisor where applicable.
+- [ ] Aggregate status includes projects, runtimes, tools, resources, gateway, daemon, and supervisor providers when available.
 - [ ] Status normalizes healthy, stopped, missing install, blocked, crashed, failed, partial, and unknown states.
 - [ ] Status includes log path, last error, last reconcile time, and next action where available.
 - [ ] Output is stable and scriptable.
@@ -194,7 +194,7 @@ actually exists so that I can understand drift.
 
 - [ ] Status shows desired state.
 - [ ] Status shows observed state.
-- [ ] Status distinguishes healthy, stopped, missing install, blocked, crashed, failed, partial, and unknown states where applicable.
+- [ ] Status distinguishes healthy, stopped, missing install, blocked, crashed, failed, partial, and unknown states.
 - [ ] Status includes project and resource context.
 ```
 
@@ -230,7 +230,7 @@ can be used in automation.
 
 - [ ] Human status format is stable.
 - [ ] stdout remains pipeable where command output is designed for piping.
-- [ ] Human progress/status goes to stderr where applicable.
+- [ ] Human progress/status goes to stderr unless the command explicitly defines pipeable stdout.
 - [ ] Machine-readable output is explicit if introduced.
 ```
 

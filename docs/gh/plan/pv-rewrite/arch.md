@@ -97,7 +97,7 @@ graph TD
 - Persistence: SQLite target for machine-owned mutable state; file-backed
   scaffolding is acceptable only during early tracer work.
 - Human project contract: YAML `pv.yml`.
-- Remote artifact metadata: generated JSON manifests where useful.
+- Remote artifact metadata: generated JSON manifests for artifact catalogs.
 - Process supervision: native Go process management.
 - Gateway: FrankenPHP/Caddy as internal gateway infrastructure.
 - Tests: Go unit and integration tests, shell E2E where real OS integration is

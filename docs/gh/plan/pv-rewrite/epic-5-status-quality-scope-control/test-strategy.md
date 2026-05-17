@@ -73,6 +73,17 @@ go build ./...
 go test ./...
 ```
 
+## Test Issue Contract
+
+Use `test-issues-checklist.md` as the execution checklist. Epic 5 has exactly
+two test issues:
+
+- #201 validates aggregate and targeted status UX across normalized states.
+- #205 validates backlog completeness and MVP scope guardrails.
+
+Targeted status views for MVP are exactly project, runtime, resource, and
+gateway.
+
 ## Exit Criteria
 
 - All Epic 5 tests pass.

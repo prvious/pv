@@ -99,7 +99,7 @@ Blocks:
 | ------------------------------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------- |
 | File-backed store becomes permanent architecture | Future locking and migrations are weak      | Add schema/migration seams now and keep SQLite as target.                               |
 | Path helpers become a junk drawer                | Resource packages bypass layout rules       | Keep helpers role-based and test every canonical path family.                           |
-| Contract versioning is ignored                   | Future `pv.yml` upgrades are unclear        | Implement now or explicitly defer with a documented path and issue link.                |
+| Contract versioning is ignored                   | Future `pv.yml` upgrades are unclear        | Record `version: 1` in Epic 2 and implement parsing in Epic 4 issue #171.              |
 | Install planner becomes too abstract             | Simple installs become hard to reason about | Model concrete runtimes/tools/services and introduce interfaces only for real adapters. |
 | Failure leaves partial advertised state          | Users run broken shims or stale status      | Test failure rollback and only persist/expose after durable steps.                      |
 

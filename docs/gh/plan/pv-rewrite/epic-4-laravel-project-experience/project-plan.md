@@ -137,7 +137,7 @@ Blocks:
 ## Definition Of Ready
 
 - Epic 3 runtime and resource issue hierarchy is published.
-- `pv.yml` contract versioning path is decided.
+- `pv.yml` contract versioning is top-level `version: 1`.
 - Resource controllers expose explicit env values.
 - Gateway work can use host adapters for DNS, TLS, and browser open behavior.
 

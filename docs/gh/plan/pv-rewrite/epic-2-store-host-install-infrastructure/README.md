@@ -21,7 +21,12 @@ These are reference material only. Execute from this planning package.
 ## Documents
 
 - `project-plan.md` - Epic 2 work hierarchy, dependencies, estimates, and risks.
+- `arch.md` - Epic 2 architecture specification.
+- `technical-breakdown.md` - module roles, path rules, and install planner contracts.
 - `implementation-plan.md` - task-by-task implementation sequence.
 - `issues-checklist.md` - GitHub issue bodies for the Epic 2 hierarchy.
 - `test-strategy.md` - Epic 2 test strategy and test issue plan.
+- `test-issues-checklist.md` - concrete test coverage for #135 and #141.
 - `qa-plan.md` - Epic 2 quality gates and acceptance checklist.
+- `store-filesystem-guardrails/prd.md` - Feature 2.1 PRD.
+- `scriptable-install-planner/prd.md` - Feature 2.2 PRD.

@@ -70,6 +70,17 @@ go build ./...
 go test ./...
 ```
 
+## Test Issue Contract
+
+Use `test-issues-checklist.md` as the execution checklist. Epic 1 has exactly
+two test issues:
+
+- #122 validates prototype/root buildability and CLI scriptability.
+- #127 validates desired/observed tracer behavior.
+
+No Epic 1 test may download real artifacts, start long-running processes, or
+exercise Laravel/PHP/service behavior.
+
 ## Exit Criteria
 
 - All Epic 1 tests pass.

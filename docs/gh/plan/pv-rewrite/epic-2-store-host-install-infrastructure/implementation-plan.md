@@ -17,6 +17,33 @@ Epic 2 builds infrastructure, not product workflows:
 Do not implement real PHP, Composer, Postgres, MySQL, Redis, Mailpit, RustFS, or
 Laravel behavior in Epic 2. Use fake adapters.
 
+## Implementation Contract
+
+Execute the published leaf issues in this order. Do not start Epic 3 resource
+work until #131 through #141 have passing tests or an explicit blocker note.
+
+| Issue | Task | Required output |
+| --- | --- | --- |
+| #131 | Task 1 | Canonical host path helpers cover every path family. |
+| #132 | Task 2 | Store schema version, applied migrations, and migration runner seam exist. |
+| #133 | Task 3 | Contract version decision is documented as top-level `version: 1`, implemented in Epic 4 issue #171. |
+| #134 | Task 4 | Layout validation prevents ambiguous binary/data/log/state locations. |
+| #135 | Verification | Store migration and filesystem layout tests pass. |
+| #136 | Task 5 | Install plan model validates identities and dependency graph. |
+| #137 | Task 6 | Bounded download scheduler exists behind fakeable adapter. |
+| #138 | Task 7 | Install executor runs dependency order and skips failed dependents. |
+| #139 | Task 8 | Atomic shim writer replaces shims only after complete writes. |
+| #140 | Task 9 | Durable persistence happens before daemon signal seam. |
+| #141 | Verification | Install planner scheduling and failure tests pass. |
+
+Non-negotiable decisions:
+
+- `pv.yml` contract versioning is owned by Epic 4 and uses top-level `version: 1`.
+- Epic 2 records the decision but does not parse the full project contract.
+- Store checksum/integrity metadata is not part of Epic 2; it is deferred in
+  `../post-mvp-backlog.md`.
+- No network downloads, artifact builds, or real resource installs run in Epic 2.
+
 ## Required Skills For Implementation
 
 Before changing Go code:
@@ -70,8 +97,8 @@ Before changing Go code:
 3. Add migration runner interface.
 4. Add one no-op or initial migration to prove the shape.
 5. Ensure migrations are forward-only.
-6. Add checksum or integrity field if implementation cost is low now; otherwise
-   document it as an explicit follow-up in the issue.
+6. Do not add checksum or integrity metadata in Epic 2; confirm the deferral is
+   recorded in `docs/gh/plan/pv-rewrite/post-mvp-backlog.md`.
 
 **Acceptance criteria:**
 
@@ -89,19 +116,16 @@ Before changing Go code:
 
 **Steps:**
 
-1. Decide whether contract versioning lands now or is deferred to the project
-   contract epic.
-2. If now, add a minimal `contract_version` representation to relevant model.
-3. If deferred, document:
-   - where it will live;
-   - what blocks it;
-   - which issue owns it later.
-4. Add a test or documentation assertion so the decision is visible.
+1. Record the decision that `pv.yml` includes top-level `version: 1`.
+2. Record that Epic 4 issue #171 owns parser and validation implementation.
+3. Add a documentation assertion in `technical-breakdown.md` and the relevant
+   issue body.
+4. Do not add contract parser code in Epic 2.
 
 **Acceptance criteria:**
 
-- Contract versioning is not forgotten.
-- The path is explicit and reviewable.
+- Contract versioning is documented as top-level `version: 1`.
+- Epic 4 issue #171 is named as the implementation owner.
 
 ## Task 4: Prevent Ambiguous Storage Locations
 
@@ -215,7 +239,8 @@ Before changing Go code:
 
 - `internal/installer/planner.go`
 - `internal/installer/planner_test.go`
-- control/store signal adapter as needed
+- `internal/control/reconcile_signal.go`
+- `internal/control/reconcile_signal_test.go`
 
 **Steps:**
 

@@ -87,7 +87,17 @@ go test ./...
 
 - All Epic 3 unit and integration tests pass.
 - Supervisor resource-agnostic checks pass.
-- Runtime and resource status covers healthy, missing install, blocked, stopped,
-  crashed, and failed where applicable.
+- Runtime and resource status covers the states named in `technical-breakdown.md`
+  for each resource family.
 - No expensive artifact workflows were run.
 - No status or log output prints secret-like values.
+
+## Test Issue Contract
+
+Use `test-issues-checklist.md` as the execution checklist. Epic 3 has exactly
+four test issues:
+
+- #151 validates PHP and Composer dependency behavior.
+- #156 validates daemon, supervisor, Mailpit, and runnable observed status.
+- #161 validates Postgres and MySQL database resources.
+- #165 validates Redis, Mailpit env behavior, RustFS, and secret redaction.

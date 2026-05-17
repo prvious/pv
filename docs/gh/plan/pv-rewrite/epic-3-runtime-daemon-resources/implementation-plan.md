@@ -20,6 +20,28 @@ go build ./...
 go test ./...
 ```
 
+## Implementation Contract
+
+Execute the published leaf issues in dependency order. Do not let any command
+perform reconciliation directly; every command named here writes desired state or
+invokes an explicit helper capability only.
+
+| Issue range | Required output |
+| --- | --- |
+| #147-#151 | PHP runtime and Composer dependency behavior, including `php:install <version>` and `composer:install <version> --php <php-version>`. |
+| #152-#156 | Daemon reconcile loop, resource-agnostic supervisor, Mailpit process definition, and runnable observed status. |
+| #157-#161 | Postgres first, then MySQL, with explicit `db:create`, `db:drop`, and `db:list` commands for each. |
+| #162-#165 | Redis, Mailpit env, RustFS S3 resource, and redaction tests. |
+
+Non-negotiable decisions:
+
+- Composer depends on a managed PHP runtime and never falls back to system PHP.
+- Mailpit remains explicit mail capture behavior, not generic HTTP service behavior.
+- Postgres is implemented before extracting shared database mechanics for MySQL.
+- Database command MVP is exactly `db:create`, `db:drop`, and `db:list` for Postgres and MySQL.
+- Supervisor public API and tests must not mention concrete resource names.
+- RustFS credentials may render into declared env values but must be redacted from status and logs.
+
 ## Suggested Package Ownership
 
 - `internal/resources/php` owns PHP runtime desired state, install integration,
@@ -96,14 +118,12 @@ go test ./...
 1. Add Postgres version-line desired state.
 2. Add Postgres install detection, data/log paths, process definition,
    readiness, env values, and status mapping.
-3. Add explicit Postgres database commands for create/drop/list or the initial
-   agreed subset.
+3. Add explicit Postgres database commands for create, drop, and list.
 4. Extract shared mechanics only after Postgres behavior is clear.
 5. Add MySQL version-line desired state.
 6. Add MySQL initialization, socket/PID behavior, privilege handling, process
    definition, readiness, env values, and status mapping.
-7. Add explicit MySQL database commands for create/drop/list or the initial
-   agreed subset.
+7. Add explicit MySQL database commands for create, drop, and list.
 8. Add status coverage for missing install, stopped, running, blocked, and
    failed states.
 

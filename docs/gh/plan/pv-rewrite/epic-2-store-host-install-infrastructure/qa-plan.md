@@ -9,6 +9,7 @@
 - [ ] Canonical filesystem layout is accepted.
 - [ ] Install planner scope excludes real resource installation.
 - [ ] Test issues are linked to feature issues.
+- [ ] `arch.md`, `technical-breakdown.md`, feature PRDs, and `test-issues-checklist.md` are present.
 
 ### Gate 2: Ready For Review
 
@@ -16,6 +17,7 @@
 - [ ] Store schema/migration tests are present.
 - [ ] Contract version decision is visible.
 - [ ] Install planner tests use fake adapters.
+- [ ] Test implementation follows `test-issues-checklist.md`.
 - [ ] `go-simplifier` was run for changed Go code before commit.
 
 ### Gate 3: Acceptance

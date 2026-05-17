@@ -11,6 +11,7 @@
 | Setup | Setup runner uses managed PHP and stops on first failure. |
 | Gateway | Route rendering is deterministic; DNS, TLS, and browser behavior use adapters. |
 | Helpers | Helper commands resolve current project and declared resources. |
+| Planning docs | `arch.md`, `technical-breakdown.md`, feature PRDs, and `test-issues-checklist.md` are present. |
 
 ## Manual QA Checklist
 
@@ -37,6 +38,7 @@
 - [ ] Tests that mutate pv state isolate `HOME`.
 - [ ] Tests that call `t.Setenv` do not call `t.Parallel`.
 - [ ] PR description lists exact verification commands run.
+- [ ] Test implementation follows `test-issues-checklist.md`.
 
 ## Required Verification
 

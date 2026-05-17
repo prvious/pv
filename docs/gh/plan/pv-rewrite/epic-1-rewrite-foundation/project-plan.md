@@ -90,7 +90,7 @@ should be created in parallel with the feature work, not after.
 | Prototype and rewrite code mix | New architecture inherits old package shape | Move prototype as a full module and prohibit imports from root rewrite. |
 | CLI scaffold becomes UI-heavy | Rewrite starts with unnecessary dependency drag | Keep direct command parsing until a dependency clearly pays for itself. |
 | Store scaffold becomes permanent | JSON/file choices leak into later architecture | Keep store interface small and call out SQLite migration as Epic 2 work. |
-| First tracer does too much | Foundation PR becomes hard to review | Use one small installable resource, preferably Mago, with marker installer. |
+| First tracer does too much | Foundation PR becomes hard to review | Use Mago as the only installable resource tracer, with marker installer. |
 | Status output overfits formatting | Tests become brittle | Test stable behavior and key lines, not incidental spacing. |
 
 ## Definition Of Ready

@@ -78,6 +78,18 @@ go build ./...
 go test ./...
 ```
 
+## Test Issue Contract
+
+Use `test-issues-checklist.md` as the execution checklist. Epic 4 has exactly
+four test issues:
+
+- #175 validates `version: 1` contracts, parser/generator behavior, and `pv init`.
+- #181 validates `pv link`, declared env writes, setup runner, and store-before-signal ordering.
+- #187 validates gateway route rendering, DNS/TLS/browser adapters, and `pv open`.
+- #192 validates Artisan, database, mail, and S3 helper routing.
+
+Tests must prove `pv link` never infers services or env values from `.env`.
+
 ## Exit Criteria
 
 - All Epic 4 unit and integration tests pass.

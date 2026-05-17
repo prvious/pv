@@ -6,6 +6,7 @@
 
 - [ ] Labels exist in GitHub.
 - [ ] Epic 1 issue hierarchy is created or staged from `issues-checklist.md`.
+- [ ] `arch.md`, `technical-breakdown.md`, feature PRDs, and `test-issues-checklist.md` are present.
 - [ ] Legacy issues #97-#99 and PR #114 are treated as references only.
 - [ ] Scope excludes PHP, Composer, daemon, supervisor, Laravel, gateway, and
   backing resources.
@@ -16,6 +17,7 @@
 - [ ] Root scaffold is complete if included in the PR.
 - [ ] First tracer behavior is complete if included in the PR.
 - [ ] Focused tests are present.
+- [ ] Test implementation follows `test-issues-checklist.md`.
 - [ ] `go-simplifier` was run for changed Go code before commit.
 
 ### Gate 3: Acceptance

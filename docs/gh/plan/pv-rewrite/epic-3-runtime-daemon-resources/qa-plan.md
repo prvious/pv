@@ -11,6 +11,7 @@
 | Resources | Each resource owns its flags, paths, readiness, env values, and status mapping. |
 | Secrets | RustFS and other secret-like values are redacted from status and logs. |
 | Tests | Focused unit tests plus narrow integration checks pass. |
+| Planning docs | `arch.md`, `technical-breakdown.md`, feature PRDs, and `test-issues-checklist.md` are present. |
 
 ## Manual QA Checklist
 
@@ -38,6 +39,7 @@
 - [ ] Tests that mutate pv state isolate `HOME`.
 - [ ] Tests that call `t.Setenv` do not call `t.Parallel`.
 - [ ] PR description lists exact verification commands run.
+- [ ] Test implementation follows `test-issues-checklist.md`.
 
 ## Required Verification
 

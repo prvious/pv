@@ -268,7 +268,7 @@ vertical slice.
 **Implementation tasks:**
 
 1. Add aggregate status model.
-2. Add targeted status views where useful.
+2. Add targeted status views for project, runtime, resource, and gateway.
 3. Add stable human output to stderr.
 4. Add pipeable output only when explicitly designed.
 5. Add status tests across resource families.

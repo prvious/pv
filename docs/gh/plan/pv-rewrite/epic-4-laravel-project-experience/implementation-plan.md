@@ -20,6 +20,28 @@ go build ./...
 go test ./...
 ```
 
+## Implementation Contract
+
+Execute the published leaf issues in dependency order. Do not add hidden setup,
+service inference, or env writes outside these issue contracts.
+
+| Issue range | Required output |
+| --- | --- |
+| #171-#175 | Versioned `pv.yml` parser/generator and deterministic `pv init`. |
+| #176-#181 | Project desired state, managed env writer, setup runner, and `pv link`. |
+| #182-#187 | Gateway desired/observed state, route rendering, DNS/TLS adapters, and `pv open`. |
+| #188-#192 | Artisan, database, mail, and S3 helper routing. |
+
+Non-negotiable decisions:
+
+- New rewrite contracts require top-level `version: 1`.
+- `setup` is an ordered list of shell command strings.
+- Each setup command runs in its own shell from the project root with managed PHP first on `PATH`.
+- `pv init` never mutates `.env`, installs resources, or reads `.env` to choose services.
+- `pv link` writes only declared env keys and runs only declared setup commands.
+- Helper commands never auto-create missing resources.
+- DNS, TLS, browser, and gateway process behavior must be adapter-driven in tests.
+
 ## Suggested Package Ownership
 
 - `internal/project` owns contract parsing, validation, current-project
@@ -38,16 +60,17 @@ go test ./...
 
 ### Implementation Sequence
 
-1. Add versioned `pv.yml` contract schema.
+1. Add versioned `pv.yml` contract schema with required top-level `version: 1`.
 2. Add validation for PHP version, services, aliases, setup commands, and
    unsupported fields.
 3. Add Laravel project detection using explicit markers.
-4. Add Laravel defaults for PHP, services, aliases, and setup without reading
-   service decisions from `.env`.
+4. Add Laravel defaults for PHP, aliases, env templates, and setup without
+   reading service decisions from `.env`; service declarations are generated
+   only from explicit flags or documented generator defaults.
 5. Add contract generator that produces stable, reviewable YAML.
 6. Add `pv init` command.
 7. Add overwrite protection and `--force` behavior.
-8. Add unsupported/fallback project errors.
+8. Add unsupported project errors; do not add generic fallback project behavior.
 
 ### Acceptance Notes
 
