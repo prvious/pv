@@ -117,11 +117,11 @@ func installStatusEntries(ctx context.Context, paths host.Paths, store *control.
 			entry.LastError = observed.LastError
 			entry.NextAction = observed.NextAction
 		} else if desired.Resource == control.ResourceComposer && desired.RuntimeVersion != "" {
-			phpObserved, phpOK, err := store.Observed(ctx, control.ResourcePHP)
+			missingRuntime, err := composerRuntimeMissing(ctx, store, desired.RuntimeVersion)
 			if err != nil {
 				return nil, err
 			}
-			if !phpOK || phpObserved.DesiredVersion != desired.RuntimeVersion || phpObserved.State != control.StateReady {
+			if missingRuntime {
 				entry.State = status.StateBlocked
 				entry.Observed = fmt.Sprintf("%s %s blocked", desired.Resource, desired.Version)
 				entry.LastError = fmt.Sprintf("PHP runtime %s is not installed", desired.RuntimeVersion)
@@ -131,6 +131,21 @@ func installStatusEntries(ctx context.Context, paths host.Paths, store *control.
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+func composerRuntimeMissing(ctx context.Context, store *control.FileStore, runtimeVersion string) (bool, error) {
+	phpObserved, observedOK, err := store.Observed(ctx, control.ResourcePHP)
+	if err != nil {
+		return false, err
+	}
+	if observedOK && phpObserved.DesiredVersion == runtimeVersion && phpObserved.State == control.StateReady {
+		return false, nil
+	}
+	phpDesired, desiredOK, err := store.Desired(ctx, control.ResourcePHP)
+	if err != nil {
+		return false, err
+	}
+	return !desiredOK || phpDesired.Version != runtimeVersion, nil
 }
 
 func projectStatePath(paths host.Paths) string {
