@@ -17,6 +17,7 @@ import (
 	"time"
 )
 
+// Sandbox owns the temp roots and cleanup state for E2E scenarios.
 type Sandbox struct {
 	RootDir     string
 	HomeDir     string
@@ -41,18 +42,21 @@ type sandboxConfig struct {
 	ProjectRoot string
 }
 
+// PortReservation keeps a loopback port unavailable until Close is called.
 type PortReservation struct {
 	Port     int
 	listener net.Listener
 	closed   bool
 }
 
+// CommandRunner executes a binary inside a sandbox and captures public evidence.
 type CommandRunner struct {
 	Executable string
 	Sandbox    *Sandbox
 	ExtraEnv   map[string]string
 }
 
+// CommandResult records one sandboxed command invocation.
 type CommandResult struct {
 	Argv             []string
 	WorkingDirectory string
@@ -65,6 +69,7 @@ type CommandResult struct {
 	Err              error
 }
 
+// NewSandbox creates isolated HOME, pv state, project, log, data, and temp roots.
 func NewSandbox(rootDir string) (*Sandbox, error) {
 	return newSandbox(sandboxConfig{RootDir: rootDir})
 }
@@ -128,6 +133,7 @@ func newSandbox(config sandboxConfig) (*Sandbox, error) {
 	return sandbox, nil
 }
 
+// ReservePort reserves a deterministic loopback port candidate for the sandbox.
 func (s *Sandbox) ReservePort() (*PortReservation, error) {
 	const attempts = 1000
 	for range attempts {
@@ -143,12 +149,14 @@ func (s *Sandbox) ReservePort() (*PortReservation, error) {
 	return nil, errors.New("reserve sandbox port: no available candidate ports")
 }
 
+// TrackCommand registers a started command for cleanup.
 func (s *Sandbox) TrackCommand(command *exec.Cmd) {
 	if command != nil {
 		s.commands = append(s.commands, command)
 	}
 }
 
+// Cleanup closes reservations, stops tracked commands, and removes sandbox files.
 func (s *Sandbox) Cleanup() error {
 	if s == nil || s.cleaned {
 		return nil
@@ -181,6 +189,7 @@ func (s *Sandbox) Cleanup() error {
 	return errors.Join(errs...)
 }
 
+// Env returns the environment overrides that keep commands inside the sandbox.
 func (s *Sandbox) Env() map[string]string {
 	return map[string]string{
 		"HOME":                s.HomeDir,
@@ -199,6 +208,7 @@ func (s *Sandbox) Env() map[string]string {
 	}
 }
 
+// LogPaths returns sandbox log files in deterministic order.
 func (s *Sandbox) LogPaths() ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(s.LogsDir, func(path string, entry fs.DirEntry, err error) error {
@@ -217,6 +227,7 @@ func (s *Sandbox) LogPaths() ([]string, error) {
 	return paths, nil
 }
 
+// Run invokes the configured executable with args from workDir.
 func (r CommandRunner) Run(ctx context.Context, workDir string, args ...string) CommandResult {
 	argv := append([]string{r.Executable}, args...)
 	command := exec.CommandContext(ctx, r.Executable, args...)
@@ -264,6 +275,7 @@ func (r CommandRunner) logPaths() ([]string, error) {
 	return r.Sandbox.LogPaths()
 }
 
+// Close releases the reserved loopback port.
 func (p *PortReservation) Close() error {
 	if p == nil || p.closed {
 		return nil

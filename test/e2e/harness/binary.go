@@ -13,11 +13,13 @@ import (
 	"time"
 )
 
+// Binary describes the active rewrite executable built for E2E scenarios.
 type Binary struct {
 	Path     string
 	Evidence BinaryEvidence
 }
 
+// BinaryEvidence records the build command and output path used by the harness.
 type BinaryEvidence struct {
 	Argv             []string
 	WorkingDirectory string
@@ -28,6 +30,7 @@ type BinaryEvidence struct {
 	Elapsed          time.Duration
 }
 
+// BuildError reports a failed active binary build with captured stderr.
 type BuildError struct {
 	Argv             []string
 	WorkingDirectory string
@@ -51,6 +54,7 @@ func (e *BuildError) Unwrap() error {
 	return e.Err
 }
 
+// BuildActiveBinary compiles the active rewrite pv binary from repoRoot into outputDir.
 func BuildActiveBinary(ctx context.Context, repoRoot string, outputDir string) (Binary, error) {
 	repoRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
