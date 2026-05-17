@@ -25,6 +25,7 @@ gh label create runtime --color 5319e7 --description "Runtime and toolchain"
 gh label create gateway --color 006b75 --description "Gateway, DNS, TLS, pv open"
 gh label create resource --color 5319e7 --description "Managed resource"
 gh label create quality --color 0e8a16 --description "Testing, status, QA, scope"
+gh label create e2e --color bfd4f2 --description "End-to-end rewrite validation"
 ```
 
 If a label already exists, `gh` will return an error for that label. That is
@@ -33,7 +34,7 @@ safe; continue with the missing labels.
 ## Creation Order
 
 1. Create milestone `pv rewrite MVP`.
-2. Create five epic issues from `issues-checklist.md`.
+2. Create six epic issues from `issues-checklist.md` and `epic-6-e2e-rewrite-validation/issues-checklist.md`.
 3. Create feature issues and link each to its parent epic.
 4. Create story/enabler issues and link each to its parent feature.
 5. Create test issues in parallel with feature issues.
@@ -48,6 +49,7 @@ safe; continue with the missing labels.
 - Epic 3 targets `rewrite/epic-2-store-host-install`.
 - Epic 4 targets `rewrite/epic-3-runtime-daemon-resources`.
 - Epic 5 targets `rewrite/epic-4-laravel-project-experience`.
+- Epic 6 targets `rewrite/epic-5-status-quality-scope`.
 - Do not target `main` directly from any rewrite implementation PR.
 - Include stack position, base branch, dependency, and verification in every PR body.
 
@@ -110,6 +112,19 @@ For Epic 5, use:
 - `docs/gh/plan/pv-rewrite/issue-label-audit.md`
 - `docs/gh/plan/pv-rewrite/stacked-diff-plan.md`
 
+For Epic 6, use:
+
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/arch.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/technical-breakdown.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/project-plan.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/implementation-plan.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/issues-checklist.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/test-strategy.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/test-issues-checklist.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/qa-plan.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/e2e-release-evidence-template.md`
+
 Feature PRDs to review before publishing or updating feature issues:
 
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/prototype-isolation-root-scaffold/prd.md`
@@ -126,6 +141,10 @@ Feature PRDs to review before publishing or updating feature issues:
 - `docs/gh/plan/pv-rewrite/epic-4-laravel-project-experience/laravel-helper-commands/prd.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/desired-observed-status-ux/prd.md`
 - `docs/gh/plan/pv-rewrite/epic-5-status-quality-scope-control/post-mvp-backlog/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/e2e-harness-fixtures/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/laravel-project-lifecycle-e2e/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/resource-failure-recovery-e2e/prd.md`
+- `docs/gh/plan/pv-rewrite/epic-6-e2e-rewrite-validation/ci-release-gates/prd.md`
 
 ## Legacy Superseded Comment
 

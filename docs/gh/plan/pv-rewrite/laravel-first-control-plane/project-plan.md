@@ -31,6 +31,7 @@ configuration, reliable long-running behavior, and clear failure reporting.
 4. Backing resources: Postgres, MySQL, Redis, RustFS.
 5. Laravel workflow: contract/init, link/env/setup, gateway/open.
 6. UX and release quality: status, helpers, QA gates, post-MVP backlog.
+7. E2E validation: hermetic rewrite E2E gate and opt-in host checks.
 
 ## Risk Assessment
 

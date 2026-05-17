@@ -64,6 +64,14 @@ _Avoid_: hidden setup step, generic command runner
 The list of intentionally deferred capabilities with reasons and reconsideration triggers.
 _Avoid_: wishlist, hidden scope
 
+**E2E Test**:
+A black-box validation that invokes the compiled pv binary and asserts public workflow behavior.
+_Avoid_: package integration test, private API test
+
+**E2E Harness**:
+The reusable sandbox, fixture, command-runner, and evidence layer for E2E tests.
+_Avoid_: ad hoc test script, local smoke test
+
 ## Relationships
 
 - A **Project Contract** can produce one durable project **Desired State** record.
@@ -72,6 +80,7 @@ _Avoid_: wishlist, hidden scope
 - The **Store** owns **Desired State** and **Observed Status**; a **Project Contract** remains human-authored.
 - **Managed Env Entries** are rendered from a **Project Contract** and resource capabilities, never inferred from existing `.env` values.
 - A **Post-MVP Backlog** item is not an MVP dependency until it is deliberately promoted through new planning work.
+- An **E2E Harness** runs **E2E Tests** against the compiled pv binary in a sandbox.
 
 ## Example Dialogue
 
@@ -83,3 +92,4 @@ _Avoid_: wishlist, hidden scope
 - "service" was used for every managed thing; resolved term is **Resource**, with **Capability** names for behavior differences.
 - "state" was used for both requests and reality; resolved terms are **Desired State** and **Observed Status**.
 - "setup" was used for hidden Laravel automation and user-authored commands; resolved term is **Setup Command**, and only declared commands are run.
+- "e2e" was used broadly; resolved term is **E2E Test**, and it means black-box compiled-binary workflow validation.

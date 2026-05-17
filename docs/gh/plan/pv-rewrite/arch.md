@@ -74,6 +74,7 @@ graph TD
 10. Scriptable install planner.
 11. Laravel helper commands.
 12. Post-MVP backlog and scope guardrails.
+13. End-to-end rewrite validation and release gates.
 
 ## Technical Enablers
 
@@ -90,6 +91,8 @@ graph TD
 - Gateway route, DNS, TLS, and browser-open adapters.
 - Test harnesses for command, controller, supervisor, and project workflow
   behavior.
+- E2E harness with sandboxed HOME, compiled binary execution, fixtures, fake
+  artifacts, fake processes, and release evidence.
 
 ## Technology Stack
 

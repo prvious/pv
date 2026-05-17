@@ -83,6 +83,8 @@ understand.
 - The supervisor remains resource-agnostic.
 - The store is the only mutable machine-owned authority.
 - All MVP scope has issue coverage, implementation plans, and test strategies.
+- The rewrite stack has a dedicated E2E validation epic with a required hermetic
+  release gate.
 
 ## Primary Users
 
