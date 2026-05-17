@@ -14,6 +14,17 @@ const Version = "dev"
 
 var ErrUsage = errors.New("usage error")
 
+var statusResources = [...]string{
+	control.ResourcePHP,
+	control.ResourceComposer,
+	control.ResourceMago,
+	control.ResourceMailpit,
+	control.ResourceMySQL,
+	control.ResourcePostgres,
+	control.ResourceRedis,
+	control.ResourceRustFS,
+}
+
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
 		writeHelp(stdout)
@@ -111,7 +122,7 @@ func runStatus(stderr io.Writer) error {
 
 	ctx := context.Background()
 	anyDesired := false
-	for _, resource := range [...]string{control.ResourcePHP, control.ResourceComposer, control.ResourceMago} {
+	for _, resource := range statusResources {
 		desired, desiredOK, err := store.Desired(ctx, resource)
 		if err != nil {
 			return err

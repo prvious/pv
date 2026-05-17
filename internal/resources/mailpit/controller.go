@@ -39,7 +39,10 @@ func (c Controller) Reconcile(ctx context.Context) error {
 	}
 	status, err := c.Supervisor.Start(ctx, definition)
 	if err != nil {
-		return c.record(ctx, desired.Version, control.StateFailed, err, "inspect the Mailpit log and run reconciliation again")
+		if recordErr := c.record(ctx, desired.Version, control.StateFailed, err, "inspect the Mailpit log and run reconciliation again"); recordErr != nil {
+			return recordErr
+		}
+		return err
 	}
 	state := control.StateStopped
 	if status.Running {

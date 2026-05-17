@@ -327,6 +327,58 @@ func TestRunStatusReportsPHPAndComposer(t *testing.T) {
 	}
 }
 
+func TestRunStatusReportsBackingResources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	for _, resource := range []string{
+		control.ResourceMailpit,
+		control.ResourceMySQL,
+		control.ResourcePostgres,
+		control.ResourceRedis,
+		control.ResourceRustFS,
+	} {
+		if err := store.PutDesired(ctx, control.DesiredResource{
+			Resource: resource,
+			Version:  "1.0.0",
+		}); err != nil {
+			t.Fatalf("PutDesired %s returned error: %v", resource, err)
+		}
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"status"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run status returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run status wrote stdout: %q", stdout.String())
+	}
+	output := stderr.String()
+	if strings.Contains(output, "desired: none") {
+		t.Fatalf("status output reported no desired resources:\n%s", output)
+	}
+	for _, want := range []string{
+		"desired: mailpit 1.0.0 install",
+		"observed: mailpit pending",
+		"desired: mysql 1.0.0 install",
+		"observed: mysql pending",
+		"desired: postgres 1.0.0 install",
+		"observed: postgres pending",
+		"desired: redis 1.0.0 install",
+		"observed: redis pending",
+		"desired: rustfs 1.0.0 install",
+		"observed: rustfs pending",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func fixedClock(value string) func() time.Time {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
