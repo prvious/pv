@@ -236,6 +236,18 @@ func loadCurrentContract() (project.Contract, error) {
 	if err != nil {
 		return project.Contract{}, err
 	}
+	paths, err := host.NewPaths()
+	if err != nil {
+		return project.Contract{}, err
+	}
+	registry := project.Registry{Path: projectStatePath(paths)}
+	state, ok, err := registry.Current(context.Background())
+	if err != nil {
+		return project.Contract{}, err
+	}
+	if ok && pathContains(state.Path, cwd) {
+		return state.Contract(), nil
+	}
 	return project.LoadContract(cwd)
 }
 
@@ -244,48 +256,21 @@ func runStatus(args []string, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "usage: pv status [project|runtime|resource|gateway]")
 		return fmt.Errorf("%w: invalid status command", ErrUsage)
 	}
+	var view status.View
 	if len(args) == 1 {
-		return runTargetedStatus(status.View(args[0]), stderr)
+		view = status.View(args[0])
 	}
-
-	store, err := defaultStore()
+	paths, err := host.NewPaths()
 	if err != nil {
 		return err
 	}
-
 	ctx := context.Background()
-	anyDesired := false
-	for _, resource := range [...]string{control.ResourcePHP, control.ResourceComposer, control.ResourceMago} {
-		desired, desiredOK, err := store.Desired(ctx, resource)
-		if err != nil {
-			return err
-		}
-		if !desiredOK {
-			continue
-		}
-		anyDesired = true
-		printDesired(stderr, desired)
-
-		observed, observedOK, err := store.Observed(ctx, resource)
-		if err != nil {
-			return err
-		}
-		if !observedOK {
-			fmt.Fprintf(stderr, "observed: %s pending\n", resource)
-			fmt.Fprintln(stderr, "next action: run reconciliation")
-			continue
-		}
-		printObserved(stderr, observed)
+	store := control.NewFileStore(paths.StateDBPath())
+	entries, err := collectStatusEntries(ctx, paths, store)
+	if err != nil {
+		return err
 	}
-
-	if !anyDesired {
-		fmt.Fprintln(stderr, "desired: none")
-	}
-	return nil
-}
-
-func runTargetedStatus(view status.View, stderr io.Writer) error {
-	rendered, err := status.Render(nil, view)
+	rendered, err := status.Render(entries, view)
 	if err != nil {
 		return err
 	}
@@ -307,25 +292,6 @@ func putDesired(desired control.DesiredResource) error {
 		return err
 	}
 	return store.PutDesired(context.Background(), desired)
-}
-
-func printDesired(w io.Writer, desired control.DesiredResource) {
-	if desired.RuntimeVersion != "" {
-		fmt.Fprintf(w, "desired: %s %s install with php %s\n", desired.Resource, desired.Version, desired.RuntimeVersion)
-		return
-	}
-	fmt.Fprintf(w, "desired: %s %s install\n", desired.Resource, desired.Version)
-}
-
-func printObserved(w io.Writer, observed control.ObservedStatus) {
-	fmt.Fprintf(w, "observed: %s %s %s\n", observed.Resource, observed.DesiredVersion, observed.State)
-	fmt.Fprintf(w, "last reconcile: %s\n", observed.LastReconcileTime)
-	if observed.LastError != "" {
-		fmt.Fprintf(w, "last error: %s\n", observed.LastError)
-	}
-	if observed.NextAction != "" {
-		fmt.Fprintf(w, "next action: %s\n", observed.NextAction)
-	}
 }
 
 func defaultStore() (*control.FileStore, error) {
@@ -362,6 +328,22 @@ func envFor(contract project.Contract) map[string]string {
 		}
 	}
 	return values
+}
+
+func pathContains(root string, path string) bool {
+	rel, err := filepath.Rel(canonicalPath(root), canonicalPath(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func canonicalPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
 
 type shellRunner struct{}

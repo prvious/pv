@@ -29,15 +29,16 @@ const (
 )
 
 type Entry struct {
-	View       View
-	Name       string
-	Desired    string
-	Observed   string
-	State      State
-	LogPath    string
-	LastError  string
-	NextAction string
-	Values     map[string]string
+	View          View
+	Name          string
+	Desired       string
+	Observed      string
+	State         State
+	LogPath       string
+	LastReconcile string
+	LastError     string
+	NextAction    string
+	Values        map[string]string
 }
 
 func Render(entries []Entry, view View) (string, error) {
@@ -67,6 +68,9 @@ func Render(entries []Entry, view View) (string, error) {
 		}
 		if entry.Observed != "" {
 			fmt.Fprintf(&b, "observed: %s\n", entry.Observed)
+		}
+		if entry.LastReconcile != "" {
+			fmt.Fprintf(&b, "last reconcile: %s\n", entry.LastReconcile)
 		}
 		if entry.LogPath != "" {
 			fmt.Fprintf(&b, "log: %s\n", entry.LogPath)

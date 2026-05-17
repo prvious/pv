@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,24 @@ type State struct {
 	PHP      string   `json:"php"`
 	Hosts    []string `json:"hosts"`
 	Services []string `json:"services"`
+}
+
+// Contract converts linked project state back into the command contract shape.
+func (s State) Contract() Contract {
+	return Contract{
+		Version:  ContractVersion,
+		PHP:      s.PHP,
+		Hosts:    append([]string(nil), s.Hosts...),
+		Services: append([]string(nil), s.Services...),
+	}
+}
+
+// Validate checks that linked project state can drive project commands.
+func (s State) Validate() error {
+	if strings.TrimSpace(s.Path) == "" {
+		return errors.New("linked project path is required")
+	}
+	return s.Contract().Validate()
 }
 
 type Registry struct {
@@ -43,6 +62,28 @@ func (r Registry) Link(ctx context.Context, projectPath string, contract Contrac
 	}
 	data = append(data, '\n')
 	return os.WriteFile(r.Path, data, 0o600)
+}
+
+// Current loads the active linked project state from the registry.
+func (r Registry) Current(ctx context.Context) (State, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return State{}, false, err
+	}
+	data, err := os.ReadFile(r.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, err
+	}
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return State{}, false, err
+	}
+	if err := state.Validate(); err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
 }
 
 type EnvWriter struct {
