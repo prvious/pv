@@ -40,6 +40,17 @@ safe; continue with the missing labels.
 6. Comment on legacy issues #96-#113 that they are superseded by the new plan.
 7. Update PR #114 if reused so it does not close #96.
 
+## Stacked Diff Publishing Rules
+
+- Create implementation PRs against the stacked branch named in `../stacked-diff-plan.md`.
+- Epic 1 targets `rewrite/base`.
+- Epic 2 targets `rewrite/epic-1-foundation`.
+- Epic 3 targets `rewrite/epic-2-store-host-install`.
+- Epic 4 targets `rewrite/epic-3-runtime-daemon-resources`.
+- Epic 5 targets `rewrite/epic-4-laravel-project-experience`.
+- Do not target `main` directly from any rewrite implementation PR.
+- Include stack position, base branch, dependency, and verification in every PR body.
+
 For Epic 1, use the focused package first:
 
 - `docs/gh/plan/pv-rewrite/epic-1-rewrite-foundation/arch.md`
@@ -97,6 +108,7 @@ For Epic 5, use:
 - `docs/gh/plan/pv-rewrite/post-mvp-backlog.md`
 - `docs/gh/plan/pv-rewrite/mvp-scope-checklist.md`
 - `docs/gh/plan/pv-rewrite/issue-label-audit.md`
+- `docs/gh/plan/pv-rewrite/stacked-diff-plan.md`
 
 Feature PRDs to review before publishing or updating feature issues:
 

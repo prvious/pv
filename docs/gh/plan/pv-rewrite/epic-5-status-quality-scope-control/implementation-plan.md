@@ -33,6 +33,9 @@ changes separate from Go status implementation when possible.
 
 Non-negotiable decisions:
 
+- Stacked diff branch is `rewrite/epic-5-status-quality-scope` and its base is
+  `rewrite/epic-4-laravel-project-experience`.
+- Epic 5 PRs do not target `main` directly.
 - Status providers return data; they do not render UI.
 - Normalized states are exactly `healthy`, `stopped`, `missing_install`, `blocked`, `crashed`, `failed`, `partial`, and `unknown`.
 - Targeted status views are exactly `project`, `runtime`, `resource`, and `gateway` for MVP.

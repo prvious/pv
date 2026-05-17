@@ -38,6 +38,9 @@ work until #131 through #141 have passing tests or an explicit blocker note.
 
 Non-negotiable decisions:
 
+- Stacked diff branch is `rewrite/epic-2-store-host-install` and its base is
+  `rewrite/epic-1-foundation`.
+- Epic 2 PRs do not target `main` directly.
 - `pv.yml` contract versioning is owned by Epic 4 and uses top-level `version: 1`.
 - Epic 2 records the decision but does not parse the full project contract.
 - Store checksum/integrity metadata is not part of Epic 2; it is deferred in

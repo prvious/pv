@@ -22,6 +22,7 @@ Epic -> Feature -> Story or Enabler -> Test -> Implementation Task
 - `laravel-first-control-plane/test-issues-checklist.md` - test issue checklist.
 - `laravel-first-control-plane/qa-plan.md` - quality gates and QA process.
 - `laravel-first-control-plane/github-automation.md` - labels, creation order, and publishing commands.
+- `stacked-diff-plan.md` - branch stack and PR base rules for epic implementation.
 - `epic-1-rewrite-foundation/` - focused execution package for Epic 1.
 - `epic-2-store-host-install-infrastructure/` - focused execution package for Epic 2.
 - `epic-3-runtime-daemon-resources/` - focused execution package for Epic 3.
@@ -30,6 +31,13 @@ Epic -> Feature -> Story or Enabler -> Test -> Implementation Task
 - `post-mvp-backlog.md` - deferred scope, deferral reasons, and reconsideration triggers.
 - `mvp-scope-checklist.md` - MVP boundary checks for issue and PR review.
 - `issue-label-audit.md` - audit evidence for #116-#205 labels and milestone.
+
+## Stacked Diff Rule
+
+Implementation uses stacked epic branches. Epic 1 targets `rewrite/base`; Epic 2
+targets Epic 1; Epic 3 targets Epic 2; Epic 4 targets Epic 3; Epic 5 targets
+Epic 4. No rewrite implementation PR targets `main` directly. See
+`stacked-diff-plan.md` for branch names and PR body requirements.
 
 Each `epic-*` package must include:
 

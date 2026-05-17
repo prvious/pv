@@ -34,6 +34,9 @@ service inference, or env writes outside these issue contracts.
 
 Non-negotiable decisions:
 
+- Stacked diff branch is `rewrite/epic-4-laravel-project-experience` and its
+  base is `rewrite/epic-3-runtime-daemon-resources`.
+- Epic 4 PRs do not target `main` directly.
 - New rewrite contracts require top-level `version: 1`.
 - `setup` is an ordered list of shell command strings.
 - Each setup command runs in its own shell from the project root with managed PHP first on `PATH`.

@@ -35,6 +35,9 @@ invokes an explicit helper capability only.
 
 Non-negotiable decisions:
 
+- Stacked diff branch is `rewrite/epic-3-runtime-daemon-resources` and its base
+  is `rewrite/epic-2-store-host-install`.
+- Epic 3 PRs do not target `main` directly.
 - Composer depends on a managed PHP runtime and never falls back to system PHP.
 - Mailpit remains explicit mail capture behavior, not generic HTTP service behavior.
 - Postgres is implemented before extracting shared database mechanics for MySQL.

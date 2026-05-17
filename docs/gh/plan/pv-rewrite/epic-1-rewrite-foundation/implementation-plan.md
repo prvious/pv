@@ -41,6 +41,8 @@ unless the issue checklist is updated first.
 
 Non-negotiable decisions:
 
+- Stacked diff branch is `rewrite/epic-1-foundation` and its base is `rewrite/base`.
+- Epic 1 PRs do not target `main` directly.
 - The first tracer resource is Mago.
 - The first tracer command is `mago:install <version>`.
 - Epic 1 does not introduce daemon, supervisor, SQLite, Laravel, PHP, Composer,

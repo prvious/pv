@@ -3,6 +3,7 @@
 Use this checklist when creating or reviewing rewrite work.
 
 - [ ] The work maps to one published MVP issue between #116 and #205.
+- [ ] The PR targets the correct stacked epic branch from `stacked-diff-plan.md` and does not target `main` directly.
 - [ ] The work preserves the control-plane rule: commands request state, controllers reconcile, supervisor runs processes, store is authority.
 - [ ] The work is Laravel-first or directly supports a Laravel-first MVP dependency.
 - [ ] The work does not infer service, env, setup, or migration behavior from `.env`.
