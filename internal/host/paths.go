@@ -113,7 +113,9 @@ func (p Paths) ValidateManagedPath(path string) error {
 		return fmt.Errorf("path %q is outside pv root", path)
 	}
 	dataRoot := filepath.Join(p.root, "data")
-	if isWithin(clean, filepath.Join(p.root, "services")) && strings.Contains(clean, string(filepath.Separator)+"data"+string(filepath.Separator)) {
+	separator := string(filepath.Separator)
+	hasDataSegment := strings.Contains(clean, separator+"data"+separator) || strings.HasSuffix(clean, separator+"data")
+	if isWithin(clean, filepath.Join(p.root, "services")) && hasDataSegment {
 		return fmt.Errorf("data path %q must use %s", path, dataRoot)
 	}
 	return nil

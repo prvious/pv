@@ -86,6 +86,7 @@ func TestPathsRejectAmbiguousManagedLocations(t *testing.T) {
 
 	for _, path := range []string{
 		filepath.Join(root, "bin"),
+		filepath.Join(root, "services", "postgres", "18.0", "data"),
 		filepath.Join(root, "services", "postgres", "18.0", "data", "cluster"),
 		filepath.Join(t.TempDir(), "outside"),
 	} {

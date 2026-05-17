@@ -27,5 +27,5 @@ func WriteShimAtomic(path string, content []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return replaceFile(tempPath, path)
 }
