@@ -75,7 +75,7 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status
 			NextAction: "run reconciliation",
 		})
 	}
-	return entries, nil
+	return applyFailures(entries, state.Failures), nil
 }
 
 func installStatusEntries(ctx context.Context, paths host.Paths, store *control.FileStore) ([]status.Entry, error) {
@@ -142,6 +142,33 @@ func projectStatusName(state project.State) string {
 		return state.Hosts[0]
 	}
 	return filepath.Base(state.Path)
+}
+
+func applyFailures(entries []status.Entry, failures []project.Failure) []status.Entry {
+	for _, failure := range failures {
+		for i, entry := range entries {
+			if string(entry.View) == failure.View && entry.Name == failure.Name {
+				entries[i] = failedEntry(entry, failure)
+				break
+			}
+		}
+	}
+	return entries
+}
+
+func failedEntry(entry status.Entry, failure project.Failure) status.Entry {
+	entry.State = status.StateFailed
+	entry.Observed = failure.Scenario + " failed"
+	entry.LogPath = failure.LogPath
+	entry.LastError = failure.Actual
+	entry.NextAction = failure.NextAction
+	entry.Values = map[string]string{
+		"actual":   failure.Actual,
+		"command":  failure.Command,
+		"expected": failure.Expected,
+		"scenario": failure.Scenario,
+	}
+	return entry
 }
 
 func joinStatusValues(values []string) string {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -136,11 +137,20 @@ func runLink(stderr io.Writer) error {
 		if err := ensureSetupRuntime(paths, contract); err != nil {
 			return err
 		}
-		return project.RunSetup(ctx, cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{})
+		if err := project.RunSetup(ctx, cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{}); err != nil {
+			if recordErr := recordSetupFailure(ctx, paths, registry, err); recordErr != nil {
+				return errors.Join(err, recordErr)
+			}
+			return err
+		}
+		return nil
 	}, func(context.Context) error {
 		return writeReconcileSignal(paths, registry.Path)
 	}); err != nil {
 		fmt.Fprintf(stderr, "pv: %v\n", err)
+		if nextAction := linkFailureNextAction(err); nextAction != "" {
+			fmt.Fprintf(stderr, "next action: %s\n", nextAction)
+		}
 		return err
 	}
 	fmt.Fprintln(stderr, "linked project")
@@ -168,6 +178,47 @@ func ensureSetupRuntime(paths host.Paths, contract project.Contract) error {
 		return err
 	}
 	return fmt.Errorf("PHP runtime %s is not installed: run pv php:install %s", contract.PHP, contract.PHP)
+}
+
+func recordSetupFailure(ctx context.Context, paths host.Paths, registry project.Registry, err error) error {
+	setupErr, ok := errors.AsType[*project.SetupError](err)
+	if !ok {
+		return nil
+	}
+	state, ok, err := registry.Current(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	name := projectStatusName(state)
+	failure := project.Failure{
+		View:       string(status.ViewProject),
+		Name:       name,
+		Scenario:   "setup",
+		Command:    setupErr.Command,
+		Expected:   "setup commands complete",
+		Actual:     setupErr.Err.Error(),
+		LogPath:    filepath.Join(paths.Root(), "logs", "setup", name+".log"),
+		NextAction: setupFailureNextAction,
+	}
+	if err := os.MkdirAll(filepath.Dir(failure.LogPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(failure.LogPath, []byte(failure.Actual+"\n"), 0o600); err != nil {
+		return err
+	}
+	return registry.RecordFailure(ctx, failure)
+}
+
+const setupFailureNextAction = "fix the failing setup command and run pv link again"
+
+func linkFailureNextAction(err error) string {
+	if _, ok := errors.AsType[*project.SetupError](err); ok {
+		return setupFailureNextAction
+	}
+	return ""
 }
 
 func runOpen(stderr io.Writer) error {
@@ -370,7 +421,28 @@ func (shellRunner) Run(ctx context.Context, dir string, command string, env map[
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Env = mergeEnv(os.Environ(), env)
-	return cmd.Run()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return commandRunError{Err: err, Stderr: strings.TrimSpace(stderr.String())}
+	}
+	return nil
+}
+
+type commandRunError struct {
+	Err    error
+	Stderr string
+}
+
+func (e commandRunError) Error() string {
+	if e.Stderr == "" {
+		return e.Err.Error()
+	}
+	return e.Err.Error() + ": " + e.Stderr
+}
+
+func (e commandRunError) Unwrap() error {
+	return e.Err
 }
 
 func mergeEnv(base []string, overrides map[string]string) []string {
