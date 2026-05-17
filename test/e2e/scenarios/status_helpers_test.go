@@ -58,9 +58,9 @@ func TestPvStatusAndHelperWorkflows(t *testing.T) {
 		"desired: php 8.4",
 		"log: " + filepath.Join(sandbox.PVRoot, "logs", "php", "8.4.log"),
 		"next action: run pv php:install 8.4",
-		"resource mailpit: unknown",
-		"resource postgres: unknown",
-		"resource rustfs: unknown",
+		"resource mailpit: missing_install",
+		"resource postgres: missing_install",
+		"resource rustfs: missing_install",
 		"gateway acme.test: unknown",
 	} {
 		assertContains(t, statusOutput, want, "aggregate status")

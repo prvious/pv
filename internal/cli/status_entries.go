@@ -55,11 +55,12 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status
 		entries = append(entries, status.Entry{
 			View:       status.ViewResource,
 			Name:       service,
-			State:      status.StateUnknown,
+			State:      status.StateMissingInstall,
 			Desired:    service + " declared",
 			Observed:   "pending reconciliation",
 			LogPath:    filepath.Join(paths.Root(), "logs", service, "declared.log"),
-			NextAction: "run reconciliation",
+			LastError:  service + " is not installed",
+			NextAction: missingResourceInstallAction(service),
 			Values:     resourceStatusValues(service),
 		})
 	}
@@ -115,6 +116,17 @@ func installStatusEntries(ctx context.Context, paths host.Paths, store *control.
 			entry.LastReconcile = observed.LastReconcileTime
 			entry.LastError = observed.LastError
 			entry.NextAction = observed.NextAction
+		} else if desired.Resource == control.ResourceComposer && desired.RuntimeVersion != "" {
+			phpObserved, phpOK, err := store.Observed(ctx, control.ResourcePHP)
+			if err != nil {
+				return nil, err
+			}
+			if !phpOK || phpObserved.DesiredVersion != desired.RuntimeVersion || phpObserved.State != control.StateReady {
+				entry.State = status.StateBlocked
+				entry.Observed = fmt.Sprintf("%s %s blocked", desired.Resource, desired.Version)
+				entry.LastError = fmt.Sprintf("PHP runtime %s is not installed", desired.RuntimeVersion)
+				entry.NextAction = fmt.Sprintf("run pv php:install %s", desired.RuntimeVersion)
+			}
 		}
 		entries = append(entries, entry)
 	}
@@ -166,10 +178,28 @@ func resourceStatusValues(resource string) map[string]string {
 		}
 	case control.ResourceRustFS:
 		return map[string]string{
-			"AWS_ENDPOINT_URL": "http://127.0.0.1:9000",
+			"AWS_ENDPOINT_URL":      "http://127.0.0.1:9000",
+			"AWS_SECRET_ACCESS_KEY": "local-rustfs-secret",
 		}
 	default:
 		return nil
+	}
+}
+
+func missingResourceInstallAction(resource string) string {
+	switch resource {
+	case control.ResourcePostgres:
+		return "run pv postgres:install <version>"
+	case control.ResourceMySQL:
+		return "run pv mysql:install <version>"
+	case control.ResourceRedis:
+		return "run pv redis:install <version>"
+	case control.ResourceMailpit:
+		return "run pv mailpit:install <version>"
+	case control.ResourceRustFS:
+		return "run pv rustfs:install <version>"
+	default:
+		return "install the declared resource and run reconciliation"
 	}
 }
 

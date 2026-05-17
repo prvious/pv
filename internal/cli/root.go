@@ -133,10 +133,14 @@ func runLink(stderr io.Writer) error {
 		if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
 			return err
 		}
+		if err := ensureSetupRuntime(paths, contract); err != nil {
+			return err
+		}
 		return project.RunSetup(ctx, cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{})
 	}, func(context.Context) error {
 		return writeReconcileSignal(paths, registry.Path)
 	}); err != nil {
+		fmt.Fprintf(stderr, "pv: %v\n", err)
 		return err
 	}
 	fmt.Fprintln(stderr, "linked project")
@@ -150,6 +154,20 @@ func writeReconcileSignal(paths host.Paths, statePath string) error {
 	signalPath := filepath.Join(paths.Root(), "state", "reconcile.signal")
 	data := fmt.Sprintf("project_state=%s\n", statePath)
 	return os.WriteFile(signalPath, []byte(data), 0o600)
+}
+
+func ensureSetupRuntime(paths host.Paths, contract project.Contract) error {
+	if len(contract.Setup) == 0 {
+		return nil
+	}
+	_, err := os.Stat(filepath.Join(paths.BinDir(), "php"))
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("PHP runtime %s is not installed: run pv php:install %s", contract.PHP, contract.PHP)
 }
 
 func runOpen(stderr io.Writer) error {
