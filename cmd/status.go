@@ -43,13 +43,13 @@ var statusCmd = &cobra.Command{
 
 		if running {
 			fmt.Fprintf(os.Stderr, "  %s %s  %s\n",
-				ui.Green.Render("●"),
-				ui.Green.Bold(true).Render("Running"),
+				ui.Positive.Render("●"),
+				ui.Positive.Bold(true).Render("Running"),
 				ui.Muted.Render(fmt.Sprintf("PID %d, %s", pid, mode)),
 			)
 		} else {
 			fmt.Fprintf(os.Stderr, "  %s %s\n",
-				ui.Red.Render("●"),
+				ui.Negative.Render("●"),
 				ui.Muted.Render("Stopped"),
 			)
 		}
@@ -72,7 +72,7 @@ var statusCmd = &cobra.Command{
 			var labels []string
 			for _, v := range versions {
 				if v == globalPHP {
-					labels = append(labels, ui.Green.Bold(true).Render(v)+" "+ui.Muted.Render("(default)"))
+					labels = append(labels, ui.Positive.Bold(true).Render(v)+" "+ui.Muted.Render("(default)"))
 				} else {
 					labels = append(labels, ui.Accent.Render(v))
 				}

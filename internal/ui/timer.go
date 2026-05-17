@@ -10,7 +10,7 @@ import (
 func Footer(start time.Time, docsURL string) {
 	elapsed := time.Since(start).Round(time.Second)
 	fmt.Fprintf(os.Stderr, "\n  %s Run %s in a project to get started.\n",
-		Green.Render(fmt.Sprintf("Ready in %s.", elapsed)),
+		Positive.Render(fmt.Sprintf("Ready in %s.", elapsed)),
 		Bold.Render("pv link"),
 	)
 	if docsURL != "" {

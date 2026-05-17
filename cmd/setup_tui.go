@@ -409,7 +409,7 @@ func renderSettingsTab(tld string, tldCursor int, editing bool, daemon bool, aut
 func renderAutoToggle(mode config.AutoMode) string {
 	inactive := lipgloss.NewStyle().Padding(0, 1)
 	activeOn := inactive.Background(ui.AccentColor).Foreground(lipgloss.Color("#000000"))
-	activeAsk := inactive.Background(ui.OrangeColor).Foreground(lipgloss.Color("#000000"))
+	activeAsk := inactive.Background(ui.WarnColor).Foreground(lipgloss.Color("#000000"))
 	activeFalse := inactive.Background(mutedColor).Foreground(lipgloss.Color("#000000"))
 
 	trueStyle, askStyle, falseStyle := inactive, inactive, inactive
