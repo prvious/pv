@@ -19,7 +19,7 @@ Epic 6 tests cover:
 
 - Tier 0 E2E runs are hermetic and repeatable.
 - 100% of MVP E2E scenarios use the compiled active rewrite binary.
-- Default E2E does not touch real `HOME`, real `~/.pv`, DNS, TLS trust, browser,
+- Local E2E does not touch real `HOME`, real `~/.pv`, DNS, TLS trust, browser,
   network artifact downloads, or live resources.
 - Every failure E2E includes a recovery or next-action validation.
 - E2E results include enough evidence to diagnose failures without rerunning
@@ -50,7 +50,7 @@ Epic 6 tests cover:
 | --- | --- | --- |
 | Functional suitability | Critical | E2E scenarios cover MVP user workflows. |
 | Reliability | Critical | Failure and recovery scenarios validate daemon, process, setup, and gateway behavior. |
-| Security | High | Default E2E avoids host mutation and verifies secret redaction. |
+| Security | High | Local E2E avoids host mutation, CI host checks run only on disposable GitHub VMs, and output verifies secret redaction. |
 | Maintainability | High | Harness helpers are reusable and scenario evidence is structured. |
 | Portability | High | Tier boundaries separate hermetic checks from host-specific checks. |
 | Performance efficiency | Medium | Tier 0 has timeout guardrails and avoids expensive downloads. |
@@ -61,9 +61,9 @@ Epic 6 tests cover:
 
 | Environment | Purpose |
 | --- | --- |
-| Tier 0 hermetic | Required default E2E gate using temp HOME, fake artifacts, fake processes, and fake host adapters. |
-| Tier 1 local process | Opt-in real daemon/supervisor checks with temp data roots and allocated ports. |
-| Tier 2 privileged host | Opt-in DNS, TLS trust, and browser behavior checks. |
+| Tier 0 hermetic | Required local-safe and CI E2E gate using temp HOME, fake artifacts, fake processes, and fake host adapters. |
+| Tier 1 CI local process | GitHub CI VM daemon/supervisor checks with temp data roots and allocated ports; refuses local execution. |
+| Tier 2 CI privileged host | GitHub CI VM DNS, TLS trust, and browser behavior checks; refuses local execution. |
 
 ## Test Data Strategy
 
@@ -102,13 +102,14 @@ go build ./...
 go test ./...
 ```
 
-Tier 0 E2E command is defined by Epic 6 implementation and becomes required for
-release readiness. Tier 1 and Tier 2 commands are opt-in and must not run without
-explicit approval.
+Epic 6 adds E2E jobs to `.github/workflows/tests.yml`. Tier 0 is safe locally and
+in CI. Tier 1 and Tier 2 run in GitHub-hosted CI VMs and must refuse local laptop
+execution.
 
 ## Exit Criteria
 
-- Tier 0 E2E release gate passes.
-- Tier 1 and Tier 2 opt-in controls are documented and tested for accidental-run prevention.
+- Tier 0 E2E release gate passes locally and in CI.
+- Tier 1 and Tier 2 CI jobs pass in GitHub-hosted VMs.
+- Tier 1 and Tier 2 local refusal behavior is documented and tested.
 - Every required scenario has evidence or a blocking issue.
 - No default E2E test mutates real host state.

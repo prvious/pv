@@ -15,12 +15,30 @@
 | Tier | Name | Required by default | Scope |
 | --- | --- | --- | --- |
 | 0 | Hermetic | yes | Compiled binary, temp HOME, fake host adapters, fake artifacts, fake processes. |
-| 1 | Local process | no | Real daemon/supervisor process checks in temp roots and allocated ports. |
-| 2 | Privileged host | no | DNS, TLS trust, and browser behavior requiring host mutation or trust changes. |
+| 1 | CI local process | yes in GitHub CI, no locally | Real daemon/supervisor process checks in temp roots and allocated ports. |
+| 2 | CI privileged host | yes in GitHub CI, no locally | DNS, TLS trust, and browser behavior requiring host mutation or trust changes. |
 
-Tier 0 is the MVP release gate. Tiers 1 and 2 require explicit flags, build tags,
-or environment variables and must print the host actions they will perform before
-running.
+Tier 0 is local-safe and runs in CI. Tiers 1 and 2 run in GitHub-hosted CI VMs
+because those VMs are disposable. Tiers 1 and 2 must fail closed outside CI so
+they do not mutate a developer laptop. Tier 2 must print the host actions it will
+perform before running.
+
+## CI Workflow Contract
+
+Epic 6 extends `.github/workflows/tests.yml`; it does not add a separate
+`.github/workflows/e2e.yml`.
+
+Required jobs after Epic 6 lands:
+
+| Job | Purpose |
+| --- | --- |
+| `go` | Format, vet, build, and unit/integration tests for the root rewrite module. |
+| `e2e-tier0` | Hermetic E2E scenarios, safe locally and in CI. |
+| `e2e-tier1` | Real daemon/supervisor process E2E in GitHub-hosted CI VM only. |
+| `e2e-tier2` | DNS, TLS trust, and browser E2E in GitHub-hosted CI VM only. |
+
+The legacy `.github/workflows/e2e.yml` must be removed or disabled when the Epic
+6 jobs are added to `tests.yml`.
 
 ## Required Scenario Groups
 
@@ -73,3 +91,4 @@ package internals.
 - No default network artifact downloads.
 - No legacy prototype E2E.
 - No post-MVP capability scenarios.
+- No separate rewrite E2E workflow file.

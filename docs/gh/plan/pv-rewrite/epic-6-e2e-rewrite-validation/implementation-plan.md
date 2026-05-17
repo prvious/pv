@@ -5,7 +5,10 @@
 - Treat Epic 6 as the final rewrite stack gate after Epic 5.
 - E2E tests exercise the compiled `pv` binary through public command behavior.
 - Default E2E runs are hermetic and must not mutate real host state.
-- Real process and privileged host checks are opt-in.
+- Real process and privileged host checks run in GitHub-hosted CI VMs, not on
+  developer laptops.
+- Epic 6 extends `.github/workflows/tests.yml`; it does not add a separate E2E
+  workflow.
 - Use Go for repository logic and harness code.
 - Before Go work, activate `golang-pro` and `modern-go`.
 - Before each commit, run `go-simplifier` on changed Go code.
@@ -38,8 +41,8 @@ from scenario work until the binary runner and sandbox are tested.
 | E6-S5 | Task 8 | Setup, process, and gateway failures are tested. |
 | E6-S6 | Task 9 | Recovery after corrective action is tested. |
 | E6-T3 | Verification | Failure and recovery E2E tests pass. |
-| E6-EN4 | Task 10 | Tier controls for hermetic, local-process, and privileged-host are implemented. |
-| E6-EN5 | Task 11 | Tier 0 release gate command is documented and scriptable. |
+| E6-EN4 | Task 10 | Tier controls for hermetic, CI local-process, and CI privileged-host checks are implemented. |
+| E6-EN5 | Task 11 | `.github/workflows/tests.yml` runs normal checks plus E2E tier jobs. |
 | E6-S7 | Task 12 | E2E evidence template is produced for release. |
 | E6-T4 | Verification | CI and release gate behavior tests pass. |
 
@@ -48,10 +51,13 @@ Non-negotiable decisions:
 - Stacked diff branch is `rewrite/epic-6-e2e-rewrite-validation` and its base is
   `rewrite/epic-5-status-quality-scope`.
 - Epic 6 PRs do not target `main` directly.
-- Tier 0 E2E is required for MVP release readiness.
+- Tier 0 E2E is required for MVP release readiness and is safe for local runs.
 - Tier 0 E2E must not touch real `~/.pv`, `/etc/hosts`, trust stores, keychains,
   browsers, network artifact downloads, or live resources.
-- Tiers 1 and 2 require explicit opt-in controls.
+- Tier 1 and Tier 2 run only when `CI=true` in GitHub-hosted runners; local
+  execution must fail closed before host mutation.
+- The single CI workflow is `.github/workflows/tests.yml` with separate jobs for
+  normal Go checks, Tier 0 E2E, Tier 1 E2E, and Tier 2 E2E.
 
 ## Task 1: Build Or Locate Active pv Binary
 
@@ -196,32 +202,37 @@ Non-negotiable decisions:
 
 - Failure scenarios include follow-up recovery validation.
 
-## Task 10: Define E2E Tiers And Opt-In Controls
+## Task 10: Define E2E Tiers And CI-Only Controls
 
 **Steps:**
 
-1. Define Tier 0 hermetic tests as the default release gate.
-2. Define Tier 1 local-process tests behind explicit flag, build tag, or environment variable.
-3. Define Tier 2 privileged-host tests behind explicit flag, build tag, or environment variable.
-4. Print intended host actions before Tier 2 runs.
+1. Define Tier 0 hermetic tests as the default local-safe E2E gate.
+2. Define Tier 1 local-process tests as CI-only in GitHub-hosted runners.
+3. Define Tier 2 privileged-host tests as CI-only in GitHub-hosted runners.
+4. Make Tier 1 and Tier 2 fail closed when `CI` is not `true`.
+5. Print intended host actions before Tier 2 runs.
 
 **Acceptance criteria:**
 
-- Default command runs Tier 0 only.
-- Tiers 1 and 2 cannot run accidentally.
+- Local default command runs Tier 0 only.
+- Tier 1 and Tier 2 cannot run on developer laptops.
+- GitHub CI can run Tier 1 and Tier 2 in disposable macOS VMs.
 
-## Task 11: Add Release Gate Command
+## Task 11: Extend `tests.yml` With E2E Jobs
 
 **Steps:**
 
-1. Document the exact Tier 0 command.
-2. Ensure failure exits non-zero.
-3. Ensure evidence output names scenario, command, expected result, actual result, and log path.
-4. Keep human status on stderr and machine-readable output explicit.
+1. Keep the normal Go checks in `.github/workflows/tests.yml`.
+2. Add an `e2e-tier0` job that runs after normal Go checks.
+3. Add an `e2e-tier1` job for real daemon/supervisor process checks in CI.
+4. Add an `e2e-tier2` job for DNS, TLS trust, and browser behavior checks in CI.
+5. Ensure each job exits non-zero on failure.
+6. Ensure evidence output names scenario, command, expected result, actual result, and log path.
+7. Keep human status on stderr and machine-readable output explicit.
 
 **Acceptance criteria:**
 
-- Release gate command is scriptable and documented.
+- `.github/workflows/tests.yml` is the single CI workflow for normal and E2E rewrite checks.
 
 ## Task 12: Produce E2E Release Evidence Template
 
@@ -247,5 +258,5 @@ go build ./...
 go test ./...
 ```
 
-Run the required Tier 0 E2E release gate after it exists. Do not run Tier 1 or
-Tier 2 without explicit user approval.
+Run the Tier 0 E2E command after it exists. Tier 1 and Tier 2 are CI-only and
+must refuse local execution.
