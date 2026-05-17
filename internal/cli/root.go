@@ -12,6 +12,7 @@ import (
 
 	"github.com/prvious/pv/internal/control"
 	"github.com/prvious/pv/internal/host"
+	"github.com/prvious/pv/internal/installer"
 	"github.com/prvious/pv/internal/project"
 	"github.com/prvious/pv/internal/status"
 )
@@ -124,17 +125,31 @@ func runLink(stderr io.Writer) error {
 		return err
 	}
 	registry := project.Registry{Path: filepath.Join(paths.Root(), "state", "project.json")}
-	if err := registry.Link(context.Background(), cwd, contract); err != nil {
-		return err
-	}
-	if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
-		return err
-	}
-	if err := project.RunSetup(context.Background(), cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{}); err != nil {
+	ctx := context.Background()
+	if err := installer.PersistThenSignal(ctx, func(ctx context.Context) error {
+		if err := registry.Link(ctx, cwd, contract); err != nil {
+			return err
+		}
+		if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
+			return err
+		}
+		return project.RunSetup(ctx, cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{})
+	}, func(context.Context) error {
+		return writeReconcileSignal(paths, registry.Path)
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintln(stderr, "linked project")
 	return nil
+}
+
+func writeReconcileSignal(paths host.Paths, statePath string) error {
+	if _, err := os.Stat(statePath); err != nil {
+		return fmt.Errorf("signal daemon after state write: %w", err)
+	}
+	signalPath := filepath.Join(paths.Root(), "state", "reconcile.signal")
+	data := fmt.Sprintf("project_state=%s\n", statePath)
+	return os.WriteFile(signalPath, []byte(data), 0o600)
 }
 
 func runOpen(stderr io.Writer) error {
@@ -352,11 +367,27 @@ func envFor(contract project.Contract) map[string]string {
 type shellRunner struct{}
 
 func (shellRunner) Run(ctx context.Context, dir string, command string, env map[string]string) error {
-	cmd := exec.CommandContext(ctx, "sh", "-lc", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for key, value := range env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = mergeEnv(os.Environ(), env)
 	return cmd.Run()
+}
+
+func mergeEnv(base []string, overrides map[string]string) []string {
+	merged := append([]string(nil), base...)
+	for key, value := range overrides {
+		prefix := key + "="
+		replaced := false
+		for i, entry := range merged {
+			if strings.HasPrefix(entry, prefix) {
+				merged[i] = prefix + value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			merged = append(merged, prefix+value)
+		}
+	}
+	return merged
 }

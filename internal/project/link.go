@@ -89,11 +89,18 @@ func RunSetup(ctx context.Context, projectPath string, phpBin string, commands [
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := runner.Run(ctx, projectPath, command, map[string]string{"PATH": phpBin}); err != nil {
+		if err := runner.Run(ctx, projectPath, command, map[string]string{"PATH": prependPath(phpBin, os.Getenv("PATH"))}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func prependPath(first string, rest string) string {
+	if rest == "" {
+		return first
+	}
+	return first + string(os.PathListSeparator) + rest
 }
 
 func removeManagedBlock(data string) string {

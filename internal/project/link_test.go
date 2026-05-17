@@ -11,6 +11,7 @@ import (
 func TestRegistryEnvWriterAndSetupAreExplicit(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
+	t.Setenv("PATH", "/usr/bin")
 	contract := Contract{
 		Version:  ContractVersion,
 		PHP:      "8.4",
@@ -49,13 +50,18 @@ func TestRegistryEnvWriterAndSetupAreExplicit(t *testing.T) {
 	if len(runner.commands) != 2 || runner.commands[0] != "composer install" {
 		t.Fatalf("commands = %#v", runner.commands)
 	}
+	if len(runner.envs) != 2 || runner.envs[0]["PATH"] != "/tmp/php/bin"+string(os.PathListSeparator)+"/usr/bin" {
+		t.Fatalf("envs = %#v", runner.envs)
+	}
 }
 
 type recordingRunner struct {
 	commands []string
+	envs     []map[string]string
 }
 
-func (r *recordingRunner) Run(_ context.Context, _ string, command string, _ map[string]string) error {
+func (r *recordingRunner) Run(_ context.Context, _ string, command string, env map[string]string) error {
 	r.commands = append(r.commands, command)
+	r.envs = append(r.envs, env)
 	return nil
 }
