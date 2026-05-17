@@ -49,8 +49,8 @@ just successful on happy paths.
 ### Non-Functional Requirements
 
 - Tier 0 uses fake processes and fake host adapters.
-- Real process checks are Tier 1 opt-in.
-- Privileged host checks are Tier 2 opt-in.
+- Real process checks are Tier 1 and run only in GitHub-hosted CI VMs.
+- Privileged host checks are Tier 2 and run only in GitHub-hosted CI VMs.
 
 ## Acceptance Criteria
 

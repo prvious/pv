@@ -38,7 +38,7 @@
 
 - Backlog entries are not MVP implementation tasks.
 - Scope checklist must be short enough for review use.
-- New MVP work must map to published issues #116-#205 or update planning first.
+- New MVP work must map to published issues #116-#205 or #213-#233, or update planning first.
 
 ## Acceptance Criteria
 

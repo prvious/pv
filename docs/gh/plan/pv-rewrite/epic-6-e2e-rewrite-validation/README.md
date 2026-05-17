@@ -14,6 +14,7 @@ together through black-box workflows before release.
 - `project-plan.md` - Epic 6 work hierarchy, dependencies, risks, and done rules.
 - `implementation-plan.md` - non-optional implementation sequence.
 - `issues-checklist.md` - GitHub issue body templates and publishing tracker.
+- `issue-tracker.md` - published GitHub issue hierarchy, dependencies, and PR link.
 - `test-strategy.md` - E2E test strategy using ISTQB and ISO 25010 framing.
 - `test-issues-checklist.md` - concrete test coverage checklist.
 - `qa-plan.md` - quality gates and manual QA expectations.

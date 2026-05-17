@@ -9,8 +9,8 @@
 | Lifecycle | Init, link, env, setup, status, gateway, and helpers pass black-box scenarios. |
 | Failure UX | Missing install, blocked dependency, setup failure, process crash, and gateway failure include next actions. |
 | Recovery | Corrective action clears blocked or failed status in follow-up scenario. |
-| Release gate | Tier 0 command is documented, scriptable, and fails closed. |
-| Opt-in safety | Tier 1 and Tier 2 cannot run accidentally. |
+| Release gate | Tier 0 command and `tests.yml` job are documented, scriptable, and fail closed. |
+| CI-only safety | Tier 1 and Tier 2 refuse local execution and run only in GitHub-hosted CI VMs. |
 
 ## Manual QA Checklist
 
@@ -19,8 +19,8 @@
 - [ ] Confirm no files were written outside the sandbox.
 - [ ] Confirm failure scenarios include next actions.
 - [ ] Confirm recovery scenarios clear the prior failure.
-- [ ] Review Tier 1 opt-in command without running it unless explicitly approved.
-- [ ] Review Tier 2 opt-in command without running it unless explicitly approved.
+- [ ] Confirm Tier 1 refuses local execution when `CI` is not `true`.
+- [ ] Confirm Tier 2 refuses local execution when `CI` is not `true`.
 
 ## Review Checklist
 
@@ -29,7 +29,7 @@
 - [ ] Default E2E uses fake artifact catalogs and fake process behavior.
 - [ ] Tests that mutate pv state isolate `HOME`.
 - [ ] Tests that call `t.Setenv` do not call `t.Parallel`.
-- [ ] Tier 1 and Tier 2 controls require explicit opt-in.
+- [ ] Tier 1 and Tier 2 controls refuse local execution and require GitHub-hosted CI.
 - [ ] No default E2E test mutates `/etc/hosts`, trust stores, keychains, browsers, or real `~/.pv`.
 - [ ] PR description lists exact verification commands run.
 
@@ -43,9 +43,9 @@ go test ./...
 ```
 
 After the Tier 0 E2E command exists, run it before release-readiness handoff.
-Do not run Tier 1 or Tier 2 without explicit approval.
+Tier 1 and Tier 2 must run only in GitHub-hosted CI VMs.
 
-If any opt-in E2E run is approved, document:
+If any CI-only E2E run executes, document:
 
 - tier;
 - host actions;

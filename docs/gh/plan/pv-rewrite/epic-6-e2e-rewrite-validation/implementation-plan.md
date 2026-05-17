@@ -240,7 +240,7 @@ Non-negotiable decisions:
 
 1. Add a markdown evidence template for release validation.
 2. Include Tier 0 command output location.
-3. Include optional Tier 1 and Tier 2 sections.
+3. Include CI Tier 1, CI Tier 2, and skipped tier sections.
 4. Include follow-up issue field for failures.
 
 **Acceptance criteria:**

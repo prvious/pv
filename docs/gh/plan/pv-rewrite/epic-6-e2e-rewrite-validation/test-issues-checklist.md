@@ -1,8 +1,8 @@
 # Test Issues Checklist: Epic 6 - E2E Rewrite Validation
 
-## Test Issue E6-T1: Harness Isolation And Cleanup
+## Test Issue #221: Harness Isolation And Cleanup
 
-Labels: `test`, `priority-critical`, `quality`, `e2e`
+Labels: `test`, `priority-critical`, `quality`, `e2e`, `ready-for-agent`
 
 Blocked by: E6-EN1, E6-EN2, E6-EN3.
 
@@ -17,9 +17,9 @@ Required coverage:
 - [ ] Cleanup removes sandbox-owned files and processes.
 - [ ] Tests fail if real `~/.pv` would be used.
 
-## Test Issue E6-T2: Laravel Lifecycle E2E
+## Test Issue #225: Laravel Lifecycle E2E
 
-Labels: `test`, `priority-critical`, `quality`, `e2e`, `laravel`
+Labels: `test`, `priority-critical`, `quality`, `e2e`, `laravel`, `ready-for-agent`
 
 Blocked by: E6-T1, E6-S1, E6-S2, E6-S3.
 
@@ -36,9 +36,9 @@ Required coverage:
 - [ ] Aggregate and targeted status work after link.
 - [ ] `pv artisan`, `pv db`, `pv mail`, and `pv s3` route through current project state and declared resources.
 
-## Test Issue E6-T3: Failure And Recovery E2E
+## Test Issue #229: Failure And Recovery E2E
 
-Labels: `test`, `priority-critical`, `quality`, `e2e`
+Labels: `test`, `priority-critical`, `quality`, `e2e`, `ready-for-agent`
 
 Blocked by: E6-T1, E6-S4, E6-S5, E6-S6.
 
@@ -53,9 +53,9 @@ Required coverage:
 - [ ] Corrective action changes blocked or failed status to healthy or expected pending state.
 - [ ] Stale failure text does not remain after successful recovery.
 
-## Test Issue E6-T4: CI And Release Gate Behavior
+## Test Issue #233: CI And Release Gate Behavior
 
-Labels: `test`, `priority-high`, `quality`, `e2e`
+Labels: `test`, `priority-high`, `quality`, `e2e`, `ready-for-agent`
 
 Blocked by: E6-EN4, E6-EN5, E6-S7.
 
@@ -65,10 +65,11 @@ Required coverage:
 - [ ] Tier 0 E2E command runs hermetic scenarios only.
 - [ ] Tier 0 E2E exits non-zero when a scenario fails.
 - [ ] Tier 0 E2E writes evidence with scenario, command, expected result, actual result, and log path.
-- [ ] Tier 1 local-process checks require explicit opt-in.
-- [ ] Tier 2 privileged-host checks require explicit opt-in.
+- [ ] Tier 1 CI job runs only in GitHub-hosted CI VMs.
+- [ ] Tier 2 CI job runs only in GitHub-hosted CI VMs.
+- [ ] Tier 1 and Tier 2 refuse local execution.
 - [ ] Tier 2 prints host actions before running.
-- [ ] Release evidence template includes Tier 0, optional Tier 1, optional Tier 2, and follow-up issue sections.
+- [ ] Release evidence template includes Tier 0, CI Tier 1, CI Tier 2, skipped tiers, and follow-up issue sections.
 
 ## Exit Evidence For All Epic 6 Test Issues
 

@@ -61,7 +61,7 @@ preventing privileged checks from mutating developer laptops.
 - [ ] Tier 1 and Tier 2 jobs run in GitHub-hosted CI VMs.
 - [ ] Tier 1 and Tier 2 refuse local execution.
 - [ ] Evidence template exists.
-- [ ] Release docs identify required and optional E2E tiers.
+- [ ] Release docs identify required local-safe and CI-only E2E tiers.
 
 ## Out Of Scope
 

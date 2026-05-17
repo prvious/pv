@@ -5,7 +5,7 @@
 Epic 6 adds an end-to-end validation layer around the rewritten pv. The harness
 builds the active rewrite binary, runs commands in a sandboxed environment, uses
 deterministic fixtures and ports, captures logs and status, and separates default
-hermetic checks from opt-in real process and privileged host checks.
+hermetic checks from CI-only real process and privileged host checks.
 
 ## System Architecture Diagram
 
@@ -25,8 +25,8 @@ graph TD
   Harness --> Assertions[Black-box assertions]
   Assertions --> Evidence[E2E evidence report]
 
-  Harness -. opt-in .-> RealProcesses[Real local process checks]
-  Harness -. opt-in .-> PrivilegedHost[DNS TLS browser checks]
+  Harness -. GitHub CI only .-> RealProcesses[Real daemon and supervisor checks]
+  Harness -. GitHub CI only .-> PrivilegedHost[DNS TLS browser checks]
 ```
 
 ## High-Level Features
@@ -45,8 +45,8 @@ graph TD
 - Fake artifact catalog and fake process binaries for default hermetic E2E.
 - Output assertion helpers for stdout, stderr, exit code, status, logs, and file
   contents.
-- Tiered E2E tags or flags: hermetic, local-process, privileged-host.
-- CI/release gate documentation for required and opt-in tiers.
+- Tiered E2E tags or flags: hermetic, CI local-process, CI privileged-host.
+- CI/release gate documentation for required local-safe and CI-only tiers.
 
 ## Technology Stack
 

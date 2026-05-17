@@ -12,7 +12,7 @@ workflow works through the compiled `pv` binary.
 - Agents cannot claim feature completion based only on unit or integration tests.
 - User-visible behavior such as stdout/stderr, exit codes, files, logs, status,
   and recovery flows is validated end to end.
-- Risky host mutation remains opt-in instead of surprising developers or CI.
+- Risky host mutation remains CI-only instead of surprising developer laptops.
 
 ## Success Criteria
 
@@ -21,7 +21,7 @@ workflow works through the compiled `pv` binary.
 - `pv init`, `pv link`, status, gateway, helpers, failure, and recovery paths are
   covered by black-box scenarios.
 - Default E2E does not mutate real host state or download artifacts.
-- CI/release gate documentation makes required and opt-in E2E tiers explicit.
+- CI/release gate documentation makes required local-safe and CI-only E2E tiers explicit.
 
 ## Work Item Hierarchy
 
@@ -47,8 +47,8 @@ graph TD
   D --> D3[Story: Validate recovery after corrective action]
   D --> D4[Test: Failure and recovery E2E]
 
-  E --> E1[Enabler: Define E2E tiers and opt-in controls]
-  E --> E2[Enabler: Add release gate command]
+  E --> E1[Enabler: Define E2E tiers and CI-only controls]
+  E --> E2[Enabler: Extend tests workflow with E2E jobs]
   E --> E3[Story: Record E2E evidence for release]
   E --> E4[Test: CI and release gate behavior]
 ```
@@ -78,8 +78,8 @@ graph TD
 | E6-S5 | Story | Validate setup process and gateway failures | 5 | E6-S4, Epic 4 gateway |
 | E6-S6 | Story | Validate recovery after corrective action | 5 | E6-S4, E6-S5 |
 | E6-T3 | Test | Failure and recovery E2E | 5 | E6-S4, E6-S5, E6-S6 |
-| E6-EN4 | Enabler | Define E2E tiers and opt-in controls | 2 | E6-F1 |
-| E6-EN5 | Enabler | Add release gate command | 3 | E6-T1, E6-T2, E6-T3 |
+| E6-EN4 | Enabler | Define E2E tiers and CI-only controls | 2 | E6-F1 |
+| E6-EN5 | Enabler | Extend tests workflow with E2E jobs | 3 | E6-T1, E6-T2, E6-T3 |
 | E6-S7 | Story | Record E2E evidence for release | 2 | E6-EN5 |
 | E6-T4 | Test | CI and release gate behavior | 3 | E6-EN4, E6-EN5, E6-S7 |
 
@@ -106,7 +106,7 @@ Blocks:
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| E2E mutates developer machine | Tests become unsafe | Tier 0 is hermetic; Tier 2 is opt-in and prints host actions first. |
+| E2E mutates developer machine | Tests become unsafe | Tier 0 is hermetic; Tier 1 and Tier 2 refuse local execution. |
 | E2E becomes slow and flaky | Release gate gets ignored | Keep Tier 0 focused, deterministic, and fake external dependencies. |
 | Harness tests internals | E2E misses user-visible failures | Invoke compiled binary and assert public behavior only. |
 | Artifact downloads sneak into default runs | CI and local runs become expensive | Default E2E uses fake artifact catalog and fake binaries. |
@@ -124,7 +124,7 @@ Blocks:
 - Features 6.1 through 6.4 are complete.
 - Test issues E6-T1 through E6-T4 are complete.
 - Tier 0 E2E release gate passes.
-- Tier 1 and Tier 2 opt-in controls are documented.
+- Tier 1 and Tier 2 CI-only controls are documented.
 - E2E evidence template is filled for release readiness.
 - Root verification passes for Go changes:
 

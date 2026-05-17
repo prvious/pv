@@ -28,9 +28,9 @@ Use this template when validating Epic 6 release readiness.
 | Gateway failure | | | | |
 | Recovery | | | | |
 
-## Optional Tier 1 Local Process Checks
+## CI Tier 1 Local Process Checks
 
-- Approved by:
+- GitHub run:
 - Command:
 - Resource names and versions:
 - Temp directories:
@@ -38,9 +38,9 @@ Use this template when validating Epic 6 release readiness.
 - Cleanup performed:
 - Result:
 
-## Optional Tier 2 Privileged Host Checks
+## CI Tier 2 Privileged Host Checks
 
-- Approved by:
+- GitHub run:
 - Command:
 - Host actions:
 - Files changed:

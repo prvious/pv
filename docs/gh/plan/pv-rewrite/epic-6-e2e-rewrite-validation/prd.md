@@ -14,9 +14,10 @@ helpers, observe failures, and recover.
 Add a sixth epic that builds a safe E2E harness and validates the full rewrite
 through staged workflows. The E2E suite uses the compiled `pv` binary, isolated
 `HOME`, temporary project fixtures, deterministic ports, fake or local artifact
-sources, and explicit opt-in gates for real host mutation. It proves the rewrite
-works as a user experiences it without touching the user's real `~/.pv`, project
-files, DNS, trust store, browser, or long-running services by default.
+sources, and CI-only gates for real process and privileged host checks. It proves
+the rewrite works as a user experiences it without touching the user's real
+`~/.pv`, project files, DNS, trust store, browser, or long-running services by
+default.
 
 ## Product Promise
 
@@ -32,11 +33,13 @@ packages.
   env rendering, gateway routing, helper commands, and status checks.
 - Hermetic E2E mode using fake host adapters, fake artifact catalogs, and fake
   runnable processes where real OS mutation is not required.
-- Opt-in real-process checks for daemon, supervisor, gateway, and selected
-  resources when safe prerequisites are present.
-- Opt-in privileged host checks for DNS, TLS trust, and browser open behavior.
-- Release gate command or script that runs the required hermetic E2E suite.
-- Manual QA evidence template for opt-in real host checks.
+- CI-only real-process checks for daemon, supervisor, gateway, and selected
+  resources in GitHub-hosted runners.
+- CI-only privileged host checks for DNS, TLS trust, and browser open behavior in
+  GitHub-hosted runners.
+- `.github/workflows/tests.yml` jobs that run the required hermetic E2E suite and
+  CI-only host tiers.
+- Release evidence template for Tier 0, CI Tier 1, and CI Tier 2 checks.
 
 ## Out Of Scope For MVP
 
@@ -69,7 +72,7 @@ packages.
 - Default E2E runs do not touch the user's real home, DNS, TLS trust, browser,
   network artifact downloads, or live resource processes.
 - CI or release gate documentation identifies which E2E tier is required before
-  MVP release and which tiers are opt-in.
+  MVP release and which tiers run only in GitHub-hosted CI VMs.
 
 ## Primary Users
 
@@ -84,6 +87,6 @@ packages.
 ```text
 E2E tests exercise pv like a user.
 Default E2E tests are hermetic.
-Real host mutation is opt-in and documented.
+Real host mutation runs only in GitHub-hosted CI VMs and is documented.
 E2E evidence gates the rewrite stack after Epic 5.
 ```

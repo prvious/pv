@@ -31,7 +31,7 @@ Epic -> Feature -> Story or Enabler -> Test -> Implementation Task
 - `epic-6-e2e-rewrite-validation/` - focused execution package for Epic 6.
 - `post-mvp-backlog.md` - deferred scope, deferral reasons, and reconsideration triggers.
 - `mvp-scope-checklist.md` - MVP boundary checks for issue and PR review.
-- `issue-label-audit.md` - audit evidence for #116-#205 labels and milestone.
+- `issue-label-audit.md` - audit evidence for published rewrite issue labels and milestone.
 
 ## Stacked Diff Rule
 
@@ -56,9 +56,9 @@ Each `epic-*` package must include:
 ## Label Audit
 
 The current GitHub label audit is recorded in `issue-label-audit.md`. Issues
-#116-#205 are on milestone `pv rewrite MVP`; container issues use epic/feature
-labels and leaf issues use `ready-for-agent` with enabler, user-story, or test
-labels.
+#116-#205 and #213-#233 are on milestone `pv rewrite MVP`; container issues use
+epic/feature labels and leaf issues use `ready-for-agent` with enabler,
+user-story, or test labels.
 
 ## Legacy Reference
 
