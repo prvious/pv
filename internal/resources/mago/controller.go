@@ -21,6 +21,10 @@ type Controller struct {
 	Clock     func() time.Time
 }
 
+func (c Controller) Resource() string {
+	return control.ResourceMago
+}
+
 func (c Controller) Reconcile(ctx context.Context) error {
 	desired, ok, err := c.Store.Desired(ctx, control.ResourceMago)
 	if err != nil {

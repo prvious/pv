@@ -2,6 +2,8 @@ package rustfs
 
 import "github.com/prvious/pv/internal/control"
 
+const endpoint = "http://127.0.0.1:9000"
+
 type Credentials struct {
 	AccessKey string
 	SecretKey string
@@ -13,16 +15,18 @@ func Desired(version string) control.DesiredResource {
 
 func Env(version string, credentials Credentials) map[string]string {
 	return map[string]string{
-		"AWS_ACCESS_KEY_ID":     credentials.AccessKey,
-		"AWS_SECRET_ACCESS_KEY": credentials.SecretKey,
-		"AWS_ENDPOINT_URL":      "http://127.0.0.1:9000",
-		"PV_RUSTFS":             version,
+		"AWS_ACCESS_KEY_ID":           credentials.AccessKey,
+		"AWS_SECRET_ACCESS_KEY":       credentials.SecretKey,
+		"AWS_ENDPOINT":                endpoint,
+		"AWS_USE_PATH_STYLE_ENDPOINT": "true",
+		"PV_RUSTFS":                   version,
 	}
 }
 
 func RedactedStatus(credentials Credentials) map[string]string {
 	status := map[string]string{
-		"AWS_ENDPOINT_URL": "http://127.0.0.1:9000",
+		"AWS_ENDPOINT":                endpoint,
+		"AWS_USE_PATH_STYLE_ENDPOINT": "true",
 	}
 	if credentials.AccessKey != "" {
 		status["AWS_ACCESS_KEY_ID"] = "<redacted>"

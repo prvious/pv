@@ -10,6 +10,14 @@ import (
 	"github.com/prvious/pv/internal/control"
 )
 
+var _ control.Controller = Controller{}
+
+func TestControllerResource(t *testing.T) {
+	if got := (Controller{}).Resource(); got != control.ResourcePHP {
+		t.Fatalf("Resource = %q, want %q", got, control.ResourcePHP)
+	}
+}
+
 func TestControllerReconcilesDesiredPHPRuntime(t *testing.T) {
 	ctx := t.Context()
 	store := control.NewFileStore(filepath.Join(t.TempDir(), "pv.db"))

@@ -11,6 +11,14 @@ import (
 	"github.com/prvious/pv/internal/resources/php"
 )
 
+var _ control.Controller = Controller{}
+
+func TestControllerResource(t *testing.T) {
+	if got := (Controller{}).Resource(); got != control.ResourceComposer {
+		t.Fatalf("Resource = %q, want %q", got, control.ResourceComposer)
+	}
+}
+
 func TestControllerBlocksComposerWhenRuntimeIsMissing(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()

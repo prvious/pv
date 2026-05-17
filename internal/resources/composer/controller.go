@@ -33,6 +33,10 @@ type Controller struct {
 	Clock     func() time.Time
 }
 
+func (c Controller) Resource() string {
+	return control.ResourceComposer
+}
+
 func (c Controller) Reconcile(ctx context.Context) error {
 	desired, ok, err := c.Store.Desired(ctx, control.ResourceComposer)
 	if err != nil {
