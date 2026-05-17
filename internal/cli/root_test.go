@@ -366,6 +366,23 @@ func TestRunStatusReportsPHPAndComposer(t *testing.T) {
 	}
 }
 
+func TestRunStatusSupportsTargetedViews(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"status", "resource"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run targeted status returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run targeted status wrote stdout: %q", stdout.String())
+	}
+	if got := stderr.String(); got != "status: none\n" {
+		t.Fatalf("targeted status = %q, want status none", got)
+	}
+}
+
 func fixedClock(value string) func() time.Time {
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {

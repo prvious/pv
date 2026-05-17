@@ -13,6 +13,7 @@ import (
 	"github.com/prvious/pv/internal/control"
 	"github.com/prvious/pv/internal/host"
 	"github.com/prvious/pv/internal/project"
+	"github.com/prvious/pv/internal/status"
 )
 
 const Version = "dev"
@@ -50,7 +51,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	case "s3":
 		return runCheckedHelper(args[1:], stderr, project.S3)
 	case "status":
-		return runStatus(stderr)
+		return runStatus(args[1:], stderr)
 	case "version", "--version":
 		fmt.Fprintf(stdout, "pv %s\n", Version)
 		return nil
@@ -220,7 +221,15 @@ func loadCurrentContract() (project.Contract, error) {
 	return project.LoadContract(cwd)
 }
 
-func runStatus(stderr io.Writer) error {
+func runStatus(args []string, stderr io.Writer) error {
+	if len(args) > 1 {
+		fmt.Fprintln(stderr, "usage: pv status [project|runtime|resource|gateway]")
+		return fmt.Errorf("%w: invalid status command", ErrUsage)
+	}
+	if len(args) == 1 {
+		return runTargetedStatus(status.View(args[0]), stderr)
+	}
+
 	store, err := defaultStore()
 	if err != nil {
 		return err
@@ -254,6 +263,15 @@ func runStatus(stderr io.Writer) error {
 	if !anyDesired {
 		fmt.Fprintln(stderr, "desired: none")
 	}
+	return nil
+}
+
+func runTargetedStatus(view status.View, stderr io.Writer) error {
+	rendered, err := status.Render(nil, view)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(stderr, rendered)
 	return nil
 }
 
