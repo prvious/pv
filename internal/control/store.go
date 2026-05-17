@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	CurrentSchemaVersion = 1
+
 	ResourceMago = "mago"
 
 	StateReady  = "ready"
@@ -34,6 +36,8 @@ type ObservedStatus struct {
 }
 
 type Store interface {
+	Migrate(context.Context) error
+	SchemaVersion(context.Context) (int, error)
 	PutDesired(context.Context, DesiredResource) error
 	Desired(context.Context, string) (DesiredResource, bool, error)
 	PutObserved(context.Context, ObservedStatus) error
@@ -41,15 +45,45 @@ type Store interface {
 }
 
 type FileStore struct {
-	path string
+	path   string
+	runner MigrationRunner
 }
 
 func NewFileStore(path string) *FileStore {
-	return &FileStore{path: path}
+	return &FileStore{
+		path:   path,
+		runner: NewMigrationRunner(defaultMigrations()),
+	}
+}
+
+func NewFileStoreWithRunner(path string, runner MigrationRunner) *FileStore {
+	if runner == nil {
+		runner = NewMigrationRunner(defaultMigrations())
+	}
+	return &FileStore{path: path, runner: runner}
 }
 
 func (s *FileStore) Path() string {
 	return s.path
+}
+
+func (s *FileStore) Migrate(ctx context.Context) error {
+	current, migrated, err := s.loadMigrated(ctx)
+	if err != nil {
+		return err
+	}
+	if !migrated {
+		return nil
+	}
+	return s.save(ctx, current)
+}
+
+func (s *FileStore) SchemaVersion(ctx context.Context) (int, error) {
+	current, _, err := s.loadMigrated(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return current.SchemaVersion, nil
 }
 
 func (s *FileStore) PutDesired(ctx context.Context, desired DesiredResource) error {
@@ -63,7 +97,7 @@ func (s *FileStore) PutDesired(ctx context.Context, desired DesiredResource) err
 		return err
 	}
 
-	snapshot, err := s.load(ctx)
+	snapshot, _, err := s.loadMigrated(ctx)
 	if err != nil {
 		return err
 	}
@@ -75,7 +109,7 @@ func (s *FileStore) Desired(ctx context.Context, resource string) (DesiredResour
 	if err := ctx.Err(); err != nil {
 		return DesiredResource{}, false, err
 	}
-	snapshot, err := s.load(ctx)
+	snapshot, _, err := s.loadMigrated(ctx)
 	if err != nil {
 		return DesiredResource{}, false, err
 	}
@@ -94,7 +128,7 @@ func (s *FileStore) PutObserved(ctx context.Context, observed ObservedStatus) er
 		return errors.New("observed state is required")
 	}
 
-	snapshot, err := s.load(ctx)
+	snapshot, _, err := s.loadMigrated(ctx)
 	if err != nil {
 		return err
 	}
@@ -106,7 +140,7 @@ func (s *FileStore) Observed(ctx context.Context, resource string) (ObservedStat
 	if err := ctx.Err(); err != nil {
 		return ObservedStatus{}, false, err
 	}
-	snapshot, err := s.load(ctx)
+	snapshot, _, err := s.loadMigrated(ctx)
 	if err != nil {
 		return ObservedStatus{}, false, err
 	}
@@ -121,21 +155,106 @@ func ValidateVersion(version string) error {
 	return nil
 }
 
-type snapshot struct {
-	Desired  map[string]DesiredResource `json:"desired"`
-	Observed map[string]ObservedStatus  `json:"observed"`
+type AppliedMigration struct {
+	ID string `json:"id"`
 }
 
-func newSnapshot() snapshot {
-	return snapshot{
+type StoreSnapshot struct {
+	SchemaVersion     int                        `json:"schema_version"`
+	AppliedMigrations []AppliedMigration         `json:"applied_migrations"`
+	Desired           map[string]DesiredResource `json:"desired"`
+	Observed          map[string]ObservedStatus  `json:"observed"`
+}
+
+func newSnapshot() StoreSnapshot {
+	return StoreSnapshot{
 		Desired:  make(map[string]DesiredResource),
 		Observed: make(map[string]ObservedStatus),
 	}
 }
 
-func (s *FileStore) load(ctx context.Context) (snapshot, error) {
+type Migration struct {
+	ID    string
+	Apply func(context.Context, StoreSnapshot) (StoreSnapshot, error)
+}
+
+type MigrationRunner interface {
+	Run(context.Context, StoreSnapshot) (StoreSnapshot, bool, error)
+}
+
+type ForwardMigrationRunner struct {
+	migrations []Migration
+}
+
+func NewMigrationRunner(migrations []Migration) ForwardMigrationRunner {
+	return ForwardMigrationRunner{migrations: migrations}
+}
+
+func (r ForwardMigrationRunner) Run(ctx context.Context, current StoreSnapshot) (StoreSnapshot, bool, error) {
+	if current.SchemaVersion > CurrentSchemaVersion {
+		return StoreSnapshot{}, false, fmt.Errorf("store schema version %d is newer than supported version %d", current.SchemaVersion, CurrentSchemaVersion)
+	}
+
+	applied := make(map[string]bool, len(current.AppliedMigrations))
+	for _, migration := range current.AppliedMigrations {
+		applied[migration.ID] = true
+	}
+
+	changed := false
+	for _, migration := range r.migrations {
+		if err := ctx.Err(); err != nil {
+			return StoreSnapshot{}, false, err
+		}
+		if applied[migration.ID] {
+			continue
+		}
+		next, err := migration.Apply(ctx, current)
+		if err != nil {
+			return StoreSnapshot{}, false, fmt.Errorf("apply migration %s: %w", migration.ID, err)
+		}
+		current = next
+		current.AppliedMigrations = append(current.AppliedMigrations, AppliedMigration{ID: migration.ID})
+		changed = true
+	}
+	return current, changed, nil
+}
+
+func defaultMigrations() []Migration {
+	return []Migration{
+		{
+			ID: "0001_initial_json_store",
+			Apply: func(ctx context.Context, current StoreSnapshot) (StoreSnapshot, error) {
+				if err := ctx.Err(); err != nil {
+					return StoreSnapshot{}, err
+				}
+				current.SchemaVersion = CurrentSchemaVersion
+				if current.Desired == nil {
+					current.Desired = make(map[string]DesiredResource)
+				}
+				if current.Observed == nil {
+					current.Observed = make(map[string]ObservedStatus)
+				}
+				return current, nil
+			},
+		},
+	}
+}
+
+func (s *FileStore) loadMigrated(ctx context.Context) (StoreSnapshot, bool, error) {
+	current, err := s.load(ctx)
+	if err != nil {
+		return StoreSnapshot{}, false, err
+	}
+	migrated, changed, err := s.runner.Run(ctx, current)
+	if err != nil {
+		return StoreSnapshot{}, false, err
+	}
+	return migrated, changed, nil
+}
+
+func (s *FileStore) load(ctx context.Context) (StoreSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return snapshot{}, err
+		return StoreSnapshot{}, err
 	}
 
 	data, err := os.ReadFile(s.path)
@@ -143,12 +262,12 @@ func (s *FileStore) load(ctx context.Context) (snapshot, error) {
 		return newSnapshot(), nil
 	}
 	if err != nil {
-		return snapshot{}, err
+		return StoreSnapshot{}, err
 	}
 
 	current := newSnapshot()
 	if err := json.Unmarshal(data, &current); err != nil {
-		return snapshot{}, err
+		return StoreSnapshot{}, fmt.Errorf("load store state %s: %w", s.path, err)
 	}
 	if current.Desired == nil {
 		current.Desired = make(map[string]DesiredResource)
@@ -159,7 +278,7 @@ func (s *FileStore) load(ctx context.Context) (snapshot, error) {
 	return current, nil
 }
 
-func (s *FileStore) save(ctx context.Context, current snapshot) error {
+func (s *FileStore) save(ctx context.Context, current StoreSnapshot) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

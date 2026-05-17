@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/control"
+	"github.com/prvious/pv/internal/host"
 )
 
 type Installer interface {
@@ -100,5 +101,13 @@ func (i MarkerInstaller) Installed(version string) bool {
 }
 
 func (i MarkerInstaller) markerPath(version string) string {
-	return filepath.Join(i.root, "tools", "mago", version, "installed")
+	paths, err := host.NewPathsFromRoot(i.root)
+	if err != nil {
+		return filepath.Join(i.root, "tools", "mago", version, "installed")
+	}
+	dir, err := paths.ToolDir(control.ResourceMago, version)
+	if err != nil {
+		return filepath.Join(i.root, "tools", "mago", version, "installed")
+	}
+	return filepath.Join(dir, "installed")
 }

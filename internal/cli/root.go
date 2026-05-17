@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/prvious/pv/internal/control"
+	"github.com/prvious/pv/internal/host"
 )
 
 const Version = "dev"
@@ -121,9 +120,9 @@ func runStatus(stderr io.Writer) error {
 }
 
 func defaultStore() (*control.FileStore, error) {
-	home, err := os.UserHomeDir()
+	paths, err := host.NewPaths()
 	if err != nil {
 		return nil, err
 	}
-	return control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.json")), nil
+	return control.NewFileStore(paths.StateDBPath()), nil
 }

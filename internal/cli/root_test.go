@@ -94,7 +94,7 @@ func TestRunMagoInstallRecordsDesiredStateWithoutInstalling(t *testing.T) {
 		t.Fatalf("stderr = %q, want requested message", got)
 	}
 
-	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.json"))
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
 	desired, ok, err := store.Desired(context.Background(), control.ResourceMago)
 	if err != nil {
 		t.Fatalf("Desired returned error: %v", err)
@@ -121,7 +121,7 @@ func TestRunStatusReportsDesiredAndObservedStatus(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	ctx := context.Background()
-	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.json"))
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
 	if err := store.PutDesired(ctx, control.DesiredResource{
 		Resource: control.ResourceMago,
 		Version:  "1.2.3",
@@ -169,7 +169,7 @@ func TestControlPlaneTracerRecordsDesiredThenObserved(t *testing.T) {
 		t.Fatalf("Run mago install returned error: %v", err)
 	}
 
-	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.json"))
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
 	controller := mago.Controller{
 		Store:     store,
 		Installer: mago.NewMarkerInstaller(filepath.Join(home, ".pv")),
