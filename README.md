@@ -28,6 +28,23 @@ go build ./...
 go test ./...
 ```
 
+Tier 0 E2E is the default local-safe release gate:
+
+```bash
+go test ./test/e2e/scenarios
+```
+
+Tier 1 and Tier 2 E2E are CI-only. They require `CI=true`,
+`GITHUB_ACTIONS=true`, and `RUNNER_ENVIRONMENT=github-hosted` before they run:
+
+```bash
+go test -tags=e2e_tier1 ./test/e2e/tier1
+go test -tags=e2e_tier2 ./test/e2e/tier2
+```
+
+Tier 2 prints the DNS, TLS, and browser host actions it intends to perform
+before enforcing the CI-only guard.
+
 ## Prototype Reference
 
 `legacy/prototype/` is the old implementation. It remains available for
