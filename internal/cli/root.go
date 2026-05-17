@@ -97,10 +97,13 @@ func runInit(args []string, stderr io.Writer) error {
 		return err
 	}
 	if !project.DetectLaravel(cwd) {
-		return errors.New("current directory is not a supported Laravel project")
+		err := errors.New("current directory is not a supported Laravel project")
+		fmt.Fprintf(stderr, "pv: %v\n", err)
+		return err
 	}
 	contract := project.DefaultLaravelContract(filepath.Base(cwd))
 	if err := project.WriteContract(cwd, contract, force); err != nil {
+		fmt.Fprintf(stderr, "pv: %v\n", err)
 		return err
 	}
 	fmt.Fprintln(stderr, "created pv.yml")
