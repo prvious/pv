@@ -34,6 +34,25 @@ func TestWriteAndParseLaravelContract(t *testing.T) {
 	}
 }
 
+func TestDefaultLaravelContractSanitizesHostLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "My App", want: "my-app.test"},
+		{name: "api_v2", want: "api-v2.test"},
+		{name: "!!!", want: "app.test"},
+		{name: strings.Repeat("a", 64), want: strings.Repeat("a", 63) + ".test"},
+	}
+
+	for _, tt := range tests {
+		contract := DefaultLaravelContract(tt.name)
+		if got := contract.Hosts[0]; got != tt.want {
+			t.Fatalf("DefaultLaravelContract(%q) host = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestParseContractRejectsUnsupportedFields(t *testing.T) {
 	_, err := ParseContract("version: 1\nphp: 8.4\ninfer_from_env: true\nhosts:\n  - app.test\n")
 	if err == nil {

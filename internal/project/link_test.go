@@ -51,11 +51,32 @@ func TestRegistryEnvWriterAndSetupAreExplicit(t *testing.T) {
 	}
 }
 
-type recordingRunner struct {
-	commands []string
+func TestRunSetupPrependsManagedBinToSystemPath(t *testing.T) {
+	systemPath := strings.Join([]string{"/usr/bin", "/bin"}, string(os.PathListSeparator))
+	t.Setenv("PATH", systemPath)
+	ctx := t.Context()
+	runner := &recordingRunner{}
+
+	if err := RunSetup(ctx, t.TempDir(), "/tmp/pv/bin", []string{"cp .env.example .env"}, runner); err != nil {
+		t.Fatalf("RunSetup returned error: %v", err)
+	}
+
+	if len(runner.envs) != 1 {
+		t.Fatalf("envs = %#v", runner.envs)
+	}
+	want := strings.Join([]string{"/tmp/pv/bin", systemPath}, string(os.PathListSeparator))
+	if got := runner.envs[0]["PATH"]; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
 }
 
-func (r *recordingRunner) Run(_ context.Context, _ string, command string, _ map[string]string) error {
+type recordingRunner struct {
+	commands []string
+	envs     []map[string]string
+}
+
+func (r *recordingRunner) Run(_ context.Context, _ string, command string, env map[string]string) error {
 	r.commands = append(r.commands, command)
+	r.envs = append(r.envs, env)
 	return nil
 }

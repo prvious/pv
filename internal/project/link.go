@@ -85,15 +85,24 @@ type Runner interface {
 }
 
 func RunSetup(ctx context.Context, projectPath string, phpBin string, commands []string, runner Runner) error {
+	env := map[string]string{"PATH": setupPath(phpBin)}
 	for _, command := range commands {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := runner.Run(ctx, projectPath, command, map[string]string{"PATH": phpBin}); err != nil {
+		if err := runner.Run(ctx, projectPath, command, env); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func setupPath(binDir string) string {
+	systemPath := os.Getenv("PATH")
+	if systemPath == "" {
+		return binDir
+	}
+	return binDir + string(os.PathListSeparator) + systemPath
 }
 
 func removeManagedBlock(data string) string {
