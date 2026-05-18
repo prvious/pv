@@ -10,6 +10,14 @@ import (
 	"github.com/prvious/pv/internal/control"
 )
 
+var _ control.Controller = Controller{}
+
+func TestControllerResource(t *testing.T) {
+	if got := (Controller{}).Resource(); got != control.ResourceMago {
+		t.Fatalf("Resource = %q, want %q", got, control.ResourceMago)
+	}
+}
+
 func TestControllerReconcilesDesiredMagoInstallToObservedReady(t *testing.T) {
 	ctx := context.Background()
 	store := control.NewFileStore(filepath.Join(t.TempDir(), "pv.json"))

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -31,14 +30,14 @@ func TestRunHelpWritesRewriteHelp(t *testing.T) {
 		"pv rewrite control plane",
 		"Usage:",
 		"pv <command>",
+		"composer:install",
+		"mago:install",
+		"php:install",
 		"version",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help output missing %q:\n%s", want, out)
 		}
-	}
-	if strings.Contains(out, "php:install") {
-		t.Fatalf("help output copied prototype command surface:\n%s", out)
 	}
 }
 
@@ -95,7 +94,7 @@ func TestRunMagoInstallRecordsDesiredStateWithoutInstalling(t *testing.T) {
 	}
 
 	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
-	desired, ok, err := store.Desired(context.Background(), control.ResourceMago)
+	desired, ok, err := store.Desired(t.Context(), control.ResourceMago)
 	if err != nil {
 		t.Fatalf("Desired returned error: %v", err)
 	}
@@ -105,7 +104,7 @@ func TestRunMagoInstallRecordsDesiredStateWithoutInstalling(t *testing.T) {
 	if desired.Version != "1.2.3" {
 		t.Fatalf("desired version = %q, want 1.2.3", desired.Version)
 	}
-	if _, ok, err := store.Observed(context.Background(), control.ResourceMago); err != nil {
+	if _, ok, err := store.Observed(t.Context(), control.ResourceMago); err != nil {
 		t.Fatalf("Observed returned error: %v", err)
 	} else if ok {
 		t.Fatal("mago install command wrote observed status directly")
@@ -120,8 +119,8 @@ func TestRunMagoInstallRecordsDesiredStateWithoutInstalling(t *testing.T) {
 func TestRunStatusReportsDesiredAndObservedStatus(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	ctx := context.Background()
 	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	ctx := t.Context()
 	if err := store.PutDesired(ctx, control.DesiredResource{
 		Resource: control.ResourceMago,
 		Version:  "1.2.3",
@@ -161,7 +160,7 @@ func TestRunStatusReportsDesiredAndObservedStatus(t *testing.T) {
 func TestControlPlaneTracerRecordsDesiredThenObserved(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	ctx := context.Background()
+	ctx := t.Context()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -198,6 +197,185 @@ func TestControlPlaneTracerRecordsDesiredThenObserved(t *testing.T) {
 	}
 	if observed.State != control.StateReady {
 		t.Fatalf("observed state = %q, want ready", observed.State)
+	}
+}
+
+func TestRunPHPInstallRecordsDesiredRuntimeState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"php:install", "8.4"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run php install returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run php install wrote stdout: %q", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "requested php 8.4 install") {
+		t.Fatalf("stderr = %q, want requested message", got)
+	}
+
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	desired, ok, err := store.Desired(t.Context(), control.ResourcePHP)
+	if err != nil {
+		t.Fatalf("Desired returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("Desired did not find PHP resource")
+	}
+	if desired.Version != "8.4" {
+		t.Fatalf("desired version = %q, want 8.4", desired.Version)
+	}
+}
+
+func TestRunComposerInstallRecordsRuntimeDependency(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"composer:install", "2.8.0", "--php", "8.4"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run composer install returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run composer install wrote stdout: %q", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "requested composer 2.8.0 install with php 8.4") {
+		t.Fatalf("stderr = %q, want requested message", got)
+	}
+
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	desired, ok, err := store.Desired(t.Context(), control.ResourceComposer)
+	if err != nil {
+		t.Fatalf("Desired returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("Desired did not find Composer resource")
+	}
+	if desired.Version != "2.8.0" {
+		t.Fatalf("desired version = %q, want 2.8.0", desired.Version)
+	}
+	if desired.RuntimeVersion != "8.4" {
+		t.Fatalf("runtime version = %q, want 8.4", desired.RuntimeVersion)
+	}
+}
+
+func TestRunStatusReportsPHPAndComposer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	if err := store.PutDesired(ctx, control.DesiredResource{
+		Resource: control.ResourcePHP,
+		Version:  "8.4",
+	}); err != nil {
+		t.Fatalf("PutDesired PHP returned error: %v", err)
+	}
+	if err := store.PutObserved(ctx, control.ObservedStatus{
+		Resource:          control.ResourcePHP,
+		DesiredVersion:    "8.4",
+		State:             control.StateReady,
+		LastReconcileTime: "2026-05-15T19:00:00Z",
+	}); err != nil {
+		t.Fatalf("PutObserved PHP returned error: %v", err)
+	}
+	if err := store.PutDesired(ctx, control.DesiredResource{
+		Resource:       control.ResourceComposer,
+		Version:        "2.8.0",
+		RuntimeVersion: "8.4",
+	}); err != nil {
+		t.Fatalf("PutDesired Composer returned error: %v", err)
+	}
+	if err := store.PutObserved(ctx, control.ObservedStatus{
+		Resource:          control.ResourceComposer,
+		DesiredVersion:    "2.8.0",
+		RuntimeVersion:    "8.4",
+		State:             control.StateBlocked,
+		LastReconcileTime: "2026-05-15T19:10:00Z",
+		LastError:         "PHP runtime 8.4 is not installed",
+		NextAction:        "run pv php:install 8.4",
+	}); err != nil {
+		t.Fatalf("PutObserved Composer returned error: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"status"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run status returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run status wrote stdout: %q", stdout.String())
+	}
+	for _, want := range []string{
+		"desired: php 8.4 install",
+		"observed: php 8.4 ready",
+		"desired: composer 2.8.0 install with php 8.4",
+		"observed: composer 2.8.0 blocked",
+		"last error: PHP runtime 8.4 is not installed",
+		"next action: run pv php:install 8.4",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestRunStatusReportsBackingResources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	for _, resource := range []string{
+		control.ResourceMailpit,
+		control.ResourceMySQL,
+		control.ResourcePostgres,
+		control.ResourceRedis,
+		control.ResourceRustFS,
+	} {
+		if err := store.PutDesired(ctx, control.DesiredResource{
+			Resource: resource,
+			Version:  "1.0.0",
+		}); err != nil {
+			t.Fatalf("PutDesired %s returned error: %v", resource, err)
+		}
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"status"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run status returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run status wrote stdout: %q", stdout.String())
+	}
+	output := stderr.String()
+	if strings.Contains(output, "desired: none") {
+		t.Fatalf("status output reported no desired resources:\n%s", output)
+	}
+	for _, want := range []string{
+		"desired: mailpit 1.0.0 install",
+		"observed: mailpit pending",
+		"desired: mysql 1.0.0 install",
+		"observed: mysql pending",
+		"desired: postgres 1.0.0 install",
+		"observed: postgres pending",
+		"desired: redis 1.0.0 install",
+		"observed: redis pending",
+		"desired: rustfs 1.0.0 install",
+		"observed: rustfs pending",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
 	}
 }
 
