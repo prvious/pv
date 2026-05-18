@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err := Run([]string{"link"}, &stdout, &stderr)
+	err := Run([]string{"serve"}, &stdout, &stderr)
 
 	if !errors.Is(err, ErrUsage) {
 		t.Fatalf("Run unknown command error = %v, want ErrUsage", err)
@@ -70,8 +71,46 @@ func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("Run unknown command wrote stdout: %q", stdout.String())
 	}
-	if got := stderr.String(); !strings.Contains(got, `unknown command "link"`) {
+	if got := stderr.String(); !strings.Contains(got, `unknown command "serve"`) {
 		t.Fatalf("stderr = %q, want unknown command message", got)
+	}
+}
+
+func TestRunInitCreatesLaravelContract(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "artisan"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile artisan returned error: %v", err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(original); err != nil {
+			t.Fatalf("restore Chdir returned error: %v", err)
+		}
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err = Run([]string{"init"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run init returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run init wrote stdout: %q", stdout.String())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "pv.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile pv.yml returned error: %v", err)
+	}
+	if !strings.Contains(string(data), "version: 1") {
+		t.Fatalf("pv.yml missing version:\n%s", data)
 	}
 }
 
