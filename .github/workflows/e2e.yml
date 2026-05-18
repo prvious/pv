@@ -18,140 +18,141 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: legacy/prototype/go.mod
 
       - name: Build
         run: |
           set -euo pipefail
+          cd legacy/prototype
           go build -o pv .
           sudo cp pv /usr/local/bin/pv
 
       - name: Unit tests
-        run: go test ./...
+        run: cd legacy/prototype && go test ./...
 
       # ── Phase 2: Install + Multi-PHP Setup ─────────────────────────
       - name: Install pv with PHP 8.4 and 8.3
         timeout-minutes: 5
-        run: scripts/e2e/install.sh
+        run: legacy/prototype/scripts/e2e/install.sh
 
       # ── Phase 3: Verify Installation ───────────────────────────────
       - name: Verify both PHP versions installed
         timeout-minutes: 1
-        run: scripts/e2e/verify-install.sh
+        run: legacy/prototype/scripts/e2e/verify-install.sh
 
       # ── Phase 3.5: PHP ini layout ──────────────────────────────────
       - name: Verify per-version php.ini layout and overrides
         timeout-minutes: 1
-        run: scripts/e2e/php-ini.sh
+        run: legacy/prototype/scripts/e2e/php-ini.sh
 
       # ── Phase 4: Test pv env ─────────────────────────────────────────
       - name: Test pv env PATH setup
         timeout-minutes: 1
-        run: scripts/e2e/env.sh
+        run: legacy/prototype/scripts/e2e/env.sh
 
       # ── Phase 5: Create Fixtures ───────────────────────────────────
       - name: Create test fixtures
-        run: scripts/e2e/fixtures.sh
+        run: legacy/prototype/scripts/e2e/fixtures.sh
 
       # ── Phase 6: Link & Verify ─────────────────────────────────────
       - name: Link projects and verify config
-        run: scripts/e2e/link-verify.sh
+        run: legacy/prototype/scripts/e2e/link-verify.sh
 
       # ── Phase 7: Start & Curl All Sites ────────────────────────────
       - name: Start server and curl all sites
         timeout-minutes: 2
-        run: scripts/e2e/start-curl.sh
+        run: legacy/prototype/scripts/e2e/start-curl.sh
 
       # ── Phase 8: Dynamic Link While Running ────────────────────────
       - name: Dynamic link while server running
         timeout-minutes: 1
-        run: scripts/e2e/dynamic-link.sh
+        run: legacy/prototype/scripts/e2e/dynamic-link.sh
 
       # ── Phase 9: Dynamic Unlink While Running ──────────────────────
       - name: Dynamic unlink while server running
         timeout-minutes: 1
-        run: scripts/e2e/dynamic-unlink.sh
+        run: legacy/prototype/scripts/e2e/dynamic-unlink.sh
 
       # ── Phase 10: Test pv log ──────────────────────────────────────
       - name: Test pv log
-        run: scripts/e2e/log.sh
+        run: legacy/prototype/scripts/e2e/log.sh
 
       # ── Phase 11: Test pv restart ──────────────────────────────────
       - name: Test pv restart
         timeout-minutes: 1
-        run: scripts/e2e/restart.sh
+        run: legacy/prototype/scripts/e2e/restart.sh
 
       # ── Phase 12: Doctor ────────────────────────────────────────────
       - name: Test pv doctor
         timeout-minutes: 1
-        run: scripts/e2e/doctor.sh
+        run: legacy/prototype/scripts/e2e/doctor.sh
 
       # ── Phase 13: PHP Shim Resolution ──────────────────────────────
       - name: Test PHP shim per-project resolution
-        run: scripts/e2e/shim.sh
+        run: legacy/prototype/scripts/e2e/shim.sh
 
       # ── Phase 14: Composer Containment ─────────────────────────────
       - name: Test Composer isolation and global install
         timeout-minutes: 3
-        run: scripts/e2e/composer.sh
+        run: legacy/prototype/scripts/e2e/composer.sh
 
       # ── Phase 15: Error Handling ───────────────────────────────────
       - name: Test error handling
-        run: scripts/e2e/errors.sh
+        run: legacy/prototype/scripts/e2e/errors.sh
 
       # ── Phase 16: Stop Server ──────────────────────────────────────
       - name: Stop server
-        run: scripts/e2e/stop.sh
+        run: legacy/prototype/scripts/e2e/stop.sh
 
       # ── Phase 17: PHP Version Lifecycle ────────────────────────────
       - name: Test PHP version lifecycle
-        run: scripts/e2e/lifecycle.sh
+        run: legacy/prototype/scripts/e2e/lifecycle.sh
 
       # ── Phase 18: Test pv update ───────────────────────────────────
       - name: Test pv update
         timeout-minutes: 3
-        run: scripts/e2e/update.sh
+        run: legacy/prototype/scripts/e2e/update.sh
 
       # ── Phase 19: Verify Server After PHP Changes ──────────────────
       - name: Verify server with remaining projects
         timeout-minutes: 2
-        run: scripts/e2e/verify-final.sh
+        run: legacy/prototype/scripts/e2e/verify-final.sh
 
       # ── Phase 20: S3 binary service lifecycle ──────────────────────
       - name: E2E — S3 binary service lifecycle
         timeout-minutes: 3
-        run: scripts/e2e/s3-binary.sh
+        run: legacy/prototype/scripts/e2e/s3-binary.sh
 
       # ── Phase 21: Mail binary service lifecycle ────────────────────
       - name: E2E — Mail binary service lifecycle
         timeout-minutes: 3
-        run: scripts/e2e/mail-binary.sh
+        run: legacy/prototype/scripts/e2e/mail-binary.sh
 
       # ── Phase 22: PostgreSQL native-binary lifecycle ───────────────
       - name: E2E — PostgreSQL native-binary lifecycle
         timeout-minutes: 5
-        run: scripts/e2e/postgres-binary.sh
+        run: legacy/prototype/scripts/e2e/postgres-binary.sh
 
       # ── Phase 23: MySQL native-binary lifecycle ────────────────────
       - name: E2E — MySQL native-binary lifecycle
         timeout-minutes: 5
-        run: scripts/e2e/mysql-binary.sh
+        run: legacy/prototype/scripts/e2e/mysql-binary.sh
 
       # ── Phase 24: Redis native-binary lifecycle ────────────────────
       - name: E2E — Redis native-binary lifecycle
         timeout-minutes: 3
-        run: scripts/e2e/redis-binary.sh
+        run: legacy/prototype/scripts/e2e/redis-binary.sh
 
       # ── Phase 25: Uninstall ───────────────────────────────────────
       # TODO: frankenphp untrust hangs in CI (internal sudo prompt, no terminal)
       # - name: Test pv uninstall
       #   timeout-minutes: 1
-      #   run: scripts/e2e/uninstall.sh
+      #   run: legacy/prototype/scripts/e2e/uninstall.sh
 
       # ── Phase 26: Failure Diagnostics & Cleanup ────────────────────
       - name: Dump logs on failure
         if: failure()
-        run: scripts/e2e/diagnostics.sh
+        run: legacy/prototype/scripts/e2e/diagnostics.sh
 
       - name: Cleanup
         if: always()
