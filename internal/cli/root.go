@@ -170,14 +170,52 @@ func ensureSetupRuntime(paths host.Paths, contract project.Contract) error {
 	if len(contract.Setup) == 0 {
 		return nil
 	}
-	_, err := os.Stat(filepath.Join(paths.BinDir(), "php"))
+	if err := ensurePHPRuntimeInstalled(paths, contract.PHP); err != nil {
+		return err
+	}
+	return ensureActivePHPShim(paths, contract.PHP)
+}
+
+func ensurePHPRuntimeInstalled(paths host.Paths, version string) error {
+	runtimeDir, err := paths.PHPRuntimeDir(version)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stat(filepath.Join(runtimeDir, "installed"))
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return fmt.Errorf("PHP runtime %s is not installed: run pv php:install %s", contract.PHP, contract.PHP)
+	return missingPHPError(version)
+}
+
+func ensureActivePHPShim(paths host.Paths, version string) error {
+	data, err := os.ReadFile(filepath.Join(paths.BinDir(), "php"))
+	if err == nil {
+		if phpShimDeclaresVersion(string(data), version) {
+			return nil
+		}
+		return fmt.Errorf("PHP runtime %s is not active: run pv php:install %s", version, version)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return missingPHPError(version)
+}
+
+func phpShimDeclaresVersion(shim string, version string) bool {
+	for _, line := range strings.Split(shim, "\n") {
+		if strings.TrimSpace(line) == "# php "+version {
+			return true
+		}
+	}
+	return false
+}
+
+func missingPHPError(version string) error {
+	return fmt.Errorf("PHP runtime %s is not installed: run pv php:install %s", version, version)
 }
 
 func recordSetupFailure(ctx context.Context, paths host.Paths, registry project.Registry, err error) error {

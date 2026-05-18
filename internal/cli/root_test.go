@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/prvious/pv/internal/control"
+	"github.com/prvious/pv/internal/host"
+	"github.com/prvious/pv/internal/project"
 	"github.com/prvious/pv/internal/resources/mago"
 )
 
@@ -363,6 +365,98 @@ func TestRunStatusReportsPHPAndComposer(t *testing.T) {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("status output missing %q:\n%s", want, stderr.String())
 		}
+	}
+}
+
+func TestRunStatusUsesInstallStatusForLinkedPHP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	paths, err := host.NewPathsFromHome(home)
+	if err != nil {
+		t.Fatalf("NewPathsFromHome returned error: %v", err)
+	}
+	contract := project.Contract{
+		Version: project.ContractVersion,
+		PHP:     "8.4",
+		Hosts:   []string{"acme.test"},
+	}
+	registry := project.Registry{Path: filepath.Join(paths.Root(), "state", "project.json")}
+	if err := registry.Link(ctx, t.TempDir(), contract); err != nil {
+		t.Fatalf("Link returned error: %v", err)
+	}
+	store := control.NewFileStore(paths.StateDBPath())
+	if err := store.PutDesired(ctx, control.DesiredResource{
+		Resource: control.ResourcePHP,
+		Version:  "8.4",
+	}); err != nil {
+		t.Fatalf("PutDesired PHP returned error: %v", err)
+	}
+	if err := store.PutObserved(ctx, control.ObservedStatus{
+		Resource:       control.ResourcePHP,
+		DesiredVersion: "8.4",
+		State:          control.StateReady,
+	}); err != nil {
+		t.Fatalf("PutObserved PHP returned error: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err = Run([]string{"status", "runtime"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run status runtime returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run status runtime wrote stdout: %q", stdout.String())
+	}
+	output := stderr.String()
+	if count := strings.Count(output, "runtime php:"); count != 1 {
+		t.Fatalf("runtime php status count = %d, want 1:\n%s", count, output)
+	}
+	if strings.Contains(output, "runtime php: missing_install") {
+		t.Fatalf("status output kept stale missing install entry:\n%s", output)
+	}
+	if !strings.Contains(output, "runtime php: healthy") {
+		t.Fatalf("status output missing healthy PHP entry:\n%s", output)
+	}
+}
+
+func TestEnsureSetupRuntimeRejectsWrongActivePHPShim(t *testing.T) {
+	paths, err := host.NewPathsFromRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPathsFromRoot returned error: %v", err)
+	}
+	runtimeDir, err := paths.PHPRuntimeDir("8.4")
+	if err != nil {
+		t.Fatalf("PHPRuntimeDir returned error: %v", err)
+	}
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("create runtime dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "installed"), []byte("php 8.4\n"), 0o644); err != nil {
+		t.Fatalf("write runtime marker: %v", err)
+	}
+	if err := os.MkdirAll(paths.BinDir(), 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	wrongShim := "#!/bin/sh\n# php 8.3\n"
+	if err := os.WriteFile(filepath.Join(paths.BinDir(), "php"), []byte(wrongShim), 0o755); err != nil {
+		t.Fatalf("write wrong php shim: %v", err)
+	}
+	contract := project.Contract{
+		Version: project.ContractVersion,
+		PHP:     "8.4",
+		Setup:   []string{"php artisan fixture:setup"},
+	}
+
+	err = ensureSetupRuntime(paths, contract)
+
+	if err == nil {
+		t.Fatal("ensureSetupRuntime accepted PHP shim for the wrong version")
+	}
+	if !strings.Contains(err.Error(), "PHP runtime 8.4 is not active") {
+		t.Fatalf("ensureSetupRuntime error = %v, want active runtime guidance", err)
 	}
 }
 

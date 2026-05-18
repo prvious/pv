@@ -175,7 +175,15 @@ func installFakePHP(sandbox *harness.Sandbox) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return err
 	}
+	runtimeDir := filepath.Join(sandbox.PVRoot, "runtimes", "php", "8.4")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "installed"), []byte("php 8.4\n"), 0o644); err != nil {
+		return err
+	}
 	script := `#!/bin/sh
+# php 8.4
 {
   printf 'cwd=%s\n' "$(pwd)"
   printf 'path=%s\n' "$PATH"

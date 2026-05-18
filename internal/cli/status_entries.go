@@ -13,7 +13,7 @@ import (
 )
 
 func collectStatusEntries(ctx context.Context, paths host.Paths, store *control.FileStore) ([]status.Entry, error) {
-	entries, err := linkedProjectStatusEntries(ctx, paths)
+	entries, err := linkedProjectStatusEntries(ctx, paths, store)
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +24,7 @@ func collectStatusEntries(ctx context.Context, paths host.Paths, store *control.
 	return append(entries, installEntries...), nil
 }
 
-func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status.Entry, error) {
+func linkedProjectStatusEntries(ctx context.Context, paths host.Paths, store *control.FileStore) ([]status.Entry, error) {
 	state, ok, err := project.Registry{Path: projectStatePath(paths)}.Current(ctx)
 	if err != nil || !ok {
 		return nil, err
@@ -41,7 +41,13 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status
 			LogPath:    filepath.Join(paths.Root(), "logs", "project", name+".log"),
 			NextAction: "run reconciliation",
 		},
-		{
+	}
+	missingPHP, err := linkedPHPMissing(ctx, store, state.PHP)
+	if err != nil {
+		return nil, err
+	}
+	if missingPHP {
+		entries = append(entries, status.Entry{
 			View:       status.ViewRuntime,
 			Name:       control.ResourcePHP,
 			State:      status.StateMissingInstall,
@@ -49,7 +55,7 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status
 			Observed:   "pending reconciliation",
 			LogPath:    versionedLogPath(paths, control.ResourcePHP, state.PHP),
 			NextAction: fmt.Sprintf("run pv php:install %s", state.PHP),
-		},
+		})
 	}
 	for _, service := range state.Services {
 		entries = append(entries, status.Entry{
@@ -76,6 +82,20 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths) ([]status
 		})
 	}
 	return applyFailures(entries, state.Failures), nil
+}
+
+func linkedPHPMissing(ctx context.Context, store *control.FileStore, version string) (bool, error) {
+	if store == nil {
+		return true, nil
+	}
+	desired, desiredOK, err := store.Desired(ctx, control.ResourcePHP)
+	if err != nil {
+		return false, err
+	}
+	if desiredOK && desired.Version == version {
+		return false, nil
+	}
+	return true, nil
 }
 
 func installStatusEntries(ctx context.Context, paths host.Paths, store *control.FileStore) ([]status.Entry, error) {
