@@ -20,10 +20,7 @@ type Contract struct {
 }
 
 func DefaultLaravelContract(projectName string) Contract {
-	host := strings.ToLower(strings.TrimSpace(projectName))
-	if host == "" {
-		host = "app"
-	}
+	host := defaultHostLabel(projectName)
 	return Contract{
 		Version:  ContractVersion,
 		PHP:      "8.4",
@@ -31,6 +28,30 @@ func DefaultLaravelContract(projectName string) Contract {
 		Services: []string{"mailpit"},
 		Setup:    []string{"composer install", "php artisan key:generate --ansi"},
 	}
+}
+
+func defaultHostLabel(projectName string) string {
+	var b strings.Builder
+	previousHyphen := false
+	for _, r := range strings.ToLower(strings.TrimSpace(projectName)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			previousHyphen = false
+			continue
+		}
+		if b.Len() > 0 && !previousHyphen {
+			b.WriteByte('-')
+			previousHyphen = true
+		}
+	}
+	label := strings.Trim(b.String(), "-")
+	if len(label) > 63 {
+		label = strings.TrimRight(label[:63], "-")
+	}
+	if label == "" {
+		return "app"
+	}
+	return label
 }
 
 func DetectLaravel(dir string) bool {
