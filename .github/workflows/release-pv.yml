@@ -20,15 +20,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: legacy/prototype/go.mod
 
       - name: Run tests
-        run: go test ./...
+        run: cd legacy/prototype && go test ./...
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
+          workdir: legacy/prototype
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
