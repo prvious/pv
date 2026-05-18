@@ -367,6 +367,8 @@ func TestRunStatusReportsPHPAndComposer(t *testing.T) {
 }
 
 func TestRunStatusSupportsTargetedViews(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -380,6 +382,57 @@ func TestRunStatusSupportsTargetedViews(t *testing.T) {
 	}
 	if got := stderr.String(); got != "status: none\n" {
 		t.Fatalf("targeted status = %q, want status none", got)
+	}
+}
+
+func TestRunStatusResourceViewLoadsStoreEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+	if err := store.PutDesired(ctx, control.DesiredResource{
+		Resource:       control.ResourceComposer,
+		Version:        "2.8.0",
+		RuntimeVersion: "8.4",
+	}); err != nil {
+		t.Fatalf("PutDesired Composer returned error: %v", err)
+	}
+	if err := store.PutObserved(ctx, control.ObservedStatus{
+		Resource:          control.ResourceComposer,
+		DesiredVersion:    "2.8.0",
+		RuntimeVersion:    "8.4",
+		State:             control.StateBlocked,
+		LastReconcileTime: "2026-05-15T19:10:00Z",
+		LastError:         "PHP runtime 8.4 is not installed",
+		NextAction:        "run pv php:install 8.4",
+	}); err != nil {
+		t.Fatalf("PutObserved Composer returned error: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := Run([]string{"status", "resource"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run targeted status returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run targeted status wrote stdout: %q", stdout.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{
+		"resource composer: blocked",
+		"desired: composer 2.8.0 install with php 8.4",
+		"observed: composer 2.8.0 blocked",
+		"last error: PHP runtime 8.4 is not installed",
+		"next action: run pv php:install 8.4",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("targeted status output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "status: none") {
+		t.Fatalf("targeted status ignored store entries:\n%s", output)
 	}
 }
 

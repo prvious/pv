@@ -20,6 +20,17 @@ const Version = "dev"
 
 var ErrUsage = errors.New("usage error")
 
+var statusResources = [...]string{
+	control.ResourcePHP,
+	control.ResourceComposer,
+	control.ResourceMago,
+	control.ResourceMailpit,
+	control.ResourceMySQL,
+	control.ResourcePostgres,
+	control.ResourceRedis,
+	control.ResourceRustFS,
+}
+
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
 		writeHelp(stdout)
@@ -237,7 +248,7 @@ func runStatus(args []string, stderr io.Writer) error {
 
 	ctx := context.Background()
 	anyDesired := false
-	for _, resource := range [...]string{control.ResourcePHP, control.ResourceComposer, control.ResourceMago} {
+	for _, resource := range statusResources {
 		desired, desiredOK, err := store.Desired(ctx, resource)
 		if err != nil {
 			return err
@@ -267,12 +278,95 @@ func runStatus(args []string, stderr io.Writer) error {
 }
 
 func runTargetedStatus(view status.View, stderr io.Writer) error {
-	rendered, err := status.Render(nil, view)
+	if err := status.ValidateView(view); err != nil {
+		return err
+	}
+	store, err := defaultStore()
+	if err != nil {
+		return err
+	}
+	entries, err := collectStatusEntries(context.Background(), store)
+	if err != nil {
+		return err
+	}
+	rendered, err := status.Render(entries, view)
 	if err != nil {
 		return err
 	}
 	fmt.Fprint(stderr, rendered)
 	return nil
+}
+
+func collectStatusEntries(ctx context.Context, store control.Store) ([]status.Entry, error) {
+	entries := make([]status.Entry, 0, len(statusResources))
+	for _, resource := range statusResources {
+		desired, desiredOK, err := store.Desired(ctx, resource)
+		if err != nil {
+			return nil, err
+		}
+		observed, observedOK, err := store.Observed(ctx, resource)
+		if err != nil {
+			return nil, err
+		}
+		if !desiredOK && !observedOK {
+			continue
+		}
+		entries = append(entries, statusEntry(resource, desired, desiredOK, observed, observedOK))
+	}
+	return entries, nil
+}
+
+func statusEntry(resource string, desired control.DesiredResource, desiredOK bool, observed control.ObservedStatus, observedOK bool) status.Entry {
+	entry := status.Entry{
+		View:  statusView(resource),
+		Name:  resource,
+		State: statusState(observed, observedOK),
+	}
+	if desiredOK {
+		entry.Desired = desiredSummary(desired)
+	}
+	if !observedOK {
+		entry.Observed = fmt.Sprintf("%s pending", resource)
+		entry.NextAction = "run reconciliation"
+		return entry
+	}
+
+	entry.Observed = observedSummary(observed)
+	entry.LastError = observed.LastError
+	entry.NextAction = observed.NextAction
+	if observed.LastReconcileTime != "" {
+		entry.Values = map[string]string{
+			"last_reconcile_time": observed.LastReconcileTime,
+		}
+	}
+	return entry
+}
+
+func statusView(resource string) status.View {
+	if resource == control.ResourcePHP {
+		return status.ViewRuntime
+	}
+	return status.ViewResource
+}
+
+func statusState(observed control.ObservedStatus, ok bool) status.State {
+	if !ok {
+		return status.StateUnknown
+	}
+	switch observed.State {
+	case control.StateReady:
+		return status.StateHealthy
+	case control.StateStopped:
+		return status.StateStopped
+	case control.StateMissing:
+		return status.StateMissingInstall
+	case control.StateBlocked:
+		return status.StateBlocked
+	case control.StateFailed:
+		return status.StateFailed
+	default:
+		return status.StateUnknown
+	}
 }
 
 func validateVersionArg(stderr io.Writer, version string) error {
@@ -292,15 +386,18 @@ func putDesired(desired control.DesiredResource) error {
 }
 
 func printDesired(w io.Writer, desired control.DesiredResource) {
+	fmt.Fprintf(w, "desired: %s\n", desiredSummary(desired))
+}
+
+func desiredSummary(desired control.DesiredResource) string {
 	if desired.RuntimeVersion != "" {
-		fmt.Fprintf(w, "desired: %s %s install with php %s\n", desired.Resource, desired.Version, desired.RuntimeVersion)
-		return
+		return fmt.Sprintf("%s %s install with php %s", desired.Resource, desired.Version, desired.RuntimeVersion)
 	}
-	fmt.Fprintf(w, "desired: %s %s install\n", desired.Resource, desired.Version)
+	return fmt.Sprintf("%s %s install", desired.Resource, desired.Version)
 }
 
 func printObserved(w io.Writer, observed control.ObservedStatus) {
-	fmt.Fprintf(w, "observed: %s %s %s\n", observed.Resource, observed.DesiredVersion, observed.State)
+	fmt.Fprintf(w, "observed: %s\n", observedSummary(observed))
 	fmt.Fprintf(w, "last reconcile: %s\n", observed.LastReconcileTime)
 	if observed.LastError != "" {
 		fmt.Fprintf(w, "last error: %s\n", observed.LastError)
@@ -308,6 +405,13 @@ func printObserved(w io.Writer, observed control.ObservedStatus) {
 	if observed.NextAction != "" {
 		fmt.Fprintf(w, "next action: %s\n", observed.NextAction)
 	}
+}
+
+func observedSummary(observed control.ObservedStatus) string {
+	if observed.DesiredVersion == "" {
+		return fmt.Sprintf("%s %s", observed.Resource, observed.State)
+	}
+	return fmt.Sprintf("%s %s %s", observed.Resource, observed.DesiredVersion, observed.State)
 }
 
 func defaultStore() (*control.FileStore, error) {
