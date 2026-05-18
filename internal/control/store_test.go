@@ -2,7 +2,9 @@ package control
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +77,61 @@ func TestValidateVersionRejectsUnsafeVersion(t *testing.T) {
 		if err := ValidateVersion(version); err == nil {
 			t.Fatalf("ValidateVersion(%q) returned nil, want error", version)
 		}
+	}
+}
+
+func TestFileStoreRecordsSchemaVersionAndAppliedMigrations(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(filepath.Join(t.TempDir(), "pv.db"))
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate returned error: %v", err)
+	}
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("SchemaVersion returned error: %v", err)
+	}
+	if version != CurrentSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, CurrentSchemaVersion)
+	}
+
+	data, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !strings.Contains(string(data), `"id": "0001_initial_json_store"`) {
+		t.Fatalf("store file did not record initial migration:\n%s", data)
+	}
+}
+
+func TestFileStoreRejectsCorruptedState(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "pv.db")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, _, err := NewFileStore(path).Desired(ctx, ResourceMago)
+	if err == nil {
+		t.Fatal("Desired returned nil error")
+	}
+	if !strings.Contains(err.Error(), "load store state") {
+		t.Fatalf("error = %v, want clear load store state message", err)
+	}
+}
+
+func TestFileStoreRejectsNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "pv.db")
+	if err := os.WriteFile(path, []byte(`{"schema_version":99,"desired":{},"observed":{}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	_, err := NewFileStore(path).SchemaVersion(ctx)
+	if err == nil {
+		t.Fatal("SchemaVersion returned nil error")
+	}
+	if !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("error = %v, want newer schema message", err)
 	}
 }
