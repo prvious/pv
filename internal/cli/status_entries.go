@@ -58,6 +58,13 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths, store *co
 		})
 	}
 	for _, service := range state.Services {
+		missingService, err := linkedServiceMissing(ctx, store, service)
+		if err != nil {
+			return nil, err
+		}
+		if !missingService {
+			continue
+		}
 		entries = append(entries, status.Entry{
 			View:       status.ViewResource,
 			Name:       service,
@@ -82,6 +89,17 @@ func linkedProjectStatusEntries(ctx context.Context, paths host.Paths, store *co
 		})
 	}
 	return applyFailures(entries, state.Failures), nil
+}
+
+func linkedServiceMissing(ctx context.Context, store *control.FileStore, resource string) (bool, error) {
+	if store == nil {
+		return true, nil
+	}
+	_, desiredOK, err := store.Desired(ctx, resource)
+	if err != nil {
+		return false, err
+	}
+	return !desiredOK, nil
 }
 
 func linkedPHPMissing(ctx context.Context, store *control.FileStore, version string) (bool, error) {
@@ -240,7 +258,7 @@ func resourceStatusValues(resource string) map[string]string {
 		}
 	case control.ResourceRustFS:
 		return map[string]string{
-			"AWS_ENDPOINT_URL":      "http://127.0.0.1:9000",
+			"AWS_ENDPOINT":          "http://127.0.0.1:9000",
 			"AWS_SECRET_ACCESS_KEY": "local-rustfs-secret",
 		}
 	default:

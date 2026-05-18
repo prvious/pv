@@ -109,7 +109,7 @@ func TestPvLinkEnvSetupLifecycle(t *testing.T) {
 		}
 	}
 	managed := managedEnvBlock(t, env)
-	for _, unwanted := range []string{"REDIS_HOST", "AWS_ENDPOINT_URL", "DB_PASSWORD"} {
+	for _, unwanted := range []string{"REDIS_HOST", "AWS_ENDPOINT", "AWS_ENDPOINT_URL", "DB_PASSWORD"} {
 		if strings.Contains(managed, unwanted) {
 			t.Fatalf("managed env block contains undeclared/user-owned key %q:\n%s", unwanted, managed)
 		}

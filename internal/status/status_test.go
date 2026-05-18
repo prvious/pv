@@ -17,7 +17,7 @@ func TestRenderFiltersTargetedViewsAndRedactsSecrets(t *testing.T) {
 			NextAction: "none",
 			Values: map[string]string{
 				"AWS_SECRET_ACCESS_KEY": "secret",
-				"AWS_ENDPOINT_URL":      "http://127.0.0.1:9000",
+				"AWS_ENDPOINT":          "http://127.0.0.1:9000",
 			},
 		},
 		{View: ViewProject, Name: "app", State: StatePartial},

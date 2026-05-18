@@ -46,10 +46,20 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runSimpleInstall(args[1:], stderr, control.ResourceMago, "pv mago:install <version>")
 	case "mail":
 		return runCheckedHelper(args[1:], stderr, project.Mail)
+	case "mailpit:install":
+		return runSimpleInstall(args[1:], stderr, control.ResourceMailpit, "pv mailpit:install <version>")
+	case "mysql:install":
+		return runSimpleInstall(args[1:], stderr, control.ResourceMySQL, "pv mysql:install <version>")
 	case "open":
 		return runOpen(stderr)
 	case "php:install":
 		return runSimpleInstall(args[1:], stderr, control.ResourcePHP, "pv php:install <version>")
+	case "postgres:install":
+		return runSimpleInstall(args[1:], stderr, control.ResourcePostgres, "pv postgres:install <version>")
+	case "redis:install":
+		return runSimpleInstall(args[1:], stderr, control.ResourceRedis, "pv redis:install <version>")
+	case "rustfs:install":
+		return runSimpleInstall(args[1:], stderr, control.ResourceRustFS, "pv rustfs:install <version>")
 	case "s3":
 		return runCheckedHelper(args[1:], stderr, project.S3)
 	case "status":
@@ -78,8 +88,13 @@ Commands:
   link
   mago:install <version>
   mail <args...>
+  mailpit:install <version>
+  mysql:install <version>
   open
   php:install <version>
+  postgres:install <version>
+  redis:install <version>
+  rustfs:install <version>
   s3 <args...>
   status    Show desired and observed control-plane status.
   version   Print the pv version.
@@ -131,7 +146,9 @@ func runLink(stderr io.Writer) error {
 		if err := registry.Link(ctx, cwd, contract); err != nil {
 			return err
 		}
-		if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
+		envWriter := project.EnvWriter{Path: filepath.Join(cwd, ".env")}
+		envValues := envFor(contract)
+		if err := envWriter.Apply(envValues); err != nil {
 			return err
 		}
 		if err := ensureSetupRuntime(paths, contract); err != nil {
@@ -142,6 +159,11 @@ func runLink(stderr io.Writer) error {
 				return errors.Join(err, recordErr)
 			}
 			return err
+		}
+		if len(contract.Setup) > 0 {
+			if err := envWriter.Apply(envValues); err != nil {
+				return err
+			}
 		}
 		return nil
 	}, func(context.Context) error {
@@ -173,7 +195,13 @@ func ensureSetupRuntime(paths host.Paths, contract project.Contract) error {
 	if err := ensurePHPRuntimeInstalled(paths, contract.PHP); err != nil {
 		return err
 	}
-	return ensureActivePHPShim(paths, contract.PHP)
+	if err := ensureActivePHPShim(paths, contract.PHP); err != nil {
+		return err
+	}
+	if setupRequiresComposer(contract.Setup) {
+		return ensureManagedComposer(paths, contract.PHP)
+	}
+	return nil
 }
 
 func ensurePHPRuntimeInstalled(paths host.Paths, version string) error {
@@ -208,6 +236,43 @@ func ensureActivePHPShim(paths host.Paths, version string) error {
 func phpShimDeclaresVersion(shim string, version string) bool {
 	for _, line := range strings.Split(shim, "\n") {
 		if strings.TrimSpace(line) == "# php "+version {
+			return true
+		}
+	}
+	return false
+}
+
+func setupRequiresComposer(commands []string) bool {
+	for _, command := range commands {
+		for _, field := range strings.Fields(command) {
+			name := strings.Trim(field, `"'`)
+			if name == "composer" || strings.HasSuffix(name, "/composer") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func ensureManagedComposer(paths host.Paths, phpVersion string) error {
+	data, err := os.ReadFile(filepath.Join(paths.BinDir(), "composer"))
+	if err == nil {
+		if composerShimDeclaresRuntime(string(data), phpVersion) {
+			return nil
+		}
+		return fmt.Errorf("managed Composer is not active for PHP %s: run pv composer:install <version> --php %s", phpVersion, phpVersion)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("managed Composer is not installed: run pv composer:install <version> --php %s", phpVersion)
+}
+
+func composerShimDeclaresRuntime(shim string, version string) bool {
+	target := "via php " + version
+	for _, line := range strings.Split(shim, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# composer ") && strings.HasSuffix(line, target) {
 			return true
 		}
 	}
@@ -431,7 +496,7 @@ func envFor(contract project.Contract) map[string]string {
 			values["REDIS_HOST"] = "127.0.0.1"
 			values["REDIS_PORT"] = "6379"
 		case "rustfs":
-			values["AWS_ENDPOINT_URL"] = "http://127.0.0.1:9000"
+			values["AWS_ENDPOINT"] = "http://127.0.0.1:9000"
 		}
 	}
 	return values

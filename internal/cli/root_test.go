@@ -35,7 +35,12 @@ func TestRunHelpWritesRewriteHelp(t *testing.T) {
 		"pv <command>",
 		"composer:install",
 		"mago:install",
+		"mailpit:install",
+		"mysql:install",
 		"php:install",
+		"postgres:install",
+		"redis:install",
+		"rustfs:install",
 		"version",
 	} {
 		if !strings.Contains(out, want) {
@@ -113,6 +118,56 @@ func TestRunInitCreatesLaravelContract(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "version: 1") {
 		t.Fatalf("pv.yml missing version:\n%s", data)
+	}
+}
+
+func TestRunServiceInstallCommandsRecordDesiredState(t *testing.T) {
+	for _, tt := range []struct {
+		command  string
+		resource string
+		version  string
+	}{
+		{command: "mailpit:install", resource: control.ResourceMailpit, version: "1.0.0"},
+		{command: "mysql:install", resource: control.ResourceMySQL, version: "8.4"},
+		{command: "postgres:install", resource: control.ResourcePostgres, version: "18"},
+		{command: "redis:install", resource: control.ResourceRedis, version: "8.6"},
+		{command: "rustfs:install", resource: control.ResourceRustFS, version: "1.0.0-beta"},
+	} {
+		t.Run(tt.command, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			err := Run([]string{tt.command, tt.version}, &stdout, &stderr)
+
+			if err != nil {
+				t.Fatalf("Run %s returned error: %v", tt.command, err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run %s wrote stdout: %q", tt.command, stdout.String())
+			}
+			if got := stderr.String(); !strings.Contains(got, "requested "+tt.resource+" "+tt.version+" install") {
+				t.Fatalf("stderr = %q, want requested message", got)
+			}
+
+			store := control.NewFileStore(filepath.Join(home, ".pv", "state", "pv.db"))
+			desired, ok, err := store.Desired(t.Context(), tt.resource)
+			if err != nil {
+				t.Fatalf("Desired returned error: %v", err)
+			}
+			if !ok {
+				t.Fatalf("Desired did not find %s resource", tt.resource)
+			}
+			if desired.Version != tt.version {
+				t.Fatalf("desired version = %q, want %s", desired.Version, tt.version)
+			}
+			if _, ok, err := store.Observed(t.Context(), tt.resource); err != nil {
+				t.Fatalf("Observed returned error: %v", err)
+			} else if ok {
+				t.Fatalf("%s install command wrote observed status directly", tt.command)
+			}
+		})
 	}
 }
 
@@ -474,6 +529,61 @@ func TestRunStatusUsesInstallStatusForLinkedPHP(t *testing.T) {
 	}
 }
 
+func TestRunStatusUsesInstallStatusForLinkedServices(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := t.Context()
+	paths, err := host.NewPathsFromHome(home)
+	if err != nil {
+		t.Fatalf("NewPathsFromHome returned error: %v", err)
+	}
+	contract := project.Contract{
+		Version:  project.ContractVersion,
+		PHP:      "8.4",
+		Hosts:    []string{"acme.test"},
+		Services: []string{control.ResourceMailpit},
+	}
+	registry := project.Registry{Path: filepath.Join(paths.Root(), "state", "project.json")}
+	if err := registry.Link(ctx, t.TempDir(), contract); err != nil {
+		t.Fatalf("Link returned error: %v", err)
+	}
+	store := control.NewFileStore(paths.StateDBPath())
+	if err := store.PutDesired(ctx, control.DesiredResource{
+		Resource: control.ResourceMailpit,
+		Version:  "1.0.0",
+	}); err != nil {
+		t.Fatalf("PutDesired Mailpit returned error: %v", err)
+	}
+	if err := store.PutObserved(ctx, control.ObservedStatus{
+		Resource:       control.ResourceMailpit,
+		DesiredVersion: "1.0.0",
+		State:          control.StateReady,
+	}); err != nil {
+		t.Fatalf("PutObserved Mailpit returned error: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err = Run([]string{"status", "resource"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run status resource returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("Run status resource wrote stdout: %q", stdout.String())
+	}
+	output := stderr.String()
+	if count := strings.Count(output, "resource mailpit:"); count != 1 {
+		t.Fatalf("resource mailpit status count = %d, want 1:\n%s", count, output)
+	}
+	if strings.Contains(output, "resource mailpit: missing_install") {
+		t.Fatalf("status output kept stale missing install entry:\n%s", output)
+	}
+	if !strings.Contains(output, "resource mailpit: healthy") {
+		t.Fatalf("status output missing healthy Mailpit entry:\n%s", output)
+	}
+}
+
 func TestEnsureSetupRuntimeRejectsWrongActivePHPShim(t *testing.T) {
 	paths, err := host.NewPathsFromRoot(t.TempDir())
 	if err != nil {
@@ -509,6 +619,106 @@ func TestEnsureSetupRuntimeRejectsWrongActivePHPShim(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PHP runtime 8.4 is not active") {
 		t.Fatalf("ensureSetupRuntime error = %v, want active runtime guidance", err)
+	}
+}
+
+func TestEnsureSetupRuntimeRequiresManagedComposerForComposerSetup(t *testing.T) {
+	paths, err := host.NewPathsFromRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewPathsFromRoot returned error: %v", err)
+	}
+	installActivePHP(t, paths, "8.4")
+	t.Setenv("PATH", t.TempDir())
+	contract := project.Contract{
+		Version: project.ContractVersion,
+		PHP:     "8.4",
+		Setup:   []string{"composer install"},
+	}
+
+	err = ensureSetupRuntime(paths, contract)
+
+	if err == nil {
+		t.Fatal("ensureSetupRuntime accepted composer setup without managed Composer")
+	}
+	for _, want := range []string{
+		"managed Composer is not installed",
+		"pv composer:install <version> --php 8.4",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ensureSetupRuntime error = %v, want %q", err, want)
+		}
+	}
+}
+
+func TestRunLinkReappliesManagedEnvAfterSetupReplacesEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	paths, err := host.NewPathsFromHome(home)
+	if err != nil {
+		t.Fatalf("NewPathsFromHome returned error: %v", err)
+	}
+	installActivePHP(t, paths, "8.4")
+	projectDir := t.TempDir()
+	contract := project.Contract{
+		Version:  project.ContractVersion,
+		PHP:      "8.4",
+		Hosts:    []string{"acme.test"},
+		Services: []string{control.ResourceMailpit},
+		Setup:    []string{"cp .env.example .env"},
+	}
+	if err := project.WriteContract(projectDir, contract, false); err != nil {
+		t.Fatalf("WriteContract returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".env.example"), []byte("APP_NAME=Example\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .env.example returned error: %v", err)
+	}
+	restore := chdir(t, projectDir)
+	defer restore()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err = Run([]string{"link"}, &stdout, &stderr)
+
+	if err != nil {
+		t.Fatalf("Run link returned error: %v\nstderr:\n%s", err, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, ".env"))
+	if err != nil {
+		t.Fatalf("ReadFile .env returned error: %v", err)
+	}
+	env := string(data)
+	for _, want := range []string{
+		"APP_NAME=Example",
+		"# pv managed begin",
+		"PV_PHP=8.4",
+		"MAIL_HOST=127.0.0.1",
+		"# pv managed end",
+	} {
+		if !strings.Contains(env, want) {
+			t.Fatalf(".env missing %q after setup rewrite:\n%s", want, env)
+		}
+	}
+}
+
+func TestEnvForRustFSUsesResourceEndpointKey(t *testing.T) {
+	values := envFor(project.Contract{Services: []string{control.ResourceRustFS}})
+
+	if values["AWS_ENDPOINT"] != "http://127.0.0.1:9000" {
+		t.Fatalf("AWS_ENDPOINT = %q, want http://127.0.0.1:9000", values["AWS_ENDPOINT"])
+	}
+	if _, ok := values["AWS_ENDPOINT_URL"]; ok {
+		t.Fatalf("envFor should not include AWS_ENDPOINT_URL: %#v", values)
+	}
+}
+
+func TestResourceStatusValuesForRustFSUseEndpointKey(t *testing.T) {
+	values := resourceStatusValues(control.ResourceRustFS)
+
+	if values["AWS_ENDPOINT"] != "http://127.0.0.1:9000" {
+		t.Fatalf("AWS_ENDPOINT = %q, want http://127.0.0.1:9000", values["AWS_ENDPOINT"])
+	}
+	if _, ok := values["AWS_ENDPOINT_URL"]; ok {
+		t.Fatalf("resource status should not include AWS_ENDPOINT_URL: %#v", values)
 	}
 }
 
@@ -587,5 +797,45 @@ func fixedClock(value string) func() time.Time {
 	}
 	return func() time.Time {
 		return parsed
+	}
+}
+
+func installActivePHP(t *testing.T, paths host.Paths, version string) {
+	t.Helper()
+
+	runtimeDir, err := paths.PHPRuntimeDir(version)
+	if err != nil {
+		t.Fatalf("PHPRuntimeDir returned error: %v", err)
+	}
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("create runtime dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "installed"), []byte("php "+version+"\n"), 0o644); err != nil {
+		t.Fatalf("write runtime marker: %v", err)
+	}
+	if err := os.MkdirAll(paths.BinDir(), 0o755); err != nil {
+		t.Fatalf("create bin dir: %v", err)
+	}
+	shim := "#!/bin/sh\n# php " + version + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(paths.BinDir(), "php"), []byte(shim), 0o755); err != nil {
+		t.Fatalf("write php shim: %v", err)
+	}
+}
+
+func chdir(t *testing.T, dir string) func() {
+	t.Helper()
+
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+	return func() {
+		t.Helper()
+		if err := os.Chdir(original); err != nil {
+			t.Fatalf("restore Chdir returned error: %v", err)
+		}
 	}
 }
