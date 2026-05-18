@@ -13,6 +13,7 @@ The rewrite MVP must be implemented as a stack of epic branches. Do not target
 | Epic 3 | `rewrite/epic-3-runtime-daemon-resources` | `rewrite/epic-2-store-host-install` |
 | Epic 4 | `rewrite/epic-4-laravel-project-experience` | `rewrite/epic-3-runtime-daemon-resources` |
 | Epic 5 | `rewrite/epic-5-status-quality-scope` | `rewrite/epic-4-laravel-project-experience` |
+| Epic 6 | `rewrite/epic-6-e2e-rewrite-validation` | `rewrite/epic-5-status-quality-scope` |
 
 ## Rules
 
@@ -23,14 +24,14 @@ The rewrite MVP must be implemented as a stack of epic branches. Do not target
 - Do not rebase an epic branch onto `main` while the rewrite stack is in progress.
 - If an earlier epic changes after later epic work starts, rebase or merge the later epic branch onto the updated previous epic branch.
 - Keep PR descriptions explicit about the base branch and the stack position.
-- Merge or land the stack from Epic 1 through Epic 5 in order.
+- Merge or land the stack from Epic 1 through Epic 6 in order.
 
 ## PR Body Requirement
 
 Every implementation PR in this rewrite stack must include:
 
 ```markdown
-Stack position: Epic N of 5
+Stack position: Epic N of 6
 Base branch: rewrite/<previous-epic-branch>
 Targets main directly: no
 Depends on: <previous epic PR or branch>

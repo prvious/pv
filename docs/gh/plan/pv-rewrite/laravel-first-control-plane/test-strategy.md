@@ -121,7 +121,9 @@ go test ./...
 
 ## E2E Strategy
 
-E2E tests are added after unit and controller coverage exists.
+Epic 6 owns the rewrite E2E strategy. E2E tests are added after unit,
+controller, and status coverage exists, and the required default E2E tier is
+hermetic.
 
 Minimum MVP E2E:
 
@@ -141,3 +143,6 @@ Service-specific E2E should be narrow:
 - Redis: install/start/env/status.
 - Mailpit: install/start/SMTP/web/status.
 - RustFS: install/start/S3 env/console/status.
+
+See `../epic-6-e2e-rewrite-validation/test-strategy.md` for the executable E2E
+scenario matrix, tiering model, and release gate.

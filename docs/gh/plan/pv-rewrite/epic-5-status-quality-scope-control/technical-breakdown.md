@@ -52,7 +52,7 @@ Targeted views reuse aggregate data and must not hide failures relevant to the r
 
 - `post-mvp-backlog.md` lists each deferred capability with reason and trigger.
 - `mvp-scope-checklist.md` is used during issue/PR review.
-- `issue-label-audit.md` records the label audit for #116-#205.
+- `issue-label-audit.md` records the label audit for #116-#205 and #213-#233.
 
 ## Non-Goals
 

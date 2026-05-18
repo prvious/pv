@@ -28,15 +28,16 @@ Epic -> Feature -> Story or Enabler -> Test -> Implementation Task
 - `epic-3-runtime-daemon-resources/` - focused execution package for Epic 3.
 - `epic-4-laravel-project-experience/` - focused execution package for Epic 4.
 - `epic-5-status-quality-scope-control/` - focused execution package for Epic 5.
+- `epic-6-e2e-rewrite-validation/` - focused execution package for Epic 6.
 - `post-mvp-backlog.md` - deferred scope, deferral reasons, and reconsideration triggers.
 - `mvp-scope-checklist.md` - MVP boundary checks for issue and PR review.
-- `issue-label-audit.md` - audit evidence for #116-#205 labels and milestone.
+- `issue-label-audit.md` - audit evidence for published rewrite issue labels and milestone.
 
 ## Stacked Diff Rule
 
 Implementation uses stacked epic branches. Epic 1 targets `rewrite/base`; Epic 2
 targets Epic 1; Epic 3 targets Epic 2; Epic 4 targets Epic 3; Epic 5 targets
-Epic 4. No rewrite implementation PR targets `main` directly. See
+Epic 4; Epic 6 targets Epic 5. No rewrite implementation PR targets `main` directly. See
 `stacked-diff-plan.md` for branch names and PR body requirements.
 
 Each `epic-*` package must include:
@@ -55,9 +56,9 @@ Each `epic-*` package must include:
 ## Label Audit
 
 The current GitHub label audit is recorded in `issue-label-audit.md`. Issues
-#116-#205 are on milestone `pv rewrite MVP`; container issues use epic/feature
-labels and leaf issues use `ready-for-agent` with enabler, user-story, or test
-labels.
+#116-#205 and #213-#233 are on milestone `pv rewrite MVP`; container issues use
+epic/feature labels and leaf issues use `ready-for-agent` with enabler,
+user-story, or test labels.
 
 ## Legacy Reference
 

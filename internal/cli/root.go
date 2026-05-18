@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/prvious/pv/internal/control"
 	"github.com/prvious/pv/internal/host"
+	"github.com/prvious/pv/internal/installer"
 	"github.com/prvious/pv/internal/project"
 	"github.com/prvious/pv/internal/status"
 )
@@ -19,17 +21,6 @@ import (
 const Version = "dev"
 
 var ErrUsage = errors.New("usage error")
-
-var statusResources = [...]string{
-	control.ResourcePHP,
-	control.ResourceComposer,
-	control.ResourceMago,
-	control.ResourceMailpit,
-	control.ResourceMySQL,
-	control.ResourcePostgres,
-	control.ResourceRedis,
-	control.ResourceRustFS,
-}
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -108,10 +99,13 @@ func runInit(args []string, stderr io.Writer) error {
 		return err
 	}
 	if !project.DetectLaravel(cwd) {
-		return errors.New("current directory is not a supported Laravel project")
+		err := errors.New("current directory is not a supported Laravel project")
+		fmt.Fprintf(stderr, "pv: %v\n", err)
+		return err
 	}
 	contract := project.DefaultLaravelContract(filepath.Base(cwd))
 	if err := project.WriteContract(cwd, contract, force); err != nil {
+		fmt.Fprintf(stderr, "pv: %v\n", err)
 		return err
 	}
 	fmt.Fprintln(stderr, "created pv.yml")
@@ -132,17 +126,137 @@ func runLink(stderr io.Writer) error {
 		return err
 	}
 	registry := project.Registry{Path: filepath.Join(paths.Root(), "state", "project.json")}
-	if err := registry.Link(context.Background(), cwd, contract); err != nil {
-		return err
-	}
-	if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
-		return err
-	}
-	if err := project.RunSetup(context.Background(), cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{}); err != nil {
+	ctx := context.Background()
+	if err := installer.PersistThenSignal(ctx, func(ctx context.Context) error {
+		if err := registry.Link(ctx, cwd, contract); err != nil {
+			return err
+		}
+		if err := (project.EnvWriter{Path: filepath.Join(cwd, ".env")}).Apply(envFor(contract)); err != nil {
+			return err
+		}
+		if err := ensureSetupRuntime(paths, contract); err != nil {
+			return err
+		}
+		if err := project.RunSetup(ctx, cwd, filepath.Join(paths.BinDir()), contract.Setup, shellRunner{}); err != nil {
+			if recordErr := recordSetupFailure(ctx, paths, registry, err); recordErr != nil {
+				return errors.Join(err, recordErr)
+			}
+			return err
+		}
+		return nil
+	}, func(context.Context) error {
+		return writeReconcileSignal(paths, registry.Path)
+	}); err != nil {
+		fmt.Fprintf(stderr, "pv: %v\n", err)
+		if nextAction := linkFailureNextAction(err); nextAction != "" {
+			fmt.Fprintf(stderr, "next action: %s\n", nextAction)
+		}
 		return err
 	}
 	fmt.Fprintln(stderr, "linked project")
 	return nil
+}
+
+func writeReconcileSignal(paths host.Paths, statePath string) error {
+	if _, err := os.Stat(statePath); err != nil {
+		return fmt.Errorf("signal daemon after state write: %w", err)
+	}
+	signalPath := filepath.Join(paths.Root(), "state", "reconcile.signal")
+	data := fmt.Sprintf("project_state=%s\n", statePath)
+	return os.WriteFile(signalPath, []byte(data), 0o600)
+}
+
+func ensureSetupRuntime(paths host.Paths, contract project.Contract) error {
+	if len(contract.Setup) == 0 {
+		return nil
+	}
+	if err := ensurePHPRuntimeInstalled(paths, contract.PHP); err != nil {
+		return err
+	}
+	return ensureActivePHPShim(paths, contract.PHP)
+}
+
+func ensurePHPRuntimeInstalled(paths host.Paths, version string) error {
+	runtimeDir, err := paths.PHPRuntimeDir(version)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stat(filepath.Join(runtimeDir, "installed"))
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return missingPHPError(version)
+}
+
+func ensureActivePHPShim(paths host.Paths, version string) error {
+	data, err := os.ReadFile(filepath.Join(paths.BinDir(), "php"))
+	if err == nil {
+		if phpShimDeclaresVersion(string(data), version) {
+			return nil
+		}
+		return fmt.Errorf("PHP runtime %s is not active: run pv php:install %s", version, version)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return missingPHPError(version)
+}
+
+func phpShimDeclaresVersion(shim string, version string) bool {
+	for _, line := range strings.Split(shim, "\n") {
+		if strings.TrimSpace(line) == "# php "+version {
+			return true
+		}
+	}
+	return false
+}
+
+func missingPHPError(version string) error {
+	return fmt.Errorf("PHP runtime %s is not installed: run pv php:install %s", version, version)
+}
+
+func recordSetupFailure(ctx context.Context, paths host.Paths, registry project.Registry, err error) error {
+	setupErr, ok := errors.AsType[*project.SetupError](err)
+	if !ok {
+		return nil
+	}
+	state, ok, err := registry.Current(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	name := projectStatusName(state)
+	failure := project.Failure{
+		View:       string(status.ViewProject),
+		Name:       name,
+		Scenario:   "setup",
+		Command:    setupErr.Command,
+		Expected:   "setup commands complete",
+		Actual:     setupErr.Err.Error(),
+		LogPath:    filepath.Join(paths.Root(), "logs", "setup", name+".log"),
+		NextAction: setupFailureNextAction,
+	}
+	if err := os.MkdirAll(filepath.Dir(failure.LogPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(failure.LogPath, []byte(failure.Actual+"\n"), 0o600); err != nil {
+		return err
+	}
+	return registry.RecordFailure(ctx, failure)
+}
+
+const setupFailureNextAction = "fix the failing setup command and run pv link again"
+
+func linkFailureNextAction(err error) string {
+	if _, ok := errors.AsType[*project.SetupError](err); ok {
+		return setupFailureNextAction
+	}
+	return ""
 }
 
 func runOpen(stderr io.Writer) error {
@@ -229,6 +343,18 @@ func loadCurrentContract() (project.Contract, error) {
 	if err != nil {
 		return project.Contract{}, err
 	}
+	paths, err := host.NewPaths()
+	if err != nil {
+		return project.Contract{}, err
+	}
+	registry := project.Registry{Path: projectStatePath(paths)}
+	state, ok, err := registry.Current(context.Background())
+	if err != nil {
+		return project.Contract{}, err
+	}
+	if ok && pathContains(state.Path, cwd) {
+		return state.Contract(), nil
+	}
 	return project.LoadContract(cwd)
 }
 
@@ -237,55 +363,17 @@ func runStatus(args []string, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "usage: pv status [project|runtime|resource|gateway]")
 		return fmt.Errorf("%w: invalid status command", ErrUsage)
 	}
+	var view status.View
 	if len(args) == 1 {
-		return runTargetedStatus(status.View(args[0]), stderr)
+		view = status.View(args[0])
 	}
-
-	store, err := defaultStore()
+	paths, err := host.NewPaths()
 	if err != nil {
 		return err
 	}
-
 	ctx := context.Background()
-	anyDesired := false
-	for _, resource := range statusResources {
-		desired, desiredOK, err := store.Desired(ctx, resource)
-		if err != nil {
-			return err
-		}
-		if !desiredOK {
-			continue
-		}
-		anyDesired = true
-		printDesired(stderr, desired)
-
-		observed, observedOK, err := store.Observed(ctx, resource)
-		if err != nil {
-			return err
-		}
-		if !observedOK {
-			fmt.Fprintf(stderr, "observed: %s pending\n", resource)
-			fmt.Fprintln(stderr, "next action: run reconciliation")
-			continue
-		}
-		printObserved(stderr, observed)
-	}
-
-	if !anyDesired {
-		fmt.Fprintln(stderr, "desired: none")
-	}
-	return nil
-}
-
-func runTargetedStatus(view status.View, stderr io.Writer) error {
-	if err := status.ValidateView(view); err != nil {
-		return err
-	}
-	store, err := defaultStore()
-	if err != nil {
-		return err
-	}
-	entries, err := collectStatusEntries(context.Background(), store)
+	store := control.NewFileStore(paths.StateDBPath())
+	entries, err := collectStatusEntries(ctx, paths, store)
 	if err != nil {
 		return err
 	}
@@ -295,78 +383,6 @@ func runTargetedStatus(view status.View, stderr io.Writer) error {
 	}
 	fmt.Fprint(stderr, rendered)
 	return nil
-}
-
-func collectStatusEntries(ctx context.Context, store control.Store) ([]status.Entry, error) {
-	entries := make([]status.Entry, 0, len(statusResources))
-	for _, resource := range statusResources {
-		desired, desiredOK, err := store.Desired(ctx, resource)
-		if err != nil {
-			return nil, err
-		}
-		observed, observedOK, err := store.Observed(ctx, resource)
-		if err != nil {
-			return nil, err
-		}
-		if !desiredOK && !observedOK {
-			continue
-		}
-		entries = append(entries, statusEntry(resource, desired, desiredOK, observed, observedOK))
-	}
-	return entries, nil
-}
-
-func statusEntry(resource string, desired control.DesiredResource, desiredOK bool, observed control.ObservedStatus, observedOK bool) status.Entry {
-	entry := status.Entry{
-		View:  statusView(resource),
-		Name:  resource,
-		State: statusState(observed, observedOK),
-	}
-	if desiredOK {
-		entry.Desired = desiredSummary(desired)
-	}
-	if !observedOK {
-		entry.Observed = fmt.Sprintf("%s pending", resource)
-		entry.NextAction = "run reconciliation"
-		return entry
-	}
-
-	entry.Observed = observedSummary(observed)
-	entry.LastError = observed.LastError
-	entry.NextAction = observed.NextAction
-	if observed.LastReconcileTime != "" {
-		entry.Values = map[string]string{
-			"last_reconcile_time": observed.LastReconcileTime,
-		}
-	}
-	return entry
-}
-
-func statusView(resource string) status.View {
-	if resource == control.ResourcePHP {
-		return status.ViewRuntime
-	}
-	return status.ViewResource
-}
-
-func statusState(observed control.ObservedStatus, ok bool) status.State {
-	if !ok {
-		return status.StateUnknown
-	}
-	switch observed.State {
-	case control.StateReady:
-		return status.StateHealthy
-	case control.StateStopped:
-		return status.StateStopped
-	case control.StateMissing:
-		return status.StateMissingInstall
-	case control.StateBlocked:
-		return status.StateBlocked
-	case control.StateFailed:
-		return status.StateFailed
-	default:
-		return status.StateUnknown
-	}
 }
 
 func validateVersionArg(stderr io.Writer, version string) error {
@@ -383,35 +399,6 @@ func putDesired(desired control.DesiredResource) error {
 		return err
 	}
 	return store.PutDesired(context.Background(), desired)
-}
-
-func printDesired(w io.Writer, desired control.DesiredResource) {
-	fmt.Fprintf(w, "desired: %s\n", desiredSummary(desired))
-}
-
-func desiredSummary(desired control.DesiredResource) string {
-	if desired.RuntimeVersion != "" {
-		return fmt.Sprintf("%s %s install with php %s", desired.Resource, desired.Version, desired.RuntimeVersion)
-	}
-	return fmt.Sprintf("%s %s install", desired.Resource, desired.Version)
-}
-
-func printObserved(w io.Writer, observed control.ObservedStatus) {
-	fmt.Fprintf(w, "observed: %s\n", observedSummary(observed))
-	fmt.Fprintf(w, "last reconcile: %s\n", observed.LastReconcileTime)
-	if observed.LastError != "" {
-		fmt.Fprintf(w, "last error: %s\n", observed.LastError)
-	}
-	if observed.NextAction != "" {
-		fmt.Fprintf(w, "next action: %s\n", observed.NextAction)
-	}
-}
-
-func observedSummary(observed control.ObservedStatus) string {
-	if observed.DesiredVersion == "" {
-		return fmt.Sprintf("%s %s", observed.Resource, observed.State)
-	}
-	return fmt.Sprintf("%s %s %s", observed.Resource, observed.DesiredVersion, observed.State)
 }
 
 func defaultStore() (*control.FileStore, error) {
@@ -450,14 +437,67 @@ func envFor(contract project.Contract) map[string]string {
 	return values
 }
 
+func pathContains(root string, path string) bool {
+	rel, err := filepath.Rel(canonicalPath(root), canonicalPath(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func canonicalPath(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
 type shellRunner struct{}
 
 func (shellRunner) Run(ctx context.Context, dir string, command string, env map[string]string) error {
-	cmd := exec.CommandContext(ctx, "sh", "-lc", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
-	cmd.Env = os.Environ()
-	for key, value := range env {
-		cmd.Env = append(cmd.Env, key+"="+value)
+	cmd.Env = mergeEnv(os.Environ(), env)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return commandRunError{Err: err, Stderr: strings.TrimSpace(stderr.String())}
 	}
-	return cmd.Run()
+	return nil
+}
+
+type commandRunError struct {
+	Err    error
+	Stderr string
+}
+
+func (e commandRunError) Error() string {
+	if e.Stderr == "" {
+		return e.Err.Error()
+	}
+	return e.Err.Error() + ": " + e.Stderr
+}
+
+func (e commandRunError) Unwrap() error {
+	return e.Err
+}
+
+func mergeEnv(base []string, overrides map[string]string) []string {
+	merged := append([]string(nil), base...)
+	for key, value := range overrides {
+		prefix := key + "="
+		replaced := false
+		for i, entry := range merged {
+			if strings.HasPrefix(entry, prefix) {
+				merged[i] = prefix + value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			merged = append(merged, prefix+value)
+		}
+	}
+	return merged
 }
