@@ -1,3 +1,0 @@
-; pv test fixture — stand-in for upstream php.ini-development
-memory_limit = 128M
-display_errors = On
