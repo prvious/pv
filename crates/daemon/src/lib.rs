@@ -136,7 +136,10 @@ async fn serve(
             _ = &mut shutdown => return Ok(()),
             accepted = listener.accept() => {
                 let (stream, _address) = accepted?;
-                handle_connection(paths.clone(), stream).await?;
+                // A malformed or disconnected client must not stop the daemon accept loop.
+                if let Err(_error) = handle_connection(paths.clone(), stream).await {
+                    continue;
+                }
             }
         }
     }

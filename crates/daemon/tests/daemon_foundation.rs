@@ -62,6 +62,29 @@ async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    send_raw_request(&paths, "not-json\n").await?;
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    assert_debug_snapshot!(lines);
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
@@ -73,6 +96,14 @@ fn assert_with_normalized_timestamps(
         assert_debug_snapshot!(name, snapshot);
         Ok::<(), anyhow::Error>(())
     })
+}
+
+async fn send_raw_request(paths: &PvPaths, request: &str) -> Result<()> {
+    let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
+    stream.write_all(request.as_bytes()).await?;
+    stream.shutdown().await?;
+
+    Ok(())
 }
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {

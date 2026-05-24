@@ -80,7 +80,9 @@ fn finish_execution(
 
             Ok(ExitCode::FAILURE)
         }
-        Err(error) => Err(error.into()),
+        Err(ExecuteError::Io(error)) => Err(error.into()),
+        Err(ExecuteError::Daemon(error)) => Err(error.into()),
+        Err(ExecuteError::State(error)) => Err(error.into()),
     }
 }
 

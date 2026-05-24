@@ -5,6 +5,7 @@ use rusqlite::{Connection, Transaction, params};
 use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
+const RECENT_JOB_LIMIT: i64 = 100;
 
 #[derive(Debug)]
 pub struct Database {
@@ -114,9 +115,9 @@ impl Database {
 
     pub fn recent_jobs(&self) -> Result<Vec<JobRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at, id",
+            "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",
         )?;
-        let rows = statement.query_map([], |row| {
+        let rows = statement.query_map(params![RECENT_JOB_LIMIT], |row| {
             Ok(JobRecord {
                 id: row.get(0)?,
                 kind: row.get(1)?,

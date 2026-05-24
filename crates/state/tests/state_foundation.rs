@@ -449,6 +449,28 @@ fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
 }
 
 #[test]
+fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    for job_number in 1..=105 {
+        let job = database.start_job("test", &format!("scope_{job_number}"))?;
+        database.complete_job(&job.id, "done")?;
+    }
+
+    let jobs = database.recent_jobs()?;
+
+    assert_debug_snapshot!((
+        jobs.len(),
+        jobs.first().map(|job| job.id.as_str()),
+        jobs.last().map(|job| job.id.as_str())
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn transactions_roll_back_when_the_operation_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
