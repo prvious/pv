@@ -11,6 +11,9 @@ pub enum DaemonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    #[error("daemon socket is already in use at {path}")]
+    SocketInUse { path: String },
+
     #[error("daemon protocol JSON error: {0}")]
     Json(#[from] JsonError),
 

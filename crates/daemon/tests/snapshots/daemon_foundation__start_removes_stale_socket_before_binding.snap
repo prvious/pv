@@ -1,0 +1,13 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 139
+expression: lines
+---
+[
+    Object {
+        "message": String("daemon healthy"),
+        "protocol_version": Number(1),
+        "status": String("ok"),
+        "type": String("response"),
+    },
+]

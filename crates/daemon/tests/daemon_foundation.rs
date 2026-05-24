@@ -116,6 +116,32 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
 }
 
 #[tokio::test]
+async fn start_removes_stale_socket_before_binding() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+    state::fs::ensure_layout(&paths)?;
+    let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
+    drop(stale_listener);
+
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    assert_debug_snapshot!(lines);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

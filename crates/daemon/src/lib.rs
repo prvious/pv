@@ -5,9 +5,10 @@ mod server;
 
 use std::future::Future;
 use std::io;
+use std::io::ErrorKind;
 
 use state::{Database, PvPaths};
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -25,6 +26,7 @@ impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
         state::fs::ensure_layout(&paths)?;
         Database::open(&paths)?;
+        prepare_socket_path(&paths).await?;
         let listener = UnixListener::bind(paths.daemon_socket())?;
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
@@ -46,6 +48,24 @@ impl RunningDaemon {
         socket_result?;
 
         Ok(())
+    }
+}
+
+async fn prepare_socket_path(paths: &PvPaths) -> Result<(), DaemonError> {
+    match UnixStream::connect(paths.daemon_socket()).await {
+        Ok(_stream) => Err(DaemonError::SocketInUse {
+            path: paths.daemon_socket().to_string(),
+        }),
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::ConnectionRefused
+            ) =>
+        {
+            state::fs::remove_daemon_socket(paths)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
     }
 }
 
