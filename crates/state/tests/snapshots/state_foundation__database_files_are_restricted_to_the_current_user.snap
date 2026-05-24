@@ -1,0 +1,24 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "state::fs::inspect_database_files(&paths)?"
+---
+[
+    DatabaseFileInspection {
+        name: "database",
+        path: "pv.db",
+        mode: "600",
+        owned_by_current_user: true,
+    },
+    DatabaseFileInspection {
+        name: "wal",
+        path: "pv.db-wal",
+        mode: "600",
+        owned_by_current_user: true,
+    },
+    DatabaseFileInspection {
+        name: "shared_memory",
+        path: "pv.db-shm",
+        mode: "600",
+        owned_by_current_user: true,
+    },
+]

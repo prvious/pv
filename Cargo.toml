@@ -22,8 +22,15 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1"
+camino = "1"
+camino-tempfile = "1"
 clap = { version = "4", features = ["derive"] }
+home = "0"
+insta = { version = "1", features = ["filters"] }
+rusqlite = { version = "0", features = ["bundled"] }
+rustix = { version = "1", features = ["process"] }
 thiserror = "2"
+time = { version = "0", features = ["formatting", "macros"] }
 
 [workspace.lints.clippy]
 dbg_macro = "deny"

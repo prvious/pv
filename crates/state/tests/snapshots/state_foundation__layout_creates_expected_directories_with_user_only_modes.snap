@@ -1,0 +1,60 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "state::fs::inspect_layout(&paths)?"
+---
+[
+    LayoutInspection {
+        name: "root",
+        path: "~/.pv",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "bin",
+        path: "bin",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "run",
+        path: "run",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "logs",
+        path: "logs",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "downloads",
+        path: "downloads",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "config",
+        path: "config",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "certificates",
+        path: "certificates",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "composer",
+        path: "composer",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+    LayoutInspection {
+        name: "resources",
+        path: "resources",
+        mode: "700",
+        owned_by_current_user: true,
+    },
+]

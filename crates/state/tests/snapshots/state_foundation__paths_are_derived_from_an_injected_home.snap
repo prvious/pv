@@ -1,0 +1,50 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: paths.summary()
+---
+[
+    PathSummaryEntry {
+        name: "home",
+        path: "/tmp/pv-test-home",
+    },
+    PathSummaryEntry {
+        name: "root",
+        path: "/tmp/pv-test-home/.pv",
+    },
+    PathSummaryEntry {
+        name: "db",
+        path: "/tmp/pv-test-home/.pv/pv.db",
+    },
+    PathSummaryEntry {
+        name: "bin",
+        path: "/tmp/pv-test-home/.pv/bin",
+    },
+    PathSummaryEntry {
+        name: "run",
+        path: "/tmp/pv-test-home/.pv/run",
+    },
+    PathSummaryEntry {
+        name: "logs",
+        path: "/tmp/pv-test-home/.pv/logs",
+    },
+    PathSummaryEntry {
+        name: "downloads",
+        path: "/tmp/pv-test-home/.pv/downloads",
+    },
+    PathSummaryEntry {
+        name: "config",
+        path: "/tmp/pv-test-home/.pv/config",
+    },
+    PathSummaryEntry {
+        name: "certificates",
+        path: "/tmp/pv-test-home/.pv/certificates",
+    },
+    PathSummaryEntry {
+        name: "composer",
+        path: "/tmp/pv-test-home/.pv/composer",
+    },
+    PathSummaryEntry {
+        name: "resources",
+        path: "/tmp/pv-test-home/.pv/resources",
+    },
+]

@@ -8,4 +8,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+camino = { workspace = true }
+home = { workspace = true }
+rusqlite = { workspace = true }
+rustix = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+camino-tempfile = { workspace = true }
+insta = { workspace = true }

@@ -1,0 +1,22 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: database.inspect()?
+---
+DatabaseInspection {
+    busy_timeout_ms: 250,
+    foreign_keys_enabled: true,
+    journal_mode: "wal",
+    migrations: [
+        "001:core_state_schema",
+    ],
+    tables: [
+        "jobs",
+        "managed_resource_tracks",
+        "observed_states",
+        "ports",
+        "project_hostnames",
+        "projects",
+        "pv_migrations",
+        "resource_allocations",
+    ],
+}
