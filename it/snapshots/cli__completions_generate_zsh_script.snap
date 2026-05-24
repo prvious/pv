@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 142
 expression: output.stdout
 ---
 #compdef pv
@@ -50,6 +49,34 @@ _arguments "${_arguments_options[@]}" : \
 ':shell -- Shell to generate completions for:(bash fish zsh)' \
 && ret=0
 ;;
+(daemon:enable)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(daemon:disable)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(daemon:restart)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(daemon:run)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (php:install)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -68,6 +95,10 @@ _pv_commands() {
     local commands; commands=(
 'env:Print shell integration code' \
 'completions:Generate shell completions' \
+'daemon:enable:Enable the PV login daemon' \
+'daemon:disable:Disable the PV login daemon' \
+'daemon:restart:Restart the PV login daemon' \
+'daemon:run:Run the internal PV daemon' \
 'php:install:Install a PHP track' \
     )
     _describe -t commands 'pv commands' commands "$@"
@@ -76,6 +107,26 @@ _pv_commands() {
 _pv__subcmd__completions_commands() {
     local commands; commands=()
     _describe -t commands 'pv completions commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__daemon:disable_commands] )) ||
+_pv__subcmd__daemon:disable_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv daemon:disable commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__daemon:enable_commands] )) ||
+_pv__subcmd__daemon:enable_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv daemon:enable commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__daemon:restart_commands] )) ||
+_pv__subcmd__daemon:restart_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv daemon:restart commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__daemon:run_commands] )) ||
+_pv__subcmd__daemon:run_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv daemon:run commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__env_commands] )) ||
 _pv__subcmd__env_commands() {

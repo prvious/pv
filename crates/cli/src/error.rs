@@ -14,6 +14,9 @@ pub enum CliError {
 
     #[error("{command} is routed, but Managed Resource installs start after PV-023")]
     DeferredCommand { command: &'static str },
+
+    #[error("{command} is routed, but LaunchAgent lifecycle management starts after PV-055")]
+    DeferredDaemonLifecycle { command: &'static str },
 }
 
 #[derive(Debug, Error)]
@@ -23,4 +26,10 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Daemon(#[from] daemon::DaemonError),
+
+    #[error(transparent)]
+    State(#[from] state::StateError),
 }

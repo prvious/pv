@@ -1,0 +1,15 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "message": String("daemon protocol mismatch; run `pv daemon:restart`"),
+            "protocol_version": Number(1),
+            "status": String("error"),
+            "type": String("response"),
+        },
+    ],
+    [],
+)

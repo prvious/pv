@@ -48,6 +48,12 @@ pub enum StateError {
         actual: String,
     },
 
+    #[error("unknown daemon job status `{status}`")]
+    UnknownJobStatus { status: String },
+
+    #[error("daemon job `{id}` was not found")]
+    JobNotFound { id: String },
+
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 

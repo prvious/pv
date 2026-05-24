@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, PvPaths, StateError};
+use state::{Database, JobStatus, PvPaths, StateError};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -444,6 +444,106 @@ fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
 
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    for job_number in 1..=105 {
+        let job = database.start_job("test", &format!("scope_{job_number}"))?;
+        database.complete_job(&job.id, "done")?;
+    }
+
+    let jobs = database.recent_jobs()?;
+    let stored_job_count = state::testing::query_i64(&database, "SELECT COUNT(*) FROM jobs")?;
+
+    assert_debug_snapshot!((
+        jobs.len(),
+        jobs.first().map(|job| job.id.as_str()),
+        jobs.last().map(|job| job.id.as_str()),
+        stored_job_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn job_records_expose_typed_statuses() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let job = database.start_job("test", "system")?;
+
+    database.complete_job(&job.id, "done")?;
+
+    let jobs = database.recent_jobs()?;
+
+    assert!(matches!(
+        jobs.first().map(|job| job.status),
+        Some(JobStatus::Succeeded)
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn completing_unknown_job_returns_typed_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let result = database.complete_job("missing_job", "done");
+
+    assert!(matches!(
+        result,
+        Err(StateError::JobNotFound { id }) if id == "missing_job"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn failing_unknown_job_returns_typed_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let result = database.fail_job("missing_job", "failed");
+
+    assert!(matches!(
+        result,
+        Err(StateError::JobNotFound { id }) if id == "missing_job"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn recent_jobs_rejects_unknown_status_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["job_1", "test", "system", "mystery", "2026-05-24T00:00:00Z"],
+        )?;
+
+        Ok(())
+    })?;
+
+    let result = database.recent_jobs();
+
+    assert!(matches!(
+        result,
+        Err(StateError::UnknownJobStatus { status }) if status == "mystery"
+    ));
 
     Ok(())
 }

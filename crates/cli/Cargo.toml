@@ -11,4 +11,6 @@ workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+daemon = { path = "../daemon" }
+state = { path = "../state" }
 thiserror = { workspace = true }

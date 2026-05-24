@@ -1,0 +1,20 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: snapshot
+---
+[
+    JobRecord {
+        id: "job_000001",
+        kind: "reconcile",
+        scope: "system",
+        status: Succeeded,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: Some(
+            "stub job completed",
+        ),
+        error: None,
+    },
+]

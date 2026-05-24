@@ -49,6 +49,16 @@ pub fn migration_backups(paths: &PvPaths) -> Result<Vec<String>, StateError> {
     backup::migration_backups(paths)
 }
 
+pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
+    let path = paths.daemon_socket();
+
+    if !path_exists(&path) {
+        return Ok(());
+    }
+
+    remove_file(&path)
+}
+
 pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspection>, StateError> {
     let mut entries = Vec::new();
 

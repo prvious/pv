@@ -37,6 +37,8 @@ PV ships as one Rust binary. The same `pv` executable handles user-facing CLI co
 
 The LaunchAgent runs the same binary through a hidden internal entrypoint, `pv daemon:run`. Public daemon lifecycle commands remain `pv daemon:enable`, `pv daemon:disable`, and `pv daemon:restart`. `pv daemon:run` is hidden from normal help output.
 
+Hidden internal commands may still appear in generated shell completions when `clap` exposes hidden subcommands there. PV should prefer keeping command routing simple and centralized over adding custom completion filtering solely to hide internal commands from completions.
+
 PV uses Tokio as its Rust async runtime for the daemon, Unix socket server, internal DNS resolver, child-process supervision, concurrent downloads, timers, and file watching.
 
 PV uses `clap` for Rust CLI parsing, including nested command namespaces, aliases, validation, help output, and shell completions.

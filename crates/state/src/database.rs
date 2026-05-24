@@ -1,10 +1,11 @@
 use std::time::Duration;
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, Transaction, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
+const RECENT_JOB_LIMIT: i64 = 100;
 
 #[derive(Debug)]
 pub struct Database {
@@ -18,6 +19,55 @@ pub struct DatabaseInspection {
     pub journal_mode: String,
     pub migrations: Vec<String>,
     pub tables: Vec<String>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum JobStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl JobStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_database(status: String) -> Result<Self, StateError> {
+        match status.as_str() {
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            _ => Err(StateError::UnknownJobStatus { status }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobRecord {
+    pub id: String,
+    pub kind: String,
+    pub scope: String,
+    pub status: JobStatus,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub summary: Option<String>,
+    pub error: Option<String>,
+}
+
+struct JobRecordRow {
+    id: String,
+    kind: String,
+    scope: String,
+    status: String,
+    started_at: String,
+    finished_at: Option<String>,
+    summary: Option<String>,
+    error: Option<String>,
 }
 
 impl Database {
@@ -49,6 +99,106 @@ impl Database {
             migrations: self.applied_migration_names()?,
             tables: self.table_names()?,
         })
+    }
+
+    pub fn start_job(&mut self, kind: &str, scope: &str) -> Result<JobRecord, StateError> {
+        let started_at = timestamp()?;
+
+        self.transaction(|transaction| {
+            let id = next_job_id(transaction)?;
+            transaction.execute(
+                "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, kind, scope, JobStatus::Running.as_str(), started_at],
+            )?;
+
+            Ok(JobRecord {
+                id,
+                kind: kind.to_string(),
+                scope: scope.to_string(),
+                status: JobStatus::Running,
+                started_at,
+                finished_at: None,
+                summary: None,
+                error: None,
+            })
+        })
+    }
+
+    pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
+        let finished_at = timestamp()?;
+
+        let updated = self.transaction(|transaction| {
+            let updated = transaction.execute(
+                "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL WHERE id = ?4",
+                params![JobStatus::Succeeded.as_str(), finished_at, summary, id],
+            )?;
+            if updated > 0 {
+                prune_old_jobs(transaction)?;
+            }
+
+            Ok(updated)
+        })?;
+        if updated == 0 {
+            return Err(StateError::JobNotFound { id: id.to_string() });
+        }
+
+        Ok(())
+    }
+
+    pub fn fail_job(&mut self, id: &str, error: &str) -> Result<(), StateError> {
+        let finished_at = timestamp()?;
+
+        let updated = self.transaction(|transaction| {
+            let updated = transaction.execute(
+                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
+                params![JobStatus::Failed.as_str(), finished_at, error, id],
+            )?;
+            if updated > 0 {
+                prune_old_jobs(transaction)?;
+            }
+
+            Ok(updated)
+        })?;
+        if updated == 0 {
+            return Err(StateError::JobNotFound { id: id.to_string() });
+        }
+
+        Ok(())
+    }
+
+    pub fn recent_jobs(&self) -> Result<Vec<JobRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![RECENT_JOB_LIMIT], |row| {
+            Ok(JobRecordRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                scope: row.get(2)?,
+                status: row.get(3)?,
+                started_at: row.get(4)?,
+                finished_at: row.get(5)?,
+                summary: row.get(6)?,
+                error: row.get(7)?,
+            })
+        })?;
+        let mut jobs = Vec::new();
+
+        for row in rows {
+            let row = row?;
+            jobs.push(JobRecord {
+                id: row.id,
+                kind: row.kind,
+                scope: row.scope,
+                status: JobStatus::from_database(row.status)?,
+                started_at: row.started_at,
+                finished_at: row.finished_at,
+                summary: row.summary,
+                error: row.error,
+            });
+        }
+
+        Ok(jobs)
     }
 
     pub(crate) fn transaction<T>(
@@ -117,4 +267,32 @@ fn configure_connection(connection: &Connection) -> Result<(), StateError> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
 
     Ok(())
+}
+
+fn next_job_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
+    let next_number = transaction.query_row(
+        "SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) + 1 FROM jobs WHERE id GLOB 'job_[0-9]*'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    Ok(format!("job_{next_number:06}"))
+}
+
+fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute(
+        "DELETE FROM jobs WHERE status != ?1 AND id NOT IN (
+            SELECT id FROM jobs WHERE status != ?1 ORDER BY started_at DESC, id DESC LIMIT ?2
+        )",
+        params![JobStatus::Running.as_str(), RECENT_JOB_LIMIT],
+    )?;
+
+    Ok(())
+}
+
+fn timestamp() -> Result<String, StateError> {
+    let format =
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+
+    Ok(time::OffsetDateTime::now_utc().format(format)?)
 }

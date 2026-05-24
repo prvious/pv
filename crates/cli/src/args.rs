@@ -26,6 +26,18 @@ pub(crate) enum Command {
     #[command(name = "completions", about = "Generate shell completions")]
     Completions(CompletionsArgs),
 
+    #[command(name = "daemon:enable", about = "Enable the PV login daemon")]
+    DaemonEnable,
+
+    #[command(name = "daemon:disable", about = "Disable the PV login daemon")]
+    DaemonDisable,
+
+    #[command(name = "daemon:restart", about = "Restart the PV login daemon")]
+    DaemonRestart,
+
+    #[command(name = "daemon:run", about = "Run the internal PV daemon", hide = true)]
+    DaemonRun,
+
     #[command(name = "php:install", about = "Install a PHP track")]
     PhpInstall(PhpInstallArgs),
 }

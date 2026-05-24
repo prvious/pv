@@ -90,6 +90,28 @@ fn php_install_allows_manifest_default_track_when_omitted() -> Result<()> {
 }
 
 #[test]
+fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
+    let output = run_pv(&["--help"])?;
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn daemon_lifecycle_commands_are_routed_as_stubs() -> Result<()> {
+    let output = [
+        run_pv(&["daemon:enable"])?,
+        run_pv(&["daemon:disable"])?,
+        run_pv(&["daemon:restart"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
 
