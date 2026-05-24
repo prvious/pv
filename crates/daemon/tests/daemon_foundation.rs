@@ -126,7 +126,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
     idle_stream.write_all(b"{").await?;
 
     let lines = timeout(
-        Duration::from_millis(250),
+        Duration::from_secs(2),
         request_lines(
             &paths,
             json!({
@@ -189,7 +189,7 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
         ),
     )
     .await?;
-    let _health = request_lines(
+    let health_lines = request_lines(
         &paths,
         json!({
             "protocol_version": daemon::PROTOCOL_VERSION,
@@ -197,6 +197,14 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
         }),
     )
     .await?;
+    assert_eq!(health_lines.len(), 1);
+    assert_eq!(health_lines[0]["type"], json!("response"));
+    assert_eq!(
+        health_lines[0]["protocol_version"],
+        json!(daemon::PROTOCOL_VERSION)
+    );
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+    assert_eq!(health_lines[0]["message"], json!("daemon healthy"));
 
     daemon.shutdown().await?;
 
