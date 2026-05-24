@@ -1,4 +1,5 @@
 use crate::DaemonError;
+use crate::ipc::LocalStream;
 use crate::protocol::{
     DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
@@ -6,7 +7,7 @@ use state::{Database, PvPaths};
 
 pub(crate) async fn run_job(
     paths: PvPaths,
-    mut transport: DaemonTransport,
+    mut transport: DaemonTransport<LocalStream>,
     kind: &str,
     scope: &str,
 ) -> Result<(), DaemonError> {

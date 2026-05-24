@@ -1,9 +1,9 @@
 use state::PvPaths;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use crate::DaemonError;
+use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::run_job;
 use crate::protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line,
@@ -11,7 +11,7 @@ use crate::protocol::{
 
 pub(crate) async fn serve(
     paths: PvPaths,
-    listener: UnixListener,
+    listener: LocalListener,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
@@ -48,7 +48,7 @@ pub(crate) async fn serve(
     }
 }
 
-async fn handle_connection(paths: PvPaths, stream: UnixStream) -> Result<(), DaemonError> {
+async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), DaemonError> {
     use futures_util::StreamExt;
 
     let mut transport = crate::protocol::transport(stream);

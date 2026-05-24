@@ -1,6 +1,6 @@
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::DaemonError;
@@ -8,7 +8,7 @@ use crate::DaemonError;
 pub const PROTOCOL_VERSION: u16 = 1;
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
-pub(crate) type DaemonTransport = Framed<UnixStream, LinesCodec>;
+pub(crate) type DaemonTransport<Stream> = Framed<Stream, LinesCodec>;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DaemonRequest {
@@ -71,20 +71,73 @@ pub(crate) enum DaemonEvent<'message> {
     },
 }
 
-pub(crate) fn transport(stream: UnixStream) -> DaemonTransport {
+pub(crate) fn transport<Stream>(stream: Stream) -> DaemonTransport<Stream>
+where
+    Stream: AsyncRead + AsyncWrite,
+{
     Framed::new(
         stream,
         LinesCodec::new_with_max_length(MAX_PROTOCOL_LINE_BYTES),
     )
 }
 
-pub(crate) async fn write_line(
-    transport: &mut DaemonTransport,
+pub(crate) async fn write_line<Stream>(
+    transport: &mut DaemonTransport<Stream>,
     line: &impl Serialize,
-) -> Result<(), DaemonError> {
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+{
     let encoded = serde_json::to_string(line)?;
 
     transport.send(encoded).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use futures_util::StreamExt;
+    use serde_json::json;
+    use tokio::io::duplex;
+
+    use super::{DaemonResponse, PROTOCOL_VERSION, ResponseStatus, transport, write_line};
+    use crate::DaemonError;
+
+    #[tokio::test]
+    async fn transport_frames_generic_async_streams() -> Result<(), DaemonError> {
+        let (client, server) = duplex(1024);
+        let mut writer = transport(client);
+        let mut reader = transport(server);
+
+        write_line(
+            &mut writer,
+            &DaemonResponse {
+                line_type: "response",
+                protocol_version: PROTOCOL_VERSION,
+                status: ResponseStatus::Ok,
+                message: "daemon healthy",
+                job_id: None,
+            },
+        )
+        .await?;
+
+        let Some(line) = reader.next().await else {
+            return Err(DaemonError::Io(Error::from(ErrorKind::UnexpectedEof)));
+        };
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&line?)?,
+            json!({
+                "type": "response",
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "ok",
+                "message": "daemon healthy",
+            })
+        );
+
+        Ok(())
+    }
 }

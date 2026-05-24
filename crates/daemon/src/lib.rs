@@ -1,14 +1,13 @@
 mod error;
+mod ipc;
 mod jobs;
 mod protocol;
 mod server;
 
 use std::future::Future;
 use std::io;
-use std::io::ErrorKind;
 
 use state::{Database, PvPaths};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -25,8 +24,8 @@ pub struct RunningDaemon {
 impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
-        prepare_socket_path(&paths).await?;
-        let listener = UnixListener::bind(paths.daemon_socket())?;
+        ipc::prepare_endpoint(&paths).await?;
+        let listener = ipc::bind(&paths)?;
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
         let task = tokio::spawn(server::serve(server_paths, listener, shutdown_receiver));
@@ -41,30 +40,12 @@ impl RunningDaemon {
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let _ = self.shutdown.send(());
         let task_result = self.task.await?;
-        let socket_result = state::fs::remove_daemon_socket(&self.paths);
+        let socket_result = ipc::remove_endpoint(&self.paths);
 
         task_result?;
         socket_result?;
 
         Ok(())
-    }
-}
-
-async fn prepare_socket_path(paths: &PvPaths) -> Result<(), DaemonError> {
-    match UnixStream::connect(paths.daemon_socket()).await {
-        Ok(_stream) => Err(DaemonError::SocketInUse {
-            path: paths.daemon_socket().to_string(),
-        }),
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::NotFound | ErrorKind::ConnectionRefused
-            ) =>
-        {
-            state::fs::remove_daemon_socket(paths)?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
     }
 }
 
@@ -95,7 +76,7 @@ async fn wait_for_shutdown(
             signal_result?;
             let _ = shutdown.send(());
             let task_result = task.await?;
-            let socket_result = state::fs::remove_daemon_socket(&paths);
+            let socket_result = ipc::remove_endpoint(&paths);
 
             task_result?;
             socket_result?;
@@ -103,7 +84,7 @@ async fn wait_for_shutdown(
             Ok(())
         }
         task_result = &mut task => {
-            let socket_result = state::fs::remove_daemon_socket(&paths);
+            let socket_result = ipc::remove_endpoint(&paths);
             let task_result = task_result?;
 
             socket_result?;
