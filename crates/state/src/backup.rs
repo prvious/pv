@@ -120,19 +120,39 @@ fn migration_backup_parts(name: &str) -> Option<(&str, usize)> {
     let stem = name
         .strip_prefix("pv.db.")
         .and_then(|name| name.strip_suffix(".bak"))?;
+    let timestamp = stem.get(..TIMESTAMP_LENGTH)?;
 
-    if stem.len() == TIMESTAMP_LENGTH {
-        return Some((stem, 0));
+    if !valid_backup_timestamp(timestamp) {
+        return None;
     }
 
-    if stem.len() > TIMESTAMP_LENGTH
-        && stem.as_bytes().get(TIMESTAMP_LENGTH) == Some(&b'-')
-        && let Ok(suffix) = stem[TIMESTAMP_LENGTH + 1..].parse::<usize>()
+    if stem.len() == TIMESTAMP_LENGTH {
+        return Some((timestamp, 0));
+    }
+
+    let suffix = stem.get(TIMESTAMP_LENGTH..)?.strip_prefix('-')?;
+
+    if let Ok(parsed_suffix) = suffix.parse::<usize>()
+        && parsed_suffix > 0
+        && parsed_suffix.to_string() == suffix
     {
-        return Some((&stem[..TIMESTAMP_LENGTH], suffix));
+        return Some((timestamp, parsed_suffix));
     }
 
     None
+}
+
+fn valid_backup_timestamp(timestamp: &str) -> bool {
+    const DATE_LENGTH: usize = "20260522".len();
+
+    timestamp.len() == "20260522-143012".len()
+        && timestamp.as_bytes().get(DATE_LENGTH) == Some(&b'-')
+        && timestamp[..DATE_LENGTH]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        && timestamp[DATE_LENGTH + 1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
 }
 
 fn backup_timestamp() -> Result<String, StateError> {

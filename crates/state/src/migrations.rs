@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use rusqlite::{Connection, Transaction, params};
 
@@ -28,10 +28,11 @@ pub(crate) fn run(
     migrations: &[Migration],
     database_existed: bool,
 ) -> Result<(), StateError> {
-    let applied_versions = applied_versions(connection)?;
+    let applied_migrations = applied_migrations(connection)?;
+    validate_applied_migration_names(&applied_migrations, migrations)?;
     let pending = migrations
         .iter()
-        .filter(|migration| !applied_versions.contains(&migration.version))
+        .filter(|migration| !applied_migrations.contains_key(&migration.version))
         .copied()
         .collect::<Vec<_>>();
 
@@ -55,6 +56,25 @@ pub(crate) fn run(
     }
 
     transaction.commit()?;
+
+    Ok(())
+}
+
+fn validate_applied_migration_names(
+    applied_migrations: &BTreeMap<i64, String>,
+    migrations: &[Migration],
+) -> Result<(), StateError> {
+    for migration in migrations {
+        if let Some(actual) = applied_migrations.get(&migration.version)
+            && actual.as_str() != migration.name
+        {
+            return Err(StateError::MigrationNameMismatch {
+                version: migration.version,
+                expected: migration.name,
+                actual: actual.clone(),
+            });
+        }
+    }
 
     Ok(())
 }
@@ -95,20 +115,23 @@ fn apply_migration(transaction: &Transaction<'_>, migration: Migration) -> Resul
     Ok(())
 }
 
-fn applied_versions(connection: &Connection) -> Result<BTreeSet<i64>, StateError> {
+fn applied_migrations(connection: &Connection) -> Result<BTreeMap<i64, String>, StateError> {
     if !table_exists(connection, "pv_migrations")? {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeMap::new());
     }
 
-    let mut statement = connection.prepare("SELECT version FROM pv_migrations")?;
-    let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
-    let mut versions = BTreeSet::new();
+    let mut statement = connection.prepare("SELECT version, name FROM pv_migrations")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut migrations = BTreeMap::new();
 
     for row in rows {
-        versions.insert(row?);
+        let (version, name) = row?;
+        migrations.insert(version, name);
     }
 
-    Ok(versions)
+    Ok(migrations)
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, StateError> {
