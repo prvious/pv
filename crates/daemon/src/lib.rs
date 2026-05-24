@@ -88,8 +88,7 @@ async fn wait_for_shutdown(
         task_result = &mut task => {
             let socket_result = ipc::remove_endpoint(&paths);
             socket_result?;
-            let task_result = task_result?;
-            task_result
+            task_result?
         }
     }
 }
