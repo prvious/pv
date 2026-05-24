@@ -1,0 +1,5 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: backed_up_rows
+---
+1

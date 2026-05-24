@@ -1,0 +1,5 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "state::fs::migration_backups(&paths)?.len()"
+---
+5
