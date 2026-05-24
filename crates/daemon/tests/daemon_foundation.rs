@@ -85,6 +85,46 @@ async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    send_raw_request(
+        &paths,
+        &format!(
+            "{}\n",
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            })
+        ),
+    )
+    .await?;
+    let _health = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "disconnected_job_stream_still_persists_final_status",
+        database.recent_jobs()?,
+    )?;
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
