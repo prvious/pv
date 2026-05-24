@@ -6,6 +6,7 @@ use crate::environment::Environment;
 use crate::error::ExecuteError;
 
 mod completions;
+mod daemon;
 mod env;
 mod php;
 
@@ -17,6 +18,10 @@ pub(crate) fn execute(
     match cli.command {
         Command::Env(args) => env::run(args, cli.no_color, environment, stdout),
         Command::Completions(args) => Ok(completions::run(args, stdout)),
+        Command::DaemonEnable => daemon::enable(),
+        Command::DaemonDisable => daemon::disable(),
+        Command::DaemonRestart => daemon::restart(),
+        Command::DaemonRun => daemon::run(),
         Command::PhpInstall(args) => php::install(args),
     }
 }

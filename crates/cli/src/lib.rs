@@ -60,7 +60,19 @@ where
         }
     };
 
-    match commands::execute(cli, environment, stdout) {
+    finish_execution(
+        commands::execute(cli, environment, stdout),
+        output_mode,
+        stderr,
+    )
+}
+
+fn finish_execution(
+    result: Result<ExitCode, ExecuteError>,
+    output_mode: OutputMode,
+    stderr: &mut impl Write,
+) -> Result<ExitCode> {
+    match result {
         Ok(exit_code) => Ok(exit_code),
         Err(ExecuteError::User(error)) => {
             let mut output = Output::new(stderr, output_mode);
@@ -68,7 +80,7 @@ where
 
             Ok(ExitCode::FAILURE)
         }
-        Err(ExecuteError::Io(error)) => Err(error.into()),
+        Err(error) => Err(error.into()),
     }
 }
 

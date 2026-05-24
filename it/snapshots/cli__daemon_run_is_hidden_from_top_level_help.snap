@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        0,
+    ),
+    stdout: "Laravel-first local desired-state control plane\n\nUsage: pv [OPTIONS] <COMMAND>\n\nCommands:\n  env             Print shell integration code\n  completions     Generate shell completions\n  daemon:enable   Enable the PV login daemon\n  daemon:disable  Disable the PV login daemon\n  daemon:restart  Restart the PV login daemon\n  php:install     Install a PHP track\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n  -V, --version   Print version\n",
+    stderr: "",
+}

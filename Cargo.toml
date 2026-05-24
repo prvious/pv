@@ -31,8 +31,11 @@ home = "0"
 insta = { version = "1", features = ["filters"] }
 rusqlite = { version = "0", features = ["bundled"] }
 rustix = { version = "1", features = ["process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 time = { version = "0", features = ["formatting", "macros"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync"] }
 
 [workspace.lints.clippy]
 dbg_macro = "deny"

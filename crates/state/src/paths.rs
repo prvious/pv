@@ -78,6 +78,10 @@ impl PvPaths {
         &self.run
     }
 
+    pub fn daemon_socket(&self) -> Utf8PathBuf {
+        self.run().join("pv.sock")
+    }
+
     pub fn logs(&self) -> &Utf8Path {
         &self.logs
     }

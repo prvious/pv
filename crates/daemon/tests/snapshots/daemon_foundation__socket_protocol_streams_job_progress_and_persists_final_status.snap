@@ -1,0 +1,47 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("job accepted"),
+            "protocol_version": Number(1),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "kind": String("reconcile"),
+            "scope": String("system"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("stub job completed without reconciliation work"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "summary": String("stub job completed"),
+            "type": String("job_completed"),
+        },
+    ],
+    [
+        JobRecord {
+            id: "job_000001",
+            kind: "reconcile",
+            scope: "system",
+            status: "succeeded",
+            started_at: "<timestamp>",
+            finished_at: Some(
+                "<timestamp>",
+            ),
+            summary: Some(
+                "stub job completed",
+            ),
+            error: None,
+        },
+    ],
+)

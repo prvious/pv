@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 152
 expression: output.stdout
 ---
 _pv() {
@@ -24,6 +23,18 @@ _pv() {
             pv,completions)
                 cmd="pv__subcmd__completions"
                 ;;
+            pv,daemon:disable)
+                cmd="pv__subcmd__daemon:disable"
+                ;;
+            pv,daemon:enable)
+                cmd="pv__subcmd__daemon:enable"
+                ;;
+            pv,daemon:restart)
+                cmd="pv__subcmd__daemon:restart"
+                ;;
+            pv,daemon:run)
+                cmd="pv__subcmd__daemon:run"
+                ;;
             pv,env)
                 cmd="pv__subcmd__env"
                 ;;
@@ -37,7 +48,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions php:install"
+            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run php:install"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -52,6 +63,62 @@ _pv() {
             ;;
         pv__subcmd__completions)
             opts="-h --no-color --help bash fish zsh"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__daemon:disable)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__daemon:enable)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__daemon:restart)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__daemon:run)
+            opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
