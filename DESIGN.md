@@ -25,6 +25,8 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 PV v1 is macOS-only. Linux and Windows support are deferred and not guaranteed.
 
+PV v1 targets macOS 13 and newer.
+
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
 ## Implementation Language
@@ -162,7 +164,7 @@ A friendly browser page for unknown Project hostnames is useful, but is post-v1 
 - Start the PV daemon immediately after registration.
 - Record desired state for the default versions of PV-managed tools and resources, then request daemon reconciliation.
 
-The default setup install set includes the manifest default tracks for FrankenPHP/PHP, MySQL, PostgreSQL, Redis, Mailpit, and RustFS, plus current Composer 2. Downloads should run in parallel where possible. `pv setup` does not install every track listed in the manifest.
+The default setup install set includes the manifest default tracks for FrankenPHP/PHP, MySQL, PostgreSQL, Redis, Mailpit, and RustFS, plus Composer track `2`. Downloads should run in parallel where possible. `pv setup` does not install every track listed in the manifest.
 
 For PHP tracks, setup/install installs both standalone PHP artifacts for CLI/PATH shims and FrankenPHP artifacts for Gateway/workers.
 
@@ -346,6 +348,20 @@ The Gateway does not automatically route `*.project.test` to a Project. Subdomai
 For unknown `.test` hostnames, the Gateway should return a simple self-contained HTML response explaining that no PV Project is linked for the hostname and suggesting `pv link` when technically feasible.
 
 PV v1 avoids PHP extension management. PHP and FrankenPHP Managed Resource artifacts are distributed as prebuilt macOS binaries with a fixed, common extension set baked in. PV does not expose extension install, uninstall, or per-Project extension configuration in v1.
+
+PV v1 builds standalone PHP and FrankenPHP as single-binary/static-style artifacts with fixed compiled-in extensions. These artifacts must not depend on Homebrew or local package-manager libraries. PV v1 does not support dynamic PHP extension loading, `phpize`, or PECL-installed extensions.
+
+Standalone PHP artifacts include the `php` executable and runtime files needed by that build. They do not include `phpize` or `php-config` in v1 because user-built extensions are not supported.
+
+The v1 fixed PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `phar`, `posix`, `redis`, `session`, `simplexml`, `sodium`, `sqlite3`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
+
+For a given PHP track, standalone PHP and FrankenPHP must expose the same compiled-in PHP extension set so CLI and browser execution do not drift.
+
+For a given PHP track, standalone PHP and FrankenPHP must use the exact same PHP patch version. For example, if the `8.4` track resolves to PHP `8.4.8`, both the standalone PHP artifact and the FrankenPHP artifact for that track use PHP `8.4.8`.
+
+PV v1 ships one PHP build flavor per PHP track. Xdebug is not included in the default v1 PHP build. Extra-extension flavors, such as builds with `xdebug`, `imagick`, `swoole`, or `mongodb`, are out of v1 scope until PV deliberately designs multi-flavor PHP artifacts.
+
+PV builds its own FrankenPHP artifacts for the PHP tracks it supports because upstream FrankenPHP releases do not provide the exact PV-required build matrix. The initial PV-managed FrankenPHP/PHP tracks are `8.2`, `8.3`, and `8.4`.
 
 PV v1 does not support custom PHP ini settings in Project config.
 
@@ -552,7 +568,11 @@ Composer is split by responsibility: the Composer PHAR and version metadata live
 
 The Composer shim invokes the Composer PHAR through PV's `php` shim so Composer inherits Project-aware PHP selection. Inside a linked Project, Composer uses that Project's PHP track; outside, it uses the global default PHP track.
 
-Composer is latest-only/current Composer 2 in v1. PV does not expose Composer version tracks or Composer 1 compatibility in v1.
+Composer uses the same artifact track model as other Managed Resources, but v1 exposes only one Composer track: `2`. PV installs and updates the latest non-revoked Composer artifact in the `2` track. Composer 1 compatibility is out of v1 scope.
+
+Composer commands keep the user-facing UX simple in v1. `pv composer:install` resolves internally to Composer track `2` and does not accept a version argument while only one track exists. If Composer 3 or another supported Composer track is added later, PV may expose an explicit Composer version argument then.
+
+PV does not package Composer as a platform-specific binary in v1. Composer remains a managed Composer 2 PHAR invoked through PV's `php` shim. For artifact lifecycle consistency, PV distributes Composer as a PV-owned `.tar.gz` artifact containing `composer.phar` and license metadata rather than downloading the raw PHAR directly.
 
 Other Managed Resource CLI shims, such as `mysql`, `psql`, `redis-cli`, or `rustfs`, use global/default installed tracks in v1. They are not Project-aware. When multiple tracks are installed, these shims use the manifest default track if installed, otherwise the highest installed track according to manifest ordering. If the choice is ambiguous, the shim errors and lists installed tracks.
 
@@ -566,9 +586,51 @@ Database-style Managed Resource initialization happens only when a resource trac
 
 PV application releases are separate from Managed Resource artifact releases. The PV app update manifest is separate from the Managed Resource artifact manifest. Managed Resource artifacts are PV-owned rolling releases that can be rebuilt on their own cadence, such as weekly or when upstream dependencies change.
 
-PV discovers available Managed Resource artifacts through a PV-owned remote artifact manifest. The manifest lists artifact metadata: resources, tracks, versions, platforms, download URLs, checksums, sizes, default versions, manifest schema version, and minimum supported PV version. Initially, the manifest is published as `manifest.json` on the rolling artifacts release. PV does not scrape GitHub release asset names at runtime and does not hardcode artifact versions in the app binary.
+PV discovers available Managed Resource artifacts through a PV-owned remote artifact manifest. The manifest lists artifact metadata: resources, tracks, versions, platforms, download URLs, checksums, sizes, default versions, manifest schema version, and minimum supported PV version. The manifest and artifact archives are published to PV-owned object storage/CDN endpoints, such as Cloudflare R2 behind a PV-owned HTTPS domain. PV does not scrape GitHub release asset names at runtime and does not hardcode artifact versions in the app binary.
 
-The artifact manifest does not define Managed Resource lifecycle behavior. Install, start, init, readiness, allocation, and reconciliation behavior live in PV's resource adapters because each Managed Resource has different lifecycle rules.
+The Managed Resource artifact manifest points only to PV-owned packaged artifacts, not raw upstream archives or local build recipes. PV never builds Managed Resource binaries on the user's machine during setup, install, update, or reconciliation.
+
+The PV artifact release pipeline may either wrap suitable upstream binaries or build missing binaries from source, but it always produces a normalized PV artifact archive before publishing. For example, if Redis does not publish the macOS binary shape PV needs, the release pipeline builds Redis ahead of time and publishes the resulting PV-owned Redis artifact. The release pipeline is expected to run in hosted automation such as GitHub Actions, not on user machines.
+
+Artifact recipes prefer wrapping official upstream binaries when those binaries pass PV's relocation, validation, and smoke-test requirements. Recipes build from source when upstream binaries are unavailable, do not match PV's required build matrix, cannot be made relocatable safely, or fail PV's smoke tests.
+
+Managed Resource artifact build recipes, scripts, patches, and expected archive layouts live in the PV repository, such as under `release/artifacts/`, so artifact production changes are reviewed with PV adapter and manifest compatibility changes. Deployment secrets and storage credentials stay in CI/provider configuration, not in the repository.
+
+Artifact recipes may apply small versioned build or packaging patches when required for macOS portability, static-style PHP/FrankenPHP builds, relocatable artifacts, or reproducible packaging. PV avoids long-lived behavior-changing forks of upstream Managed Resources. Any patch that changes runtime behavior rather than build/packaging behavior requires an explicit design decision before publication.
+
+PV v1 keeps Managed Resource artifact build/release automation in the same repository and CI system as the PV application. A separate artifact-build repository is deferred until coordination or security needs justify the split.
+
+Managed Resource artifact build and publication workflows are separate from PV application binary build and release workflows. Normal PV application CI/release does not rebuild Managed Resource artifacts. Artifact publication is an explicit release workflow with resource, track, upstream version, PV build revision, and target platform inputs.
+
+Shared artifact release metadata validation and manifest generation are implemented in Rust as internal repository tooling, such as an `xtask` or `pv-release` crate. Resource-specific build recipes remain shell scripts because they mostly orchestrate upstream tools such as `configure`, `make`, `cmake`, `spc`, `go build`, `cargo build`, `codesign`, `otool`, and `tar`.
+
+PV repackages even usable upstream binaries into a consistent artifact layout instead of exposing raw upstream archive layouts to the client. This keeps install, validation, rollback, and adapter behavior stable when upstream packaging changes.
+
+Each Managed Resource artifact is distributed as a single `.tar.gz` archive per resource, track, upstream version, PV build revision, and platform. PV downloads one archive, verifies it against the remote artifact manifest, unpacks it into a temporary directory, validates the expected adapter-specific files, and then atomically installs it.
+
+Each Managed Resource artifact archive expands into exactly one top-level directory named from the artifact identity, such as `redis-7.2.5-pv1-darwin-arm64/`. The archive must not place files directly at the extraction root.
+
+Each Managed Resource artifact archive includes upstream license and notice files where required by the redistributed resource and bundled dependencies. PV v1 does not provide a dedicated licenses command.
+
+License and notice validation happens in the artifact release pipeline, not in PV's client-side resource adapters. Runtime adapters validate files required to install and run the resource, while publication checks enforce licensing metadata before an artifact appears in the public manifest.
+
+Managed Resource artifacts must be relocatable before publishing. Any shebang, rpath, install-name, or embedded path fixes happen in the release pipeline before final signing and checksum generation. User machines do not patch Managed Resource binaries during install.
+
+Relocation validation scans every Mach-O executable and dynamic library in a candidate artifact before publication. The release pipeline fails artifacts that reference build-machine paths, absolute Homebrew paths such as `/opt/homebrew` or `/usr/local/Cellar`, `/Users/runner`, or non-system dynamic libraries outside the artifact root. macOS system libraries under `/usr/lib` and `/System/Library` are allowed.
+
+For v1, PV ad-hoc signs Managed Resource Mach-O binaries in the release pipeline after any binary path fixes. Paid Developer ID signing and notarization for Managed Resource artifacts are deferred unless macOS Gatekeeper or quarantine behavior requires them for a reliable v1 install experience. Checksums are computed only after final signing and packaging.
+
+The remote Managed Resource artifact manifest is the only manifest in v1. PV-owned artifact archives do not contain per-archive manifest files in v1; validation comes from the remote manifest plus the compiled-in resource adapter rules.
+
+Published Managed Resource artifact archive URLs are immutable. Artifact object keys include enough identity to distinguish the resource, track, upstream version, PV build revision, platform, and content. If a published artifact is bad, PV publishes a new build revision and updates the manifest to point at the new artifact instead of replacing the existing object in place.
+
+Managed Resource artifact identity includes both the upstream resource version and a PV build revision. For example, a Redis artifact may represent upstream Redis `7.2.5` with PV build revision `pv1`; if PV changes packaging, patches, build flags, or validation for the same upstream version, it publishes `pv2` rather than mutating `pv1`.
+
+The artifact manifest stores upstream version and PV build revision as separate fields, such as `upstream_version` and `pv_build_revision`, plus a derived display/install identity such as `artifact_version: "7.2.5-pv1"`. PV uses the separate fields for update logic and diagnostics while showing the combined artifact version where concise output is useful.
+
+The artifact manifest may include artifact provenance metadata such as upstream source URL, upstream checksum, applied patch identifiers, PV repository commit SHA, recipe path/version, build run ID, and build timestamp. Provenance metadata is for diagnostics, audit, and release operations; it is not a client-side build instruction set.
+
+The artifact manifest does not define Managed Resource lifecycle behavior or resource-specific archive layout requirements. Install, start, init, readiness, allocation, reconciliation behavior, and required file/path validation live in PV's resource adapters because each Managed Resource has different lifecycle rules. For example, the Redis adapter knows it needs `bin/redis-server`, while the Postgres adapter knows it needs `bin/postgres`, `bin/initdb`, and supporting `share/postgresql` files.
 
 PV resource adapters are compiled into the Rust binary. PV will not support plugin resource adapters; all control-plane and adapter behavior lives in the single `pv` binary. Managed Resources remain external binaries/artifacts managed by PV.
 
@@ -618,9 +680,41 @@ Managed Resource updates are atomic. PV installs the new artifact side-by-side, 
 
 After a successful Managed Resource update, PV keeps the current artifact revision plus one previous artifact revision per track for rollback. Older non-current artifact revisions are pruned. Mutable data/config outside `releases/` is never pruned by update cleanup.
 
-PV v1 relies on HTTPS/GitHub trust for the artifact manifest itself. The manifest format should allow signatures to be added later without breaking compatibility.
+PV v1 relies on HTTPS trust for the artifact manifest itself plus SHA-256 verification for each downloaded artifact archive. PV v1 does not require cryptographic manifest signatures. The manifest format should allow signatures to be added later without breaking compatibility.
 
-Public v1 should support Managed Resource artifacts for both Apple Silicon and Intel macOS: `darwin-arm64` and `darwin-amd64`. If build complexity blocks progress, Apple Silicon-only is acceptable for an initial preview, but not as the intended public v1 scope.
+Public v1 should support separate Managed Resource artifacts for both Apple Silicon and Intel macOS: `darwin-arm64` and `darwin-amd64`. PV v1 does not use universal macOS Managed Resource artifacts. If build complexity blocks progress, Apple Silicon-only is acceptable for an initial preview, but not as the intended public v1 scope.
+
+Managed Resource artifact recipes set an explicit macOS deployment target of macOS 13.0 unless a later design decision raises PV's minimum supported macOS version. Recipes must not silently inherit a newer GitHub runner deployment target.
+
+The artifact manifest may use `platform: "any"` only for truly portable artifacts that do not contain platform-specific binaries. Composer is the expected v1 `platform: "any"` artifact because PV packages `composer.phar` inside a PV-owned archive. Native Managed Resource artifacts use explicit platform values such as `darwin-arm64` or `darwin-amd64`.
+
+When resolving artifacts, PV prefers an exact platform match over `platform: "any"`. PV uses `platform: "any"` only when no exact platform-specific artifact exists for the selected resource, track, and artifact version.
+
+The artifact release pipeline should build and validate `darwin-arm64` and `darwin-amd64` artifacts on native macOS runners for each architecture when available. Cross-compilation is acceptable only for resources where target-architecture smoke tests prove the artifact works. For database/runtime artifacts such as Postgres, MySQL, and FrankenPHP, target-architecture validation is required before publication.
+
+For macOS v1 artifacts, recipes rely on GitHub-hosted macOS runners plus recipe-managed build dependency setup rather than containerized builds. Recipes should pin build tool versions where practical. Homebrew may be used as a CI build-time dependency source, but published artifacts must not retain unmanaged Homebrew runtime dependencies or absolute Homebrew paths.
+
+Maintainer-local macOS artifact builds also run natively on macOS. Docker is not a supported path for producing or validating macOS Managed Resource artifacts because it cannot exercise native Mach-O linking, signing, rpaths, or runtime behavior.
+
+Strict byte-for-byte reproducible Managed Resource builds are not a v1 requirement. Artifact recipes should still record provenance and pin source/dependency/tool inputs where practical, but v1 does not block publication on deterministic rebuild verification.
+
+The artifact release pipeline must pass adapter-specific smoke tests before publishing a Managed Resource artifact. Redis starts `redis-server`, checks `redis-cli ping` returns `PONG`, and stops cleanly. Postgres runs `initdb`, starts `postgres`, runs `psql SELECT 1`, and stops cleanly. MySQL initializes a temporary data directory, starts the server, connects as admin, runs `SELECT 1`, and stops cleanly. Mailpit starts the server, checks the HTTP UI and SMTP port bind, and stops cleanly. RustFS starts the server, checks S3 API readiness, creates or lists a test bucket, and stops cleanly. FrankenPHP/PHP runs `php -v`, verifies the expected PHP version and fixed extension set, serves a tiny PHP site through FrankenPHP over loopback, and stops cleanly. PHP extension validation compares the actual compiled extension list against PV's declared v1 set for both standalone PHP and FrankenPHP; missing required extensions or unexpected extra extensions fail publication unless explicitly allowed by a later design decision.
+
+Artifact object upload and public artifact availability are separate steps. The release pipeline may upload immutable candidate artifact archives after they pass their own build checks, but PV clients only see artifacts referenced by the published artifact manifest. The public manifest references only artifacts that passed required smoke tests. Partial manifest publication is allowed only for intentionally supported platforms/resources; public v1 should not mark a resource track generally available until both `darwin-arm64` and `darwin-amd64` artifacts pass.
+
+Artifact manifest publication is atomic from the client's perspective. The release pipeline generates and validates a complete manifest, uploads it under a versioned immutable key, then updates the stable manifest entrypoint last. PV clients must never observe a half-written manifest. If the storage backend cannot provide sufficiently atomic replacement for the stable manifest object, the stable entrypoint may be a small index file that points to the current versioned manifest.
+
+The public artifact manifest is generated from structured artifact release metadata and must not be edited by hand. Artifact publication records metadata such as resource, track, versions, platform, URLs, checksums, sizes, provenance, and revocation state, then generates and validates the manifest from that source data.
+
+Structured artifact release metadata is stored as PV-owned immutable records in the artifact object storage, not only in git. The repository owns build recipes, patches, expected layouts, and metadata schemas; artifact publication writes release records to storage and regenerates the public manifest from those records. This allows manifest publication, revocation, and repair workflows without requiring a repository commit for every metadata operation.
+
+Artifact release records are immutable. Artifact revocation is recorded as a separate append-only metadata record that references the artifact identity, reason, timestamp, and replacement artifact when available. The manifest generator combines immutable release records and append-only revocation records to produce the current public artifact manifest.
+
+PV retains artifact archives referenced by any still-supported artifact manifest version indefinitely. Unreferenced candidate artifacts, failed builds, and superseded artifacts that were never referenced by a published manifest may be pruned on a fixed retention window, such as 30-90 days. PV must not delete an artifact archive while an older supported manifest could still point to it.
+
+The artifact manifest supports emergency artifact revocation with a reason. Fresh installs refuse revoked artifacts. Already-installed revoked artifacts may continue running so existing local development is not abruptly broken, but `pv status` and `pv update --check` warn clearly. `pv update` moves installed revoked artifacts to a non-revoked replacement when one is available.
+
+If the newest artifact in a requested track is revoked, install and update commands may fall back to the newest non-revoked artifact in the same track when the manifest explicitly lists that artifact as installable. PV warns that the newest artifact was revoked and identifies the installed fallback artifact. PV never falls back across tracks automatically.
 
 MySQL, PostgreSQL, Redis, Mailpit, and RustFS run as shared machine-level Managed Resource instances per resource/track. Multiple tracks of the same Managed Resource can run simultaneously. PV v1 does not create isolated per-Project service instances.
 
@@ -1118,9 +1212,9 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 
 | command               | what it does                                    |
 | --------------------- | ----------------------------------------------- |
-| pv composer:install   | Install current Composer 2                      |
+| pv composer:install   | Install Composer track `2`                      |
 | pv composer:uninstall [--prune] | Remove Composer PHAR and shim. Preserve Composer home/cache unless `--prune` is provided. |
-| pv composer:update    | Update Composer 2 to the latest available release |
+| pv composer:update    | Update Composer track `2` to the latest non-revoked artifact |
 
 ## Postgres (Alias: pg)
 

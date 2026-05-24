@@ -26,8 +26,8 @@ This roadmap turns `DESIGN.md` into implementation-sized work packages. The goal
 | M7 | Gateway, PHP, Composer | Implement Gateway, PHP-track workers, PHP shim, Composer 2, and Project routing. | First usable Project serving |
 | M8 | Managed Resource Adapters | Implement MySQL, Postgres, Redis, Mailpit, and RustFS as separate adapter workstreams. | Complete Laravel-first backing Managed Resources |
 | M9 | Diagnostics, Logs, Status | Implement `pv status`, `pv logs`, `pv doctor`, `pv jobs`, JSON status output, and degraded-state UX. | Release readiness |
-| M10 | Installer, Update, Release | Implement generated installer assumptions, PV application self-update, Managed Resource updates, rollback, and release manifests. | Public distribution |
-| M11 | Hardening And Release Candidate | End-to-end validation, failure-mode testing, docs pass, and release candidate checklist. | Public v1 |
+| M10 | Installer, Update, Release Pipeline | Implement generated installer assumptions, PV application self-update, Managed Resource updates, artifact release tooling, artifact recipes, and release manifests. | Public distribution |
+| M11 | Hardening And Release Candidate | End-to-end validation with published artifacts, failure-mode testing, docs pass, and release candidate checklist. | Public v1 |
 
 ## Critical Path
 
@@ -40,6 +40,10 @@ Backing Managed Resources are not required for the first Project-serving MVP. My
 The shortest path to full Laravel-first v1 is:
 
 `M0 -> M1 -> M2 -> M3 -> M4 -> M5 -> M6 -> M7 -> M8 -> M9 -> M10 -> M11`
+
+Managed Resource artifact release work is not on the browser-visible MVP path when tests use fixture artifacts and local manifests. It becomes blocking for public setup, public update, and release-candidate validation once PV must download real artifacts from PV-owned object storage.
+
+Adapter PRs should not wait for the full object-storage publication pipeline. They can use fixture artifacts after M4. The corresponding artifact recipes can be built in parallel in M10 and become release blockers only when public distribution needs that resource.
 
 ## Dependency Graph
 
@@ -58,9 +62,12 @@ graph TD
     M6 --> M8
     M3 --> M9[M9 Diagnostics, Logs, Status]
     M8 --> M9
-    M4 --> M10[M10 Installer, Update, Release]
+    M4 --> M10[M10 Installer, Update, Release Pipeline]
     M2 --> M10
-    M9 --> M11[M11 Hardening]
+    M5 --> M10
+    M8 --> M10
+    M7 --> M11[M11 Hardening]
+    M9 --> M11
     M10 --> M11
 ```
 
@@ -75,6 +82,8 @@ graph TD
 | G5 | Artifact manifest, downloader, atomic install, and adapter registry exist. | MySQL, Postgres, Redis, Mailpit, RustFS, PHP/FrankenPHP, Composer adapters |
 | G6 | Project config and Resource allocation schema exist. | Resource allocation implementation per adapter |
 | G7 | Gateway + PHP workers can serve linked Projects. | End-to-end Project tests, Managed Resource-backed Project scenarios |
+| G8 | Artifact release tooling and common packaging/validation harness exist. | Per-resource artifact recipes and object-storage publication workflows |
+| G9 | Published artifacts exist for the default setup matrix. | Public setup/update hardening and release-candidate validation |
 
 ## Work Packages
 
@@ -104,6 +113,8 @@ crates/
   macos/
 ```
 
+Release tooling may later live in `xtask/` or an internal `crates/release/` crate. It is not part of the user-facing `pv` binary.
+
 Suggested crate ownership:
 
 | Crate | Owns |
@@ -114,6 +125,7 @@ Suggested crate ownership:
 | `config` | `pv.yml` parsing, validation, hostnames, document roots, env mappings, placeholder validation, and allocation config shape. |
 | `resources` | Compiled-in Managed Resource adapter traits, registry, artifact lifecycle helpers, allocation contracts, and common resource command plumbing. |
 | `macos` | macOS-specific integrations: LaunchAgent, `/etc/resolver/test`, `pf`, System keychain CA trust, shell profile targets, and privileged command helpers. |
+| `xtask` or `release` | Internal release tooling for artifact metadata validation, manifest generation, checksums, revocations, and publication planning. |
 
 Keep crate boundaries practical. If a boundary starts slowing development down, prefer moving code within the workspace over introducing another crate.
 
@@ -167,15 +179,16 @@ This is the key milestone that unlocks separate Managed Resource PRs.
 | --- | --- | --- | --- | --- | --- |
 | PV-040 | Define compiled-in adapter registry | Enabler | M3 | Every Managed Resource adapter | `ResourceAdapter` or equivalent trait covers install, init, start, stop, readiness, allocation, env values, logs, commands. |
 | PV-041 | Define Managed Resource track model | Enabler | PV-040, M1 | Artifact install, commands | Managed Resource names, aliases, tracks, installed artifacts, current artifact pointer, and usage counts are modeled. |
-| PV-042 | Implement artifact manifest parser | Enabler | PV-041 | Installs, updates | Manifest schema, minimum PV version, platforms, tracks, defaults, URLs, checksums, sizes parse and validate. |
+| PV-042 | Implement artifact manifest parser | Enabler | PV-041 | Installs, updates, release tooling | Manifest schema, minimum PV version, platforms including `any`, exact-platform fallback, tracks, defaults, URLs, checksums, sizes, and revocations parse and validate. |
 | PV-043 | Implement manifest cache and fetch | Enabler | PV-042 | Setup, install/update | Latest fetch with cached fallback works according to `DESIGN.md`. |
 | PV-044 | Implement downloader and checksum verifier | Enabler | PV-043 | Artifact install | Parallel limit, retries, checksum hard stop, partial cleanup, and cache behavior work. |
-| PV-045 | Implement atomic artifact install/update | Enabler | PV-044 | Every Managed Resource install/update | Temporary unpack, validation, `releases/<artifact-version>`, `current` pointer, rollback, and retention work. |
+| PV-045 | Implement atomic artifact install/update | Enabler | PV-044 | Every Managed Resource install/update | Single-root `.tar.gz` unpack, temporary install, adapter file validation, `releases/<artifact-version>`, `current` pointer, rollback, and retention work. |
 | PV-046 | Implement common Managed Resource commands | Enabler | PV-040, PV-045 | Adapter PRs | `install`, `update`, `uninstall`, and `list` command plumbing can call adapter code. |
 | PV-047 | Implement Resource allocation contract | Enabler | PV-040, M6 schema | MySQL, Postgres, Redis, RustFS allocations | Allocation state, generated object names, max-length/hash behavior, env placeholder output, and failure reporting are generic. |
 | PV-048 | Add fake/test adapter | Test | PV-040, PV-045 | Adapter development confidence | Tests can validate lifecycle, install/update, process supervision, allocation, and logging without real Managed Resources. |
+| PV-049 | Add fixture artifact strategy | Test | PV-042, PV-045 | Adapter tests, release tooling tests | Local `.tar.gz` fixture artifacts and fixture manifests cover checksums, single-root extraction, `platform: "any"`, exact-platform selection, revocation, and rollback paths. |
 
-After PV-040 through PV-048 land, MySQL, Postgres, Redis, Mailpit, RustFS, PHP/FrankenPHP, and Composer can be implemented independently.
+After PV-040 through PV-049 land, MySQL, Postgres, Redis, Mailpit, RustFS, PHP/FrankenPHP, and Composer can be implemented independently with fixture artifacts. Public artifact recipes and object-storage publication are M10 release work.
 
 ### M5: macOS System Integration
 
@@ -213,14 +226,14 @@ M6 can run partly in parallel with M5. Resource allocation implementation depend
 
 | ID | Package | Type | Blocked By | Blocks | Done When |
 | --- | --- | --- | --- | --- | --- |
-| PV-070 | Implement PHP/FrankenPHP artifact adapters | Enabler | M4 | Project serving | PHP tracks install standalone PHP plus FrankenPHP artifacts and expose lifecycle hooks. |
+| PV-070 | Implement PHP/FrankenPHP artifact adapters | Enabler | M4 | Project serving | PHP tracks install standalone PHP plus matched FrankenPHP artifacts and expose lifecycle hooks. |
 | PV-071 | Implement PHP track worker supervisor | Enabler | PV-070, M3 | Project serving | One worker per PHP track serves all Projects assigned to that track. |
 | PV-072 | Implement Gateway config generation | Enabler | PV-070, M5, M6 | HTTPS routing | Root Gateway config imports per-Project config and validates before reload. |
 | PV-073 | Implement Gateway runtime | Story | PV-072, M3 | Browser-ready Projects | Gateway starts, reloads, restarts on failure, terminates TLS, redirects HTTP to HTTPS, and proxies to workers. |
 | PV-074 | Implement per-Project worker config | Story | PV-071, M6 | Project serving | Document root, front-controller routing, static files, host header forwarding, and per-track imports work. |
 | PV-075 | Implement `php` shim | Story | PV-070, M6 | CLI PHP UX | Shim resolves Project-aware PHP track or global default and runs the selected PHP. |
 | PV-076 | Implement `pv php:*` commands | Story | PV-070, PV-075 | PHP management | `php:install`, `php:default`, `php:update`, `php:uninstall`, and `php:list` follow track rules. |
-| PV-077 | Implement Composer 2 install and shim | Story | M4, PV-075 | Composer UX | Composer PHAR installs as latest/current Composer 2 and runs through PV's PHP shim. |
+| PV-077 | Implement Composer 2 install and shim | Story | M4, PV-075 | Composer UX | Composer track `2` installs as a packaged PHAR artifact and runs through PV's PHP shim. |
 | PV-078 | First Project-serving end-to-end test | Test | PV-061, PV-073, PV-074 | MVP confidence | A simple PHP Project links and responds through `https://<project>.test` on macOS test environment. |
 
 PHP/FrankenPHP is intentionally separate from MySQL/Postgres/Redis/RustFS. It is the runtime path for serving Projects and should land before broad Managed Resource testing.
@@ -274,7 +287,7 @@ Do not start MySQL and Postgres by copying unfinished code from each other in pa
 
 Basic status can start earlier, but release-ready status needs at least one real adapter and Gateway state to avoid designing in the abstract.
 
-### M10: Installer, Update, Release
+### M10: Installer, Update, Release Pipeline
 
 | ID | Package | Type | Blocked By | Blocks | Done When |
 | --- | --- | --- | --- | --- | --- |
@@ -285,20 +298,32 @@ Basic status can start earlier, but release-ready status needs at least one real
 | PV-104 | Implement `pv update --check` | Story | PV-100, M2, M4 | update preview | Reports PV application and installed Managed Resource updates, supports `--json`, requires daemon, and does not lock. |
 | PV-105 | Implement Managed Resource update orchestration | Story | M4, M8 partial | Managed Resource update UX | Top-level update updates all installed tracks after the PV application update phase. |
 | PV-106 | Implement generated installer script contract | Enabler | PV-101, PV-056 | distribution | Installer installs current stable release, verifies checksum, creates symlink, edits shell profile safely, and runs setup unless skipped. |
-| PV-107 | Implement release metadata generation | Enabler | PV-042, PV-100 | installer/update | App manifest, Managed Resource manifest, checksums, and generated installer inputs come from release metadata. |
+| PV-107 | Implement PV app release metadata generation | Enabler | PV-100, PV-101 | installer/update | PV app manifest, PV binary checksums, and generated installer inputs come from release metadata. |
+| PV-108 | Define artifact release metadata model | Enabler | PV-042 | artifact distribution | Immutable artifact release records, append-only revocation records, object-storage key layout, provenance fields, and platform selection rules are modeled. |
+| PV-109 | Implement artifact release Rust tooling | Enabler | PV-042, PV-108 | artifact distribution | Internal Rust tooling validates records, merges revocations, computes checksums/sizes, generates the public Managed Resource artifact manifest, and validates versioned/stable manifest publication inputs. |
+| PV-110 | Implement common artifact packaging and validation harness | Enabler | PV-109 | artifact recipes | Shared shell/Rust helpers create single-root `.tar.gz` archives, enforce macOS 13 target metadata, run Mach-O relocation scans, ad-hoc sign binaries, verify license files, and execute smoke-test hooks. |
+| PV-111 | Add artifact publication workflow | Enabler | PV-109, PV-110 | public artifact distribution | GitHub Actions uploads immutable archives and release records to object storage, then atomically publishes versioned and stable artifact manifests without rebuilding the PV app. |
+| PV-112 | Add PHP/FrankenPHP artifact recipes | Story | PV-110 | M7 public artifacts | Recipes build PHP `8.2`, `8.3`, and `8.4` plus matched FrankenPHP artifacts, enforce the fixed extension set, validate PHP/FrankenPHP patch-version sync, and smoke-test CLI plus loopback serving. |
+| PV-113 | Add Composer artifact recipe | Story | PV-110 | Composer public artifact | Recipe packages Composer track `2` as a `platform: "any"` `.tar.gz` containing `composer.phar`, license metadata, checksum, size, and provenance. |
+| PV-114 | Add Redis artifact recipe | Story | PV-110 | Redis public artifact | Recipe builds or wraps Redis, validates no unmanaged Homebrew/runtime paths, packages `redis-server` and `redis-cli`, and smoke-tests `PING`/`PONG`. |
+| PV-115 | Add SQL Managed Resource artifact recipes | Story | PV-110 | MySQL/Postgres public artifacts | Recipes prefer wrapping official MySQL/Postgres binaries when suitable, otherwise build from source, then validate relocation and smoke-test init/start/query/stop. |
+| PV-116 | Add Mailpit and RustFS artifact recipes | Story | PV-110 | Mailpit/RustFS public artifacts | Recipes prefer wrapping official upstream binaries, package normalized artifacts, and smoke-test Mailpit HTTP/SMTP plus RustFS S3 readiness. |
+| PV-117 | Publish initial Managed Resource artifact matrix | Task | PV-111, PV-112, PV-113, PV-114, PV-115, PV-116 | release candidate | The public artifact manifest contains the default setup install set for supported macOS platforms, with Composer as `platform: "any"` and native resources as `darwin-arm64`/`darwin-amd64`. |
 
 Installer endpoint/server-side generation can be represented by generated artifacts in-repo first. The actual website/server implementation is explicitly outside this code roadmap until distribution work begins.
+
+Managed Resource artifact recipe work is a release/distribution lane. It can run in parallel with adapter PRs once PV-110 exists, and adapters should continue using fixture artifacts until public artifacts are published.
 
 ### M11: Hardening And Release Candidate
 
 | ID | Package | Type | Blocked By | Blocks | Done When |
 | --- | --- | --- | --- | --- | --- |
-| PV-110 | End-to-end setup test pass | Test | M5, M7, M8 partial | release | Fresh macOS setup can install PV, run setup, link a Project, and serve it. |
-| PV-111 | Resource matrix validation | Test | M8 | release | Each Managed Resource adapter has install/start/readiness/allocation/log/status coverage. |
-| PV-112 | Failure-mode validation | Test | M3, M5, M10 | release | Port conflicts, daemon crash, bad manifest, checksum mismatch, invalid Project config, and missing Project behavior are covered. |
-| PV-113 | Uninstall/prune validation | Test | M5, M8, M10 | release | Safe uninstall preserves data; prune removes PV-owned state with confirmation rules. |
-| PV-114 | Documentation release pass | Task | M9, M10 | release | `DESIGN.md`, `IMPLEMENTATION.md`, user docs, and command help agree. |
-| PV-115 | Release candidate checklist | Task | PV-110, PV-111, PV-112, PV-113, PV-114 | public v1 | A single checklist confirms install, setup, link, Managed Resources, update, uninstall, and diagnostics. |
+| PV-120 | End-to-end setup test pass | Test | M5, M7, M10 | release | Fresh macOS setup installs PV, downloads published default artifacts, runs setup, links a Project, and serves it. |
+| PV-121 | Resource matrix validation | Test | M8, PV-117 | release | Each Managed Resource adapter has install/start/readiness/allocation/log/status coverage against published artifacts or explicit release-candidate fixtures. |
+| PV-122 | Failure-mode validation | Test | M3, M5, M10 | release | Port conflicts, daemon crash, bad manifest, revoked artifact, checksum mismatch, invalid Project config, and missing Project behavior are covered. |
+| PV-123 | Uninstall/prune validation | Test | M5, M8, M10 | release | Safe uninstall preserves data; prune removes PV-owned state with confirmation rules. |
+| PV-124 | Documentation release pass | Task | M9, M10 | release | `DESIGN.md`, `IMPLEMENTATION.md`, user docs, and command help agree. |
+| PV-125 | Release candidate checklist | Task | PV-120, PV-121, PV-122, PV-123, PV-124 | public v1 | A single checklist confirms install, setup, link, Managed Resources, update, uninstall, artifact publication, and diagnostics. |
 
 ## Suggested PR Sequence
 
@@ -327,8 +352,11 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 19 | Postgres adapter | PR 7, PR 9 | Yes |
 | PR 20 | RustFS adapter | PR 7, PR 9 | Yes |
 | PR 21 | Status/logs/doctor/jobs | PR 5 plus at least one real runtime | Yes, staged |
-| PR 22 | Self-update and release metadata | PR 6, PR 13 | Yes, after update lock foundations |
-| PR 23 | End-to-end hardening | PR 14-22 | No |
+| PR 22 | Self-update and PV app release metadata | PR 6, PR 13 | Yes, after update lock foundations |
+| PR 23 | Artifact release tooling and packaging harness | PR 6 | Yes, can overlap PR 14-22 |
+| PR 24 | PHP/FrankenPHP and Composer artifact recipes | PR 23 | Yes, blocks public setup artifacts |
+| PR 25 | Backing Managed Resource artifact recipes and publication workflow | PR 23 | Yes, can split per resource |
+| PR 26 | End-to-end hardening | PR 14-25 | No |
 
 ## First Usable MVP Cut
 
@@ -342,7 +370,7 @@ Included:
 - Basic `pv list` and `pv status`
 - PHP/FrankenPHP install for the manifest default PHP track
 - Gateway routing for one linked Project
-- `php` shim and current Composer 2
+- `php` shim and Composer track `2`
 
 Excluded from first demo:
 
@@ -368,6 +396,22 @@ After M4 and PV-064 land, assign one Managed Resource per person.
 | Mailpit | Adapter registry, artifact install, supervisor, port allocator | Start Mailpit, SMTP/UI ports, dashboard open command, env placeholders | Start Mailpit, verify SMTP/UI readiness and `mailpit:open` behavior. |
 | RustFS | Adapter registry, artifact install, supervisor, port allocator, allocation naming | Root/access credential, S3 readiness, bucket create/check, path-style endpoint, env placeholders | Start RustFS, create `acme-test-uploads`, render S3 env, preserve bucket after hostname change. |
 
+## Parallel Artifact Release Plan
+
+After PV-110 lands, artifact recipe work can run in parallel with adapter work. Recipes are release blockers for public distribution, but they should not block adapter implementation that can run against fixture artifacts.
+
+| Artifact | Preferred Source | Blocks | Release Validation |
+| --- | --- | --- | --- |
+| PHP/FrankenPHP | Build from source through the PV recipe because PV needs exact PHP tracks and fixed extensions. | Public M7 setup artifacts | macOS 13 deployment target, fixed extension set, PHP/FrankenPHP patch-version sync, loopback serving smoke test. |
+| Composer | Wrap upstream Composer PHAR into PV `.tar.gz`. | Composer public artifact | `platform: "any"`, track `2`, PHAR checksum, PHP shim execution smoke test. |
+| Redis | Build from source unless a suitable upstream macOS binary appears. | Redis public artifact | No unmanaged Homebrew paths, `redis-server` start, `redis-cli ping`, clean stop. |
+| MySQL | Prefer wrapping official upstream macOS/generic binaries when relocation tests pass. | MySQL public artifact | Init temporary data dir, start, admin connection, `SELECT 1`, clean stop. |
+| Postgres | Prefer wrapping official upstream macOS binaries when relocation tests pass. | Postgres public artifact | `initdb`, start, `psql SELECT 1`, clean stop. |
+| Mailpit | Prefer wrapping upstream static macOS release binary. | Mailpit public artifact | HTTP UI check, SMTP port bind, clean stop. |
+| RustFS | Prefer wrapping upstream release binary when suitable. | RustFS public artifact | S3 readiness, create/list test bucket, clean stop. |
+
+Artifact recipe PRs should be split by resource when practical. The common harness and publication workflow stay separate so every recipe gets the same packaging, relocation, signing, smoke-test, metadata, and manifest-generation behavior.
+
 ## Blocking Rules For Resource PRs
 
 - Managed Resource PRs must not change public Project config syntax unless a separate config PR lands first.
@@ -375,6 +419,16 @@ After M4 and PV-064 land, assign one Managed Resource per person.
 - Managed Resource PRs must not implement Project application behavior such as migrations, `APP_KEY`, `composer install`, or Laravel commands.
 - Managed Resource PRs must keep destructive cleanup behind explicit prune behavior.
 - Managed Resource PRs must use canonical Managed Resource names internally: `mysql`, `postgres`, `redis`, `mailpit`, `rustfs`.
+- Managed Resource PRs must not depend on unpublished object-storage artifacts. Use fixture artifacts and local manifests until the public artifact recipe for that resource exists.
+
+## Blocking Rules For Artifact Recipe PRs
+
+- Artifact recipe PRs must not change the public artifact manifest schema unless the client parser and release tooling change in the same foundation PR.
+- Artifact recipe PRs must output normalized single-root `.tar.gz` archives and structured release metadata records.
+- Artifact recipe PRs must run on native macOS for macOS artifacts; Docker is not an accepted validation path for published macOS artifacts.
+- Artifact recipe PRs must pass relocation validation, ad-hoc signing, required license/notice publication checks, and resource-specific smoke tests before publication.
+- Artifact recipe PRs must not allow Homebrew or runner-installed dependencies to become unmanaged runtime dependencies.
+- Normal PV application CI must not publish artifacts or mutate the stable artifact manifest. Publication happens only through the explicit artifact release workflow.
 
 ## Definition Of Done
 
@@ -401,6 +455,14 @@ For macOS integration PRs:
 - Non-PV existing config conflicts fail safely.
 - `--yes`, `--non-interactive`, `--no-path`, and `--force` semantics are tested where relevant.
 
+For artifact release PRs:
+
+- Release metadata validation has snapshot or fixture coverage for release records, revocation records, `platform: "any"`, exact-platform preference, revoked fallback, and generated manifests.
+- Packaging tests prove archives contain exactly one top-level directory and installable paths expected by the corresponding adapter.
+- macOS artifact candidates pass Mach-O dependency scans for build-runner paths, absolute Homebrew paths, and unexpected non-system dynamic libraries.
+- Publication workflows upload immutable archives and metadata records, then update the stable manifest entrypoint only after a complete generated manifest validates.
+- Resource-specific smoke tests run before a candidate artifact can appear in the public manifest.
+
 ## Release Readiness Checklist
 
 - Fresh install script installs `~/.pv/bin/releases/<version>/pv` and active symlink.
@@ -410,7 +472,12 @@ For macOS integration PRs:
 - Local CA trust allows HTTPS Project hostnames.
 - `pv link` serves a PHP Project through Gateway and PHP-track worker.
 - PHP shim selects Project PHP track and global default track correctly.
-- Composer 2 runs through the PHP shim.
+- Composer track `2` runs through the PHP shim.
+- Artifact release tooling generates the public Managed Resource artifact manifest from immutable release records plus append-only revocation records.
+- Artifact publication uploads immutable archives to PV-owned object storage and updates the stable manifest entrypoint atomically.
+- Default PHP, FrankenPHP, and Composer artifacts are published for the supported v1 platform matrix.
+- Backing Managed Resource artifacts are published for the supported v1 platform matrix, or a preview release explicitly documents any intentionally missing resource/platform.
+- Published native macOS artifacts pass relocation scans, ad-hoc signing, macOS 13 deployment target checks, and resource-specific smoke tests.
 - Each Managed Resource installs, starts on demand, stops when unused, and reports status.
 - SQL allocations create databases with stable readable names.
 - Redis allocations render stable prefixes.

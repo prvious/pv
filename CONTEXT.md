@@ -24,6 +24,14 @@ _Avoid_: Main FrankenPHP
 A tool, runtime, or backing service installed and managed by PV.
 _Avoid_: Tool, service when referring to the whole category
 
+**Managed Resource artifact**:
+A PV-owned packaged installable for a **Managed Resource**.
+_Avoid_: Upstream binary, local build recipe
+
+**Artifact manifest**:
+The PV-owned catalog of available **Managed Resource artifacts**.
+_Avoid_: Project config, per-archive manifest
+
 **Resource allocation**:
 A Project-specific object created inside a shared **Managed Resource**.
 _Avoid_: Logical resource, project resource
@@ -36,6 +44,8 @@ _Avoid_: Logical resource, project resource
 - A **Project** may have one **Project config**.
 - A **Project** may have many **Resource allocations**.
 - A **Resource allocation** belongs to one **Project** and one **Managed Resource**.
+- A **Managed Resource** is installed from one or more **Managed Resource artifacts**.
+- An **Artifact manifest** lists **Managed Resource artifacts**.
 - The **Gateway** routes **Project hostnames** to **Projects**.
 
 ## Example dialogue
@@ -48,6 +58,10 @@ _Avoid_: Logical resource, project resource
 > **Domain expert:** "Yes — the **Gateway** routes the **Project hostname** to the linked **Project**."
 > **Dev:** "If PV creates a database for my **Project**, is that a **Resource allocation**?"
 > **Domain expert:** "Yes — it is the **Project's** allocation inside the database **Managed Resource**."
+> **Dev:** "If Redis has no upstream macOS binary, is the source tarball the **Managed Resource artifact**?"
+> **Domain expert:** "No — the **Managed Resource artifact** is the PV-owned package users install."
+> **Dev:** "Does each **Managed Resource artifact** contain its own manifest?"
+> **Domain expert:** "No — the **Artifact manifest** is the PV-owned catalog outside the archive."
 
 ## Flagged ambiguities
 
@@ -55,3 +69,5 @@ _Avoid_: Logical resource, project resource
 - "domain" was considered for the `.test` address — resolved: use **Project hostname**.
 - "main FrankenPHP" was considered for the front routing role — resolved: use **Gateway**.
 - "logical resource" and "project resource" were considered for per-Project objects inside shared resources — resolved: use **Resource allocation**.
+- "artifact" could mean an upstream binary, source archive, or local build recipe — resolved: use **Managed Resource artifact** for the PV-owned packaged installable.
+- "manifest" could mean Project config, a per-archive metadata file, or the artifact catalog — resolved: use **Artifact manifest** only for the PV-owned catalog of available Managed Resource artifacts.
