@@ -67,6 +67,45 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
 }
 
 #[tokio::test]
+async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let project_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "project:project_1",
+        }),
+    )
+    .await?;
+    let resource_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "resource:mysql:8.4",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "valid_reconciliation_scopes_stream_stub_completion",
+        (project_lines, resource_lines, database.recent_jobs()?),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

@@ -14,6 +14,7 @@ use crate::protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
     ResponseStatus, write_line,
 };
+use crate::reconciliation::ReconciliationQueue;
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -24,6 +25,7 @@ pub(crate) async fn serve(
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
+    let queue = ReconciliationQueue::new();
 
     loop {
         tokio::select! {
@@ -37,9 +39,10 @@ pub(crate) async fn serve(
                 match accepted {
                     Ok((stream, _address)) => {
                         let connection_paths = paths.clone();
+                        let connection_queue = queue.clone();
 
                         connections.spawn(async move {
-                            handle_connection(connection_paths, stream).await
+                            handle_connection(connection_paths, connection_queue, stream).await
                         });
                     }
                     Err(_error) => {
@@ -59,7 +62,11 @@ pub(crate) async fn serve(
     }
 }
 
-async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), DaemonError> {
+async fn handle_connection(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    stream: LocalStream,
+) -> Result<(), DaemonError> {
     let mut transport = crate::protocol::transport(stream);
     let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
         return Ok(());
@@ -94,7 +101,9 @@ async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), Da
             )
             .await
         }
-        DaemonCommand::RunJob { kind, scope } => run_job(paths, transport, &kind, &scope).await,
+        DaemonCommand::RunJob { kind, scope } => {
+            run_job(paths, queue, transport, &kind, &scope).await
+        }
     }
 }
 

@@ -1,0 +1,81 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nreassigned_mysql, database.assigned_ports()?,)"
+---
+(
+    PortAssignment {
+        name: "resource:mysql:8.4",
+        port: 45000,
+        owner_kind: "resource",
+        resource_name: Some(
+            "mysql",
+        ),
+        track: Some(
+            "8.4",
+        ),
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        name: "resource:mysql:8.4",
+        port: 45000,
+        owner_kind: "resource",
+        resource_name: Some(
+            "mysql",
+        ),
+        track: Some(
+            "8.4",
+        ),
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        name: "resource:redis:8.6",
+        port: 45001,
+        owner_kind: "resource",
+        resource_name: Some(
+            "redis",
+        ),
+        track: Some(
+            "8.6",
+        ),
+        updated_at: "<timestamp>",
+    },
+    true,
+    PortAssignment {
+        name: "resource:mysql:8.4",
+        port: 45000,
+        owner_kind: "resource",
+        resource_name: Some(
+            "mysql",
+        ),
+        track: Some(
+            "8.4",
+        ),
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            name: "resource:mysql:8.4",
+            port: 45000,
+            owner_kind: "resource",
+            resource_name: Some(
+                "mysql",
+            ),
+            track: Some(
+                "8.4",
+            ),
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            name: "resource:redis:8.6",
+            port: 45001,
+            owner_kind: "resource",
+            resource_name: Some(
+                "redis",
+            ),
+            track: Some(
+                "8.6",
+            ),
+            updated_at: "<timestamp>",
+        },
+    ],
+)

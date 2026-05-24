@@ -2,7 +2,9 @@ mod error;
 mod ipc;
 mod jobs;
 mod protocol;
+mod reconciliation;
 mod server;
+mod supervisor;
 
 use std::future::Future;
 use std::io;
@@ -13,6 +15,13 @@ use tokio::task::JoinHandle;
 
 pub use error::DaemonError;
 pub use protocol::PROTOCOL_VERSION;
+pub use reconciliation::{
+    EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
+    ReconciliationScope, RunningReconciliation,
+};
+pub use supervisor::{
+    ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
+};
 
 #[derive(Debug)]
 pub struct RunningDaemon {

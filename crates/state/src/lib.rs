@@ -5,7 +5,9 @@ pub mod fs;
 mod migrations;
 mod paths;
 
-pub use database::{Database, DatabaseInspection, JobRecord, JobStatus};
+pub use database::{
+    Database, DatabaseInspection, JobRecord, JobStatus, PortAssignment, PortRequest,
+};
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
 
@@ -25,6 +27,10 @@ pub mod testing {
 
     pub fn query_i64(database: &Database, sql: &str) -> Result<i64, StateError> {
         database.query_i64(sql)
+    }
+
+    pub fn read_to_string(path: &camino::Utf8Path) -> Result<String, StateError> {
+        crate::fs::read_to_string(path)
     }
 
     pub fn transaction<T>(

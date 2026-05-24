@@ -59,6 +59,28 @@ pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
     remove_file(&path)
 }
 
+pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    ensure_parent_dir(path)?;
+    write_atomically(path, content)?;
+    secure_sensitive_file(path)
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn open_append_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    ensure_parent_dir(path)?;
+    let file = open_append_file_handle(path)?;
+    secure_sensitive_file(path)?;
+
+    Ok(file)
+}
+
+pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
+    read_utf8_file(path)
+}
+
 pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspection>, StateError> {
     let mut entries = Vec::new();
 
@@ -114,6 +136,49 @@ fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
     validate_mode(path, USER_ONLY_DIR_MODE)?;
     validate_owner(path)
+}
+
+fn ensure_parent_dir(path: &Utf8Path) -> Result<(), StateError> {
+    if let Some(parent) = path.parent() {
+        ensure_user_dir(parent)?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns atomic file writes"
+)]
+fn write_atomically(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    let temporary_path = path.with_extension("tmp");
+
+    std::fs::write(&temporary_path, content)
+        .map_err(|source| StateError::filesystem(temporary_path.clone(), source))?;
+    secure_sensitive_file(&temporary_path)?;
+    std::fs::rename(&temporary_path, path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+fn open_append_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct file reads"
+)]
+fn read_utf8_file(path: &Utf8Path) -> Result<String, StateError> {
+    std::fs::read_to_string(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
 #[expect(

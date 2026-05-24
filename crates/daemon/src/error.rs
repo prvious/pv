@@ -25,4 +25,13 @@ pub enum DaemonError {
 
     #[error("daemon task failed: {0}")]
     Task(#[from] JoinError),
+
+    #[error("process `{name}` started without an observable pid")]
+    MissingProcessId { name: String },
+
+    #[error("readiness check `{check}` timed out after {timeout_ms}ms")]
+    ReadinessTimedOut { check: String, timeout_ms: u128 },
+
+    #[error("time formatting failed: {0}")]
+    TimeFormat(#[from] time::error::Format),
 }

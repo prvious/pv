@@ -3,9 +3,46 @@ use crate::ipc::LocalStream;
 use crate::protocol::{
     DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
+use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use state::{Database, PvPaths};
 
 pub(crate) async fn run_job(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    mut transport: DaemonTransport<LocalStream>,
+    kind: &str,
+    scope: &str,
+) -> Result<(), DaemonError> {
+    let parsed_scope = scope.parse::<ReconciliationScope>();
+    if kind == "reconcile"
+        && let Ok(parsed_scope) = parsed_scope
+    {
+        let EnqueueResult::Queued(queued) = queue.enqueue(parsed_scope).await else {
+            return write_line(
+                &mut transport,
+                &DaemonResponse {
+                    line_type: "response",
+                    protocol_version: PROTOCOL_VERSION,
+                    status: ResponseStatus::Accepted,
+                    message: "reconciliation already queued or running",
+                    job_id: None,
+                },
+            )
+            .await;
+        };
+        let running = queued.wait_for_turn().await;
+        let active_scope = running.scope().to_string();
+        let result = run_started_job(paths, transport, kind, &active_scope).await;
+
+        running.finish().await;
+
+        return result;
+    }
+
+    run_started_job(paths, transport, kind, scope).await
+}
+
+async fn run_started_job(
     paths: PvPaths,
     mut transport: DaemonTransport<LocalStream>,
     kind: &str,
@@ -50,7 +87,7 @@ pub(crate) async fn run_job(
     .await
     .is_ok();
 
-    if kind != "reconcile" || scope != "system" {
+    if kind != "reconcile" || scope.parse::<ReconciliationScope>().is_err() {
         let error = format!("unsupported daemon job `{kind}` with scope `{scope}`");
         database.fail_job(&job.id, &error)?;
 

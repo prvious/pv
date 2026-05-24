@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, JobStatus, PvPaths, StateError};
+use state::{Database, JobStatus, PortRequest, PvPaths, StateError};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -207,6 +207,13 @@ fn with_normalized_backup_names(assertion: impl FnOnce() -> Result<()>) -> Resul
         r"pv\.db\.\d{8}-\d{6}(?:-\d+)?\.bak",
         "pv.db.<timestamp>.bak",
     );
+
+    settings.bind(assertion)
+}
+
+fn with_normalized_timestamps(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
 
     settings.bind(assertion)
 }
@@ -468,6 +475,51 @@ fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
         jobs.last().map(|job| job.id.as_str()),
         stored_job_count,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let mysql = PortRequest {
+        name: "resource:mysql:8.4".to_string(),
+        owner_kind: "resource".to_string(),
+        resource_name: Some("mysql".to_string()),
+        track: Some("8.4".to_string()),
+        preferred_port: 3306,
+        fallback_start: 45000,
+        fallback_end: 45009,
+    };
+    let redis = PortRequest {
+        name: "resource:redis:8.6".to_string(),
+        owner_kind: "resource".to_string(),
+        resource_name: Some("redis".to_string()),
+        track: Some("8.6".to_string()),
+        preferred_port: 45000,
+        fallback_start: 45000,
+        fallback_end: 45009,
+    };
+
+    let assigned_mysql = database.assign_port(mysql.clone(), |port| port != 3306)?;
+    let reused_mysql = database.assign_port(mysql.clone(), |port| port == assigned_mysql.port)?;
+    let assigned_redis = database.assign_port(redis, |_port| true)?;
+    let released_mysql = database.release_port("resource:mysql:8.4")?;
+    let reassigned_mysql = database.assign_port(mysql, |port| port != 3306)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            assigned_mysql,
+            reused_mysql,
+            assigned_redis,
+            released_mysql,
+            reassigned_mysql,
+            database.assigned_ports()?,
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }

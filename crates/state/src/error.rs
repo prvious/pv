@@ -54,6 +54,17 @@ pub enum StateError {
     #[error("daemon job `{id}` was not found")]
     JobNotFound { id: String },
 
+    #[error(
+        "no available port for {name}; tried preferred {preferred_port} and up to {attempts} candidates in {fallback_start}-{fallback_end}"
+    )]
+    NoAvailablePort {
+        name: String,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+        attempts: usize,
+    },
+
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 

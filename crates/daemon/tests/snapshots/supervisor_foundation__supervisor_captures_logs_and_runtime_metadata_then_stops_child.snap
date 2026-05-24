@@ -1,0 +1,19 @@
+---
+source: crates/daemon/tests/supervisor_foundation.rs
+expression: "(\"<pid>\", log, metadata)"
+---
+(
+    "<pid>",
+    "runtime ready\n",
+    Object {
+        "arguments": Array [
+            String("-c"),
+            String("printf 'runtime ready\\n'; sleep 30"),
+        ],
+        "command": String("/bin/sh"),
+        "log_path": String("<home>/.pv/logs/test-runtime.log"),
+        "name": String("test-runtime"),
+        "pid": String("<pid>"),
+        "started_at": String("<timestamp>"),
+    },
+)

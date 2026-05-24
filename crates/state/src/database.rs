@@ -6,6 +6,7 @@ use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
+const PORT_CANDIDATE_LIMIT: usize = 10;
 
 #[derive(Debug)]
 pub struct Database {
@@ -59,6 +60,27 @@ pub struct JobRecord {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortRequest {
+    pub name: String,
+    pub owner_kind: String,
+    pub resource_name: Option<String>,
+    pub track: Option<String>,
+    pub preferred_port: u16,
+    pub fallback_start: u16,
+    pub fallback_end: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortAssignment {
+    pub name: String,
+    pub port: u16,
+    pub owner_kind: String,
+    pub resource_name: Option<String>,
+    pub track: Option<String>,
+    pub updated_at: String,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -68,6 +90,15 @@ struct JobRecordRow {
     finished_at: Option<String>,
     summary: Option<String>,
     error: Option<String>,
+}
+
+struct PortAssignmentRow {
+    name: String,
+    port: u16,
+    owner_kind: String,
+    resource_name: Option<String>,
+    track: Option<String>,
+    updated_at: String,
 }
 
 impl Database {
@@ -201,6 +232,58 @@ impl Database {
         Ok(jobs)
     }
 
+    pub fn assign_port(
+        &mut self,
+        request: PortRequest,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<PortAssignment, StateError> {
+        if let Some(existing) = self.port_assignment(&request.name)?
+            && is_available(existing.port)
+        {
+            return Ok(existing);
+        }
+
+        let assigned_ports = self.assigned_port_numbers_except(&request.name)?;
+
+        for candidate in request.candidates() {
+            if assigned_ports.contains(&candidate) || !is_available(candidate) {
+                continue;
+            }
+
+            return self.upsert_port(request, candidate);
+        }
+
+        Err(StateError::NoAvailablePort {
+            name: request.name,
+            preferred_port: request.preferred_port,
+            fallback_start: request.fallback_start,
+            fallback_end: request.fallback_end,
+            attempts: PORT_CANDIDATE_LIMIT,
+        })
+    }
+
+    pub fn release_port(&mut self, name: &str) -> Result<bool, StateError> {
+        let deleted = self
+            .connection
+            .execute("DELETE FROM ports WHERE name = ?1", params![name])?;
+
+        Ok(deleted > 0)
+    }
+
+    pub fn assigned_ports(&self) -> Result<Vec<PortAssignment>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports ORDER BY name",
+        )?;
+        let rows = statement.query_map([], port_assignment_from_row)?;
+        let mut assignments = Vec::new();
+
+        for row in rows {
+            assignments.push(row?.into_assignment());
+        }
+
+        Ok(assignments)
+    }
+
     pub(crate) fn transaction<T>(
         &mut self,
         operation: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
@@ -259,6 +342,114 @@ impl Database {
 
         Ok(tables)
     }
+
+    fn port_assignment(&self, name: &str) -> Result<Option<PortAssignment>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports WHERE name = ?1",
+        )?;
+        let mut rows = statement.query_map(params![name], port_assignment_from_row)?;
+
+        match rows.next() {
+            Some(row) => Ok(Some(row?.into_assignment())),
+            None => Ok(None),
+        }
+    }
+
+    fn assigned_port_numbers_except(&self, name: &str) -> Result<Vec<u16>, StateError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT port FROM ports WHERE name != ?1 ORDER BY port")?;
+        let rows = statement.query_map(params![name], |row| row.get::<_, u16>(0))?;
+        let mut ports = Vec::new();
+
+        for row in rows {
+            ports.push(row?);
+        }
+
+        Ok(ports)
+    }
+
+    fn upsert_port(
+        &mut self,
+        request: PortRequest,
+        port: u16,
+    ) -> Result<PortAssignment, StateError> {
+        let updated_at = timestamp()?;
+
+        self.transaction(|transaction| {
+            transaction.execute(
+                "INSERT INTO ports (name, port, owner_kind, resource_name, track, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(name) DO UPDATE SET
+                    port = excluded.port,
+                    owner_kind = excluded.owner_kind,
+                    resource_name = excluded.resource_name,
+                    track = excluded.track,
+                    updated_at = excluded.updated_at",
+                params![
+                    request.name,
+                    port,
+                    request.owner_kind,
+                    request.resource_name,
+                    request.track,
+                    updated_at,
+                ],
+            )?;
+
+            Ok(())
+        })?;
+
+        Ok(PortAssignment {
+            name: request.name,
+            port,
+            owner_kind: request.owner_kind,
+            resource_name: request.resource_name,
+            track: request.track,
+            updated_at,
+        })
+    }
+}
+
+impl PortRequest {
+    fn candidates(&self) -> Vec<u16> {
+        let mut candidates = vec![self.preferred_port];
+
+        for port in self.fallback_start..=self.fallback_end {
+            if candidates.len() >= PORT_CANDIDATE_LIMIT {
+                break;
+            }
+
+            if port != self.preferred_port {
+                candidates.push(port);
+            }
+        }
+
+        candidates
+    }
+}
+
+impl PortAssignmentRow {
+    fn into_assignment(self) -> PortAssignment {
+        PortAssignment {
+            name: self.name,
+            port: self.port,
+            owner_kind: self.owner_kind,
+            resource_name: self.resource_name,
+            track: self.track,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+fn port_assignment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PortAssignmentRow> {
+    Ok(PortAssignmentRow {
+        name: row.get(0)?,
+        port: row.get(1)?,
+        owner_kind: row.get(2)?,
+        resource_name: row.get(3)?,
+        track: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {
