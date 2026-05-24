@@ -169,6 +169,25 @@ fn migration_backup_retention_keeps_the_latest_five_backups() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn migration_backups_ignore_non_pv_backup_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let manual_backup_name = "pv.db.manual.bak";
+    let manual_backup_path = paths.root().join(manual_backup_name);
+
+    {
+        let _manual_backup = Connection::open(&manual_backup_path)?;
+    }
+
+    let backups = state::fs::migration_backups(&paths)?;
+
+    assert!(!backups.contains(&manual_backup_name.to_string()));
+
+    Ok(())
+}
+
 fn with_normalized_backup_names(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
     let mut settings = Settings::clone_current();
     settings.add_filter(

@@ -1,6 +1,8 @@
+mod backup;
 mod database;
 mod error;
 pub mod fs;
+mod migrations;
 mod paths;
 
 pub use database::{Database, DatabaseInspection};
@@ -11,7 +13,7 @@ pub use paths::{PathSummaryEntry, PvPaths};
 pub mod testing {
     use rusqlite::Transaction;
 
-    pub use crate::database::Migration;
+    pub use crate::migrations::Migration;
     use crate::{Database, PvPaths, StateError};
 
     pub fn open_with_migrations(

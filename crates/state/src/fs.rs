@@ -1,10 +1,9 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{PvPaths, StateError};
+use crate::{PvPaths, StateError, backup};
 
 const USER_ONLY_DIR_MODE: u32 = 0o700;
 const SENSITIVE_FILE_MODE: u32 = 0o600;
-const MIGRATION_BACKUP_RETENTION: usize = 5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -47,7 +46,7 @@ pub fn inspect_layout(paths: &PvPaths) -> Result<Vec<LayoutInspection>, StateErr
 }
 
 pub fn migration_backups(paths: &PvPaths) -> Result<Vec<String>, StateError> {
-    migration_backup_names(paths)
+    backup::migration_backups(paths)
 }
 
 pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspection>, StateError> {
@@ -70,60 +69,6 @@ pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspect
     Ok(entries)
 }
 
-pub(crate) fn backup_database(
-    paths: &PvPaths,
-    create_backup: impl FnOnce(&Utf8Path) -> Result<(), StateError>,
-) -> Result<(), StateError> {
-    let backup_path = unique_backup_path(paths)?;
-
-    create_backup(&backup_path)?;
-    set_file_mode(&backup_path, SENSITIVE_FILE_MODE)?;
-    validate_mode(&backup_path, SENSITIVE_FILE_MODE)?;
-    validate_owner(&backup_path)?;
-    prune_migration_backups(paths)?;
-
-    Ok(())
-}
-
-fn unique_backup_path(paths: &PvPaths) -> Result<camino::Utf8PathBuf, StateError> {
-    let timestamp = backup_timestamp()?;
-    let next_suffix = next_backup_suffix(paths, &timestamp)?;
-
-    for suffix in next_suffix..=999 {
-        let candidate = backup_path(paths, &timestamp, suffix);
-
-        if !path_exists(&candidate) {
-            return Ok(candidate);
-        }
-    }
-
-    Err(StateError::BackupNameExhausted {
-        path: paths.root().to_path_buf(),
-    })
-}
-
-fn next_backup_suffix(paths: &PvPaths, timestamp: &str) -> Result<usize, StateError> {
-    let mut next_suffix = 0;
-
-    for backup in migration_backup_names(paths)? {
-        if let Some((backup_timestamp, suffix)) = migration_backup_parts(&backup)
-            && backup_timestamp == timestamp
-        {
-            next_suffix = next_suffix.max(suffix.saturating_add(1));
-        }
-    }
-
-    Ok(next_suffix)
-}
-
-fn backup_path(paths: &PvPaths, timestamp: &str, suffix: usize) -> Utf8PathBuf {
-    if suffix == 0 {
-        return paths.root().join(format!("pv.db.{timestamp}.bak"));
-    }
-
-    paths.root().join(format!("pv.db.{timestamp}-{suffix}.bak"))
-}
-
 pub(crate) fn database_exists(paths: &PvPaths) -> bool {
     path_exists(paths.db())
 }
@@ -134,12 +79,16 @@ pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
             continue;
         }
 
-        set_file_mode(&path, SENSITIVE_FILE_MODE)?;
-        validate_mode(&path, SENSITIVE_FILE_MODE)?;
-        validate_owner(&path)?;
+        secure_sensitive_file(&path)?;
     }
 
     Ok(())
+}
+
+pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
+    set_file_mode(path, SENSITIVE_FILE_MODE)?;
+    validate_mode(path, SENSITIVE_FILE_MODE)?;
+    validate_owner(path)
 }
 
 fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
@@ -157,17 +106,6 @@ fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     validate_owner(path)
 }
 
-fn prune_migration_backups(paths: &PvPaths) -> Result<(), StateError> {
-    let backups = migration_backup_names(paths)?;
-    let prune_count = backups.len().saturating_sub(MIGRATION_BACKUP_RETENTION);
-
-    for backup in backups.iter().take(prune_count) {
-        remove_file(&paths.root().join(backup))?;
-    }
-
-    Ok(())
-}
-
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
@@ -181,7 +119,7 @@ fn create_dir_all(path: &Utf8Path) -> Result<(), StateError> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
-fn remove_file(path: &Utf8Path) -> Result<(), StateError> {
+pub(crate) fn remove_file(path: &Utf8Path) -> Result<(), StateError> {
     std::fs::remove_file(path).map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
@@ -260,65 +198,7 @@ fn owner_uid(path: &Utf8Path) -> Result<u32, StateError> {
     Ok(metadata.uid())
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "PV filesystem helper owns direct filesystem access"
-)]
-fn migration_backup_names(paths: &PvPaths) -> Result<Vec<String>, StateError> {
-    let mut backups = Vec::new();
-    let entries = std::fs::read_dir(paths.root())
-        .map_err(|source| StateError::filesystem(paths.root().to_path_buf(), source))?;
-
-    for entry in entries {
-        let entry =
-            entry.map_err(|source| StateError::filesystem(paths.root().to_path_buf(), source))?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if file_name.starts_with("pv.db.") && file_name.ends_with(".bak") {
-            backups.push(file_name.into_owned());
-        }
-    }
-
-    sort_migration_backup_names(&mut backups);
-
-    Ok(backups)
-}
-
-fn sort_migration_backup_names(backups: &mut [String]) {
-    backups.sort_by(|left, right| {
-        migration_backup_sort_key(left).cmp(&migration_backup_sort_key(right))
-    });
-}
-
-fn migration_backup_sort_key(name: &str) -> (&str, usize) {
-    match migration_backup_parts(name) {
-        Some((timestamp, suffix)) => (timestamp, suffix),
-        None => (name, usize::MAX),
-    }
-}
-
-fn migration_backup_parts(name: &str) -> Option<(&str, usize)> {
-    const TIMESTAMP_LENGTH: usize = "20260522-143012".len();
-    let stem = name
-        .strip_prefix("pv.db.")
-        .and_then(|name| name.strip_suffix(".bak"))?;
-
-    if stem.len() == TIMESTAMP_LENGTH {
-        return Some((stem, 0));
-    }
-
-    if stem.len() > TIMESTAMP_LENGTH
-        && stem.as_bytes().get(TIMESTAMP_LENGTH) == Some(&b'-')
-        && let Ok(suffix) = stem[TIMESTAMP_LENGTH + 1..].parse::<usize>()
-    {
-        return Some((&stem[..TIMESTAMP_LENGTH], suffix));
-    }
-
-    None
-}
-
-fn path_exists(path: &Utf8Path) -> bool {
+pub(crate) fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }
 
@@ -333,12 +213,6 @@ fn display_path(paths: &PvPaths, path: &Utf8Path) -> String {
     }
 }
 
-fn backup_timestamp() -> Result<String, StateError> {
-    let format = time::macros::format_description!("[year][month][day]-[hour][minute][second]");
-
-    Ok(time::OffsetDateTime::now_utc().format(format)?)
-}
-
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -349,30 +223,3 @@ fn current_uid() -> u32 {
 
 #[cfg(not(unix))]
 compile_error!("PV v1 targets macOS and requires Unix filesystem permissions");
-
-#[cfg(test)]
-mod tests {
-    use super::sort_migration_backup_names;
-
-    #[test]
-    fn suffixed_backup_names_sort_after_the_unsuffixed_backup_from_the_same_second() {
-        let mut backups = vec![
-            "pv.db.20260523-120000-3.bak".to_string(),
-            "pv.db.20260523-120000.bak".to_string(),
-            "pv.db.20260523-120000-1.bak".to_string(),
-            "pv.db.20260523-120000-2.bak".to_string(),
-        ];
-
-        sort_migration_backup_names(&mut backups);
-
-        assert_eq!(
-            backups,
-            vec![
-                "pv.db.20260523-120000.bak".to_string(),
-                "pv.db.20260523-120000-1.bak".to_string(),
-                "pv.db.20260523-120000-2.bak".to_string(),
-                "pv.db.20260523-120000-3.bak".to_string(),
-            ]
-        );
-    }
-}

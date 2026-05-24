@@ -23,6 +23,13 @@ pub struct PathSummaryEntry {
     pub path: String,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct PathEntry<'path> {
+    name: &'static str,
+    path: &'path Utf8Path,
+    layout_directory: bool,
+}
+
 impl PvPaths {
     pub fn for_home(home: impl AsRef<Utf8Path>) -> Self {
         let home = home.as_ref().to_path_buf();
@@ -96,64 +103,79 @@ impl PvPaths {
     }
 
     pub fn layout_directories(&self) -> Vec<(&'static str, &Utf8Path)> {
-        vec![
-            ("root", self.root()),
-            ("bin", self.bin()),
-            ("run", self.run()),
-            ("logs", self.logs()),
-            ("downloads", self.downloads()),
-            ("config", self.config()),
-            ("certificates", self.certificates()),
-            ("composer", self.composer()),
-            ("resources", self.resources()),
-        ]
+        self.path_entries()
+            .into_iter()
+            .filter(|entry| entry.layout_directory)
+            .map(|entry| (entry.name, entry.path))
+            .collect()
     }
 
     pub fn summary(&self) -> Vec<PathSummaryEntry> {
-        vec![
-            PathSummaryEntry {
+        self.path_entries()
+            .into_iter()
+            .map(|entry| PathSummaryEntry {
+                name: entry.name,
+                path: entry.path.to_string(),
+            })
+            .collect()
+    }
+
+    fn path_entries(&self) -> [PathEntry<'_>; 11] {
+        [
+            PathEntry {
                 name: "home",
-                path: self.home().to_string(),
+                path: self.home(),
+                layout_directory: false,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "root",
-                path: self.root().to_string(),
+                path: self.root(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "db",
-                path: self.db().to_string(),
+                path: self.db(),
+                layout_directory: false,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "bin",
-                path: self.bin().to_string(),
+                path: self.bin(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "run",
-                path: self.run().to_string(),
+                path: self.run(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "logs",
-                path: self.logs().to_string(),
+                path: self.logs(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "downloads",
-                path: self.downloads().to_string(),
+                path: self.downloads(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "config",
-                path: self.config().to_string(),
+                path: self.config(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "certificates",
-                path: self.certificates().to_string(),
+                path: self.certificates(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "composer",
-                path: self.composer().to_string(),
+                path: self.composer(),
+                layout_directory: true,
             },
-            PathSummaryEntry {
+            PathEntry {
                 name: "resources",
-                path: self.resources().to_string(),
+                path: self.resources(),
+                layout_directory: true,
             },
         ]
     }
