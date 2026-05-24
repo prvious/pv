@@ -21,16 +21,53 @@ pub struct DatabaseInspection {
     pub tables: Vec<String>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum JobStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl JobStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_database(status: String) -> Result<Self, StateError> {
+        match status.as_str() {
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            _ => Err(StateError::UnknownJobStatus { status }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobRecord {
     pub id: String,
     pub kind: String,
     pub scope: String,
-    pub status: String,
+    pub status: JobStatus,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub summary: Option<String>,
     pub error: Option<String>,
+}
+
+struct JobRecordRow {
+    id: String,
+    kind: String,
+    scope: String,
+    status: String,
+    started_at: String,
+    finished_at: Option<String>,
+    summary: Option<String>,
+    error: Option<String>,
 }
 
 impl Database {
@@ -71,14 +108,14 @@ impl Database {
             let id = next_job_id(transaction)?;
             transaction.execute(
                 "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, kind, scope, "running", started_at],
+                params![id, kind, scope, JobStatus::Running.as_str(), started_at],
             )?;
 
             Ok(JobRecord {
                 id,
                 kind: kind.to_string(),
                 scope: scope.to_string(),
-                status: "running".to_string(),
+                status: JobStatus::Running,
                 started_at,
                 finished_at: None,
                 summary: None,
@@ -93,7 +130,7 @@ impl Database {
         self.transaction(|transaction| {
             transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL WHERE id = ?4",
-                params!["succeeded", finished_at, summary, id],
+                params![JobStatus::Succeeded.as_str(), finished_at, summary, id],
             )?;
             prune_old_jobs(transaction)?;
 
@@ -107,7 +144,7 @@ impl Database {
         self.transaction(|transaction| {
             transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
-                params!["failed", finished_at, error, id],
+                params![JobStatus::Failed.as_str(), finished_at, error, id],
             )?;
             prune_old_jobs(transaction)?;
 
@@ -120,7 +157,7 @@ impl Database {
             "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",
         )?;
         let rows = statement.query_map(params![RECENT_JOB_LIMIT], |row| {
-            Ok(JobRecord {
+            Ok(JobRecordRow {
                 id: row.get(0)?,
                 kind: row.get(1)?,
                 scope: row.get(2)?,
@@ -134,7 +171,17 @@ impl Database {
         let mut jobs = Vec::new();
 
         for row in rows {
-            jobs.push(row?);
+            let row = row?;
+            jobs.push(JobRecord {
+                id: row.id,
+                kind: row.kind,
+                scope: row.scope,
+                status: JobStatus::from_database(row.status)?,
+                started_at: row.started_at,
+                finished_at: row.finished_at,
+                summary: row.summary,
+                error: row.error,
+            });
         }
 
         Ok(jobs)
@@ -223,7 +270,7 @@ fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
         "DELETE FROM jobs WHERE status != ?1 AND id NOT IN (
             SELECT id FROM jobs WHERE status != ?1 ORDER BY started_at DESC, id DESC LIMIT ?2
         )",
-        params!["running", RECENT_JOB_LIMIT],
+        params![JobStatus::Running.as_str(), RECENT_JOB_LIMIT],
     )?;
 
     Ok(())

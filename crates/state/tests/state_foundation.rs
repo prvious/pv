@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, PvPaths, StateError};
+use state::{Database, JobStatus, PvPaths, StateError};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -467,6 +467,50 @@ fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
         jobs.first().map(|job| job.id.as_str()),
         jobs.last().map(|job| job.id.as_str()),
         stored_job_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn job_records_expose_typed_statuses() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let job = database.start_job("test", "system")?;
+
+    database.complete_job(&job.id, "done")?;
+
+    let jobs = database.recent_jobs()?;
+
+    assert!(matches!(
+        jobs.first().map(|job| job.status),
+        Some(JobStatus::Succeeded)
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn recent_jobs_rejects_unknown_status_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["job_1", "test", "system", "mystery", "2026-05-24T00:00:00Z"],
+        )?;
+
+        Ok(())
+    })?;
+
+    let result = database.recent_jobs();
+
+    assert!(matches!(
+        result,
+        Err(StateError::UnknownJobStatus { status }) if status == "mystery"
     ));
 
     Ok(())

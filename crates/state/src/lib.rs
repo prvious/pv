@@ -5,7 +5,7 @@ pub mod fs;
 mod migrations;
 mod paths;
 
-pub use database::{Database, DatabaseInspection, JobRecord};
+pub use database::{Database, DatabaseInspection, JobRecord, JobStatus};
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
 

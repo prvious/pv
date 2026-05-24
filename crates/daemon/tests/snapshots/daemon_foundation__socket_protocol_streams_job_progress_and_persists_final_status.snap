@@ -33,7 +33,7 @@ expression: snapshot
             id: "job_000001",
             kind: "reconcile",
             scope: "system",
-            status: "succeeded",
+            status: Succeeded,
             started_at: "<timestamp>",
             finished_at: Some(
                 "<timestamp>",
