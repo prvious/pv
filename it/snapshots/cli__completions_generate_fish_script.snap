@@ -1,0 +1,45 @@
+---
+source: it/cli.rs
+expression: output.stdout
+---
+# Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
+function __fish_pv_global_optspecs
+	string join \n no-color h/help V/version
+end
+
+function __fish_pv_needs_command
+	# Figure out if the current invocation already has a command.
+	set -l cmd (commandline -opc)
+	set -e cmd[1]
+	argparse -s (__fish_pv_global_optspecs) -- $cmd 2>/dev/null
+	or return
+	if set -q argv[1]
+		# Also print the command, so this can be used to figure out what it is.
+		echo $argv[1]
+		return 1
+	end
+	return 0
+end
+
+function __fish_pv_using_subcommand
+	set -l cmd (__fish_pv_needs_command)
+	test -z "$cmd"
+	and return 1
+	contains -- $cmd[1] $argv
+end
+
+complete -c pv -n "__fish_pv_needs_command" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_needs_command" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_needs_command" -s V -l version -d 'Print version'
+complete -c pv -n "__fish_pv_needs_command" -f -a "env" -d 'Print shell integration code'
+complete -c pv -n "__fish_pv_needs_command" -f -a "completions" -d 'Generate shell completions'
+complete -c pv -n "__fish_pv_needs_command" -f -a "php:install" -d 'Install a PHP track'
+complete -c pv -n "__fish_pv_using_subcommand env" -l shell -d 'Shell syntax to generate' -r -f -a "bash\t''
+fish\t''
+zsh\t''"
+complete -c pv -n "__fish_pv_using_subcommand env" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand env" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand completions" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand completions" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand php:install" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand php:install" -s h -l help -d 'Print help'

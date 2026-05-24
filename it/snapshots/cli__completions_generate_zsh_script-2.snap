@@ -1,0 +1,10 @@
+---
+source: it/cli.rs
+expression: "(output.code, output.stderr)"
+---
+(
+    Some(
+        0,
+    ),
+    "",
+)

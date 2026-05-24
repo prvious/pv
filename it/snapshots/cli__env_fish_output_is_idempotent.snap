@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        0,
+    ),
+    stdout: "set -gx COMPOSER_HOME \"$HOME/.pv/composer\"\nset -gx COMPOSER_CACHE_DIR \"$HOME/.pv/composer/cache\"\ncontains -- \"$HOME/.pv/composer/vendor/bin\" $PATH; or set -gx PATH \"$HOME/.pv/composer/vendor/bin\" $PATH\ncontains -- \"$HOME/.pv/bin\" $PATH; or set -gx PATH \"$HOME/.pv/bin\" $PATH\n\n",
+    stderr: "",
+}

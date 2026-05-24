@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        0,
+    ),
+    stdout: "pv_prepend_path() {\n  case \":$PATH:\" in\n    *\":$1:\"*) ;;\n    *) PATH=\"$1${PATH:+:$PATH}\" ;;\n  esac\n}\n\nexport COMPOSER_HOME=\"$HOME/.pv/composer\"\nexport COMPOSER_CACHE_DIR=\"$HOME/.pv/composer/cache\"\npv_prepend_path \"$HOME/.pv/composer/vendor/bin\"\npv_prepend_path \"$HOME/.pv/bin\"\nexport PATH\nunset -f pv_prepend_path\n\n",
+    stderr: "",
+}

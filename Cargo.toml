@@ -22,9 +22,11 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1"
+assert_cmd = "2"
 camino = "1"
 camino-tempfile = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 home = "0"
 insta = { version = "1", features = ["filters"] }
 rusqlite = { version = "0", features = ["bundled"] }
@@ -54,8 +56,8 @@ cli = { path = "crates/cli" }
 
 [dev-dependencies]
 anyhow = { workspace = true }
-assert_cmd = "2"
-insta = "1"
+assert_cmd = { workspace = true }
+insta = { workspace = true }
 
 [[test]]
 name = "cli"

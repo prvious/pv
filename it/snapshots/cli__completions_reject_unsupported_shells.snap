@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        2,
+    ),
+    stdout: "",
+    stderr: "error: invalid value 'tcsh' for '<SHELL>'\n  [possible values: bash, fish, zsh]\n\n  tip: a similar value exists: 'zsh'\n\nFor more information, try '--help'.\n",
+}
