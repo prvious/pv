@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "error: detected unsupported shell `/bin/tcsh`; pass --shell zsh, --shell bash, or --shell fish\n",
+}
