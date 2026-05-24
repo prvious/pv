@@ -1,10 +1,14 @@
+use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
+use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::DaemonError;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+
+pub(crate) type DaemonTransport = Framed<UnixStream, LinesCodec>;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DaemonRequest {
@@ -59,14 +63,20 @@ pub(crate) enum DaemonEvent<'message> {
     },
 }
 
+pub(crate) fn transport(stream: UnixStream) -> DaemonTransport {
+    Framed::new(
+        stream,
+        LinesCodec::new_with_max_length(MAX_PROTOCOL_LINE_BYTES),
+    )
+}
+
 pub(crate) async fn write_line(
-    stream: &mut UnixStream,
+    transport: &mut DaemonTransport,
     line: &impl Serialize,
 ) -> Result<(), DaemonError> {
     let encoded = serde_json::to_string(line)?;
 
-    stream.write_all(encoded.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
+    transport.send(encoded).await?;
 
     Ok(())
 }

@@ -1,12 +1,12 @@
-use state::{Database, PvPaths};
-use tokio::net::UnixStream;
-
 use crate::DaemonError;
-use crate::protocol::{DaemonEvent, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line};
+use crate::protocol::{
+    DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
+};
+use state::{Database, PvPaths};
 
 pub(crate) async fn run_job(
     paths: PvPaths,
-    mut stream: UnixStream,
+    mut transport: DaemonTransport,
     kind: &str,
     scope: &str,
 ) -> Result<(), DaemonError> {
@@ -16,7 +16,7 @@ pub(crate) async fn run_job(
 
     let write_result = async {
         write_line(
-            &mut stream,
+            &mut transport,
             &DaemonResponse {
                 line_type: "response",
                 protocol_version: PROTOCOL_VERSION,
@@ -27,7 +27,7 @@ pub(crate) async fn run_job(
         )
         .await?;
         write_line(
-            &mut stream,
+            &mut transport,
             &DaemonEvent::JobStarted {
                 job_id: &job.id,
                 kind,
@@ -36,7 +36,7 @@ pub(crate) async fn run_job(
         )
         .await?;
         write_line(
-            &mut stream,
+            &mut transport,
             &DaemonEvent::Progress {
                 job_id: &job.id,
                 message: "stub job completed without reconciliation work",
@@ -52,7 +52,7 @@ pub(crate) async fn run_job(
     write_result?;
 
     write_line(
-        &mut stream,
+        &mut transport,
         &DaemonEvent::JobCompleted {
             job_id: &job.id,
             summary,

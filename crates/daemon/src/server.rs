@@ -1,7 +1,7 @@
 use state::PvPaths;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use crate::DaemonError;
 use crate::jobs::run_job;
@@ -14,14 +14,34 @@ pub(crate) async fn serve(
     listener: UnixListener,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), DaemonError> {
+    let mut connections = JoinSet::new();
+
     loop {
         tokio::select! {
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => {
+                connections.abort_all();
+                while connections.join_next().await.is_some() {}
+
+                return Ok(());
+            }
             accepted = listener.accept() => {
-                let (stream, _address) = accepted?;
-                // A malformed or disconnected client must not stop the daemon accept loop.
-                if let Err(_error) = handle_connection(paths.clone(), stream).await {
-                    continue;
+                match accepted {
+                    Ok((stream, _address)) => {
+                        let connection_paths = paths.clone();
+
+                        connections.spawn(async move {
+                            handle_connection(connection_paths, stream).await
+                        });
+                    }
+                    Err(_error) => continue,
+                }
+            }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                match joined {
+                    Some(Ok(Ok(()))) | None => {}
+                    Some(Ok(Err(_error))) => {}
+                    Some(Err(error)) if error.is_panic() => return Err(error.into()),
+                    Some(Err(_error)) => {}
                 }
             }
         }
@@ -29,19 +49,17 @@ pub(crate) async fn serve(
 }
 
 async fn handle_connection(paths: PvPaths, stream: UnixStream) -> Result<(), DaemonError> {
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
+    use futures_util::StreamExt;
 
-    if reader.read_line(&mut line).await? == 0 {
+    let mut transport = crate::protocol::transport(stream);
+    let Some(line) = transport.next().await else {
         return Ok(());
-    }
-
-    let mut stream = reader.into_inner();
-    let request = serde_json::from_str::<DaemonRequest>(line.trim_end())?;
+    };
+    let request = serde_json::from_str::<DaemonRequest>(&line?)?;
 
     if request.protocol_version != PROTOCOL_VERSION {
         return write_line(
-            &mut stream,
+            &mut transport,
             &DaemonResponse {
                 line_type: "response",
                 protocol_version: PROTOCOL_VERSION,
@@ -56,7 +74,7 @@ async fn handle_connection(paths: PvPaths, stream: UnixStream) -> Result<(), Dae
     match request.command {
         DaemonCommand::Health => {
             write_line(
-                &mut stream,
+                &mut transport,
                 &DaemonResponse {
                     line_type: "response",
                     protocol_version: PROTOCOL_VERSION,
@@ -67,6 +85,6 @@ async fn handle_connection(paths: PvPaths, stream: UnixStream) -> Result<(), Dae
             )
             .await
         }
-        DaemonCommand::RunJob { kind, scope } => run_job(paths, stream, &kind, &scope).await,
+        DaemonCommand::RunJob { kind, scope } => run_job(paths, transport, &kind, &scope).await,
     }
 }

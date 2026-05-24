@@ -3,8 +3,10 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use serde_json::{Value, json};
 use state::{Database, PvPaths};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::timeout;
 
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
@@ -77,6 +79,34 @@ async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
         }),
     )
     .await?;
+
+    daemon.shutdown().await?;
+
+    assert_debug_snapshot!(lines);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_client_without_newline_does_not_block_health_requests() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let mut idle_stream = UnixStream::connect(paths.daemon_socket()).await?;
+
+    idle_stream.write_all(b"{").await?;
+
+    let lines = timeout(
+        Duration::from_millis(250),
+        request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "health",
+            }),
+        ),
+    )
+    .await??;
 
     daemon.shutdown().await?;
 

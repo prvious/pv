@@ -4,6 +4,7 @@ use serde_json::Error as JsonError;
 use state::StateError;
 use thiserror::Error;
 use tokio::task::JoinError;
+use tokio_util::codec::LinesCodecError;
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
@@ -12,6 +13,9 @@ pub enum DaemonError {
 
     #[error("daemon protocol JSON error: {0}")]
     Json(#[from] JsonError),
+
+    #[error("daemon protocol frame error: {0}")]
+    Frame(#[from] LinesCodecError),
 
     #[error("state error: {0}")]
     State(#[from] StateError),
