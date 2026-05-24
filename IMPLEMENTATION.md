@@ -334,7 +334,7 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 1 | Rust skeleton, CI, workspace conventions | PV-000, PV-001, PV-002, PV-003, PV-004 | None | No | Yes (#234) |
 | PR 2 | Filesystem layout and SQLite state foundation | PV-010, PV-011, PV-012, PV-013, PV-014, PV-015 | PR 1 | No | Yes (#235) |
 | PR 3 | CLI command routing, global output, `pv env`, completions | PV-020, PV-021, PV-022, PV-023 | PR 1 | Yes, after PR 1 | Yes (#236) |
-| PR 4 | Daemon mode, socket protocol, job progress, daemon lifecycle stubs | PV-024, PV-025, PV-026, PV-027 | PR 2, PR 3 | No | No |
+| PR 4 | Daemon mode, socket protocol, job progress, daemon lifecycle stubs | PV-024, PV-025, PV-026, PV-027 | PR 2, PR 3 | No | Yes (#239) |
 | PR 5 | Reconciliation queue, supervisor, ports, readiness, logs, watchers | PV-030, PV-031, PV-032, PV-033, PV-034, PV-035, PV-036 | PR 4 | No | No |
 | PR 6 | Adapter trait, track model, manifest, downloader, atomic install, fixture artifacts | PV-040, PV-041, PV-042, PV-043, PV-044, PV-045, PV-049 | PR 5 | No | No |
 | PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6 | No | No |
