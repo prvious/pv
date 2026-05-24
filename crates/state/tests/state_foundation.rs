@@ -460,11 +460,13 @@ fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
     }
 
     let jobs = database.recent_jobs()?;
+    let stored_job_count = state::testing::query_i64(&database, "SELECT COUNT(*) FROM jobs")?;
 
     assert_debug_snapshot!((
         jobs.len(),
         jobs.first().map(|job| job.id.as_str()),
-        jobs.last().map(|job| job.id.as_str())
+        jobs.last().map(|job| job.id.as_str()),
+        stored_job_count,
     ));
 
     Ok(())

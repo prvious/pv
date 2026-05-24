@@ -1,6 +1,7 @@
 ---
 source: crates/state/tests/state_foundation.rs
-expression: "(jobs.len(), jobs.first().map(|job| job.id.as_str()),\njobs.last().map(|job| job.id.as_str()))"
+assertion_line: 465
+expression: "(jobs.len(), jobs.first().map(|job| job.id.as_str()),\njobs.last().map(|job| job.id.as_str()), stored_job_count,)"
 ---
 (
     100,
@@ -10,4 +11,5 @@ expression: "(jobs.len(), jobs.first().map(|job| job.id.as_str()),\njobs.last().
     Some(
         "job_000006",
     ),
+    100,
 )

@@ -95,6 +95,7 @@ impl Database {
                 "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL WHERE id = ?4",
                 params!["succeeded", finished_at, summary, id],
             )?;
+            prune_old_jobs(transaction)?;
 
             Ok(())
         })
@@ -108,6 +109,7 @@ impl Database {
                 "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
                 params!["failed", finished_at, error, id],
             )?;
+            prune_old_jobs(transaction)?;
 
             Ok(())
         })
@@ -214,6 +216,17 @@ fn next_job_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
     )?;
 
     Ok(format!("job_{next_number:06}"))
+}
+
+fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute(
+        "DELETE FROM jobs WHERE status != ?1 AND id NOT IN (
+            SELECT id FROM jobs WHERE status != ?1 ORDER BY started_at DESC, id DESC LIMIT ?2
+        )",
+        params!["running", RECENT_JOB_LIMIT],
+    )?;
+
+    Ok(())
 }
 
 fn timestamp() -> Result<String, StateError> {
