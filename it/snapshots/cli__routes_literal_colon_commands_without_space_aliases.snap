@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "error: php:install is routed, but Managed Resource installs start after PV-023\n",
+}

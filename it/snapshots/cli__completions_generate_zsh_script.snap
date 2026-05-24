@@ -1,0 +1,94 @@
+---
+source: it/cli.rs
+expression: output.stdout
+---
+#compdef pv
+
+autoload -U is-at-least
+
+_pv() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_pv_commands" \
+"*::: :->pv" \
+&& ret=0
+    case $state in
+    (pv)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pv-command-$line[1]:"
+        case $line[1] in
+            (env)
+_arguments "${_arguments_options[@]}" : \
+'--shell=[Shell syntax to generate]:SHELL:(bash fish zsh)' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- Shell to generate completions for:(bash fish zsh)' \
+&& ret=0
+;;
+(php:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- PHP track to install:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_pv_commands] )) ||
+_pv_commands() {
+    local commands; commands=(
+'env:Print shell integration code' \
+'completions:Generate shell completions' \
+'php:install:Install a PHP track' \
+    )
+    _describe -t commands 'pv commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__completions_commands] )) ||
+_pv__subcmd__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv completions commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__env_commands] )) ||
+_pv__subcmd__env_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv env commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__php:install_commands] )) ||
+_pv__subcmd__php:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv php:install commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_pv" ]; then
+    _pv "$@"
+else
+    compdef _pv pv
+fi
