@@ -1,13 +1,22 @@
+use std::time::Duration;
+
+use futures_util::StreamExt;
 use state::PvPaths;
+use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
+use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::run_job;
 use crate::protocol::{
-    DaemonCommand, DaemonRequest, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line,
+    DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
+    ResponseStatus, write_line,
 };
+
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
     paths: PvPaths,
@@ -33,7 +42,9 @@ pub(crate) async fn serve(
                             handle_connection(connection_paths, stream).await
                         });
                     }
-                    Err(_error) => continue,
+                    Err(_error) => {
+                        sleep(ACCEPT_ERROR_BACKOFF).await;
+                    }
                 }
             }
             joined = connections.join_next(), if !connections.is_empty() => {
@@ -49,13 +60,11 @@ pub(crate) async fn serve(
 }
 
 async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), DaemonError> {
-    use futures_util::StreamExt;
-
     let mut transport = crate::protocol::transport(stream);
-    let Some(line) = transport.next().await else {
+    let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
         return Ok(());
     };
-    let request = serde_json::from_str::<DaemonRequest>(&line?)?;
+    let request = serde_json::from_str::<DaemonRequest>(&line)?;
 
     if request.protocol_version != PROTOCOL_VERSION {
         return write_line(
@@ -86,5 +95,40 @@ async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), Da
             .await
         }
         DaemonCommand::RunJob { kind, scope } => run_job(paths, transport, &kind, &scope).await,
+    }
+}
+
+async fn read_request_line<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+    read_timeout: Duration,
+) -> Result<Option<String>, DaemonError>
+where
+    Stream: AsyncRead + Unpin,
+{
+    match timeout(read_timeout, transport.next()).await {
+        Ok(Some(line)) => Ok(Some(line?)),
+        Ok(None) | Err(_) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::io::duplex;
+
+    use super::read_request_line;
+    use crate::protocol::transport;
+
+    #[tokio::test]
+    async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {
+        let (_client, server) = duplex(1024);
+        let mut transport = transport(server);
+
+        let line = read_request_line(&mut transport, Duration::from_millis(10)).await?;
+
+        assert!(line.is_none());
+
+        Ok(())
     }
 }
