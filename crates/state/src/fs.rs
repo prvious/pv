@@ -87,14 +87,10 @@ pub(crate) fn backup_database(
 
 fn unique_backup_path(paths: &PvPaths) -> Result<camino::Utf8PathBuf, StateError> {
     let timestamp = backup_timestamp()?;
-    let base = paths.root().join(format!("pv.db.{timestamp}.bak"));
+    let next_suffix = next_backup_suffix(paths, &timestamp)?;
 
-    if !path_exists(&base) {
-        return Ok(base);
-    }
-
-    for suffix in 1..=999 {
-        let candidate = paths.root().join(format!("pv.db.{timestamp}-{suffix}.bak"));
+    for suffix in next_suffix..=999 {
+        let candidate = backup_path(paths, &timestamp, suffix);
 
         if !path_exists(&candidate) {
             return Ok(candidate);
@@ -104,6 +100,28 @@ fn unique_backup_path(paths: &PvPaths) -> Result<camino::Utf8PathBuf, StateError
     Err(StateError::BackupNameExhausted {
         path: paths.root().to_path_buf(),
     })
+}
+
+fn next_backup_suffix(paths: &PvPaths, timestamp: &str) -> Result<usize, StateError> {
+    let mut next_suffix = 0;
+
+    for backup in migration_backup_names(paths)? {
+        if let Some((backup_timestamp, suffix)) = migration_backup_parts(&backup)
+            && backup_timestamp == timestamp
+        {
+            next_suffix = next_suffix.max(suffix.saturating_add(1));
+        }
+    }
+
+    Ok(next_suffix)
+}
+
+fn backup_path(paths: &PvPaths, timestamp: &str, suffix: usize) -> Utf8PathBuf {
+    if suffix == 0 {
+        return paths.root().join(format!("pv.db.{timestamp}.bak"));
+    }
+
+    paths.root().join(format!("pv.db.{timestamp}-{suffix}.bak"))
 }
 
 pub(crate) fn database_exists(paths: &PvPaths) -> bool {
@@ -262,9 +280,42 @@ fn migration_backup_names(paths: &PvPaths) -> Result<Vec<String>, StateError> {
         }
     }
 
-    backups.sort();
+    sort_migration_backup_names(&mut backups);
 
     Ok(backups)
+}
+
+fn sort_migration_backup_names(backups: &mut [String]) {
+    backups.sort_by(|left, right| {
+        migration_backup_sort_key(left).cmp(&migration_backup_sort_key(right))
+    });
+}
+
+fn migration_backup_sort_key(name: &str) -> (&str, usize) {
+    match migration_backup_parts(name) {
+        Some((timestamp, suffix)) => (timestamp, suffix),
+        None => (name, usize::MAX),
+    }
+}
+
+fn migration_backup_parts(name: &str) -> Option<(&str, usize)> {
+    const TIMESTAMP_LENGTH: usize = "20260522-143012".len();
+    let stem = name
+        .strip_prefix("pv.db.")
+        .and_then(|name| name.strip_suffix(".bak"))?;
+
+    if stem.len() == TIMESTAMP_LENGTH {
+        return Some((stem, 0));
+    }
+
+    if stem.len() > TIMESTAMP_LENGTH
+        && stem.as_bytes().get(TIMESTAMP_LENGTH) == Some(&b'-')
+        && let Ok(suffix) = stem[TIMESTAMP_LENGTH + 1..].parse::<usize>()
+    {
+        return Some((&stem[..TIMESTAMP_LENGTH], suffix));
+    }
+
+    None
 }
 
 fn path_exists(path: &Utf8Path) -> bool {
@@ -298,3 +349,30 @@ fn current_uid() -> u32 {
 
 #[cfg(not(unix))]
 compile_error!("PV v1 targets macOS and requires Unix filesystem permissions");
+
+#[cfg(test)]
+mod tests {
+    use super::sort_migration_backup_names;
+
+    #[test]
+    fn suffixed_backup_names_sort_after_the_unsuffixed_backup_from_the_same_second() {
+        let mut backups = vec![
+            "pv.db.20260523-120000-3.bak".to_string(),
+            "pv.db.20260523-120000.bak".to_string(),
+            "pv.db.20260523-120000-1.bak".to_string(),
+            "pv.db.20260523-120000-2.bak".to_string(),
+        ];
+
+        sort_migration_backup_names(&mut backups);
+
+        assert_eq!(
+            backups,
+            vec![
+                "pv.db.20260523-120000.bak".to_string(),
+                "pv.db.20260523-120000-1.bak".to_string(),
+                "pv.db.20260523-120000-2.bak".to_string(),
+                "pv.db.20260523-120000-3.bak".to_string(),
+            ]
+        );
+    }
+}

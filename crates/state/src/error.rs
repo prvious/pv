@@ -33,6 +33,14 @@ pub enum StateError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("migration {version} ({name}) failed: {source}")]
+    MigrationFailed {
+        version: i64,
+        name: &'static str,
+        #[source]
+        source: rusqlite::Error,
+    },
+
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 

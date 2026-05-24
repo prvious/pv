@@ -1,0 +1,6 @@
+---
+source: crates/state/tests/state_foundation.rs
+assertion_line: 282
+expression: "state::testing::query_i64(&database,\n\"SELECT COUNT(*) FROM resource_allocations\")?"
+---
+1

@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 152
 expression: output.stdout
 ---
 _pv() {
@@ -82,7 +83,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__php:install)
-            opts="-h --no-color --help <TRACK>"
+            opts="-h --no-color --help [version]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

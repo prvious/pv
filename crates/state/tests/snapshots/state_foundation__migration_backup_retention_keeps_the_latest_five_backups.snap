@@ -1,5 +1,12 @@
 ---
 source: crates/state/tests/state_foundation.rs
-expression: "state::fs::migration_backups(&paths)?.len()"
+assertion_line: 167
+expression: backup_table_counts
 ---
-5
+[
+    3,
+    4,
+    5,
+    6,
+    7,
+]

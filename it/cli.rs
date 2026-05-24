@@ -64,6 +64,15 @@ fn routes_literal_colon_commands_without_space_aliases() -> Result<()> {
 }
 
 #[test]
+fn php_install_allows_manifest_default_track_when_omitted() -> Result<()> {
+    let output = run_pv(&["php:install"])?;
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
 

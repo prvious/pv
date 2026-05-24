@@ -22,11 +22,19 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+
       - name: Check formatting
         run: cargo fmt --all --check
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Check unused dependencies
+        run: cargo shear
 
       - name: Run tests
         run: cargo nextest run --workspace --all-features --locked

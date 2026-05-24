@@ -25,6 +25,65 @@ CREATE TABLE project_hostnames (
     created_at TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX project_hostnames_one_primary_per_project
+ON project_hostnames(project_id)
+WHERE is_primary = 1;
+
+CREATE TRIGGER project_hostnames_primary_matches_project_insert
+BEFORE INSERT ON project_hostnames
+WHEN NEW.is_primary = 1
+AND (
+    SELECT primary_hostname
+    FROM projects
+    WHERE id = NEW.project_id
+) != NEW.hostname
+BEGIN
+    SELECT RAISE(ABORT, 'primary hostname must match project primary_hostname');
+END;
+
+CREATE TRIGGER project_hostnames_primary_matches_project_update
+BEFORE UPDATE OF hostname, project_id, is_primary ON project_hostnames
+WHEN NEW.is_primary = 1
+AND (
+    SELECT primary_hostname
+    FROM projects
+    WHERE id = NEW.project_id
+) != NEW.hostname
+BEGIN
+    SELECT RAISE(ABORT, 'primary hostname must match project primary_hostname');
+END;
+
+CREATE TRIGGER projects_primary_hostname_matches_hostname_update
+BEFORE UPDATE OF primary_hostname ON projects
+WHEN EXISTS (
+    SELECT 1
+    FROM project_hostnames
+    WHERE project_id = OLD.id
+    AND is_primary = 1
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM project_hostnames
+    WHERE project_id = OLD.id
+    AND is_primary = 1
+    AND hostname = NEW.primary_hostname
+)
+BEGIN
+    SELECT RAISE(ABORT, 'project primary_hostname must match primary project_hostname row');
+END;
+
+CREATE TRIGGER project_hostnames_primary_delete_requires_project_delete
+BEFORE DELETE ON project_hostnames
+WHEN OLD.is_primary = 1
+AND EXISTS (
+    SELECT 1
+    FROM projects
+    WHERE id = OLD.project_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'primary project_hostname rows are removed with their project');
+END;
+
 CREATE TABLE managed_resource_tracks (
     resource_name TEXT NOT NULL,
     track TEXT NOT NULL,
@@ -47,7 +106,8 @@ CREATE TABLE resource_allocations (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (project_id, resource_name, allocation_name)
+    UNIQUE (project_id, resource_name, allocation_name),
+    UNIQUE (resource_name, track, generated_name)
 );
 
 CREATE TABLE ports (
@@ -114,7 +174,7 @@ impl Database {
         Self::open_with_migrations(paths, DEFAULT_MIGRATIONS)
     }
 
-    pub fn open_with_migrations(
+    pub(crate) fn open_with_migrations(
         paths: &PvPaths,
         migrations: &[Migration],
     ) -> Result<Self, StateError> {
@@ -140,7 +200,7 @@ impl Database {
         })
     }
 
-    pub fn transaction<T>(
+    pub(crate) fn transaction<T>(
         &mut self,
         operation: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
     ) -> Result<T, StateError> {
@@ -151,7 +211,7 @@ impl Database {
         Ok(output)
     }
 
-    pub fn query_i64(&self, sql: &str) -> Result<i64, StateError> {
+    pub(crate) fn query_i64(&self, sql: &str) -> Result<i64, StateError> {
         Ok(self.connection.query_row(sql, [], |row| row.get(0))?)
     }
 
@@ -230,17 +290,14 @@ fn run_migrations(
         backup_database(paths, connection)?;
     }
 
-    ensure_migration_table(connection)?;
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(MIGRATION_TABLE_SQL)?;
 
     for migration in pending {
-        let transaction = connection.transaction()?;
-        transaction.execute_batch(migration.sql)?;
-        transaction.execute(
-            "INSERT INTO pv_migrations (version, name, applied_at) VALUES (?1, ?2, datetime('now'))",
-            params![migration.version, migration.name],
-        )?;
-        transaction.commit()?;
+        apply_migration(&transaction, migration)?;
     }
+
+    transaction.commit()?;
 
     Ok(())
 }
@@ -253,15 +310,37 @@ fn backup_database(paths: &PvPaths, connection: &Connection) -> Result<(), State
 }
 
 fn ensure_migration_table(connection: &Connection) -> Result<(), StateError> {
-    connection.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS pv_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TEXT NOT NULL
-        );
-        "#,
-    )?;
+    connection.execute_batch(MIGRATION_TABLE_SQL)?;
+
+    Ok(())
+}
+
+const MIGRATION_TABLE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS pv_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
+"#;
+
+fn apply_migration(transaction: &Transaction<'_>, migration: Migration) -> Result<(), StateError> {
+    transaction
+        .execute_batch(migration.sql)
+        .map_err(|source| StateError::MigrationFailed {
+            version: migration.version,
+            name: migration.name,
+            source,
+        })?;
+    transaction
+        .execute(
+            "INSERT INTO pv_migrations (version, name, applied_at) VALUES (?1, ?2, datetime('now'))",
+            params![migration.version, migration.name],
+        )
+        .map_err(|source| StateError::MigrationFailed {
+            version: migration.version,
+            name: migration.name,
+            source,
+        })?;
 
     Ok(())
 }

@@ -51,8 +51,8 @@ struct CompletionsArgs {
 
 #[derive(Debug, clap::Args)]
 struct PhpInstallArgs {
-    #[arg(help = "PHP track to install")]
-    track: String,
+    #[arg(value_name = "version", help = "PHP track to install")]
+    track: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

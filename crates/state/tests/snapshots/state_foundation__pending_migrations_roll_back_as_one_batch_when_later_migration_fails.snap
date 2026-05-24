@@ -1,0 +1,9 @@
+---
+source: crates/state/tests/state_foundation.rs
+assertion_line: 219
+expression: "(table_exists(&connection, \"second_table\")?,\napplied_migration_count(&connection)?)"
+---
+(
+    false,
+    1,
+)

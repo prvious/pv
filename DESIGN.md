@@ -162,7 +162,7 @@ A friendly browser page for unknown Project hostnames is useful, but is post-v1 
 - Trust PV's local CA in the macOS System keychain.
 - Register the PV daemon as a per-user `launchd` LaunchAgent with `KeepAlive` so macOS starts it after login and can restart it after crashes.
 - Start the PV daemon immediately after registration.
-- Record desired state for the default versions of PV-managed tools and resources, then request daemon reconciliation.
+- Record desired state for the default Managed Resource versions, then request daemon reconciliation.
 
 The default setup install set includes the manifest default tracks for FrankenPHP/PHP, MySQL, PostgreSQL, Redis, Mailpit, and RustFS, plus Composer track `2`. Downloads should run in parallel where possible. `pv setup` does not install every track listed in the manifest.
 
@@ -1150,10 +1150,10 @@ If the daemon is intentionally disabled while DNS, ports, or CA integrations rem
 | pv list                  | List linked projects with which php version they using                                                            |
 | pv logs [--follow]       | Show PV daemon/reconciliation logs                                                                                |
 | pv status                | Show whole-system PV status                                                                                       |
-| pv setup [--yes] [--non-interactive] [--no-path] | Configure macOS resolver, `pf` redirects, CA trust, daemon registration, and default managed resources |
+| pv setup [--yes] [--non-interactive] [--no-path] | Configure macOS resolver, `pf` redirects, CA trust, daemon registration, and default Managed Resources |
 | pv uninstall [--prune] [--force] | Uninstall PV, preserving data by default                                                                  |
 | pv unlink [hostname]     | Unlink a Project by current directory or Project hostname                                                         |
-| pv update [--check]      | Update pv and all managed tools to their latest versions, or report available updates with `--check`              |
+| pv update [--check]      | Update the PV application and installed Managed Resources to their latest versions, or report available updates with `--check` |
 | pv restart               | Restart PV-managed runtime processes and reconcile desired state                                                   |
 | pv env [--shell <shell>] | Print shell exports for PV-managed binaries and Composer environment                                              |
 | pv completions <shell>   | Generate shell completions                                                                                        |

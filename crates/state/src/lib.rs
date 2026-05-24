@@ -3,6 +3,32 @@ mod error;
 pub mod fs;
 mod paths;
 
-pub use database::{Database, DatabaseInspection, Migration};
+pub use database::{Database, DatabaseInspection};
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
+
+#[doc(hidden)]
+pub mod testing {
+    use rusqlite::Transaction;
+
+    pub use crate::database::Migration;
+    use crate::{Database, PvPaths, StateError};
+
+    pub fn open_with_migrations(
+        paths: &PvPaths,
+        migrations: &[Migration],
+    ) -> Result<Database, StateError> {
+        Database::open_with_migrations(paths, migrations)
+    }
+
+    pub fn query_i64(database: &Database, sql: &str) -> Result<i64, StateError> {
+        database.query_i64(sql)
+    }
+
+    pub fn transaction<T>(
+        database: &mut Database,
+        operation: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
+    ) -> Result<T, StateError> {
+        database.transaction(operation)
+    }
+}

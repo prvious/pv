@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 142
 expression: output.stdout
 ---
 #compdef pv
@@ -54,7 +55,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
-':track -- PHP track to install:_default' \
+'::track -- PHP track to install:_default' \
 && ret=0
 ;;
         esac
