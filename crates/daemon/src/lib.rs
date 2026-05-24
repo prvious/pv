@@ -24,7 +24,6 @@ pub struct RunningDaemon {
 
 impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
-        state::fs::ensure_layout(&paths)?;
         Database::open(&paths)?;
         prepare_socket_path(&paths).await?;
         let listener = UnixListener::bind(paths.daemon_socket())?;
