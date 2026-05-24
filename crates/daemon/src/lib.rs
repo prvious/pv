@@ -39,11 +39,12 @@ impl RunningDaemon {
 
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let _ = self.shutdown.send(());
-        let task_result = self.task.await?;
+        let join_result = self.task.await;
         let socket_result = ipc::remove_endpoint(&self.paths);
 
-        task_result?;
         socket_result?;
+        let task_result = join_result?;
+        task_result?;
 
         Ok(())
     }
@@ -75,19 +76,19 @@ async fn wait_for_shutdown(
         signal_result = &mut shutdown_signal => {
             signal_result?;
             let _ = shutdown.send(());
-            let task_result = task.await?;
+            let join_result = task.await;
             let socket_result = ipc::remove_endpoint(&paths);
 
-            task_result?;
             socket_result?;
+            let task_result = join_result?;
+            task_result?;
 
             Ok(())
         }
         task_result = &mut task => {
             let socket_result = ipc::remove_endpoint(&paths);
-            let task_result = task_result?;
-
             socket_result?;
+            let task_result = task_result?;
             task_result
         }
     }
@@ -115,6 +116,7 @@ async fn termination_signal() -> io::Result<()> {
 mod tests {
     use std::{future, io};
 
+    use camino_tempfile::tempdir;
     use state::PvPaths;
     use tokio::sync::oneshot;
 
@@ -138,5 +140,29 @@ mod tests {
             result,
             Err(DaemonError::Io(error)) if error.to_string() == "server stopped early"
         ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_removes_socket_when_server_task_is_cancelled() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
+        drop(stale_listener);
+        let (shutdown, _shutdown_receiver) = oneshot::channel();
+        let task = tokio::spawn(future::pending::<Result<(), DaemonError>>());
+        task.abort();
+        let daemon = RunningDaemon {
+            paths: paths.clone(),
+            shutdown,
+            task,
+        };
+
+        let result = daemon.shutdown().await;
+
+        assert!(matches!(result, Err(DaemonError::Task(error)) if error.is_cancelled()));
+        assert!(!paths.daemon_socket().exists());
+
+        Ok(())
     }
 }
