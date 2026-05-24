@@ -32,6 +32,23 @@ fn run_pv_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<CommandOutput>
     })
 }
 
+fn run_pv_without_env(args: &[&str], env: &[&str]) -> Result<CommandOutput> {
+    let mut command = Command::cargo_bin("pv")?;
+    command.env_remove("NO_COLOR");
+
+    for key in env {
+        command.env_remove(key);
+    }
+
+    let output = command.args(args).output()?;
+
+    Ok(CommandOutput {
+        code: status_code(output.status),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
 fn status_code(status: ExitStatus) -> Option<i32> {
     status.code()
 }
@@ -102,6 +119,24 @@ fn env_fish_output_is_idempotent() -> Result<()> {
 #[test]
 fn env_detects_shell_from_environment() -> Result<()> {
     let output = run_pv_with_env(&["env"], &[("SHELL", "/bin/zsh")])?;
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn env_reports_missing_detected_shell() -> Result<()> {
+    let output = run_pv_without_env(&["env"], &["SHELL"])?;
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn env_reports_unsupported_detected_shell() -> Result<()> {
+    let output = run_pv_with_env(&["env"], &[("SHELL", "/bin/tcsh")])?;
 
     assert_debug_snapshot!(output);
 
