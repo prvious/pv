@@ -52,20 +52,7 @@ Linting requires [shellcheck](https://github.com/koalaman/shellcheck) and
 
 ```shell
 # Rust
-cargo clippy --workspace --all-targets --all-features --locked -- \
-  -D warnings \
-  -D clippy::dbg_macro \
-  -D clippy::disallowed_macros \
-  -D clippy::disallowed_methods \
-  -D clippy::disallowed_types \
-  -D clippy::expect_used \
-  -D clippy::panic \
-  -D clippy::print_stderr \
-  -D clippy::print_stdout \
-  -D clippy::todo \
-  -D clippy::unimplemented \
-  -D clippy::unreachable \
-  -D clippy::unwrap_used
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 # Shell scripts
 shellcheck <script>
@@ -80,7 +67,7 @@ The root `clippy.toml` configures PV-specific lint behavior. It intentionally di
 
 Use PV helpers instead, so permissions, atomic writes, injected test homes, process ownership checks, structured output, and diagnostics stay consistent.
 
-`clippy.toml` configures these lints, but it does not enable them by itself. CI and local checks should pass the `-D clippy::...` flags above, or equivalent workspace lint settings once the Cargo workspace exists.
+`clippy.toml` configures these lint details, and the Cargo workspace enables the policy through `[workspace.lints.clippy]`. Every workspace package should opt in with `[lints] workspace = true`, so CI and local checks only need `-D warnings`.
 
 If a lint must be silenced, prefer `#[expect(...)]` over `#[allow(...)]`, and keep the reason local and specific.
 
