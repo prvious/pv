@@ -329,34 +329,34 @@ Managed Resource artifact recipe work is a release/distribution lane. It can run
 
 This sequence keeps the critical path moving while allowing parallel branches after the adapter foundation lands. The `Implements` column is the concrete package mapping; if a PR becomes too large, split it on `PV-xxx` package boundaries and update this table.
 
-| PR | Content | Implements | Depends On | Can Be Parallel? |
-| --- | --- | --- | --- | --- |
-| PR 1 | Rust skeleton, CI, workspace conventions | PV-000, PV-001, PV-002, PV-003, PV-004 | None | No |
-| PR 2 | Filesystem layout and SQLite state foundation | PV-010, PV-011, PV-012, PV-013, PV-014, PV-015 | PR 1 | No |
-| PR 3 | CLI command routing, global output, `pv env`, completions | PV-020, PV-021, PV-022, PV-023 | PR 1 | Yes, after PR 1 |
-| PR 4 | Daemon mode, socket protocol, job progress, daemon lifecycle stubs | PV-024, PV-025, PV-026, PV-027 | PR 2, PR 3 | No |
-| PR 5 | Reconciliation queue, supervisor, ports, readiness, logs, watchers | PV-030, PV-031, PV-032, PV-033, PV-034, PV-035, PV-036 | PR 4 | No |
-| PR 6 | Adapter trait, track model, manifest, downloader, atomic install, fixture artifacts | PV-040, PV-041, PV-042, PV-043, PV-044, PV-045, PV-049 | PR 5 | No |
-| PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6 | No |
-| PR 8 | Project state, `link`, `unlink`, config parser, `open`, base `list` | PV-060, PV-061, PV-062, PV-063, PV-068, PV-069 | PR 2, PR 4 | Yes, can overlap PR 5-7 with coordination |
-| PR 9 | Resource allocation contract, allocation names, env rendering | PV-047, PV-064, PV-065, PV-066, PV-067 | PR 7, PR 8 | No |
-| PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes |
-| PR 11 | `pf` config generation and port commands | PV-052, PV-053 | PR 4, PR 5 | Yes |
-| PR 12 | CA file generation and trust commands | PV-054 | PR 2, PR 4 | Yes |
-| PR 13 | LaunchAgent, `pv setup`, safe `pv uninstall` | PV-055, PV-056, PV-057 | PR 7, PR 10, PR 11, PR 12 | No |
-| PR 14 | PHP/FrankenPHP adapters, workers, Gateway, first Project-serving test | PV-070, PV-071, PV-072, PV-073, PV-074, PV-078 | PR 7, PR 9, PR 13 | No |
-| PR 15 | PHP shim, PHP commands, Composer track `2` install/shim | PV-075, PV-076, PV-077 | PR 14 | Yes |
-| PR 16 | Mailpit adapter | PV-083 | PR 7, PR 9 | Yes |
-| PR 17 | Redis adapter | PV-082 | PR 7, PR 9 | Yes |
-| PR 18 | MySQL adapter | PV-080 | PR 7, PR 9 | Yes |
-| PR 19 | Postgres adapter | PV-081 | PR 7, PR 9 | Yes |
-| PR 20 | RustFS adapter | PV-084 | PR 7, PR 9 | Yes |
-| PR 21 | Status, logs, doctor, jobs, JSON outputs | PV-090, PV-091, PV-092, PV-093, PV-094, PV-095 | PR 8, PR 13, and at least one of PR 14 or PR 16-20 | Yes, staged |
-| PR 22 | Self-update, update checks, Managed Resource update orchestration, installer contract, PV app release metadata | PV-100, PV-101, PV-102, PV-103, PV-104, PV-105, PV-106, PV-107 | PR 7, PR 13; PV-105 needs at least one real adapter | Yes, after update lock foundations |
-| PR 23 | Artifact release metadata, manifest generation tooling, packaging/validation harness | PV-108, PV-109, PV-110 | PR 6 | Yes, can overlap PR 14-22 |
-| PR 24 | PHP/FrankenPHP and Composer artifact recipes | PV-112, PV-113 | PR 23 | Yes, blocks public setup artifacts |
-| PR 25 | Artifact publication workflow and backing Managed Resource artifact recipes | PV-111, PV-114, PV-115, PV-116, PV-117 | PR 23, PR 24 | Yes, can split per resource |
-| PR 26 | End-to-end hardening and release candidate validation | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125 | PR 14-25 | No |
+| PR | Content | Implements | Depends On | Can Be Parallel? | Done |
+| --- | --- | --- | --- | --- | --- |
+| PR 1 | Rust skeleton, CI, workspace conventions | PV-000, PV-001, PV-002, PV-003, PV-004 | None | No | Yes (#234) |
+| PR 2 | Filesystem layout and SQLite state foundation | PV-010, PV-011, PV-012, PV-013, PV-014, PV-015 | PR 1 | No | Yes (#235) |
+| PR 3 | CLI command routing, global output, `pv env`, completions | PV-020, PV-021, PV-022, PV-023 | PR 1 | Yes, after PR 1 | Yes (#236) |
+| PR 4 | Daemon mode, socket protocol, job progress, daemon lifecycle stubs | PV-024, PV-025, PV-026, PV-027 | PR 2, PR 3 | No | No |
+| PR 5 | Reconciliation queue, supervisor, ports, readiness, logs, watchers | PV-030, PV-031, PV-032, PV-033, PV-034, PV-035, PV-036 | PR 4 | No | No |
+| PR 6 | Adapter trait, track model, manifest, downloader, atomic install, fixture artifacts | PV-040, PV-041, PV-042, PV-043, PV-044, PV-045, PV-049 | PR 5 | No | No |
+| PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6 | No | No |
+| PR 8 | Project state, `link`, `unlink`, config parser, `open`, base `list` | PV-060, PV-061, PV-062, PV-063, PV-068, PV-069 | PR 2, PR 4 | Yes, can overlap PR 5-7 with coordination | No |
+| PR 9 | Resource allocation contract, allocation names, env rendering | PV-047, PV-064, PV-065, PV-066, PV-067 | PR 7, PR 8 | No | No |
+| PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes | No |
+| PR 11 | `pf` config generation and port commands | PV-052, PV-053 | PR 4, PR 5 | Yes | No |
+| PR 12 | CA file generation and trust commands | PV-054 | PR 2, PR 4 | Yes | No |
+| PR 13 | LaunchAgent, `pv setup`, safe `pv uninstall` | PV-055, PV-056, PV-057 | PR 7, PR 10, PR 11, PR 12 | No | No |
+| PR 14 | PHP/FrankenPHP adapters, workers, Gateway, first Project-serving test | PV-070, PV-071, PV-072, PV-073, PV-074, PV-078 | PR 7, PR 9, PR 13 | No | No |
+| PR 15 | PHP shim, PHP commands, Composer track `2` install/shim | PV-075, PV-076, PV-077 | PR 14 | Yes | No |
+| PR 16 | Mailpit adapter | PV-083 | PR 7, PR 9 | Yes | No |
+| PR 17 | Redis adapter | PV-082 | PR 7, PR 9 | Yes | No |
+| PR 18 | MySQL adapter | PV-080 | PR 7, PR 9 | Yes | No |
+| PR 19 | Postgres adapter | PV-081 | PR 7, PR 9 | Yes | No |
+| PR 20 | RustFS adapter | PV-084 | PR 7, PR 9 | Yes | No |
+| PR 21 | Status, logs, doctor, jobs, JSON outputs | PV-090, PV-091, PV-092, PV-093, PV-094, PV-095 | PR 8, PR 13, and at least one of PR 14 or PR 16-20 | Yes, staged | No |
+| PR 22 | Self-update, update checks, Managed Resource update orchestration, installer contract, PV app release metadata | PV-100, PV-101, PV-102, PV-103, PV-104, PV-105, PV-106, PV-107 | PR 7, PR 13; PV-105 needs at least one real adapter | Yes, after update lock foundations | No |
+| PR 23 | Artifact release metadata, manifest generation tooling, packaging/validation harness | PV-108, PV-109, PV-110 | PR 6 | Yes, can overlap PR 14-22 | No |
+| PR 24 | PHP/FrankenPHP and Composer artifact recipes | PV-112, PV-113 | PR 23 | Yes, blocks public setup artifacts | No |
+| PR 25 | Artifact publication workflow and backing Managed Resource artifact recipes | PV-111, PV-114, PV-115, PV-116, PV-117 | PR 23, PR 24 | Yes, can split per resource | No |
+| PR 26 | End-to-end hardening and release candidate validation | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125 | PR 14-25 | No | No |
 
 ## First Usable MVP Cut
 
