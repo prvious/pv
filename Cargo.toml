@@ -1,0 +1,55 @@
+[package]
+name = "pv"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = [
+    ".",
+    "crates/cli",
+    "crates/config",
+    "crates/daemon",
+    "crates/macos",
+    "crates/resources",
+    "crates/state",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+disallowed_macros = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
+
+[lints]
+workspace = true
+
+[dependencies]
+cli = { path = "crates/cli" }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+assert_cmd = "2"
+insta = "1"
+
+[[test]]
+name = "cli"
+path = "it/cli.rs"
