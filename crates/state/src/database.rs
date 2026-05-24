@@ -127,29 +127,43 @@ impl Database {
     pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
         let finished_at = timestamp()?;
 
-        self.transaction(|transaction| {
-            transaction.execute(
+        let updated = self.transaction(|transaction| {
+            let updated = transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL WHERE id = ?4",
                 params![JobStatus::Succeeded.as_str(), finished_at, summary, id],
             )?;
-            prune_old_jobs(transaction)?;
+            if updated > 0 {
+                prune_old_jobs(transaction)?;
+            }
 
-            Ok(())
-        })
+            Ok(updated)
+        })?;
+        if updated == 0 {
+            return Err(StateError::JobNotFound { id: id.to_string() });
+        }
+
+        Ok(())
     }
 
     pub fn fail_job(&mut self, id: &str, error: &str) -> Result<(), StateError> {
         let finished_at = timestamp()?;
 
-        self.transaction(|transaction| {
-            transaction.execute(
+        let updated = self.transaction(|transaction| {
+            let updated = transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
                 params![JobStatus::Failed.as_str(), finished_at, error, id],
             )?;
-            prune_old_jobs(transaction)?;
+            if updated > 0 {
+                prune_old_jobs(transaction)?;
+            }
 
-            Ok(())
-        })
+            Ok(updated)
+        })?;
+        if updated == 0 {
+            return Err(StateError::JobNotFound { id: id.to_string() });
+        }
+
+        Ok(())
     }
 
     pub fn recent_jobs(&self) -> Result<Vec<JobRecord>, StateError> {

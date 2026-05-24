@@ -492,6 +492,38 @@ fn job_records_expose_typed_statuses() -> Result<()> {
 }
 
 #[test]
+fn completing_unknown_job_returns_typed_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let result = database.complete_job("missing_job", "done");
+
+    assert!(matches!(
+        result,
+        Err(StateError::JobNotFound { id }) if id == "missing_job"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn failing_unknown_job_returns_typed_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let result = database.fail_job("missing_job", "failed");
+
+    assert!(matches!(
+        result,
+        Err(StateError::JobNotFound { id }) if id == "missing_job"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn recent_jobs_rejects_unknown_status_values() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
