@@ -80,7 +80,12 @@ fn finish_execution(
 
             Ok(ExitCode::FAILURE)
         }
-        Err(ExecuteError::Io(error)) => Err(error.into()),
+        Err(ExecuteError::Io(error)) => {
+            let mut output = Output::new(stderr, output_mode);
+            output.error(&error.to_string())?;
+
+            Ok(ExitCode::FAILURE)
+        }
         Err(ExecuteError::Daemon(error)) => Err(error.into()),
         Err(ExecuteError::State(error)) => Err(error.into()),
     }
@@ -117,5 +122,30 @@ fn write_clap_error(
         write!(stdout, "{error}")
     } else {
         write!(stderr, "{error}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::process::ExitCode;
+
+    use super::finish_execution;
+    use crate::error::ExecuteError;
+    use crate::output::OutputMode;
+
+    #[test]
+    fn finish_execution_formats_io_errors() -> anyhow::Result<()> {
+        let mut stderr = Vec::new();
+        let exit_code = finish_execution(
+            Err(ExecuteError::Io(io::Error::other("stdout closed"))),
+            OutputMode::plain(),
+            &mut stderr,
+        )?;
+
+        assert_eq!(exit_code, ExitCode::FAILURE);
+        assert_eq!(String::from_utf8(stderr)?, "error: stdout closed\n");
+
+        Ok(())
     }
 }
