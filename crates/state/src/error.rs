@@ -41,6 +41,13 @@ pub enum StateError {
         source: rusqlite::Error,
     },
 
+    #[error("migration {version} name mismatch: expected {expected}, found {actual}")]
+    MigrationNameMismatch {
+        version: i64,
+        expected: &'static str,
+        actual: String,
+    },
+
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 

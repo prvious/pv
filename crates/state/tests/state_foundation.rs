@@ -147,6 +147,12 @@ fn migration_backup_retention_keeps_the_latest_five_backups() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    let manual_backup_path = paths.root().join("pv.db.00000000-manual.bak");
+
+    {
+        let _manual_backup = Connection::open(&manual_backup_path)?;
+    }
+
     let migrations = [
         Migration::new(1, "m1", "CREATE TABLE m1 (id TEXT PRIMARY KEY);"),
         Migration::new(2, "m2", "CREATE TABLE m2 (id TEXT PRIMARY KEY);"),
@@ -164,7 +170,33 @@ fn migration_backup_retention_keeps_the_latest_five_backups() -> Result<()> {
 
     let backup_table_counts = migration_backup_table_counts(&paths)?;
 
+    assert!(manual_backup_path.exists());
     assert_debug_snapshot!(backup_table_counts);
+
+    Ok(())
+}
+
+#[test]
+fn migration_backups_ignore_non_pv_backup_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let manual_backup_names = [
+        "pv.db.manual.bak",
+        "pv.db.00000000-manual.bak",
+        "pv.db.not-a-timestamp.bak",
+    ];
+
+    for manual_backup_name in manual_backup_names {
+        let manual_backup_path = paths.root().join(manual_backup_name);
+        let _manual_backup = Connection::open(&manual_backup_path)?;
+    }
+
+    let backups = state::fs::migration_backups(&paths)?;
+
+    for manual_backup_name in manual_backup_names {
+        assert!(!backups.contains(&manual_backup_name.to_string()));
+    }
 
     Ok(())
 }
@@ -219,6 +251,37 @@ fn pending_migrations_roll_back_as_one_batch_when_later_migration_fails() -> Res
     assert_debug_snapshot!((
         table_exists(&connection, "second_table")?,
         applied_migration_count(&connection)?
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn applied_migration_name_mismatches_are_reported() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let first_migration = [Migration::new(
+        1,
+        "first",
+        "CREATE TABLE first_table (id TEXT PRIMARY KEY);",
+    )];
+    state::testing::open_with_migrations(&paths, &first_migration)?;
+
+    let renamed_migration = [Migration::new(
+        1,
+        "renamed",
+        "CREATE TABLE first_table (id TEXT PRIMARY KEY);",
+    )];
+    let result = state::testing::open_with_migrations(&paths, &renamed_migration);
+
+    assert!(matches!(
+        result,
+        Err(StateError::MigrationNameMismatch {
+            version: 1,
+            expected: "renamed",
+            actual,
+        }) if actual == "first"
     ));
 
     Ok(())
