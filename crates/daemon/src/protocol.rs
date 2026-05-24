@@ -57,9 +57,17 @@ pub(crate) enum DaemonEvent<'message> {
         job_id: &'message str,
         message: &'message str,
     },
+    Log {
+        job_id: &'message str,
+        message: &'message str,
+    },
     JobCompleted {
         job_id: &'message str,
         summary: &'message str,
+    },
+    JobFailed {
+        job_id: &'message str,
+        error: &'message str,
     },
 }
 

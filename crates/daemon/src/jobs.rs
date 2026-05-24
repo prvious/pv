@@ -14,7 +14,7 @@ pub(crate) async fn run_job(
     let job = database.start_job(kind, scope)?;
     let summary = "stub job completed";
 
-    let write_result = async {
+    let stream_is_open = async {
         write_line(
             &mut transport,
             &DaemonResponse {
@@ -37,6 +37,44 @@ pub(crate) async fn run_job(
         .await?;
         write_line(
             &mut transport,
+            &DaemonEvent::Log {
+                job_id: &job.id,
+                message: "stub job started",
+            },
+        )
+        .await?;
+
+        Ok::<(), DaemonError>(())
+    }
+    .await
+    .is_ok();
+
+    if kind != "reconcile" || scope != "system" {
+        let error = format!("unsupported daemon job `{kind}` with scope `{scope}`");
+        database.fail_job(&job.id, &error)?;
+
+        if stream_is_open {
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobFailed {
+                    job_id: &job.id,
+                    error: &error,
+                },
+            )
+            .await?;
+        }
+
+        return Ok(());
+    }
+
+    database.complete_job(&job.id, summary)?;
+    if !stream_is_open {
+        return Ok(());
+    }
+
+    let write_result = async {
+        write_line(
+            &mut transport,
             &DaemonEvent::Progress {
                 job_id: &job.id,
                 message: "stub job completed without reconciliation work",
@@ -48,7 +86,6 @@ pub(crate) async fn run_job(
     }
     .await;
 
-    database.complete_job(&job.id, summary)?;
     write_result?;
 
     write_line(

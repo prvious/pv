@@ -1,5 +1,6 @@
 ---
 source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 221
 expression: snapshot
 ---
 (
@@ -13,7 +14,7 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000001"),
-            "kind": String("reconcile"),
+            "kind": String("unsupported"),
             "scope": String("system"),
             "type": String("job_started"),
         },
@@ -23,30 +24,25 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "error": String("unsupported daemon job `unsupported` with scope `system`"),
             "job_id": String("job_000001"),
-            "message": String("stub job completed without reconciliation work"),
-            "type": String("progress"),
-        },
-        Object {
-            "job_id": String("job_000001"),
-            "summary": String("stub job completed"),
-            "type": String("job_completed"),
+            "type": String("job_failed"),
         },
     ],
     [
         JobRecord {
             id: "job_000001",
-            kind: "reconcile",
+            kind: "unsupported",
             scope: "system",
-            status: Succeeded,
+            status: Failed,
             started_at: "<timestamp>",
             finished_at: Some(
                 "<timestamp>",
             ),
-            summary: Some(
-                "stub job completed",
+            summary: None,
+            error: Some(
+                "unsupported daemon job `unsupported` with scope `system`",
             ),
-            error: None,
         },
     ],
 )

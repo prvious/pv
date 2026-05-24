@@ -38,6 +38,35 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
 }
 
 #[tokio::test]
+async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "unsupported",
+            "scope": "system",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "unsupported_job_streams_failure_event_and_persists_failed_status",
+        (lines, database.recent_jobs()?),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
