@@ -48,7 +48,19 @@ impl ProjectConfigWatcher {
         let mut current_configs = BTreeMap::new();
 
         for watch in watches {
-            let modified_at = fs::modified_at(&watch.config_path)?;
+            let modified_at = match fs::modified_at(&watch.config_path) {
+                Ok(modified_at) => modified_at,
+                Err(_error) => {
+                    current_configs.insert(
+                        watch.project_id,
+                        WatchedConfig {
+                            path: watch.config_path,
+                            modified_at: None,
+                        },
+                    );
+                    continue;
+                }
+            };
             let watched_config = WatchedConfig {
                 path: watch.config_path,
                 modified_at,
@@ -58,12 +70,9 @@ impl ProjectConfigWatcher {
                 .watched_configs
                 .insert(watch.project_id.clone(), watched_config.clone())
                 && previous_config != watched_config
+                && let Ok(scope) = ReconciliationScope::project(watch.project_id.clone())
             {
-                self.debouncer
-                    .request(ReconciliationScope::Project {
-                        id: watch.project_id.clone(),
-                    })
-                    .await;
+                self.debouncer.request(scope).await;
             }
 
             current_configs.insert(watch.project_id, watched_config);
@@ -80,6 +89,8 @@ mod tests {
     use std::time::Duration;
 
     use camino_tempfile::tempdir;
+    use rusqlite::params;
+    use state::{Database, PvPaths, fs};
     use tokio::time::timeout;
 
     use super::ProjectConfigWatcher;
@@ -88,14 +99,59 @@ mod tests {
     #[tokio::test]
     async fn watcher_returns_poll_errors_to_the_task_owner() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
-        let paths = state::PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::write_sensitive_file(paths.root(), "not a directory")?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        fs::write_sensitive_file(paths.root(), "not a directory")?;
         let debouncer = ReconciliationDebouncer::new(Duration::from_millis(1), |_scope| {});
         let watcher = ProjectConfigWatcher::new(paths, debouncer, Duration::from_millis(1));
 
         let result = timeout(Duration::from_millis(50), watcher.run()).await?;
 
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watcher_keeps_polling_when_one_project_config_path_is_unreadable() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+        let mut database = Database::open(&paths)?;
+        state::testing::transaction(&mut database, |transaction| {
+            transaction.execute(
+                "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "bad_project",
+                    "/tmp/bad",
+                    "bad.test",
+                    "bad\0path",
+                    "2026-05-25T00:00:00Z",
+                    "2026-05-25T00:00:00Z",
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "good_project",
+                    project_path.as_str(),
+                    "good.test",
+                    config_path.as_str(),
+                    "2026-05-25T00:00:00Z",
+                    "2026-05-25T00:00:00Z",
+                ],
+            )?;
+
+            Ok(())
+        })?;
+        let debouncer = ReconciliationDebouncer::new(Duration::from_millis(1), |_scope| {});
+        let mut watcher = ProjectConfigWatcher::new(paths, debouncer, Duration::from_millis(1));
+
+        watcher.poll_once().await?;
 
         Ok(())
     }

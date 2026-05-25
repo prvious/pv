@@ -11,9 +11,12 @@ expression: "(\"<pid>\", log, metadata)"
             String("printf 'runtime ready\\n'; sleep 30"),
         ],
         "command": String("/bin/sh"),
+        "config_path": String("<home>/.pv/config/test-runtime.json"),
         "log_path": String("<home>/.pv/logs/test-runtime.log"),
         "name": String("test-runtime"),
         "pid": String("<pid>"),
+        "resource_name": String("test-runtime"),
         "started_at": String("<timestamp>"),
+        "track": String("test"),
     },
 )

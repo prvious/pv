@@ -11,6 +11,7 @@ use std::future::Future;
 use std::io;
 
 use state::{Database, PvPaths};
+use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -62,14 +63,19 @@ impl RunningDaemon {
 }
 
 pub fn run_blocking(paths: PvPaths) -> Result<(), DaemonError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()?;
+    let runtime = build_runtime()?;
 
     runtime.block_on(async {
         let daemon = RunningDaemon::start(paths).await?;
         wait_for_shutdown(daemon, termination_signal()).await
     })
+}
+
+fn build_runtime() -> io::Result<Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
 }
 
 async fn wait_for_shutdown(
@@ -130,7 +136,18 @@ mod tests {
     use state::PvPaths;
     use tokio::sync::oneshot;
 
-    use super::{DaemonError, RunningDaemon, wait_for_shutdown};
+    use super::{DaemonError, RunningDaemon, build_runtime, wait_for_shutdown};
+
+    #[test]
+    fn daemon_runtime_enables_tokio_timers() -> anyhow::Result<()> {
+        let runtime = build_runtime()?;
+
+        runtime.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn shutdown_wait_returns_when_server_task_fails_before_signal() {

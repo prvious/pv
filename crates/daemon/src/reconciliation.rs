@@ -10,9 +10,17 @@ use tokio::sync::Notify;
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ReconciliationScope {
     System,
-    Project { id: String },
-    Resource { name: String, track: String },
+    Project {
+        id: ReconciliationScopeComponent,
+    },
+    Resource {
+        name: ReconciliationScopeComponent,
+        track: ReconciliationScopeComponent,
+    },
 }
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ReconciliationScopeComponent(String);
 
 #[derive(Clone)]
 pub struct ReconciliationQueue {
@@ -106,7 +114,7 @@ impl ReconciliationQueue {
     ) -> Result<EnqueueResult, E> {
         let mut state = lock_queue_state(&self.inner);
 
-        if let Some(job) = matching_job(&state, &scope) {
+        if let Some(job) = matching_queued_job(&state, &scope) {
             return Ok(EnqueueResult::Coalesced(job));
         }
 
@@ -260,6 +268,66 @@ impl ReconciliationJob {
     }
 }
 
+impl ReconciliationScope {
+    pub fn project(id: impl Into<String>) -> Result<Self, ReconciliationScopeParseError> {
+        let id = id.into();
+        let scope = format!("project:{id}");
+        let id = ReconciliationScopeComponent::new(id, "id", &scope, 2)?;
+
+        Ok(Self::Project { id })
+    }
+
+    pub fn resource(
+        name: impl Into<String>,
+        track: impl Into<String>,
+    ) -> Result<Self, ReconciliationScopeParseError> {
+        let name = name.into();
+        let track = track.into();
+        let scope = format!("resource:{name}:{track}");
+        let name = ReconciliationScopeComponent::new(name, "name", &scope, 3)?;
+        let track = ReconciliationScopeComponent::new(track, "track", &scope, 3)?;
+
+        Ok(Self::Resource { name, track })
+    }
+}
+
+impl ReconciliationScopeComponent {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn new(
+        value: String,
+        component: &'static str,
+        scope: &str,
+        expected_components: usize,
+    ) -> Result<Self, ReconciliationScopeParseError> {
+        if value.is_empty() {
+            return Err(ReconciliationScopeParseError::EmptyComponent {
+                scope: scope.to_string(),
+                component,
+            });
+        }
+
+        let actual_components = scope.split(':').count();
+        if actual_components != expected_components {
+            return Err(ReconciliationScopeParseError::InvalidComponentCount {
+                scope: scope.to_string(),
+                expected: expected_components,
+                actual: actual_components,
+            });
+        }
+
+        Ok(Self(value))
+    }
+}
+
+impl fmt::Display for ReconciliationScopeComponent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 impl fmt::Display for ReconciliationScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -278,7 +346,9 @@ impl FromStr for ReconciliationScope {
 
         match parts.as_slice() {
             ["system"] => Ok(Self::System),
-            ["project", id] if !id.is_empty() => Ok(Self::Project { id: id.to_string() }),
+            ["project", id] if !id.is_empty() => Ok(Self::Project {
+                id: ReconciliationScopeComponent((*id).to_string()),
+            }),
             ["project", _id] => Err(ReconciliationScopeParseError::EmptyComponent {
                 scope: scope.to_string(),
                 component: "id",
@@ -290,8 +360,8 @@ impl FromStr for ReconciliationScope {
             }),
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => {
                 Ok(Self::Resource {
-                    name: name.to_string(),
-                    track: track.to_string(),
+                    name: ReconciliationScopeComponent((*name).to_string()),
+                    track: ReconciliationScopeComponent((*track).to_string()),
                 })
             }
             ["resource", "", _track] => Err(ReconciliationScopeParseError::EmptyComponent {
@@ -314,13 +384,11 @@ impl FromStr for ReconciliationScope {
     }
 }
 
-fn matching_job(state: &QueueState, scope: &ReconciliationScope) -> Option<ReconciliationJob> {
-    state
-        .active
-        .iter()
-        .chain(state.queued.iter())
-        .find(|job| &job.scope == scope)
-        .cloned()
+fn matching_queued_job(
+    state: &QueueState,
+    scope: &ReconciliationScope,
+) -> Option<ReconciliationJob> {
+    state.queued.iter().find(|job| &job.scope == scope).cloned()
 }
 
 fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) {
@@ -381,14 +449,10 @@ mod tests {
         let duplicate = queue.enqueue(ReconciliationScope::System, || {
             Ok::<String, anyhow::Error>("job_duplicate".to_string())
         })?;
-        assert!(matches!(
-            duplicate,
-            EnqueueResult::Coalesced(job) if job.job_id() == "job_1"
-        ));
+        let trailing = queued(duplicate)?;
+        assert_eq!(trailing.job_id(), "job_duplicate");
 
-        let project_scope = ReconciliationScope::Project {
-            id: "project_1".to_string(),
-        };
+        let project_scope = ReconciliationScope::project("project_1")?;
         let project = queued(queue.enqueue(project_scope.clone(), || {
             Ok::<String, anyhow::Error>("job_2".to_string())
         })?)?;
@@ -396,6 +460,10 @@ mod tests {
         assert!(project_wait.is_err());
 
         first_run.finish();
+
+        let trailing_run = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
+        assert_eq!(trailing_run.scope(), &ReconciliationScope::System);
+        trailing_run.finish();
 
         let project = queued(queue.enqueue(project_scope.clone(), || {
             Ok::<String, anyhow::Error>("job_3".to_string())
@@ -430,14 +498,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_active_scope_runs_one_trailing_reconciliation() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let active = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_1".to_string())
+        })?)?
+        .wait_for_turn()
+        .await;
+
+        let trailing = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_2".to_string())
+        })?)?;
+        let duplicate_trailing = queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_3".to_string())
+        })?;
+
+        assert!(matches!(
+            duplicate_trailing,
+            EnqueueResult::Coalesced(job) if job.job_id() == "job_2"
+        ));
+
+        active.finish();
+
+        let running = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
+        assert_eq!(running.job_id(), "job_2");
+        running.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn debounce_coalesces_bursts_before_queueing_reconciliation() -> anyhow::Result<()> {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let debouncer = ReconciliationDebouncer::new(Duration::from_millis(10), move |scope| {
             let _sent = sender.send(scope);
         });
-        let project_scope = ReconciliationScope::Project {
-            id: "project_1".to_string(),
-        };
+        let project_scope = ReconciliationScope::project("project_1")?;
 
         debouncer.request(ReconciliationScope::System).await;
         debouncer.request(ReconciliationScope::System).await;
@@ -460,7 +556,7 @@ mod tests {
         assert!(matches!(
             "resource:mysql:8.4".parse::<ReconciliationScope>(),
             Ok(ReconciliationScope::Resource { name, track })
-                if name == "mysql" && track == "8.4"
+                if name.as_str() == "mysql" && track.as_str() == "8.4"
         ));
         assert!(matches!(
             "resource:mysql:8.4:extra".parse::<ReconciliationScope>(),
@@ -481,6 +577,25 @@ mod tests {
             "unknown:scope".parse::<ReconciliationScope>(),
             Err(ReconciliationScopeParseError::UnknownScope { scope })
                 if scope == "unknown:scope"
+        ));
+    }
+
+    #[test]
+    fn scope_constructors_reject_ambiguous_components() {
+        assert!(matches!(
+            ReconciliationScope::project(""),
+            Err(ReconciliationScopeParseError::EmptyComponent {
+                component: "id",
+                ..
+            })
+        ));
+        assert!(matches!(
+            ReconciliationScope::project("project:one"),
+            Err(ReconciliationScopeParseError::InvalidComponentCount { .. })
+        ));
+        assert!(matches!(
+            ReconciliationScope::resource("mysql", "8.4:debug"),
+            Err(ReconciliationScopeParseError::InvalidComponentCount { .. })
         ));
     }
 

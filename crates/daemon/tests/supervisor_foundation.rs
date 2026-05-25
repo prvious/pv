@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use camino::Utf8PathBuf;
 use camino_tempfile::tempdir;
 use daemon::{
     ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
@@ -38,6 +39,51 @@ async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()
     .await;
 
     assert!(result.is_err());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let result: Result<(), std::io::Error> = async {
+            loop {
+                let (mut stream, _address) = listener.accept().await?;
+                let mut request = [0_u8; 1024];
+                let _bytes = stream.read(&mut request).await?;
+                stream
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+            }
+
+            #[expect(unreachable_code, reason = "test server runs until aborted")]
+            Ok(())
+        }
+        .await;
+
+        result
+    });
+
+    let result = wait_for_readiness(
+        ReadinessCheck::Http {
+            host: "127.0.0.1".to_string(),
+            port,
+            path: "/health".to_string(),
+        },
+        Duration::from_millis(30),
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(daemon::DaemonError::ReadinessTimedOut {
+            last_error: Some(reason),
+            ..
+        }) if reason.contains("HTTP readiness returned non-success status")
+    ));
+    server.abort();
 
     Ok(())
 }
@@ -139,17 +185,15 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     state::fs::ensure_layout(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let process = supervisor
-        .start(ProcessSpec {
-            name: "test-runtime".to_string(),
-            command: "/bin/sh".into(),
-            arguments: vec![
+        .start(process_spec(
+            &paths,
+            "test-runtime",
+            "/bin/sh",
+            vec![
                 "-c".to_string(),
                 "printf 'runtime ready\\n'; sleep 30".to_string(),
             ],
-            log_path: paths.logs().join("test-runtime.log"),
-            pid_path: paths.run().join("test-runtime.pid"),
-            metadata_path: paths.run().join("test-runtime.json"),
-        })
+        ))
         .await?;
 
     let log = wait_for_file_contains(process.log_path(), "runtime ready").await?;
@@ -158,6 +202,7 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     let pid = process.pid();
     assert!(pid > 0);
     metadata["pid"] = json!("<pid>");
+    metadata["config_path"] = json!("<home>/.pv/config/test-runtime.json");
     metadata["log_path"] = json!("<home>/.pv/logs/test-runtime.log");
     metadata["started_at"] = json!("<timestamp>");
 
@@ -186,9 +231,12 @@ async fn supervisor_terminates_child_when_runtime_metadata_persistence_fails() -
             name: "metadata-failure".to_string(),
             command: "/bin/sh".into(),
             arguments: vec!["-c".to_string(), "sleep 30".to_string()],
+            config_path: paths.config().join("metadata-failure.json"),
             log_path: paths.logs().join("metadata-failure.log"),
             pid_path: pid_path.clone(),
             metadata_path: metadata_parent_blocker.join("metadata.json"),
+            resource_name: "metadata-failure".to_string(),
+            track: "test".to_string(),
         })
         .await;
 
@@ -206,14 +254,12 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let spec = ProcessSpec {
-        name: "adoptable-runtime".to_string(),
-        command: "/bin/sh".into(),
-        arguments: vec!["-c".to_string(), "sleep 30".to_string()],
-        log_path: paths.logs().join("adoptable-runtime.log"),
-        pid_path: paths.run().join("adoptable-runtime.pid"),
-        metadata_path: paths.run().join("adoptable-runtime.json"),
-    };
+    let spec = process_spec(
+        &paths,
+        "adoptable-runtime",
+        "/bin/sh",
+        vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+    );
     let process = supervisor.start(spec.clone()).await?;
 
     let owned = supervisor
@@ -229,6 +275,49 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     process.stop(Duration::from_secs(1)).await?;
 
     assert!(supervisor.adopt(&spec)?.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "actual-runtime",
+            "/bin/sh",
+            vec!["-c".to_string(), "sleep 30".to_string()],
+        ))
+        .await?;
+    let forged = process_spec(
+        &paths,
+        "forged-runtime",
+        "/bin/echo",
+        vec!["not-the-live-process".to_string()],
+    );
+    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
+    state::fs::write_sensitive_file(
+        &forged.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": "forged-runtime",
+            "pid": actual.pid(),
+            "command": "/bin/echo",
+            "arguments": ["not-the-live-process"],
+            "config_path": forged.config_path.as_str(),
+            "resource_name": "forged-runtime",
+            "track": "test",
+            "log_path": forged.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+        }))?,
+    )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
 
     Ok(())
 }
@@ -264,4 +353,23 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
 
 fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
     Settings::clone_current().bind(assertion)
+}
+
+fn process_spec(
+    paths: &PvPaths,
+    name: &str,
+    command: impl Into<Utf8PathBuf>,
+    arguments: Vec<String>,
+) -> ProcessSpec {
+    ProcessSpec {
+        name: name.to_string(),
+        command: command.into(),
+        arguments,
+        config_path: paths.config().join(format!("{name}.json")),
+        log_path: paths.logs().join(format!("{name}.log")),
+        pid_path: paths.run().join(format!("{name}.pid")),
+        metadata_path: paths.run().join(format!("{name}.json")),
+        resource_name: name.to_string(),
+        track: "test".to_string(),
+    }
 }

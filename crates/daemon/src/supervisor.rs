@@ -15,14 +15,23 @@ use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV process supervisor verifies live process ownership"
+)]
+type StdCommand = std::process::Command;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessSpec {
     pub name: String,
     pub command: Utf8PathBuf,
     pub arguments: Vec<String>,
+    pub config_path: Utf8PathBuf,
     pub log_path: Utf8PathBuf,
     pub pid_path: Utf8PathBuf,
     pub metadata_path: Utf8PathBuf,
+    pub resource_name: String,
+    pub track: String,
 }
 
 #[derive(Debug)]
@@ -70,6 +79,12 @@ struct RuntimeMetadata {
     pid: u32,
     command: String,
     arguments: Vec<String>,
+    #[serde(default)]
+    config_path: String,
+    #[serde(default)]
+    resource_name: String,
+    #[serde(default)]
+    track: String,
     log_path: String,
     started_at: String,
 }
@@ -119,7 +134,7 @@ impl ProcessSupervisor {
             return Ok(None);
         };
 
-        if metadata.matches(spec, pid) && process_exists(pid)? {
+        if metadata.matches(spec, pid) && live_process_matches_spec(pid, spec)? {
             return Ok(Some(OwnedRuntime {
                 pid,
                 log_path: spec.log_path.clone(),
@@ -189,18 +204,26 @@ pub async fn wait_for_readiness(
     readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     let started_at = Instant::now();
+    let mut last_error = None;
 
     while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
         match timeout(remaining, check_once(&check)).await {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(_error)) => sleep(remaining.min(READINESS_POLL_INTERVAL)).await,
-            Err(_elapsed) => break,
+            Ok(Err(error)) => {
+                last_error = Some(error.to_string());
+                sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+            }
+            Err(elapsed) => {
+                last_error = Some(elapsed.to_string());
+                break;
+            }
         }
     }
 
     Err(DaemonError::ReadinessTimedOut {
         check: check.name(),
         timeout_ms: readiness_timeout.as_millis(),
+        last_error,
     })
 }
 
@@ -214,18 +237,26 @@ where
     Fut: Future<Output = bool>,
 {
     let started_at = Instant::now();
+    let mut last_error = None;
 
     while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
         match timeout(remaining, check()).await {
             Ok(true) => return Ok(()),
-            Ok(false) => sleep(remaining.min(READINESS_POLL_INTERVAL)).await,
-            Err(_elapsed) => break,
+            Ok(false) => {
+                last_error = Some("custom readiness returned false".to_string());
+                sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+            }
+            Err(elapsed) => {
+                last_error = Some(elapsed.to_string());
+                break;
+            }
         }
     }
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("custom:{name}"),
         timeout_ms: readiness_timeout.as_millis(),
+        last_error,
     })
 }
 
@@ -329,6 +360,9 @@ fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonErro
         pid,
         command: spec.command.to_string(),
         arguments: spec.arguments.clone(),
+        config_path: spec.config_path.to_string(),
+        resource_name: spec.resource_name.clone(),
+        track: spec.track.clone(),
         log_path: spec.log_path.to_string(),
         started_at,
     };
@@ -385,6 +419,42 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     }
 }
 
+fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+    if !process_exists(pid)? {
+        return Ok(false);
+    }
+
+    let Some(command_line) = live_process_command_line(pid)? else {
+        return Ok(false);
+    };
+
+    let command_matches = command_line.contains(spec.command.as_str())
+        || spec.command.file_name().is_some_and(|file_name| {
+            command_line
+                .split_whitespace()
+                .next()
+                .is_some_and(|command| command.ends_with(file_name))
+        });
+    Ok(command_matches)
+}
+
+fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
+    let output = StdCommand::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command_line.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(command_line))
+}
+
 fn process_not_found(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }
@@ -395,6 +465,9 @@ impl RuntimeMetadata {
             && self.pid == pid
             && self.command == spec.command.as_str()
             && self.arguments == spec.arguments
+            && self.config_path == spec.config_path.as_str()
+            && self.resource_name == spec.resource_name
+            && self.track == spec.track
             && self.log_path == spec.log_path.as_str()
     }
 }

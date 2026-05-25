@@ -29,8 +29,12 @@ pub enum DaemonError {
     #[error("process `{name}` started without an observable pid")]
     MissingProcessId { name: String },
 
-    #[error("readiness check `{check}` timed out after {timeout_ms}ms")]
-    ReadinessTimedOut { check: String, timeout_ms: u128 },
+    #[error("readiness check `{check}` timed out after {timeout_ms}ms; last error: {last_error:?}")]
+    ReadinessTimedOut {
+        check: String,
+        timeout_ms: u128,
+        last_error: Option<String>,
+    },
 
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
