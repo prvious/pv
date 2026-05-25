@@ -35,9 +35,9 @@ impl ProjectConfigWatcher {
         }
     }
 
-    pub(crate) async fn run(mut self) {
+    pub(crate) async fn run(mut self) -> Result<(), DaemonError> {
         loop {
-            let _result = self.poll_once().await;
+            self.poll_once().await?;
             sleep(self.poll_interval).await;
         }
     }
@@ -70,6 +70,32 @@ impl ProjectConfigWatcher {
         }
 
         self.watched_configs = current_configs;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use camino_tempfile::tempdir;
+    use tokio::time::timeout;
+
+    use super::ProjectConfigWatcher;
+    use crate::reconciliation::ReconciliationDebouncer;
+
+    #[tokio::test]
+    async fn watcher_returns_poll_errors_to_the_task_owner() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = state::PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::write_sensitive_file(paths.root(), "not a directory")?;
+        let debouncer = ReconciliationDebouncer::new(Duration::from_millis(1), |_scope| {});
+        let watcher = ProjectConfigWatcher::new(paths, debouncer, Duration::from_millis(1));
+
+        let result = timeout(Duration::from_millis(50), watcher.run()).await?;
+
+        assert!(result.is_err());
 
         Ok(())
     }

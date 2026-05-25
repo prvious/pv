@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::params;
@@ -284,8 +284,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
     })?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    state::fs::write_sensitive_file(&config_path, "php: '8.4'\n")?;
+    write_file_after_modified_time_tick(&config_path, "php: '8.4'\n").await?;
 
     let job = wait_for_job_scope(&paths, "project:project_1").await?;
 
@@ -356,4 +355,19 @@ async fn wait_for_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
     }
 
     Err(anyhow::anyhow!("job with scope {scope:?} was not recorded"))
+}
+
+async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &str) -> Result<()> {
+    let before = state::fs::modified_at(path)?;
+
+    for _attempt in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        state::fs::write_sensitive_file(path, content)?;
+
+        if state::fs::modified_at(path)? != before {
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!("modified time did not advance for {path}"))
 }

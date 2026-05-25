@@ -43,19 +43,25 @@ pub(crate) async fn serve(
     );
     let watcher =
         ProjectConfigWatcher::new(paths.clone(), debouncer, PROJECT_CONFIG_WATCH_INTERVAL);
-    connections.spawn(async move {
-        watcher.run().await;
-
-        Ok::<(), DaemonError>(())
-    });
+    let mut watcher_task = tokio::spawn(watcher.run());
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                watcher_task.abort();
+                let _join_result = watcher_task.await;
                 connections.abort_all();
                 while connections.join_next().await.is_some() {}
 
                 return Ok(());
+            }
+            watcher_result = &mut watcher_task => {
+                match watcher_result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(error)) => return Err(error),
+                    Err(error) if error.is_panic() => return Err(error.into()),
+                    Err(_error) => return Ok(()),
+                }
             }
             accepted = listener.accept() => {
                 match accepted {

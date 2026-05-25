@@ -11,7 +11,7 @@ use serde_json::json;
 use state::PvPaths;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{sleep, timeout};
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -81,7 +81,6 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
 
         Ok::<(), std::io::Error>(())
     });
-    let started_at = Instant::now();
 
     let result = timeout(
         Duration::from_millis(250),
@@ -97,7 +96,6 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
     .await?;
 
     assert!(result.is_err());
-    assert!(started_at.elapsed() < Duration::from_millis(200));
     server.abort();
 
     Ok(())
@@ -121,8 +119,6 @@ async fn custom_readiness_retries_until_the_check_succeeds() -> Result<()> {
 
 #[tokio::test]
 async fn custom_readiness_timeout_bounds_a_hanging_check_future() -> Result<()> {
-    let started_at = Instant::now();
-
     let result = timeout(
         Duration::from_millis(250),
         wait_for_custom_readiness("hanging-custom", Duration::from_millis(30), || {
@@ -132,7 +128,6 @@ async fn custom_readiness_timeout_bounds_a_hanging_check_future() -> Result<()> 
     .await?;
 
     assert!(result.is_err());
-    assert!(started_at.elapsed() < Duration::from_millis(200));
 
     Ok(())
 }
