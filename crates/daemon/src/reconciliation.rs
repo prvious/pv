@@ -1,10 +1,11 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::sync::{Mutex, Notify};
+use thiserror::Error;
+use tokio::sync::Notify;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ReconciliationScope {
@@ -20,25 +21,51 @@ pub struct ReconciliationQueue {
 
 pub enum EnqueueResult {
     Queued(QueuedReconciliation),
-    Coalesced,
+    Coalesced(ReconciliationJob),
 }
 
-#[derive(Clone)]
-pub struct QueuedReconciliation {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconciliationJob {
     scope: ReconciliationScope,
+    job_id: String,
+}
+
+pub struct QueuedReconciliation {
+    job: ReconciliationJob,
     inner: Arc<QueueInner>,
+    released: bool,
 }
 
 pub struct RunningReconciliation {
-    scope: ReconciliationScope,
+    job: ReconciliationJob,
     inner: Arc<QueueInner>,
+    finished: bool,
 }
 
 #[derive(Clone)]
 pub struct ReconciliationDebouncer {
-    queue: ReconciliationQueue,
     delay: Duration,
     state: Arc<DebounceState>,
+    handler: Arc<dyn Fn(ReconciliationScope) + Send + Sync>,
+}
+
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum ReconciliationScopeParseError {
+    #[error("unknown reconciliation scope `{scope}`")]
+    UnknownScope { scope: String },
+
+    #[error("reconciliation scope `{scope}` has {actual} components; expected {expected}")]
+    InvalidComponentCount {
+        scope: String,
+        expected: usize,
+        actual: usize,
+    },
+
+    #[error("reconciliation scope `{scope}` has an empty {component} component")]
+    EmptyComponent {
+        scope: String,
+        component: &'static str,
+    },
 }
 
 struct QueueInner {
@@ -52,8 +79,8 @@ struct DebounceState {
 
 #[derive(Debug, Default)]
 struct QueueState {
-    active: Option<ReconciliationScope>,
-    queued: VecDeque<ReconciliationScope>,
+    active: Option<ReconciliationJob>,
+    queued: VecDeque<ReconciliationJob>,
 }
 
 #[derive(Debug, Default)]
@@ -72,20 +99,29 @@ impl ReconciliationQueue {
         }
     }
 
-    pub async fn enqueue(&self, scope: ReconciliationScope) -> EnqueueResult {
-        let mut state = self.inner.state.lock().await;
+    pub fn enqueue<E>(
+        &self,
+        scope: ReconciliationScope,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+    ) -> Result<EnqueueResult, E> {
+        let mut state = lock_queue_state(&self.inner);
 
-        if state.active.as_ref() == Some(&scope) || state.queued.contains(&scope) {
-            return EnqueueResult::Coalesced;
+        if let Some(job) = matching_job(&state, &scope) {
+            return Ok(EnqueueResult::Coalesced(job));
         }
 
-        state.queued.push_back(scope.clone());
+        let job = ReconciliationJob {
+            scope,
+            job_id: create_job_id()?,
+        };
+        state.queued.push_back(job.clone());
         self.inner.notify.notify_waiters();
 
-        EnqueueResult::Queued(QueuedReconciliation {
-            scope,
+        Ok(EnqueueResult::Queued(QueuedReconciliation {
+            job,
             inner: Arc::clone(&self.inner),
-        })
+            released: false,
+        }))
     }
 }
 
@@ -97,18 +133,25 @@ impl Default for ReconciliationQueue {
 
 impl QueuedReconciliation {
     pub async fn wait_for_turn(self) -> RunningReconciliation {
+        let mut queued = self;
+
         loop {
-            let notified = self.inner.notify.notified();
+            let notified = queued.inner.notify.notified();
 
             {
-                let mut state = self.inner.state.lock().await;
-                if state.active.is_none() && state.queued.front() == Some(&self.scope) {
-                    state.queued.pop_front();
-                    state.active = Some(self.scope.clone());
+                let mut state = lock_queue_state(&queued.inner);
+                if state.active.is_none()
+                    && let Some(front) = state.queued.front()
+                    && front.job_id == queued.job.job_id
+                    && let Some(job) = state.queued.pop_front()
+                {
+                    state.active = Some(job.clone());
+                    queued.released = true;
 
                     return RunningReconciliation {
-                        scope: self.scope,
-                        inner: Arc::clone(&self.inner),
+                        job,
+                        inner: Arc::clone(&queued.inner),
+                        finished: false,
                     };
                 }
             }
@@ -116,37 +159,64 @@ impl QueuedReconciliation {
             notified.await;
         }
     }
+
+    pub fn job_id(&self) -> &str {
+        &self.job.job_id
+    }
+}
+
+impl Drop for QueuedReconciliation {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+
+        remove_queued_job(&self.inner, &self.job);
+    }
 }
 
 impl RunningReconciliation {
     pub fn scope(&self) -> &ReconciliationScope {
-        &self.scope
+        &self.job.scope
     }
 
-    pub async fn finish(self) {
-        let mut state = self.inner.state.lock().await;
+    pub fn job_id(&self) -> &str {
+        &self.job.job_id
+    }
 
-        if state.active.as_ref() == Some(&self.scope) {
-            state.active = None;
-            self.inner.notify.notify_waiters();
+    pub fn finish(mut self) {
+        release_active_job(&self.inner, &self.job);
+        self.finished = true;
+    }
+}
+
+impl Drop for RunningReconciliation {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
         }
+
+        release_active_job(&self.inner, &self.job);
     }
 }
 
 impl ReconciliationDebouncer {
-    pub fn new(queue: ReconciliationQueue, delay: Duration) -> Self {
+    pub fn new(
+        delay: Duration,
+        handler: impl Fn(ReconciliationScope) + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            queue,
             delay,
             state: Arc::new(DebounceState {
                 inner: Mutex::new(DebounceInner::default()),
             }),
+            handler: Arc::new(handler),
         }
     }
 
     pub async fn request(&self, scope: ReconciliationScope) {
         let should_spawn = {
-            let mut inner = self.state.inner.lock().await;
+            let mut inner = lock_debounce_state(&self.state);
             inner.pending.insert(scope);
 
             if inner.worker_running {
@@ -169,14 +239,24 @@ impl ReconciliationDebouncer {
         tokio::time::sleep(self.delay).await;
 
         let scopes = {
-            let mut inner = self.state.inner.lock().await;
+            let mut inner = lock_debounce_state(&self.state);
             inner.worker_running = false;
             std::mem::take(&mut inner.pending)
         };
 
         for scope in scopes {
-            let _result = self.queue.enqueue(scope).await;
+            (self.handler)(scope);
         }
+    }
+}
+
+impl ReconciliationJob {
+    pub fn scope(&self) -> &ReconciliationScope {
+        &self.scope
+    }
+
+    pub fn job_id(&self) -> &str {
+        &self.job_id
     }
 }
 
@@ -191,33 +271,92 @@ impl fmt::Display for ReconciliationScope {
 }
 
 impl FromStr for ReconciliationScope {
-    type Err = ();
+    type Err = ReconciliationScopeParseError;
 
     fn from_str(scope: &str) -> Result<Self, Self::Err> {
-        if scope == "system" {
-            return Ok(Self::System);
-        }
+        let parts = scope.split(':').collect::<Vec<_>>();
 
-        if let Some(id) = scope.strip_prefix("project:")
-            && !id.is_empty()
-        {
-            return Ok(Self::Project { id: id.to_string() });
-        }
-
-        if let Some(resource) = scope.strip_prefix("resource:") {
-            let Some((name, track)) = resource.split_once(':') else {
-                return Err(());
-            };
-
-            if !name.is_empty() && !track.is_empty() {
-                return Ok(Self::Resource {
+        match parts.as_slice() {
+            ["system"] => Ok(Self::System),
+            ["project", id] if !id.is_empty() => Ok(Self::Project { id: id.to_string() }),
+            ["project", _id] => Err(ReconciliationScopeParseError::EmptyComponent {
+                scope: scope.to_string(),
+                component: "id",
+            }),
+            ["project", ..] => Err(ReconciliationScopeParseError::InvalidComponentCount {
+                scope: scope.to_string(),
+                expected: 2,
+                actual: parts.len(),
+            }),
+            ["resource", name, track] if !name.is_empty() && !track.is_empty() => {
+                Ok(Self::Resource {
                     name: name.to_string(),
                     track: track.to_string(),
-                });
+                })
             }
+            ["resource", "", _track] => Err(ReconciliationScopeParseError::EmptyComponent {
+                scope: scope.to_string(),
+                component: "name",
+            }),
+            ["resource", _name, ""] => Err(ReconciliationScopeParseError::EmptyComponent {
+                scope: scope.to_string(),
+                component: "track",
+            }),
+            ["resource", ..] => Err(ReconciliationScopeParseError::InvalidComponentCount {
+                scope: scope.to_string(),
+                expected: 3,
+                actual: parts.len(),
+            }),
+            _ => Err(ReconciliationScopeParseError::UnknownScope {
+                scope: scope.to_string(),
+            }),
         }
+    }
+}
 
-        Err(())
+fn matching_job(state: &QueueState, scope: &ReconciliationScope) -> Option<ReconciliationJob> {
+    state
+        .active
+        .iter()
+        .chain(state.queued.iter())
+        .find(|job| &job.scope == scope)
+        .cloned()
+}
+
+fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) {
+    let mut state = lock_queue_state(inner);
+    let queued_len = state.queued.len();
+    state.queued.retain(|queued| queued.job_id != job.job_id);
+
+    if state.queued.len() != queued_len {
+        inner.notify.notify_waiters();
+    }
+}
+
+fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) {
+    let mut state = lock_queue_state(inner);
+
+    if state
+        .active
+        .as_ref()
+        .is_some_and(|active| active.job_id == job.job_id)
+    {
+        state.active = None;
+        inner.notify.notify_waiters();
+    }
+}
+
+fn lock_queue_state(inner: &QueueInner) -> MutexGuard<'_, QueueState> {
+    match inner.state.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_debounce_state(state: &DebounceState) -> MutexGuard<'_, DebounceInner> {
+    match state.inner.lock() {
+        Ok(inner) => inner,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -227,39 +366,75 @@ mod tests {
 
     use super::{
         EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
-        ReconciliationScope,
+        ReconciliationScope, ReconciliationScopeParseError,
     };
 
     #[tokio::test]
     async fn queue_runs_one_scope_at_a_time_and_coalesces_duplicates() -> anyhow::Result<()> {
         let queue = ReconciliationQueue::new();
-        let first = queued(queue.enqueue(ReconciliationScope::System).await)?;
+        let first = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_1".to_string())
+        })?)?;
         let first_run = first.wait_for_turn().await;
+        assert_eq!(first_run.job_id(), "job_1");
 
-        let duplicate = queue.enqueue(ReconciliationScope::System).await;
-        assert!(matches!(duplicate, EnqueueResult::Coalesced));
+        let duplicate = queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_duplicate".to_string())
+        })?;
+        assert!(matches!(
+            duplicate,
+            EnqueueResult::Coalesced(job) if job.job_id() == "job_1"
+        ));
 
         let project_scope = ReconciliationScope::Project {
             id: "project_1".to_string(),
         };
-        let project = queued(queue.enqueue(project_scope.clone()).await)?;
-        let project_wait =
-            timeout(Duration::from_millis(10), project.clone().wait_for_turn()).await;
+        let project = queued(queue.enqueue(project_scope.clone(), || {
+            Ok::<String, anyhow::Error>("job_2".to_string())
+        })?)?;
+        let project_wait = timeout(Duration::from_millis(10), project.wait_for_turn()).await;
         assert!(project_wait.is_err());
 
-        first_run.finish().await;
+        first_run.finish();
 
+        let project = queued(queue.enqueue(project_scope.clone(), || {
+            Ok::<String, anyhow::Error>("job_3".to_string())
+        })?)?;
         let project_run = timeout(Duration::from_secs(1), project.wait_for_turn()).await?;
         assert_eq!(project_run.scope(), &project_scope);
-        project_run.finish().await;
+        assert_eq!(project_run.job_id(), "job_3");
+        project_run.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_running_reconciliation_releases_the_active_scope() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let running = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_1".to_string())
+        })?)?
+        .wait_for_turn()
+        .await;
+
+        drop(running);
+
+        assert!(matches!(
+            queue.enqueue(ReconciliationScope::System, || {
+                Ok::<String, anyhow::Error>("job_2".to_string())
+            })?,
+            EnqueueResult::Queued(_)
+        ));
 
         Ok(())
     }
 
     #[tokio::test]
     async fn debounce_coalesces_bursts_before_queueing_reconciliation() -> anyhow::Result<()> {
-        let queue = ReconciliationQueue::new();
-        let debouncer = ReconciliationDebouncer::new(queue.clone(), Duration::from_millis(10));
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let debouncer = ReconciliationDebouncer::new(Duration::from_millis(10), move |scope| {
+            let _sent = sender.send(scope);
+        });
         let project_scope = ReconciliationScope::Project {
             id: "project_1".to_string(),
         };
@@ -269,22 +444,53 @@ mod tests {
         debouncer.request(project_scope.clone()).await;
         sleep(Duration::from_millis(50)).await;
 
-        assert!(matches!(
-            queue.enqueue(ReconciliationScope::System).await,
-            EnqueueResult::Coalesced
-        ));
-        assert!(matches!(
-            queue.enqueue(project_scope).await,
-            EnqueueResult::Coalesced
-        ));
+        let mut scopes = Vec::new();
+        while let Ok(scope) = receiver.try_recv() {
+            scopes.push(scope);
+        }
+
+        scopes.sort();
+        assert_eq!(scopes, vec![ReconciliationScope::System, project_scope]);
 
         Ok(())
+    }
+
+    #[test]
+    fn scope_parser_rejects_extra_or_missing_components_with_typed_errors() {
+        assert!(matches!(
+            "resource:mysql:8.4".parse::<ReconciliationScope>(),
+            Ok(ReconciliationScope::Resource { name, track })
+                if name == "mysql" && track == "8.4"
+        ));
+        assert!(matches!(
+            "resource:mysql:8.4:extra".parse::<ReconciliationScope>(),
+            Err(ReconciliationScopeParseError::InvalidComponentCount {
+                scope,
+                expected: 3,
+                actual: 4,
+            }) if scope == "resource:mysql:8.4:extra"
+        ));
+        assert!(matches!(
+            "project:".parse::<ReconciliationScope>(),
+            Err(ReconciliationScopeParseError::EmptyComponent {
+                scope,
+                component: "id",
+            }) if scope == "project:"
+        ));
+        assert!(matches!(
+            "unknown:scope".parse::<ReconciliationScope>(),
+            Err(ReconciliationScopeParseError::UnknownScope { scope })
+                if scope == "unknown:scope"
+        ));
     }
 
     fn queued(result: EnqueueResult) -> anyhow::Result<QueuedReconciliation> {
         match result {
             EnqueueResult::Queued(queued) => Ok(queued),
-            EnqueueResult::Coalesced => Err(anyhow::anyhow!("scope unexpectedly coalesced")),
+            EnqueueResult::Coalesced(job) => Err(anyhow::anyhow!(
+                "scope unexpectedly coalesced into {}",
+                job.job_id()
+            )),
         }
     }
 }

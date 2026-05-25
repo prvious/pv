@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use rusqlite::{Connection, Transaction, params};
+use camino::Utf8PathBuf;
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
 
@@ -62,13 +64,24 @@ pub struct JobRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortRequest {
-    pub name: String,
-    pub owner_kind: String,
-    pub resource_name: Option<String>,
-    pub track: Option<String>,
-    pub preferred_port: u16,
-    pub fallback_start: u16,
-    pub fallback_end: u16,
+    owner: PortOwner,
+    preferred_port: u16,
+    fallback_start: u16,
+    fallback_end: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PortOwner {
+    Dns,
+    Gateway,
+    ProjectWorker {
+        project_id: String,
+        php_track: String,
+    },
+    Resource {
+        name: String,
+        track: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +92,12 @@ pub struct PortAssignment {
     pub resource_name: Option<String>,
     pub track: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectConfigWatch {
+    pub project_id: String,
+    pub config_path: Utf8PathBuf,
 }
 
 struct JobRecordRow {
@@ -237,28 +256,48 @@ impl Database {
         request: PortRequest,
         mut is_available: impl FnMut(u16) -> bool,
     ) -> Result<PortAssignment, StateError> {
-        if let Some(existing) = self.port_assignment(&request.name)?
+        let request_name = request.name();
+        let candidates = request.candidates();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some(existing) = port_assignment_in_transaction(&transaction, &request_name)?
             && is_available(existing.port)
         {
+            transaction.commit()?;
+
             return Ok(existing);
         }
 
-        let assigned_ports = self.assigned_port_numbers_except(&request.name)?;
+        let assigned_ports =
+            assigned_port_numbers_except_in_transaction(&transaction, &request_name)?;
 
-        for candidate in request.candidates() {
+        for candidate in candidates.iter().copied() {
             if assigned_ports.contains(&candidate) || !is_available(candidate) {
                 continue;
             }
 
-            return self.upsert_port(request, candidate);
+            let updated_at = timestamp()?;
+            upsert_port_in_transaction(&transaction, &request, candidate, &updated_at)?;
+            transaction.commit()?;
+
+            return Ok(PortAssignment {
+                name: request_name,
+                port: candidate,
+                owner_kind: request.owner.kind().to_string(),
+                resource_name: request.owner.resource_name(),
+                track: request.owner.track(),
+                updated_at,
+            });
         }
 
         Err(StateError::NoAvailablePort {
-            name: request.name,
+            name: request_name,
             preferred_port: request.preferred_port,
             fallback_start: request.fallback_start,
             fallback_end: request.fallback_end,
-            attempts: PORT_CANDIDATE_LIMIT,
+            attempts: candidates.len(),
         })
     }
 
@@ -282,6 +321,25 @@ impl Database {
         }
 
         Ok(assignments)
+    }
+
+    pub fn project_config_watches(&self) -> Result<Vec<ProjectConfigWatch>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, config_path FROM projects WHERE config_path IS NOT NULL ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(ProjectConfigWatch {
+                project_id: row.get(0)?,
+                config_path: Utf8PathBuf::from(row.get::<_, String>(1)?),
+            })
+        })?;
+        let mut watches = Vec::new();
+
+        for row in rows {
+            watches.push(row?);
+        }
+
+        Ok(watches)
     }
 
     pub(crate) fn transaction<T>(
@@ -342,75 +400,76 @@ impl Database {
 
         Ok(tables)
     }
-
-    fn port_assignment(&self, name: &str) -> Result<Option<PortAssignment>, StateError> {
-        let mut statement = self.connection.prepare(
-            "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports WHERE name = ?1",
-        )?;
-        let mut rows = statement.query_map(params![name], port_assignment_from_row)?;
-
-        match rows.next() {
-            Some(row) => Ok(Some(row?.into_assignment())),
-            None => Ok(None),
-        }
-    }
-
-    fn assigned_port_numbers_except(&self, name: &str) -> Result<Vec<u16>, StateError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT port FROM ports WHERE name != ?1 ORDER BY port")?;
-        let rows = statement.query_map(params![name], |row| row.get::<_, u16>(0))?;
-        let mut ports = Vec::new();
-
-        for row in rows {
-            ports.push(row?);
-        }
-
-        Ok(ports)
-    }
-
-    fn upsert_port(
-        &mut self,
-        request: PortRequest,
-        port: u16,
-    ) -> Result<PortAssignment, StateError> {
-        let updated_at = timestamp()?;
-
-        self.transaction(|transaction| {
-            transaction.execute(
-                "INSERT INTO ports (name, port, owner_kind, resource_name, track, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                ON CONFLICT(name) DO UPDATE SET
-                    port = excluded.port,
-                    owner_kind = excluded.owner_kind,
-                    resource_name = excluded.resource_name,
-                    track = excluded.track,
-                    updated_at = excluded.updated_at",
-                params![
-                    request.name,
-                    port,
-                    request.owner_kind,
-                    request.resource_name,
-                    request.track,
-                    updated_at,
-                ],
-            )?;
-
-            Ok(())
-        })?;
-
-        Ok(PortAssignment {
-            name: request.name,
-            port,
-            owner_kind: request.owner_kind,
-            resource_name: request.resource_name,
-            track: request.track,
-            updated_at,
-        })
-    }
 }
 
 impl PortRequest {
+    pub fn dns(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
+        Self::new(PortOwner::Dns, preferred_port, fallback_start, fallback_end)
+    }
+
+    pub fn gateway(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
+        Self::new(
+            PortOwner::Gateway,
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn project_worker(
+        project_id: impl Into<String>,
+        php_track: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::ProjectWorker {
+                project_id: project_id.into(),
+                php_track: php_track.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn resource(
+        name: impl Into<String>,
+        track: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::Resource {
+                name: name.into(),
+                track: track.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn new(
+        owner: PortOwner,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self {
+            owner,
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        }
+    }
+
+    pub fn name(&self) -> String {
+        self.owner.storage_key()
+    }
+
     fn candidates(&self) -> Vec<u16> {
         let mut candidates = vec![self.preferred_port];
 
@@ -428,6 +487,44 @@ impl PortRequest {
     }
 }
 
+impl PortOwner {
+    fn storage_key(&self) -> String {
+        match self {
+            Self::Dns => "dns".to_string(),
+            Self::Gateway => "gateway".to_string(),
+            Self::ProjectWorker {
+                project_id,
+                php_track,
+            } => format!("project:{project_id}:php:{php_track}"),
+            Self::Resource { name, track } => format!("resource:{name}:{track}"),
+        }
+    }
+
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Gateway => "gateway",
+            Self::ProjectWorker { .. } => "project_worker",
+            Self::Resource { .. } => "resource",
+        }
+    }
+
+    fn resource_name(&self) -> Option<String> {
+        match self {
+            Self::Resource { name, .. } => Some(name.clone()),
+            Self::Dns | Self::Gateway | Self::ProjectWorker { .. } => None,
+        }
+    }
+
+    fn track(&self) -> Option<String> {
+        match self {
+            Self::ProjectWorker { php_track, .. } => Some(php_track.clone()),
+            Self::Resource { track, .. } => Some(track.clone()),
+            Self::Dns | Self::Gateway => None,
+        }
+    }
+}
+
 impl PortAssignmentRow {
     fn into_assignment(self) -> PortAssignment {
         PortAssignment {
@@ -439,6 +536,65 @@ impl PortAssignmentRow {
             updated_at: self.updated_at,
         }
     }
+}
+
+fn port_assignment_in_transaction(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> rusqlite::Result<Option<PortAssignment>> {
+    let mut statement = transaction.prepare(
+        "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports WHERE name = ?1",
+    )?;
+    let mut rows = statement.query_map(params![name], port_assignment_from_row)?;
+
+    match rows.next() {
+        Some(row) => Ok(Some(row?.into_assignment())),
+        None => Ok(None),
+    }
+}
+
+fn assigned_port_numbers_except_in_transaction(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> rusqlite::Result<BTreeSet<u16>> {
+    let mut statement =
+        transaction.prepare("SELECT port FROM ports WHERE name != ?1 ORDER BY port")?;
+    let rows = statement.query_map(params![name], |row| row.get::<_, u16>(0))?;
+    let mut ports = BTreeSet::new();
+
+    for row in rows {
+        ports.insert(row?);
+    }
+
+    Ok(ports)
+}
+
+fn upsert_port_in_transaction(
+    transaction: &Transaction<'_>,
+    request: &PortRequest,
+    port: u16,
+    updated_at: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO ports (name, port, owner_kind, resource_name, track, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(name) DO UPDATE SET
+            port = excluded.port,
+            owner_kind = excluded.owner_kind,
+            resource_name = excluded.resource_name,
+            track = excluded.track,
+            updated_at = excluded.updated_at",
+        params![
+            request.name(),
+            port,
+            request.owner.kind(),
+            request.owner.resource_name(),
+            request.owner.track(),
+            updated_at,
+        ],
+    )?;
+
+    Ok(())
 }
 
 fn port_assignment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PortAssignmentRow> {

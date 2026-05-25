@@ -237,6 +237,7 @@ dependencies = [
  "camino-tempfile",
  "futures-util",
  "insta",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

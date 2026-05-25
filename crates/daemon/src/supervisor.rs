@@ -3,9 +3,9 @@ use std::time::Duration;
 use std::{future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rustix::process::{Pid, Signal, kill_process_group};
-use serde::Serialize;
-use state::{PvPaths, fs};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
+use serde::{Deserialize, Serialize};
+use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
@@ -39,6 +39,19 @@ pub struct ManagedProcess {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedRuntime {
+    pid: u32,
+    log_path: Utf8PathBuf,
+    pid_path: Utf8PathBuf,
+    metadata_path: Utf8PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptedProcess {
+    owned: OwnedRuntime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadinessCheck {
     Tcp {
         host: String,
@@ -51,13 +64,13 @@ pub enum ReadinessCheck {
     },
 }
 
-#[derive(Serialize)]
-struct RuntimeMetadata<'metadata> {
-    name: &'metadata str,
+#[derive(Deserialize, Serialize)]
+struct RuntimeMetadata {
+    name: String,
     pid: u32,
-    command: &'metadata str,
-    arguments: &'metadata [String],
-    log_path: &'metadata str,
+    command: String,
+    arguments: Vec<String>,
+    log_path: String,
     started_at: String,
 }
 
@@ -75,13 +88,16 @@ impl ProcessSupervisor {
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         let Some(pid) = child.id() else {
             return Err(DaemonError::MissingProcessId { name: spec.name });
         };
 
-        fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
-        write_runtime_metadata(&spec, pid)?;
+        if let Err(error) = persist_runtime_files(&spec, pid) {
+            terminate_spawned_child(pid, &mut child).await;
+
+            return Err(error);
+        }
 
         Ok(ManagedProcess {
             pid,
@@ -90,6 +106,35 @@ impl ProcessSupervisor {
             pid_path: spec.pid_path,
             metadata_path: spec.metadata_path,
         })
+    }
+
+    pub fn verify_ownership(
+        &self,
+        spec: &ProcessSpec,
+    ) -> Result<Option<OwnedRuntime>, DaemonError> {
+        let Some(pid) = read_pid_file(&spec.pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
+            return Ok(None);
+        };
+
+        if metadata.matches(spec, pid) && process_exists(pid)? {
+            return Ok(Some(OwnedRuntime {
+                pid,
+                log_path: spec.log_path.clone(),
+                pid_path: spec.pid_path.clone(),
+                metadata_path: spec.metadata_path.clone(),
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub fn adopt(&self, spec: &ProcessSpec) -> Result<Option<AdoptedProcess>, DaemonError> {
+        Ok(self
+            .verify_ownership(spec)?
+            .map(|owned| AdoptedProcess { owned }))
     }
 }
 
@@ -111,15 +156,31 @@ impl ManagedProcess {
     }
 
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+
         let process_group = process_group_pid(self.pid)?;
-        kill_process_group(process_group, Signal::TERM).map_err(io::Error::from)?;
+        signal_process_group(process_group, Signal::TERM)?;
 
         if timeout(grace_period, self.child.wait()).await.is_err() {
-            kill_process_group(process_group, Signal::KILL).map_err(io::Error::from)?;
+            signal_process_group(process_group, Signal::KILL)?;
             self.child.wait().await?;
         }
 
         Ok(())
+    }
+}
+
+impl OwnedRuntime {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+}
+
+impl AdoptedProcess {
+    pub fn pid(&self) -> u32 {
+        self.owned.pid()
     }
 }
 
@@ -129,12 +190,12 @@ pub async fn wait_for_readiness(
 ) -> Result<(), DaemonError> {
     let started_at = Instant::now();
 
-    while started_at.elapsed() < readiness_timeout {
-        if check_once(&check).await.is_ok() {
-            return Ok(());
+    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+        match timeout(remaining, check_once(&check)).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(_error)) => sleep(remaining.min(READINESS_POLL_INTERVAL)).await,
+            Err(_elapsed) => break,
         }
-
-        sleep(READINESS_POLL_INTERVAL).await;
     }
 
     Err(DaemonError::ReadinessTimedOut {
@@ -154,18 +215,24 @@ where
 {
     let started_at = Instant::now();
 
-    while started_at.elapsed() < readiness_timeout {
-        if check().await {
-            return Ok(());
+    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+        match timeout(remaining, check()).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => sleep(remaining.min(READINESS_POLL_INTERVAL)).await,
+            Err(_elapsed) => break,
         }
-
-        sleep(READINESS_POLL_INTERVAL).await;
     }
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("custom:{name}"),
         timeout_ms: readiness_timeout.as_millis(),
     })
+}
+
+fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
+    readiness_timeout
+        .checked_sub(started_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
 }
 
 impl ReadinessCheck {
@@ -215,6 +282,28 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     })
 }
 
+fn signal_process_group(process_group: Pid, signal: Signal) -> Result<(), DaemonError> {
+    match kill_process_group(process_group, signal) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            let error = io::Error::from(source);
+            if process_not_found(&error) {
+                return Ok(());
+            }
+
+            Err(error.into())
+        }
+    }
+}
+
+async fn terminate_spawned_child(pid: u32, child: &mut Child) {
+    if let Ok(process_group) = process_group_pid(pid) {
+        let _result = signal_process_group(process_group, Signal::KILL);
+    }
+
+    let _result = child.wait().await;
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "PV process supervisor owns child process spawning"
@@ -228,14 +317,19 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     command
 }
 
+fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
+    fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
+    write_runtime_metadata(spec, pid)
+}
+
 fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
     let started_at = timestamp()?;
     let metadata = RuntimeMetadata {
-        name: &spec.name,
+        name: spec.name.clone(),
         pid,
-        command: spec.command.as_str(),
-        arguments: &spec.arguments,
-        log_path: spec.log_path.as_str(),
+        command: spec.command.to_string(),
+        arguments: spec.arguments.clone(),
+        log_path: spec.log_path.to_string(),
         started_at,
     };
     let encoded = serde_json::to_string(&metadata)?;
@@ -243,6 +337,66 @@ fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonErro
     fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
     Ok(())
+}
+
+fn read_pid_file(path: &Utf8Path) -> Result<Option<u32>, DaemonError> {
+    let Some(content) = read_optional_file(path)? else {
+        return Ok(None);
+    };
+    let pid = content
+        .trim()
+        .parse::<u32>()
+        .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+
+    Ok(Some(pid))
+}
+
+fn read_runtime_metadata(path: &Utf8Path) -> Result<Option<RuntimeMetadata>, DaemonError> {
+    let Some(content) = read_optional_file(path)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(serde_json::from_str(&content)?))
+}
+
+fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn process_exists(pid: u32) -> Result<bool, DaemonError> {
+    let pid = process_group_pid(pid)?;
+
+    match test_kill_process(pid) {
+        Ok(()) => Ok(true),
+        Err(source) => {
+            let error = io::Error::from(source);
+            if process_not_found(&error) {
+                return Ok(false);
+            }
+
+            Err(error.into())
+        }
+    }
+}
+
+fn process_not_found(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
+}
+
+impl RuntimeMetadata {
+    fn matches(&self, spec: &ProcessSpec, pid: u32) -> bool {
+        self.name == spec.name
+            && self.pid == pid
+            && self.command == spec.command.as_str()
+            && self.arguments == spec.arguments
+            && self.log_path == spec.log_path.as_str()
+    }
 }
 
 fn timestamp() -> Result<String, DaemonError> {

@@ -9,14 +9,17 @@ use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
-use crate::jobs::run_job;
+use crate::jobs::{run_background_reconciliation_job, run_job};
 use crate::protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
     ResponseStatus, write_line,
 };
 use crate::reconciliation::ReconciliationQueue;
+use crate::watcher::ProjectConfigWatcher;
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
+const PROJECT_CONFIG_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
@@ -26,6 +29,25 @@ pub(crate) async fn serve(
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
     let queue = ReconciliationQueue::new();
+    let background_paths = paths.clone();
+    let background_queue = queue.clone();
+    let debouncer = crate::reconciliation::ReconciliationDebouncer::new(
+        PROJECT_CONFIG_DEBOUNCE,
+        move |scope| {
+            let paths = background_paths.clone();
+            let queue = background_queue.clone();
+            let _task = tokio::spawn(async move {
+                let _result = run_background_reconciliation_job(paths, queue, scope).await;
+            });
+        },
+    );
+    let watcher =
+        ProjectConfigWatcher::new(paths.clone(), debouncer, PROJECT_CONFIG_WATCH_INTERVAL);
+    connections.spawn(async move {
+        watcher.run().await;
+
+        Ok::<(), DaemonError>(())
+    });
 
     loop {
         tokio::select! {

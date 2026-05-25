@@ -484,24 +484,8 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let mysql = PortRequest {
-        name: "resource:mysql:8.4".to_string(),
-        owner_kind: "resource".to_string(),
-        resource_name: Some("mysql".to_string()),
-        track: Some("8.4".to_string()),
-        preferred_port: 3306,
-        fallback_start: 45000,
-        fallback_end: 45009,
-    };
-    let redis = PortRequest {
-        name: "resource:redis:8.6".to_string(),
-        owner_kind: "resource".to_string(),
-        resource_name: Some("redis".to_string()),
-        track: Some("8.6".to_string()),
-        preferred_port: 45000,
-        fallback_start: 45000,
-        fallback_end: 45009,
-    };
+    let mysql = PortRequest::resource("mysql", "8.4", 3306, 45000, 45009);
+    let redis = PortRequest::resource("redis", "8.6", 45000, 45000, 45009);
 
     let assigned_mysql = database.assign_port(mysql.clone(), |port| port != 3306)?;
     let reused_mysql = database.assign_port(mysql.clone(), |port| port == assigned_mysql.port)?;
@@ -520,6 +504,33 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
         ));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_reports_the_documented_candidate_cap() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let single_candidate = database.assign_port(
+        PortRequest::resource("mysql", "8.4", 45000, 45000, 45000),
+        |_port| false,
+    );
+    let capped_candidates = database.assign_port(
+        PortRequest::resource("redis", "8.6", 45000, 45000, 45099),
+        |_port| false,
+    );
+
+    assert!(matches!(
+        single_candidate,
+        Err(StateError::NoAvailablePort { attempts: 1, .. })
+    ));
+    assert!(matches!(
+        capped_candidates,
+        Err(StateError::NoAvailablePort { attempts: 10, .. })
+    ));
 
     Ok(())
 }

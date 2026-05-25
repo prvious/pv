@@ -5,6 +5,7 @@ mod protocol;
 mod reconciliation;
 mod server;
 mod supervisor;
+mod watcher;
 
 use std::future::Future;
 use std::io;
@@ -16,11 +17,12 @@ use tokio::task::JoinHandle;
 pub use error::DaemonError;
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{
-    EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
-    ReconciliationScope, RunningReconciliation,
+    EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,
+    ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
 pub use supervisor::{
-    ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
+    AdoptedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    wait_for_custom_readiness, wait_for_readiness,
 };
 
 #[derive(Debug)]

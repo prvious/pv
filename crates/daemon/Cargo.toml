@@ -24,5 +24,6 @@ anyhow = { workspace = true }
 camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

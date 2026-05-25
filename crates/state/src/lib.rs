@@ -6,7 +6,8 @@ mod migrations;
 mod paths;
 
 pub use database::{
-    Database, DatabaseInspection, JobRecord, JobStatus, PortAssignment, PortRequest,
+    Database, DatabaseInspection, JobRecord, JobStatus, PortAssignment, PortOwner, PortRequest,
+    ProjectConfigWatch,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
@@ -15,6 +16,7 @@ pub use paths::{PathSummaryEntry, PvPaths};
 pub mod testing {
     use rusqlite::Transaction;
 
+    use crate::fs::read_to_string as read_file_to_string;
     pub use crate::migrations::Migration;
     use crate::{Database, PvPaths, StateError};
 
@@ -30,7 +32,7 @@ pub mod testing {
     }
 
     pub fn read_to_string(path: &camino::Utf8Path) -> Result<String, StateError> {
-        crate::fs::read_to_string(path)
+        read_file_to_string(path)
     }
 
     pub fn transaction<T>(

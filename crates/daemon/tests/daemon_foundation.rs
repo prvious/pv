@@ -1,8 +1,9 @@
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use rusqlite::params;
 use serde_json::{Value, json};
-use state::{Database, PvPaths};
+use state::{Database, JobRecord, PvPaths};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -257,6 +258,45 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "project_1",
+                project_path.as_str(),
+                "project.test",
+                config_path.as_str(),
+                "2026-05-24T00:00:00Z",
+                "2026-05-24T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    state::fs::write_sensitive_file(&config_path, "php: '8.4'\n")?;
+
+    let job = wait_for_job_scope(&paths, "project:project_1").await?;
+
+    daemon.shutdown().await?;
+
+    assert_eq!(job.kind, "reconcile");
+    assert_eq!(job.scope, "project:project_1");
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
@@ -299,4 +339,21 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     }
 
     Ok(lines)
+}
+
+async fn wait_for_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
+    for _attempt in 0..50 {
+        let database = Database::open(paths)?;
+        if let Some(job) = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == scope)
+        {
+            return Ok(job);
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    Err(anyhow::anyhow!("job with scope {scope:?} was not recorded"))
 }
