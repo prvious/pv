@@ -5,6 +5,12 @@ pub enum ResourcesError {
     #[error("unknown Managed Resource `{name}`")]
     UnknownResource { name: String },
 
+    #[error("artifact manifest does not include Managed Resource `{resource}`")]
+    ResourceNotInManifest { resource: String },
+
+    #[error("artifact manifest resource `{resource}` has no track `{track}`")]
+    TrackNotFound { resource: String, track: String },
+
     #[error(
         "unsupported artifact manifest schema version {schema_version}, expected {supported_schema_version}"
     )]

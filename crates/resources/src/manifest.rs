@@ -177,12 +177,18 @@ impl ArtifactManifest {
     }
 
     fn resource(&self, resource: &ResourceName) -> Result<&ManifestResource> {
-        self.resources
+        if let Some(resource) = self
+            .resources
             .iter()
             .find(|candidate| candidate.name == *resource)
-            .ok_or_else(|| ResourcesError::UnknownResource {
-                name: resource.as_str().to_string(),
-            })
+        {
+            return Ok(resource);
+        }
+
+        registry::resolve_canonical(resource.as_str())?;
+        Err(ResourcesError::ResourceNotInManifest {
+            resource: resource.as_str().to_string(),
+        })
     }
 }
 
@@ -228,8 +234,9 @@ impl ManifestResource {
         self.tracks
             .iter()
             .find(|candidate| candidate.name.as_str() == track)
-            .ok_or_else(|| ResourcesError::InvalidManifest {
-                reason: format!("resource `{}` has no track `{track}`", self.name),
+            .ok_or_else(|| ResourcesError::TrackNotFound {
+                resource: self.name.as_str().to_string(),
+                track: track.to_string(),
             })
     }
 }

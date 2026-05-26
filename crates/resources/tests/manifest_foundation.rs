@@ -171,6 +171,16 @@ fn manifest_rejects_latest_as_a_concrete_track_name() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_missing_default_track() -> Result<()> {
+    let missing_default_track =
+        VALID_MANIFEST.replacen("\"default_track\": \"7\"", "\"default_track\": \"8\"", 1);
+
+    assert_debug_snapshot!(parse_manifest_error(&missing_default_track)?);
+
+    Ok(())
+}
+
+#[test]
 fn latest_selection_chooses_newer_any_artifact_when_version_has_no_exact_platform() -> Result<()> {
     let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
     let resource = ResourceName::new("redis")?;
@@ -203,6 +213,44 @@ fn latest_selection_reports_revoked_newest_fallback() -> Result<()> {
             return Err(anyhow::anyhow!("expected revoked fallback selection"));
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn latest_selection_reports_manifest_resource_misses_separately() -> Result<()> {
+    let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
+    let resource = ResourceName::new("mysql")?;
+    let track = TrackName::new("8")?;
+
+    assert_debug_snapshot!(select_latest_error(&manifest, &resource, &track)?);
+
+    Ok(())
+}
+
+#[test]
+fn latest_selection_reports_missing_tracks_separately() -> Result<()> {
+    let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("8")?;
+
+    assert_debug_snapshot!(select_latest_error(&manifest, &resource, &track)?);
+
+    Ok(())
+}
+
+#[test]
+fn latest_selection_errors_when_no_installable_artifact_exists() -> Result<()> {
+    let revoked_only = REVOKED_SELECTION_MANIFEST.replacen(
+        "\"published_at\": \"2026-05-26T14:30:00Z\"",
+        "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revoked\": true,\n              \"revocation_reason\": \"bad package\"",
+        1,
+    );
+    let manifest = ArtifactManifest::parse(&revoked_only)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+
+    assert_debug_snapshot!(select_latest_error(&manifest, &resource, &track)?);
 
     Ok(())
 }
@@ -515,6 +563,20 @@ fn parse_manifest_error(json: &str) -> Result<ResourcesError> {
         Ok(manifest) => Err(anyhow::anyhow!(
             "manifest parsed successfully: {:#?}",
             manifest
+        )),
+        Err(error) => Ok(error),
+    }
+}
+
+fn select_latest_error(
+    manifest: &ArtifactManifest,
+    resource: &ResourceName,
+    track: &TrackName,
+) -> Result<ResourcesError> {
+    match manifest.select_latest(resource, track, TargetPlatform::new("darwin-arm64")?) {
+        Ok(selection) => Err(anyhow::anyhow!(
+            "manifest selected successfully: {:#?}",
+            selection
         )),
         Err(error) => Ok(error),
     }
