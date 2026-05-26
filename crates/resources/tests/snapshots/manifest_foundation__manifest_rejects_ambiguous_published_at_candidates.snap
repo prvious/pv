@@ -1,10 +1,8 @@
 ---
 source: crates/resources/tests/manifest_foundation.rs
-assertion_line: 160
-expression: error
+assertion_line: 262
+expression: parse_manifest_error(&ambiguous)?
 ---
-AmbiguousArtifactSelection {
-    resource: "redis",
-    track: "7",
-    platform: "darwin-arm64",
+InvalidManifest {
+    reason: "duplicate published_at candidate in resource `redis` track `7`",
 }

@@ -1,26 +1,40 @@
-use crate::ResourceName;
 use crate::error::{ResourcesError, Result};
 
+/// Classifies a managed resource by its role in PV.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceKind {
+    /// Execution environment used to run project workloads.
     Runtime,
+    /// Developer-facing tool or command-line utility.
     Tool,
+    /// Long-lived service that projects depend on.
     BackingService,
 }
 
+/// Describes operations supported by a managed resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceCapability {
+    /// Resource can be installed from a managed artifact.
     Install,
+    /// Resource has an initialization or configuration step.
     Init,
+    /// Resource has start lifecycle behavior.
     Start,
+    /// Resource has stop lifecycle behavior.
     Stop,
+    /// Resource can report readiness after start.
     Readiness,
+    /// Resource allocates per-project or per-track state.
     Allocation,
+    /// Resource contributes environment values.
     EnvValues,
+    /// Resource exposes logs.
     Logs,
+    /// Resource exposes user-facing commands.
     Commands,
 }
 
+/// Static registry entry for a PV-managed resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceDescriptor {
     name: &'static str,
@@ -115,15 +129,13 @@ static RESOURCES: &[ResourceDescriptor] = &[
     },
 ];
 
+/// Returns every statically registered resource descriptor.
 pub fn all() -> &'static [ResourceDescriptor] {
     RESOURCES
 }
 
-pub fn get(name: &ResourceName) -> Result<&'static ResourceDescriptor> {
-    canonical(name.as_str())
-}
-
-pub fn canonical(name: &str) -> Result<&'static ResourceDescriptor> {
+/// Resolves a descriptor by canonical resource name only.
+pub fn resolve_canonical(name: &str) -> Result<&'static ResourceDescriptor> {
     RESOURCES
         .iter()
         .find(|descriptor| descriptor.name == name)
@@ -132,6 +144,7 @@ pub fn canonical(name: &str) -> Result<&'static ResourceDescriptor> {
         })
 }
 
+/// Resolves a descriptor by canonical resource name or registered alias.
 pub fn resolve(name_or_alias: &str) -> Result<&'static ResourceDescriptor> {
     RESOURCES
         .iter()
@@ -144,27 +157,33 @@ pub fn resolve(name_or_alias: &str) -> Result<&'static ResourceDescriptor> {
 }
 
 impl ResourceDescriptor {
-    pub fn name(self) -> &'static str {
+    /// Returns the canonical resource name.
+    pub fn name(&self) -> &'static str {
         self.name
     }
 
-    pub fn aliases(self) -> &'static [&'static str] {
+    /// Returns alternate names accepted by alias-aware lookup.
+    pub fn aliases(&self) -> &'static [&'static str] {
         self.aliases
     }
 
-    pub fn kind(self) -> ResourceKind {
+    /// Returns the resource category.
+    pub fn kind(&self) -> ResourceKind {
         self.kind
     }
 
-    pub fn capabilities(self) -> &'static [ResourceCapability] {
+    /// Returns the supported resource operations.
+    pub fn capabilities(&self) -> &'static [ResourceCapability] {
         self.capabilities
     }
 
-    pub fn is_alias(self, value: &str) -> bool {
+    /// Returns true when the value is a registered alias.
+    pub fn is_alias(&self, value: &str) -> bool {
         self.aliases.contains(&value)
     }
 
-    pub fn is_canonical(self, value: &str) -> bool {
+    /// Returns true when the value is the canonical resource name.
+    pub fn is_canonical(&self, value: &str) -> bool {
         self.name == value
     }
 }

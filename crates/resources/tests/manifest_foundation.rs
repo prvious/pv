@@ -1,19 +1,41 @@
 use anyhow::Result;
 use insta::assert_debug_snapshot;
 use resources::ArtifactManifest;
+use resources::ManifestSelection;
 use resources::ResourcesError;
 use resources::registry;
 use resources::{ArtifactPlatform, TargetPlatform};
-use resources::{ArtifactVersion, ResourceName, Sha256Digest, TrackName};
+use resources::{ArtifactVersion, ResourceName, Sha256Digest, TrackName, TrackSelector};
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct DescriptorSnapshot {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    kind: String,
+    capabilities: Vec<String>,
+}
 
 #[test]
 fn registry_lists_all_pv_managed_artifact_resources() -> Result<()> {
-    let names = registry::all()
+    let descriptors = registry::all()
         .iter()
-        .map(|descriptor| descriptor.name())
+        .map(|descriptor| DescriptorSnapshot {
+            name: descriptor.name(),
+            aliases: descriptor.aliases(),
+            kind: format!("{:?}", descriptor.kind()),
+            capabilities: descriptor
+                .capabilities()
+                .iter()
+                .map(|capability| format!("{capability:?}"))
+                .collect(),
+        })
         .collect::<Vec<_>>();
 
-    assert_debug_snapshot!(names);
+    assert_debug_snapshot!(descriptors);
 
     Ok(())
 }
@@ -26,6 +48,14 @@ fn registry_normalizes_compiled_in_aliases() -> Result<()> {
     assert_eq!(registry::resolve("s3")?.name(), "rustfs");
     assert!(registry::resolve("postgresql")?.is_alias("postgresql"));
     assert!(registry::resolve("mysql")?.is_canonical("mysql"));
+
+    Ok(())
+}
+
+#[test]
+fn registry_only_resolves_aliases_through_resolve() -> Result<()> {
+    assert_eq!(registry::resolve("postgresql")?.name(), "postgres");
+    assert!(registry::resolve_canonical("postgresql").is_err());
 
     Ok(())
 }
@@ -56,17 +86,25 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
 fn manifest_parses_registry_backed_resources_tracks_and_artifacts() -> Result<()> {
     let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
 
-    assert_debug_snapshot!(manifest.summary());
+    assert_debug_snapshot!(manifest);
 
     Ok(())
 }
 
 #[test]
 fn latest_selection_uses_published_at_with_exact_platform_preference() -> Result<()> {
-    let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
-    let selected = manifest.select_latest("redis", "7", TargetPlatform::new("darwin-arm64")?)?;
+    let manifest_json = SELECTION_MANIFEST.replacen(
+        "\"artifact_version\": \"7.2.6-pv1\"",
+        "\"artifact_version\": \"7.2.5-pv1\"",
+        1,
+    );
+    let manifest = ArtifactManifest::parse(&manifest_json)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
-    assert_eq!(selected.artifact_version().as_str(), "7.2.5-pv1");
+    assert_eq!(selected.artifact().artifact_version().as_str(), "7.2.5-pv1");
 
     Ok(())
 }
@@ -74,9 +112,12 @@ fn latest_selection_uses_published_at_with_exact_platform_preference() -> Result
 #[test]
 fn latest_selection_falls_back_to_any_when_exact_platform_is_missing() -> Result<()> {
     let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
-    let selected = manifest.select_latest("composer", "2", TargetPlatform::new("darwin-arm64")?)?;
+    let resource = ResourceName::new("composer")?;
+    let track = TrackName::new("2")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
-    assert_eq!(selected.artifact_version().as_str(), "2.8.0-pv2");
+    assert_eq!(selected.artifact().artifact_version().as_str(), "2.8.0-pv2");
 
     Ok(())
 }
@@ -84,9 +125,84 @@ fn latest_selection_falls_back_to_any_when_exact_platform_is_missing() -> Result
 #[test]
 fn latest_track_alias_resolves_to_default_track() -> Result<()> {
     let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
-    let track = manifest.resolve_track("redis", "latest")?;
+    let resource = ResourceName::new("redis")?;
+    let track = manifest.resolve_track(&resource, TrackSelector::Latest)?;
 
     assert_eq!(track.as_str(), "7");
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_unsupported_schema_versions() -> Result<()> {
+    let unsupported = VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1);
+
+    assert_debug_snapshot!(parse_manifest_error(&unsupported)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_newer_minimum_pv_versions() -> Result<()> {
+    let newer = VALID_MANIFEST.replacen(
+        "\"minimum_pv_version\": \"0.1.0\"",
+        "\"minimum_pv_version\": \"999.0.0\"",
+        1,
+    );
+
+    assert_debug_snapshot!(parse_manifest_error(&newer)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_latest_as_a_concrete_track_name() -> Result<()> {
+    let default_latest = VALID_MANIFEST.replacen(
+        "\"default_track\": \"7\"",
+        "\"default_track\": \"latest\"",
+        1,
+    );
+    let track_latest = VALID_MANIFEST.replacen("\"name\": \"7\"", "\"name\": \"latest\"", 1);
+
+    assert_debug_snapshot!(parse_manifest_error(&default_latest)?);
+    assert_debug_snapshot!(parse_manifest_error(&track_latest)?);
+
+    Ok(())
+}
+
+#[test]
+fn latest_selection_chooses_newer_any_artifact_when_version_has_no_exact_platform() -> Result<()> {
+    let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
+
+    assert_eq!(selected.artifact().artifact_version().as_str(), "7.2.6-pv1");
+
+    Ok(())
+}
+
+#[test]
+fn latest_selection_reports_revoked_newest_fallback() -> Result<()> {
+    let manifest = ArtifactManifest::parse(REVOKED_SELECTION_MANIFEST)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
+
+    match selected {
+        ManifestSelection::RevokedFallback {
+            artifact,
+            revoked_latest,
+        } => {
+            assert_eq!(artifact.artifact_version().as_str(), "7.2.5-pv1");
+            assert_eq!(revoked_latest.artifact_version().as_str(), "7.2.6-pv1");
+        }
+        ManifestSelection::Latest(_) => {
+            return Err(anyhow::anyhow!("expected revoked fallback selection"));
+        }
+    }
 
     Ok(())
 }
@@ -99,6 +215,25 @@ fn manifest_rejects_resource_aliases_and_unknown_resources() -> Result<()> {
 
     assert_debug_snapshot!(parse_manifest_error(&alias_manifest)?);
     assert_debug_snapshot!(parse_manifest_error(&unknown_manifest)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_invalid_revocation_state() -> Result<()> {
+    let missing_reason = VALID_MANIFEST.replacen(
+        "\"published_at\": \"2026-05-26T14:30:00Z\"",
+        "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revoked\": true",
+        1,
+    );
+    let unexpected_reason = VALID_MANIFEST.replacen(
+        "\"published_at\": \"2026-05-26T14:30:00Z\"",
+        "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revocation_reason\": \"bad package\"",
+        1,
+    );
+
+    assert_debug_snapshot!(parse_manifest_error(&missing_reason)?);
+    assert_debug_snapshot!(parse_manifest_error(&unexpected_reason)?);
 
     Ok(())
 }
@@ -154,15 +289,7 @@ fn manifest_rejects_ambiguous_published_at_candidates() -> Result<()> {
         "\"published_at\": \"2026-05-26T14:30:00Z\"",
         1,
     );
-    let manifest = ArtifactManifest::parse(&ambiguous)?;
-    let error = select_latest_error(
-        &manifest,
-        "redis",
-        "7",
-        TargetPlatform::new("darwin-arm64")?,
-    )?;
-
-    assert_debug_snapshot!(error);
+    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
 
     Ok(())
 }
@@ -316,26 +443,53 @@ const SELECTION_MANIFEST: &str = r#"
 }
 "#;
 
+const REVOKED_SELECTION_MANIFEST: &str = r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "redis",
+      "default_track": "7",
+      "tracks": [
+        {
+          "name": "7",
+          "artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            },
+            {
+              "artifact_version": "7.2.6-pv1",
+              "upstream_version": "7.2.6",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.6-pv1-darwin-arm64.tar.gz",
+              "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+              "size": 12345,
+              "published_at": "2026-05-27T14:30:00Z",
+              "revoked": true,
+              "revocation_reason": "bad package"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#;
+
 fn parse_manifest_error(json: &str) -> Result<ResourcesError> {
     match ArtifactManifest::parse(json) {
         Ok(manifest) => Err(anyhow::anyhow!(
             "manifest parsed successfully: {:#?}",
-            manifest.summary()
-        )),
-        Err(error) => Ok(error),
-    }
-}
-
-fn select_latest_error(
-    manifest: &ArtifactManifest,
-    resource: &str,
-    track: &str,
-    target: TargetPlatform,
-) -> Result<ResourcesError> {
-    match manifest.select_latest(resource, track, target) {
-        Ok(artifact) => Err(anyhow::anyhow!(
-            "artifact selected successfully: {}",
-            artifact.artifact_version().as_str()
+            manifest
         )),
         Err(error) => Ok(error),
     }

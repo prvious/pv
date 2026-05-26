@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 129
+expression: parse_manifest_error(&unsupported)?
+---
+UnsupportedManifestSchema {
+    schema_version: 2,
+    supported_schema_version: 1,
+}

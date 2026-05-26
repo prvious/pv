@@ -1,14 +1,16 @@
 use crate::error::{ResourcesError, Result};
-use crate::identity::{ArtifactVersion, PublishedAt, ResourceName, Sha256Digest, TrackName};
+use crate::identity::{
+    ArtifactVersion, PublishedAt, PvVersion, ResourceName, Sha256Digest, TrackName, TrackSelector,
+};
 use crate::platform::{ArtifactPlatform, TargetPlatform};
 use crate::registry;
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct ArtifactManifest {
-    schema_version: u64,
-    minimum_pv_version: String,
+    schema_version: ManifestSchemaVersion,
+    minimum_pv_version: PvVersion,
     resources: Vec<ManifestResource>,
 }
 
@@ -35,8 +37,22 @@ pub struct ManifestArtifact {
     sha256: Sha256Digest,
     size: u64,
     published_at: PublishedAt,
-    revoked: bool,
-    revocation_reason: Option<String>,
+    revocation_state: RevocationState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevocationState {
+    Active,
+    Revoked { reason: String },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ManifestSelection<'a> {
+    Latest(&'a ManifestArtifact),
+    RevokedFallback {
+        artifact: &'a ManifestArtifact,
+        revoked_latest: &'a ManifestArtifact,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,40 +91,6 @@ struct RawArtifact {
     revocation_reason: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct ManifestSummary {
-    pub schema_version: u64,
-    pub minimum_pv_version: String,
-    pub resources: Vec<ResourceSummary>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct ResourceSummary {
-    pub name: String,
-    pub default_track: String,
-    pub tracks: Vec<TrackSummary>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct TrackSummary {
-    pub name: String,
-    pub artifacts: Vec<ArtifactSummary>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct ArtifactSummary {
-    pub artifact_version: String,
-    pub upstream_version: String,
-    pub pv_build_revision: String,
-    pub platform: String,
-    pub url: String,
-    pub sha256: String,
-    pub size: u64,
-    pub published_at: String,
-    pub revoked: bool,
-    pub revocation_reason: Option<String>,
-}
-
 impl ArtifactManifest {
     pub fn parse(json: &str) -> Result<Self> {
         let raw: RawManifest =
@@ -121,42 +103,46 @@ impl ArtifactManifest {
 
     pub fn select_latest(
         &self,
-        resource: &str,
-        track: &str,
+        resource: &ResourceName,
+        track: &TrackName,
         target: TargetPlatform,
-    ) -> Result<&ManifestArtifact> {
+    ) -> Result<ManifestSelection<'_>> {
         let resource = self.resource(resource)?;
-        let track = resource.track(track)?;
+        let track = resource.track(track.as_str())?;
 
         track.select_latest(resource.name.as_str(), target)
     }
 
-    pub fn resolve_track(&self, resource: &str, track_or_latest: &str) -> Result<&TrackName> {
+    pub fn resolve_track(
+        &self,
+        resource: &ResourceName,
+        selector: TrackSelector,
+    ) -> Result<&TrackName> {
         let resource = self.resource(resource)?;
 
-        if track_or_latest == "latest" {
-            Ok(&resource.default_track)
-        } else {
-            resource.track(track_or_latest).map(|track| &track.name)
+        match selector {
+            TrackSelector::Latest => Ok(&resource.default_track),
+            TrackSelector::Track(track) => resource.track(track.as_str()).map(|track| &track.name),
         }
     }
 
-    pub fn summary(&self) -> ManifestSummary {
-        ManifestSummary {
-            schema_version: self.schema_version,
-            minimum_pv_version: self.minimum_pv_version.clone(),
-            resources: self
-                .resources
-                .iter()
-                .map(ManifestResource::summary)
-                .collect(),
-        }
+    pub fn schema_version(&self) -> u64 {
+        self.schema_version.as_u64()
+    }
+
+    pub fn minimum_pv_version(&self) -> &PvVersion {
+        &self.minimum_pv_version
     }
 
     fn from_raw(raw: RawManifest) -> Result<Self> {
-        if raw.schema_version == 0 {
-            return Err(ResourcesError::InvalidManifest {
-                reason: "schema_version must be greater than zero".to_string(),
+        let schema_version = ManifestSchemaVersion::parse(raw.schema_version)?;
+        let minimum_pv_version = PvVersion::parse(raw.minimum_pv_version)?;
+        let current_pv_version = PvVersion::current()?;
+
+        if minimum_pv_version > current_pv_version {
+            return Err(ResourcesError::RequiresNewerPv {
+                minimum_pv_version: minimum_pv_version.as_str().to_string(),
+                current_pv_version: current_pv_version.as_str().to_string(),
             });
         }
 
@@ -184,18 +170,18 @@ impl ArtifactManifest {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
-            schema_version: raw.schema_version,
-            minimum_pv_version: raw.minimum_pv_version,
+            schema_version,
+            minimum_pv_version,
             resources,
         })
     }
 
-    fn resource(&self, resource: &str) -> Result<&ManifestResource> {
+    fn resource(&self, resource: &ResourceName) -> Result<&ManifestResource> {
         self.resources
             .iter()
-            .find(|candidate| candidate.name.as_str() == resource)
+            .find(|candidate| candidate.name == *resource)
             .ok_or_else(|| ResourcesError::UnknownResource {
-                name: resource.to_string(),
+                name: resource.as_str().to_string(),
             })
     }
 }
@@ -203,6 +189,7 @@ impl ArtifactManifest {
 impl ManifestResource {
     fn from_raw(raw: RawResource) -> Result<Self> {
         let name = ResourceName::new(raw.name.clone())?;
+        reject_reserved_track_name(&raw.default_track)?;
         let default_track = TrackName::new(raw.default_track.clone())?;
         let mut seen_tracks = BTreeSet::new();
         let tracks = raw
@@ -245,18 +232,11 @@ impl ManifestResource {
                 reason: format!("resource `{}` has no track `{track}`", self.name),
             })
     }
-
-    fn summary(&self) -> ResourceSummary {
-        ResourceSummary {
-            name: self.name.as_str().to_string(),
-            default_track: self.default_track.as_str().to_string(),
-            tracks: self.tracks.iter().map(ManifestTrack::summary).collect(),
-        }
-    }
 }
 
 impl ManifestTrack {
     fn from_raw(raw: RawTrack, resource: &str) -> Result<Self> {
+        reject_reserved_track_name(&raw.name)?;
         let name = TrackName::new(raw.name.clone())?;
         let mut seen_artifacts = BTreeSet::new();
         let artifacts = raw
@@ -286,35 +266,56 @@ impl ManifestTrack {
             });
         }
 
-        Ok(Self { name, artifacts })
+        let track = Self { name, artifacts };
+        track.validate_unique_published_at_slots(resource)?;
+
+        Ok(track)
     }
 
-    fn select_latest(&self, resource: &str, target: TargetPlatform) -> Result<&ManifestArtifact> {
-        if let Some(candidate) = self.best_candidate(resource, target, PlatformMatch::Exact)? {
-            return Ok(candidate);
-        }
-
-        self.best_candidate(resource, target, PlatformMatch::Any)?
+    fn select_latest(
+        &self,
+        resource: &str,
+        target: TargetPlatform,
+    ) -> Result<ManifestSelection<'_>> {
+        let candidates = self.platform_selected_candidates(target);
+        let installable = self
+            .best_candidate(
+                resource,
+                target,
+                candidates
+                    .iter()
+                    .copied()
+                    .filter(|artifact| !artifact.revocation_state.is_revoked()),
+            )?
             .ok_or_else(|| ResourcesError::NoInstallableArtifact {
                 resource: resource.to_string(),
                 track: self.name.as_str().to_string(),
                 platform: target.as_str().to_string(),
+            })?;
+        let latest = self.best_candidate(resource, target, candidates.iter().copied())?;
+
+        if let Some(revoked_latest) = latest
+            && revoked_latest.revocation_state.is_revoked()
+            && revoked_latest.published_at > installable.published_at
+        {
+            Ok(ManifestSelection::RevokedFallback {
+                artifact: installable,
+                revoked_latest,
             })
+        } else {
+            Ok(ManifestSelection::Latest(installable))
+        }
     }
 
-    fn best_candidate(
+    fn best_candidate<'a>(
         &self,
         resource: &str,
         target: TargetPlatform,
-        platform_match: PlatformMatch,
-    ) -> Result<Option<&ManifestArtifact>> {
-        let mut best: Option<&ManifestArtifact> = None;
+        candidates: impl IntoIterator<Item = &'a ManifestArtifact>,
+    ) -> Result<Option<&'a ManifestArtifact>> {
+        let mut best: Option<&'a ManifestArtifact> = None;
 
-        for artifact in self
-            .artifacts
-            .iter()
-            .filter(|artifact| artifact.matches(target, platform_match))
-        {
+        for artifact in candidates {
             match best {
                 Some(current) if artifact.published_at == current.published_at => {
                     return Err(ResourcesError::AmbiguousArtifactSelection {
@@ -331,15 +332,47 @@ impl ManifestTrack {
         Ok(best)
     }
 
-    fn summary(&self) -> TrackSummary {
-        TrackSummary {
-            name: self.name.as_str().to_string(),
-            artifacts: self
-                .artifacts
-                .iter()
-                .map(ManifestArtifact::summary)
-                .collect(),
+    fn platform_selected_candidates(&self, target: TargetPlatform) -> Vec<&ManifestArtifact> {
+        let mut candidates = BTreeMap::new();
+
+        for artifact in self
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.matches(target))
+        {
+            candidates
+                .entry(artifact.artifact_version.clone())
+                .and_modify(|candidate: &mut &ManifestArtifact| {
+                    if artifact.platform.is_exact() && !candidate.platform.is_exact() {
+                        *candidate = artifact;
+                    }
+                })
+                .or_insert(artifact);
         }
+
+        candidates.into_values().collect()
+    }
+
+    fn validate_unique_published_at_slots(&self, resource: &str) -> Result<()> {
+        for target in [TargetPlatform::DarwinArm64, TargetPlatform::DarwinAmd64] {
+            let mut seen = BTreeSet::new();
+            for artifact in self
+                .platform_selected_candidates(target)
+                .into_iter()
+                .filter(|artifact| !artifact.revocation_state.is_revoked())
+            {
+                if !seen.insert(artifact.published_at.clone()) {
+                    return Err(ResourcesError::InvalidManifest {
+                        reason: format!(
+                            "duplicate published_at candidate in resource `{resource}` track `{}`",
+                            self.name
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -354,8 +387,7 @@ impl ManifestArtifact {
             sha256: Sha256Digest::new(raw.sha256)?,
             size: raw.size,
             published_at: PublishedAt::parse(raw.published_at)?,
-            revoked: raw.revoked,
-            revocation_reason: raw.revocation_reason,
+            revocation_state: RevocationState::from_raw(raw.revoked, raw.revocation_reason)?,
         })
     }
 
@@ -363,33 +395,115 @@ impl ManifestArtifact {
         &self.artifact_version
     }
 
-    fn matches(&self, target: TargetPlatform, platform_match: PlatformMatch) -> bool {
-        !self.revoked
-            && self.platform.matches(target)
-            && match platform_match {
-                PlatformMatch::Exact => self.platform.is_exact(),
-                PlatformMatch::Any => self.platform == ArtifactPlatform::Any,
-            }
+    pub fn upstream_version(&self) -> &str {
+        &self.upstream_version
     }
 
-    fn summary(&self) -> ArtifactSummary {
-        ArtifactSummary {
-            artifact_version: self.artifact_version.as_str().to_string(),
-            upstream_version: self.upstream_version.clone(),
-            pv_build_revision: self.pv_build_revision.clone(),
-            platform: self.platform.as_str().to_string(),
-            url: self.url.clone(),
-            sha256: self.sha256.as_str().to_string(),
-            size: self.size,
-            published_at: self.published_at.as_rfc3339(),
-            revoked: self.revoked,
-            revocation_reason: self.revocation_reason.clone(),
+    pub fn pv_build_revision(&self) -> &str {
+        &self.pv_build_revision
+    }
+
+    pub fn platform(&self) -> ArtifactPlatform {
+        self.platform
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn sha256(&self) -> &Sha256Digest {
+        &self.sha256
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn published_at(&self) -> &PublishedAt {
+        &self.published_at
+    }
+
+    pub fn revocation_state(&self) -> &RevocationState {
+        &self.revocation_state
+    }
+
+    fn matches(&self, target: TargetPlatform) -> bool {
+        self.platform.matches(target)
+    }
+}
+
+impl RevocationState {
+    fn from_raw(revoked: bool, reason: Option<String>) -> Result<Self> {
+        match (revoked, reason) {
+            (false, None) => Ok(Self::Active),
+            (false, Some(_reason)) => Err(ResourcesError::InvalidRevocationState {
+                reason: "revocation_reason requires revoked=true",
+            }),
+            (true, Some(reason)) if !reason.trim().is_empty() => Ok(Self::Revoked { reason }),
+            (true, _) => Err(ResourcesError::InvalidRevocationState {
+                reason: "revoked artifacts require a non-empty revocation_reason",
+            }),
+        }
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        matches!(self, Self::Revoked { .. })
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Active => None,
+            Self::Revoked { reason } => Some(reason),
         }
     }
 }
 
-#[derive(Clone, Copy)]
-enum PlatformMatch {
-    Exact,
-    Any,
+impl<'a> ManifestSelection<'a> {
+    pub fn artifact(self) -> &'a ManifestArtifact {
+        match self {
+            Self::Latest(artifact) | Self::RevokedFallback { artifact, .. } => artifact,
+        }
+    }
+
+    pub fn revoked_latest(self) -> Option<&'a ManifestArtifact> {
+        match self {
+            Self::Latest(_) => None,
+            Self::RevokedFallback { revoked_latest, .. } => Some(revoked_latest),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManifestSchemaVersion {
+    V1,
+}
+
+impl ManifestSchemaVersion {
+    const SUPPORTED: Self = Self::V1;
+
+    fn parse(value: u64) -> Result<Self> {
+        match value {
+            1 => Ok(Self::V1),
+            _ => Err(ResourcesError::UnsupportedManifestSchema {
+                schema_version: value,
+                supported_schema_version: Self::SUPPORTED.as_u64(),
+            }),
+        }
+    }
+
+    fn as_u64(self) -> u64 {
+        match self {
+            Self::V1 => 1,
+        }
+    }
+}
+
+fn reject_reserved_track_name(name: &str) -> Result<()> {
+    if TrackSelector::is_reserved_alias(name) {
+        Err(ResourcesError::ReservedTrackName {
+            name: name.to_string(),
+        })
+    } else {
+        Ok(())
+    }
 }

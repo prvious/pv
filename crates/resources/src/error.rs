@@ -6,6 +6,22 @@ pub enum ResourcesError {
     UnknownResource { name: String },
 
     #[error(
+        "unsupported artifact manifest schema version {schema_version}, expected {supported_schema_version}"
+    )]
+    UnsupportedManifestSchema {
+        schema_version: u64,
+        supported_schema_version: u64,
+    },
+
+    #[error(
+        "artifact manifest requires PV {minimum_pv_version}, current PV is {current_pv_version}"
+    )]
+    RequiresNewerPv {
+        minimum_pv_version: String,
+        current_pv_version: String,
+    },
+
+    #[error(
         "artifact manifests must use canonical resource name `{canonical}`, not alias `{alias}`"
     )]
     ManifestUsesAlias {
@@ -18,6 +34,12 @@ pub enum ResourcesError {
 
     #[error("invalid artifact manifest: {reason}")]
     InvalidManifest { reason: String },
+
+    #[error("artifact manifest track name `{name}` is reserved")]
+    ReservedTrackName { name: String },
+
+    #[error("invalid artifact revocation state: {reason}")]
+    InvalidRevocationState { reason: &'static str },
 
     #[error("unsupported artifact platform `{platform}`")]
     UnsupportedPlatform { platform: String },

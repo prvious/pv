@@ -5,7 +5,9 @@ pub mod platform;
 pub mod registry;
 
 pub use error::{ResourcesError, Result};
-pub use identity::{ArtifactVersion, PublishedAt, ResourceName, Sha256Digest, TrackName};
-pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSummary};
+pub use identity::{
+    ArtifactVersion, PublishedAt, PvVersion, ResourceName, Sha256Digest, TrackName, TrackSelector,
+};
+pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};

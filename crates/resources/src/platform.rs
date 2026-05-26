@@ -1,14 +1,14 @@
 use crate::error::{ResourcesError, Result};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ArtifactPlatform {
     Any,
     DarwinArm64,
     DarwinAmd64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TargetPlatform {
     DarwinArm64,
     DarwinAmd64,
