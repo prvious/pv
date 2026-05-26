@@ -356,11 +356,7 @@ impl ManifestTrack {
     fn validate_unique_published_at_slots(&self, resource: &str) -> Result<()> {
         for target in [TargetPlatform::DarwinArm64, TargetPlatform::DarwinAmd64] {
             let mut seen = BTreeSet::new();
-            for artifact in self
-                .platform_selected_candidates(target)
-                .into_iter()
-                .filter(|artifact| !artifact.revocation_state.is_revoked())
-            {
+            for artifact in self.platform_selected_candidates(target) {
                 if !seen.insert(artifact.published_at.clone()) {
                     return Err(ResourcesError::InvalidManifest {
                         reason: format!(

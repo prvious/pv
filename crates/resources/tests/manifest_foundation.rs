@@ -295,6 +295,31 @@ fn manifest_rejects_ambiguous_published_at_candidates() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_revoked_ambiguous_published_at_candidates() -> Result<()> {
+    let ambiguous = REVOKED_SELECTION_MANIFEST.replacen(
+        "{\n              \"artifact_version\": \"7.2.6-pv1\"",
+        r#"{
+              "artifact_version": "7.2.7-pv1",
+              "upstream_version": "7.2.7",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.7-pv1-darwin-arm64.tar.gz",
+              "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+              "size": 12345,
+              "published_at": "2026-05-27T14:30:00Z",
+              "revoked": true,
+              "revocation_reason": "bad package"
+            },
+            {
+              "artifact_version": "7.2.6-pv1""#,
+        1,
+    );
+    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
     let checksum_manifest = VALID_MANIFEST.replacen(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
