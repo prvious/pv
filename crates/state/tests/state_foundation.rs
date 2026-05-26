@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, JobStatus, PortRequest, PvPaths, StateError};
+use state::{Database, JobStatus, PortOwner, PortRequest, PvPaths, StateError};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -490,7 +490,10 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
     let assigned_mysql = database.assign_port(mysql.clone(), |port| port != 3306)?;
     let reused_mysql = database.assign_port(mysql.clone(), |port| port == assigned_mysql.port)?;
     let assigned_redis = database.assign_port(redis, |_port| true)?;
-    let released_mysql = database.release_port("resource:mysql:8.4")?;
+    let released_mysql = database.release_port(PortOwner::Resource {
+        name: "mysql".to_string(),
+        track: "8.4".to_string(),
+    })?;
     let reassigned_mysql = database.assign_port(mysql, |port| port != 3306)?;
 
     with_normalized_timestamps(|| {
@@ -504,6 +507,46 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
         ));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_keeps_owner_components_structured() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let mysql_debug = PortRequest::resource("mysql", "8.4:debug", 45000, 45000, 45009);
+    let mysql_track_resource = PortRequest::resource("mysql:8.4", "debug", 45000, 45000, 45009);
+
+    let assigned_mysql_debug = database.assign_port(mysql_debug, |_port| true)?;
+    let assigned_mysql_track_resource = database.assign_port(mysql_track_resource, |_port| true)?;
+    let released_mysql_debug = database.release_port(PortOwner::Resource {
+        name: "mysql".to_string(),
+        track: "8.4:debug".to_string(),
+    })?;
+
+    assert_eq!(
+        assigned_mysql_debug.owner,
+        PortOwner::Resource {
+            name: "mysql".to_string(),
+            track: "8.4:debug".to_string(),
+        }
+    );
+    assert_eq!(assigned_mysql_debug.port, 45000);
+    assert_eq!(
+        assigned_mysql_track_resource.owner,
+        PortOwner::Resource {
+            name: "mysql:8.4".to_string(),
+            track: "debug".to_string(),
+        }
+    );
+    assert_eq!(assigned_mysql_track_resource.port, 45001);
+    assert!(released_mysql_debug);
+    assert_eq!(
+        database.assigned_ports()?,
+        vec![assigned_mysql_track_resource]
+    );
 
     Ok(())
 }

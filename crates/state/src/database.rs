@@ -86,11 +86,8 @@ pub enum PortOwner {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortAssignment {
-    pub name: String,
+    pub owner: PortOwner,
     pub port: u16,
-    pub owner_kind: String,
-    pub resource_name: Option<String>,
-    pub track: Option<String>,
     pub updated_at: String,
 }
 
@@ -112,12 +109,17 @@ struct JobRecordRow {
 }
 
 struct PortAssignmentRow {
-    name: String,
-    port: u16,
     owner_kind: String,
-    resource_name: Option<String>,
-    track: Option<String>,
+    owner_id: String,
+    owner_track: String,
+    port: u16,
     updated_at: String,
+}
+
+struct PortIdentity {
+    owner_kind: &'static str,
+    owner_id: String,
+    owner_track: String,
 }
 
 impl Database {
@@ -256,13 +258,14 @@ impl Database {
         request: PortRequest,
         mut is_available: impl FnMut(u16) -> bool,
     ) -> Result<PortAssignment, StateError> {
-        let request_name = request.name();
+        let identity = request.owner.identity()?;
+        let request_name = identity.display_name();
         let candidates = request.candidates();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        if let Some(existing) = port_assignment_in_transaction(&transaction, &request_name)?
+        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)?
             && is_available(existing.port)
         {
             transaction.commit()?;
@@ -270,8 +273,7 @@ impl Database {
             return Ok(existing);
         }
 
-        let assigned_ports =
-            assigned_port_numbers_except_in_transaction(&transaction, &request_name)?;
+        let assigned_ports = assigned_port_numbers_except_in_transaction(&transaction, &identity)?;
 
         for candidate in candidates.iter().copied() {
             if assigned_ports.contains(&candidate) || !is_available(candidate) {
@@ -279,15 +281,12 @@ impl Database {
             }
 
             let updated_at = timestamp()?;
-            upsert_port_in_transaction(&transaction, &request, candidate, &updated_at)?;
+            upsert_port_in_transaction(&transaction, &identity, candidate, &updated_at)?;
             transaction.commit()?;
 
             return Ok(PortAssignment {
-                name: request_name,
+                owner: request.owner,
                 port: candidate,
-                owner_kind: request.owner.kind().to_string(),
-                resource_name: request.owner.resource_name(),
-                track: request.owner.track(),
                 updated_at,
             });
         }
@@ -301,23 +300,29 @@ impl Database {
         })
     }
 
-    pub fn release_port(&mut self, name: &str) -> Result<bool, StateError> {
-        let deleted = self
-            .connection
-            .execute("DELETE FROM ports WHERE name = ?1", params![name])?;
+    pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {
+        let identity = owner.identity()?;
+        let deleted = self.connection.execute(
+            "DELETE FROM ports WHERE owner_kind = ?1 AND owner_id = ?2 AND owner_track = ?3",
+            params![
+                identity.owner_kind,
+                identity.owner_id.as_str(),
+                identity.owner_track.as_str(),
+            ],
+        )?;
 
         Ok(deleted > 0)
     }
 
     pub fn assigned_ports(&self) -> Result<Vec<PortAssignment>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports ORDER BY name",
+            "SELECT owner_kind, owner_id, owner_track, port, updated_at FROM ports ORDER BY owner_kind, owner_id, owner_track",
         )?;
         let rows = statement.query_map([], port_assignment_from_row)?;
         let mut assignments = Vec::new();
 
         for row in rows {
-            assignments.push(row?.into_assignment());
+            assignments.push(row?.into_assignment()?);
         }
 
         Ok(assignments)
@@ -467,7 +472,7 @@ impl PortRequest {
     }
 
     pub fn name(&self) -> String {
-        self.owner.storage_key()
+        self.owner.display_name()
     }
 
     fn candidates(&self) -> Vec<u16> {
@@ -488,78 +493,172 @@ impl PortRequest {
 }
 
 impl PortOwner {
-    fn storage_key(&self) -> String {
+    fn identity(&self) -> Result<PortIdentity, StateError> {
+        match self {
+            Self::Dns => Ok(PortIdentity {
+                owner_kind: "dns",
+                owner_id: "dns".to_string(),
+                owner_track: String::new(),
+            }),
+            Self::Gateway => Ok(PortIdentity {
+                owner_kind: "gateway",
+                owner_id: "gateway".to_string(),
+                owner_track: String::new(),
+            }),
+            Self::ProjectWorker {
+                project_id,
+                php_track,
+            } => {
+                self.validate_component("project_id", project_id)?;
+                self.validate_component("php_track", php_track)?;
+
+                Ok(PortIdentity {
+                    owner_kind: "project_worker",
+                    owner_id: project_id.clone(),
+                    owner_track: php_track.clone(),
+                })
+            }
+            Self::Resource { name, track } => {
+                self.validate_component("name", name)?;
+                self.validate_component("track", track)?;
+
+                Ok(PortIdentity {
+                    owner_kind: "resource",
+                    owner_id: name.clone(),
+                    owner_track: track.clone(),
+                })
+            }
+        }
+    }
+
+    fn from_database(
+        owner_kind: String,
+        owner_id: String,
+        owner_track: String,
+    ) -> Result<Self, StateError> {
+        match owner_kind.as_str() {
+            "dns" if owner_id == "dns" && owner_track.is_empty() => Ok(Self::Dns),
+            "dns" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "dns ports must use owner id `dns` and an empty owner track",
+            }),
+            "gateway" if owner_id == "gateway" && owner_track.is_empty() => Ok(Self::Gateway),
+            "gateway" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "gateway ports must use owner id `gateway` and an empty owner track",
+            }),
+            "project_worker" if !owner_id.is_empty() && !owner_track.is_empty() => {
+                Ok(Self::ProjectWorker {
+                    project_id: owner_id,
+                    php_track: owner_track,
+                })
+            }
+            "project_worker" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "project worker ports must include a project id and php track",
+            }),
+            "resource" if !owner_id.is_empty() && !owner_track.is_empty() => Ok(Self::Resource {
+                name: owner_id,
+                track: owner_track,
+            }),
+            "resource" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "resource ports must include a resource name and track",
+            }),
+            _ => Err(StateError::UnknownPortOwnerKind { owner_kind }),
+        }
+    }
+
+    fn validate_component(&self, component: &'static str, value: &str) -> Result<(), StateError> {
+        if value.is_empty() {
+            return Err(StateError::InvalidPortOwner {
+                owner: self.display_name(),
+                reason: match component {
+                    "project_id" => "project worker port owner project id must not be empty",
+                    "php_track" => "project worker port owner php track must not be empty",
+                    "name" => "resource port owner name must not be empty",
+                    "track" => "resource port owner track must not be empty",
+                    _ => "port owner component must not be empty",
+                },
+            });
+        }
+
+        Ok(())
+    }
+
+    fn display_name(&self) -> String {
         match self {
             Self::Dns => "dns".to_string(),
             Self::Gateway => "gateway".to_string(),
             Self::ProjectWorker {
                 project_id,
                 php_track,
-            } => format!("project:{project_id}:php:{php_track}"),
-            Self::Resource { name, track } => format!("resource:{name}:{track}"),
-        }
-    }
-
-    const fn kind(&self) -> &'static str {
-        match self {
-            Self::Dns => "dns",
-            Self::Gateway => "gateway",
-            Self::ProjectWorker { .. } => "project_worker",
-            Self::Resource { .. } => "resource",
-        }
-    }
-
-    fn resource_name(&self) -> Option<String> {
-        match self {
-            Self::Resource { name, .. } => Some(name.clone()),
-            Self::Dns | Self::Gateway | Self::ProjectWorker { .. } => None,
-        }
-    }
-
-    fn track(&self) -> Option<String> {
-        match self {
-            Self::ProjectWorker { php_track, .. } => Some(php_track.clone()),
-            Self::Resource { track, .. } => Some(track.clone()),
-            Self::Dns | Self::Gateway => None,
+            } => format!("project worker {project_id:?} php {php_track:?}"),
+            Self::Resource { name, track } => format!("resource {name:?} track {track:?}"),
         }
     }
 }
 
 impl PortAssignmentRow {
-    fn into_assignment(self) -> PortAssignment {
-        PortAssignment {
-            name: self.name,
+    fn into_assignment(self) -> Result<PortAssignment, StateError> {
+        let owner = PortOwner::from_database(self.owner_kind, self.owner_id, self.owner_track)?;
+
+        Ok(PortAssignment {
+            owner,
             port: self.port,
-            owner_kind: self.owner_kind,
-            resource_name: self.resource_name,
-            track: self.track,
             updated_at: self.updated_at,
-        }
+        })
+    }
+}
+
+impl PortIdentity {
+    fn display_name(&self) -> String {
+        describe_port_identity(self.owner_kind, &self.owner_id, &self.owner_track)
     }
 }
 
 fn port_assignment_in_transaction(
     transaction: &Transaction<'_>,
-    name: &str,
-) -> rusqlite::Result<Option<PortAssignment>> {
+    identity: &PortIdentity,
+) -> Result<Option<PortAssignment>, StateError> {
     let mut statement = transaction.prepare(
-        "SELECT name, port, owner_kind, resource_name, track, updated_at FROM ports WHERE name = ?1",
+        "SELECT owner_kind, owner_id, owner_track, port, updated_at
+        FROM ports
+        WHERE owner_kind = ?1 AND owner_id = ?2 AND owner_track = ?3",
     )?;
-    let mut rows = statement.query_map(params![name], port_assignment_from_row)?;
+    let mut rows = statement.query_map(
+        params![
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
+        ],
+        port_assignment_from_row,
+    )?;
 
     match rows.next() {
-        Some(row) => Ok(Some(row?.into_assignment())),
+        Some(row) => Ok(Some(row?.into_assignment()?)),
         None => Ok(None),
     }
 }
 
 fn assigned_port_numbers_except_in_transaction(
     transaction: &Transaction<'_>,
-    name: &str,
-) -> rusqlite::Result<BTreeSet<u16>> {
-    let mut statement =
-        transaction.prepare("SELECT port FROM ports WHERE name != ?1 ORDER BY port")?;
-    let rows = statement.query_map(params![name], |row| row.get::<_, u16>(0))?;
+    identity: &PortIdentity,
+) -> Result<BTreeSet<u16>, StateError> {
+    let mut statement = transaction.prepare(
+        "SELECT port
+        FROM ports
+        WHERE owner_kind != ?1 OR owner_id != ?2 OR owner_track != ?3
+        ORDER BY port",
+    )?;
+    let rows = statement.query_map(
+        params![
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
+        ],
+        |row| row.get::<_, u16>(0),
+    )?;
     let mut ports = BTreeSet::new();
 
     for row in rows {
@@ -571,25 +670,21 @@ fn assigned_port_numbers_except_in_transaction(
 
 fn upsert_port_in_transaction(
     transaction: &Transaction<'_>,
-    request: &PortRequest,
+    identity: &PortIdentity,
     port: u16,
     updated_at: &str,
 ) -> rusqlite::Result<()> {
     transaction.execute(
-        "INSERT INTO ports (name, port, owner_kind, resource_name, track, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        ON CONFLICT(name) DO UPDATE SET
+        "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
             port = excluded.port,
-            owner_kind = excluded.owner_kind,
-            resource_name = excluded.resource_name,
-            track = excluded.track,
             updated_at = excluded.updated_at",
         params![
-            request.name(),
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
             port,
-            request.owner.kind(),
-            request.owner.resource_name(),
-            request.owner.track(),
             updated_at,
         ],
     )?;
@@ -599,13 +694,20 @@ fn upsert_port_in_transaction(
 
 fn port_assignment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PortAssignmentRow> {
     Ok(PortAssignmentRow {
-        name: row.get(0)?,
-        port: row.get(1)?,
-        owner_kind: row.get(2)?,
-        resource_name: row.get(3)?,
-        track: row.get(4)?,
-        updated_at: row.get(5)?,
+        owner_kind: row.get(0)?,
+        owner_id: row.get(1)?,
+        owner_track: row.get(2)?,
+        port: row.get(3)?,
+        updated_at: row.get(4)?,
     })
+}
+
+fn describe_port_identity(owner_kind: &str, owner_id: &str, owner_track: &str) -> String {
+    if owner_track.is_empty() {
+        return format!("{owner_kind} {owner_id:?}");
+    }
+
+    format!("{owner_kind} {owner_id:?} track {owner_track:?}")
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {

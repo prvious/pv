@@ -101,12 +101,12 @@ CREATE TABLE resource_allocations (
 );
 
 CREATE TABLE ports (
-    name TEXT PRIMARY KEY,
-    port INTEGER NOT NULL UNIQUE,
     owner_kind TEXT NOT NULL,
-    resource_name TEXT,
-    track TEXT,
-    updated_at TEXT NOT NULL
+    owner_id TEXT NOT NULL,
+    owner_track TEXT NOT NULL,
+    port INTEGER NOT NULL UNIQUE,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id, owner_track)
 );
 
 CREATE TABLE observed_states (
