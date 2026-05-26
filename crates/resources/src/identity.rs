@@ -76,6 +76,13 @@ impl PublishedAt {
 
         Ok(Self(parsed))
     }
+
+    pub fn as_rfc3339(&self) -> String {
+        match self.0.format(&Rfc3339) {
+            Ok(value) => value,
+            Err(_error) => self.0.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for ResourceName {

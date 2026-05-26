@@ -1,0 +1,57 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 58
+expression: manifest.summary()
+---
+ManifestSummary {
+    schema_version: 1,
+    minimum_pv_version: "0.1.0",
+    resources: [
+        ResourceSummary {
+            name: "redis",
+            default_track: "7",
+            tracks: [
+                TrackSummary {
+                    name: "7",
+                    artifacts: [
+                        ArtifactSummary {
+                            artifact_version: "7.2.5-pv1",
+                            upstream_version: "7.2.5",
+                            pv_build_revision: "pv1",
+                            platform: "darwin-arm64",
+                            url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            size: 12345,
+                            published_at: "2026-05-26T14:30:00Z",
+                            revoked: false,
+                            revocation_reason: None,
+                        },
+                    ],
+                },
+            ],
+        },
+        ResourceSummary {
+            name: "composer",
+            default_track: "2",
+            tracks: [
+                TrackSummary {
+                    name: "2",
+                    artifacts: [
+                        ArtifactSummary {
+                            artifact_version: "2.8.0-pv1",
+                            upstream_version: "2.8.0",
+                            pv_build_revision: "pv1",
+                            platform: "any",
+                            url: "https://artifacts.example.test/composer-2.8.0-pv1.tar.gz",
+                            sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            size: 23456,
+                            published_at: "2026-05-26T15:30:00Z",
+                            revoked: false,
+                            revocation_reason: None,
+                        },
+                    ],
+                },
+            ],
+        },
+    ],
+}
