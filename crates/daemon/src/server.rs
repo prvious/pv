@@ -9,7 +9,9 @@ use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
-use crate::jobs::{run_background_reconciliation_job, run_job};
+use crate::jobs::{
+    record_background_reconciliation_error, run_background_reconciliation_job, run_job,
+};
 use crate::protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
     ResponseStatus, write_line,
@@ -37,7 +39,13 @@ pub(crate) async fn serve(
             let paths = background_paths.clone();
             let queue = background_queue.clone();
             let _task = tokio::spawn(async move {
-                let _result = run_background_reconciliation_job(paths, queue, scope).await;
+                let scope_text = scope.to_string();
+                if let Err(error) =
+                    run_background_reconciliation_job(paths.clone(), queue, scope).await
+                {
+                    let _result =
+                        record_background_reconciliation_error(&paths, &scope_text, &error);
+                }
             });
         },
     );

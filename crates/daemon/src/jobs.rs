@@ -4,7 +4,7 @@ use crate::protocol::{
     DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
-use state::{Database, PvPaths};
+use state::{Database, JobStatus, PvPaths};
 use tokio::io::AsyncWrite;
 
 pub(crate) async fn run_job(
@@ -32,8 +32,7 @@ pub(crate) async fn run_background_reconciliation_job(
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
 ) -> Result<(), DaemonError> {
-    let scope_text = scope.to_string();
-    let result = queue.enqueue(scope, || start_reconciliation_job(&paths, &scope_text))?;
+    let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
     let EnqueueResult::Queued(queued) = result else {
         return Ok(());
     };
@@ -55,7 +54,7 @@ async fn run_reconciliation_job(
     scope: ReconciliationScope,
 ) -> Result<(), DaemonError> {
     let scope_text = scope.to_string();
-    let result = queue.enqueue(scope, || start_reconciliation_job(&paths, &scope_text))?;
+    let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
 
     match result {
         EnqueueResult::Queued(queued) => {
@@ -84,9 +83,7 @@ async fn run_reconciliation_job(
 
             running.finish();
 
-            accepted_result?;
-
-            result
+            foreground_reconciliation_result(accepted_result, result)
         }
         EnqueueResult::Coalesced(job) => {
             write_line(
@@ -102,6 +99,31 @@ async fn run_reconciliation_job(
             .await
         }
     }
+}
+
+fn enqueue_reconciliation_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    scope: ReconciliationScope,
+) -> Result<EnqueueResult, DaemonError> {
+    let scope_text = scope.to_string();
+    let abandon_paths = paths.clone();
+
+    queue.enqueue_with_abandon(
+        scope,
+        || start_reconciliation_job(paths, &scope_text),
+        move |job_id| {
+            let _result = abandon_reconciliation_job(&abandon_paths, job_id);
+        },
+    )
+}
+
+fn foreground_reconciliation_result(
+    accepted_result: Result<(), DaemonError>,
+    reconciliation_result: Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    reconciliation_result?;
+    accepted_result
 }
 
 async fn stream_started_reconciliation_job<Stream>(
@@ -175,6 +197,13 @@ fn start_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String, Daem
     Ok(job.id)
 }
 
+fn abandon_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<(), DaemonError> {
+    let mut database = Database::open(paths)?;
+    database.fail_job(job_id, "reconciliation was abandoned before completion")?;
+
+    Ok(())
+}
+
 fn complete_stub_reconciliation(
     paths: &PvPaths,
     job_id: &str,
@@ -202,6 +231,30 @@ fn complete_or_fail_background_reconciliation(
             Err(error)
         }
     }
+}
+
+pub(crate) fn record_background_reconciliation_error(
+    paths: &PvPaths,
+    scope: &str,
+    error: &DaemonError,
+) -> Result<(), DaemonError> {
+    let error_message = error.to_string();
+    let mut database = Database::open(paths)?;
+    let already_recorded = database.recent_jobs()?.into_iter().any(|job| {
+        job.kind == "reconcile"
+            && job.scope == scope
+            && job.status == JobStatus::Failed
+            && job.error.as_deref() == Some(error_message.as_str())
+    });
+
+    if already_recorded {
+        return Ok(());
+    }
+
+    let job = database.start_job("reconcile", scope)?;
+    database.fail_job(&job.id, &error_message)?;
+
+    Ok(())
 }
 
 async fn run_invalid_reconciliation_scope_job(
@@ -356,13 +409,15 @@ mod tests {
     use std::io;
 
     use camino_tempfile::tempdir;
-    use state::{Database, JobStatus, PvPaths};
+    use state::{Database, JobStatus, PvPaths, StateError};
     use tokio::io::duplex;
 
     use super::{
-        complete_or_fail_background_reconciliation, start_reconciliation_job,
-        stream_started_reconciliation_job,
+        complete_or_fail_background_reconciliation, enqueue_reconciliation_job,
+        foreground_reconciliation_result, record_background_reconciliation_error,
+        start_reconciliation_job, stream_started_reconciliation_job,
     };
+    use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
     #[tokio::test]
     async fn stream_write_error_is_returned_after_job_completion_is_persisted() -> anyhow::Result<()>
@@ -415,5 +470,105 @@ mod tests {
         assert_eq!(job.error.as_deref(), Some("I/O error: reconcile failed"));
 
         Ok(())
+    }
+
+    #[test]
+    fn background_reconciliation_error_records_failed_job() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let error = crate::DaemonError::Io(io::Error::other("background task failed"));
+
+        record_background_reconciliation_error(&paths, "project:project_1", &error)?;
+
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == "project:project_1")
+            .ok_or_else(|| anyhow::anyhow!("missing background failure job"))?;
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(
+            job.error.as_deref(),
+            Some("I/O error: background task failed")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn foreground_reconciliation_result_takes_precedence_over_accepted_write_error() {
+        let result = foreground_reconciliation_result(
+            Err(crate::DaemonError::Io(io::Error::other(
+                "accepted write failed",
+            ))),
+            Err(crate::DaemonError::State(StateError::JobNotFound {
+                id: "reconcile_1".to_string(),
+            })),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::DaemonError::State(StateError::JobNotFound { id }))
+                if id == "reconcile_1"
+        ));
+    }
+
+    #[test]
+    fn foreground_reconciliation_returns_accepted_write_error_after_successful_reconciliation() {
+        let result = foreground_reconciliation_result(
+            Err(crate::DaemonError::Io(io::Error::other(
+                "accepted write failed",
+            ))),
+            Ok(()),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::DaemonError::Io(error)) if error.to_string() == "accepted write failed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropping_queued_reconciliation_marks_persisted_job_failed() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let running = first.wait_for_turn().await;
+        let queued_scope = ReconciliationScope::project("project_1")?;
+        let queued = queued(enqueue_reconciliation_job(&paths, &queue, queued_scope)?)?;
+        let queued_job_id = queued.job_id().to_string();
+
+        drop(queued);
+
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == queued_job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing abandoned job {queued_job_id}"))?;
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(
+            job.error.as_deref(),
+            Some("reconciliation was abandoned before completion")
+        );
+
+        running.finish();
+
+        Ok(())
+    }
+
+    fn queued(result: EnqueueResult) -> anyhow::Result<crate::QueuedReconciliation> {
+        match result {
+            EnqueueResult::Queued(queued) => Ok(queued),
+            EnqueueResult::Coalesced(job) => Err(anyhow::anyhow!(
+                "scope unexpectedly coalesced into {}",
+                job.job_id()
+            )),
+        }
     }
 }

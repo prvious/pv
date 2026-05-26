@@ -41,12 +41,14 @@ pub struct ReconciliationJob {
 pub struct QueuedReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
+    abandon_job: Option<JobFinalizer>,
     released: bool,
 }
 
 pub struct RunningReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
+    abandon_job: Option<JobFinalizer>,
     finished: bool,
 }
 
@@ -81,6 +83,8 @@ struct QueueInner {
     notify: Notify,
 }
 
+type JobFinalizer = Box<dyn FnOnce(&str) + Send + 'static>;
+
 struct DebounceState {
     inner: Mutex<DebounceInner>,
 }
@@ -112,6 +116,15 @@ impl ReconciliationQueue {
         scope: ReconciliationScope,
         create_job_id: impl FnOnce() -> Result<String, E>,
     ) -> Result<EnqueueResult, E> {
+        self.enqueue_with_abandon(scope, create_job_id, |_job_id| {})
+    }
+
+    pub(crate) fn enqueue_with_abandon<E>(
+        &self,
+        scope: ReconciliationScope,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E> {
         let mut state = lock_queue_state(&self.inner);
 
         if let Some(job) = matching_queued_job(&state, &scope) {
@@ -128,6 +141,7 @@ impl ReconciliationQueue {
         Ok(EnqueueResult::Queued(QueuedReconciliation {
             job,
             inner: Arc::clone(&self.inner),
+            abandon_job: Some(Box::new(abandon_job)),
             released: false,
         }))
     }
@@ -154,11 +168,13 @@ impl QueuedReconciliation {
                     && let Some(job) = state.queued.pop_front()
                 {
                     state.active = Some(job.clone());
+                    let abandon_job = queued.abandon_job.take();
                     queued.released = true;
 
                     return RunningReconciliation {
                         job,
                         inner: Arc::clone(&queued.inner),
+                        abandon_job,
                         finished: false,
                     };
                 }
@@ -179,7 +195,11 @@ impl Drop for QueuedReconciliation {
             return;
         }
 
-        remove_queued_job(&self.inner, &self.job);
+        if remove_queued_job(&self.inner, &self.job)
+            && let Some(abandon_job) = self.abandon_job.take()
+        {
+            abandon_job(&self.job.job_id);
+        }
     }
 }
 
@@ -204,7 +224,11 @@ impl Drop for RunningReconciliation {
             return;
         }
 
-        release_active_job(&self.inner, &self.job);
+        if release_active_job(&self.inner, &self.job)
+            && let Some(abandon_job) = self.abandon_job.take()
+        {
+            abandon_job(&self.job.job_id);
+        }
     }
 }
 
@@ -391,17 +415,20 @@ fn matching_queued_job(
     state.queued.iter().find(|job| &job.scope == scope).cloned()
 }
 
-fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) {
+fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     let mut state = lock_queue_state(inner);
     let queued_len = state.queued.len();
     state.queued.retain(|queued| queued.job_id != job.job_id);
 
     if state.queued.len() != queued_len {
         inner.notify.notify_waiters();
+        return true;
     }
+
+    false
 }
 
-fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) {
+fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     let mut state = lock_queue_state(inner);
 
     if state
@@ -411,7 +438,10 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) {
     {
         state.active = None;
         inner.notify.notify_waiters();
+        return true;
     }
+
+    false
 }
 
 fn lock_queue_state(inner: &QueueInner) -> MutexGuard<'_, QueueState> {

@@ -427,13 +427,13 @@ fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, Daemo
     let Some(command_line) = live_process_command_line(pid)? else {
         return Ok(false);
     };
+    let Some(live_executable) = command_line.split_whitespace().next() else {
+        return Ok(false);
+    };
 
-    let command_matches = command_line.contains(spec.command.as_str())
+    let command_matches = live_executable == spec.command.as_str()
         || spec.command.file_name().is_some_and(|file_name| {
-            command_line
-                .split_whitespace()
-                .next()
-                .is_some_and(|command| command.ends_with(file_name))
+            live_executable == file_name || live_executable.ends_with(&format!("/{file_name}"))
         });
     Ok(command_matches)
 }

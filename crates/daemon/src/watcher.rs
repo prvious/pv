@@ -48,19 +48,7 @@ impl ProjectConfigWatcher {
         let mut current_configs = BTreeMap::new();
 
         for watch in watches {
-            let modified_at = match fs::modified_at(&watch.config_path) {
-                Ok(modified_at) => modified_at,
-                Err(_error) => {
-                    current_configs.insert(
-                        watch.project_id,
-                        WatchedConfig {
-                            path: watch.config_path,
-                            modified_at: None,
-                        },
-                    );
-                    continue;
-                }
-            };
+            let modified_at = fs::modified_at(&watch.config_path)?;
             let watched_config = WatchedConfig {
                 path: watch.config_path,
                 modified_at,
@@ -112,8 +100,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watcher_keeps_polling_when_one_project_config_path_is_unreadable() -> anyhow::Result<()>
-    {
+    async fn watcher_returns_project_config_modified_at_errors_to_the_task_owner()
+    -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("project");
@@ -151,7 +139,13 @@ mod tests {
         let debouncer = ReconciliationDebouncer::new(Duration::from_millis(1), |_scope| {});
         let mut watcher = ProjectConfigWatcher::new(paths, debouncer, Duration::from_millis(1));
 
-        watcher.poll_once().await?;
+        let result = watcher.poll_once().await;
+
+        assert!(matches!(
+            result,
+            Err(crate::DaemonError::State(state::StateError::Filesystem { source, .. }))
+                if source.kind() == std::io::ErrorKind::InvalidInput
+        ));
 
         Ok(())
     }

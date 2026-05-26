@@ -322,6 +322,51 @@ async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command()
     Ok(())
 }
 
+#[tokio::test]
+async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arguments()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let fake_command = paths.root().join("fake-pv-runtime");
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "argument-runtime",
+            "/bin/sh",
+            vec!["-c".to_string(), format!("sleep 30 # {fake_command}")],
+        ))
+        .await?;
+    let forged = process_spec(
+        &paths,
+        "forged-argument-runtime",
+        fake_command.clone(),
+        Vec::new(),
+    );
+    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
+    state::fs::write_sensitive_file(
+        &forged.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": "forged-argument-runtime",
+            "pid": actual.pid(),
+            "command": fake_command.as_str(),
+            "arguments": [],
+            "config_path": forged.config_path.as_str(),
+            "resource_name": "forged-argument-runtime",
+            "track": "test",
+            "log_path": forged.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+        }))?,
+    )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
 async fn wait_for_file_contains(path: &camino::Utf8Path, needle: &str) -> Result<String> {
     for _attempt in 0..50 {
         let content = state::testing::read_to_string(path)?;
