@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use rusqlite::params;
 use serde_json::{Value, json};
-use state::{Database, PvPaths};
+use state::{Database, JobRecord, JobStatus, PvPaths};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -60,6 +61,74 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
 
     assert_with_normalized_timestamps(
         "unsupported_job_streams_failure_event_and_persists_failed_status",
+        (lines, database.recent_jobs()?),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let project_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "project:project_1",
+        }),
+    )
+    .await?;
+    let resource_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "resource:mysql:8.4",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "valid_reconciliation_scopes_stream_stub_completion",
+        (project_lines, resource_lines, database.recent_jobs()?),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "project:",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "invalid_reconciliation_scope_reports_scope_parse_failure",
         (lines, database.recent_jobs()?),
     )?;
 
@@ -218,6 +287,46 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "project_1",
+                project_path.as_str(),
+                "project.test",
+                config_path.as_str(),
+                "2026-05-24T00:00:00Z",
+                "2026-05-24T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    write_file_after_modified_time_tick(&config_path, "php: '8.4'\n").await?;
+
+    let job = wait_for_succeeded_job_scope(&paths, "project:project_1").await?;
+
+    daemon.shutdown().await?;
+
+    assert_eq!(job.kind, "reconcile");
+    assert_eq!(job.scope, "project:project_1");
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert_eq!(job.summary.as_deref(), Some("stub job completed"));
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
@@ -260,4 +369,38 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     }
 
     Ok(lines)
+}
+
+async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
+    for _attempt in 0..50 {
+        let database = Database::open(paths)?;
+        if let Some(job) = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == scope && job.status == JobStatus::Succeeded)
+        {
+            return Ok(job);
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    Err(anyhow::anyhow!(
+        "succeeded job with scope {scope:?} was not recorded"
+    ))
+}
+
+async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &str) -> Result<()> {
+    let before = state::fs::modified_at(path)?;
+
+    for _attempt in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        state::fs::write_sensitive_file(path, content)?;
+
+        if state::fs::modified_at(path)? != before {
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!("modified time did not advance for {path}"))
 }

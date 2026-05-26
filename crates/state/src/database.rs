@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
-use rusqlite::{Connection, Transaction, params};
+use camino::Utf8PathBuf;
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
+const PORT_CANDIDATE_LIMIT: usize = 10;
 
 #[derive(Debug)]
 pub struct Database {
@@ -59,6 +62,41 @@ pub struct JobRecord {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortRequest {
+    owner: PortOwner,
+    preferred_port: u16,
+    fallback_start: u16,
+    fallback_end: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PortOwner {
+    Dns,
+    Gateway,
+    ProjectWorker {
+        project_id: String,
+        php_track: String,
+    },
+    Resource {
+        name: String,
+        track: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortAssignment {
+    pub owner: PortOwner,
+    pub port: u16,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectConfigWatch {
+    pub project_id: String,
+    pub config_path: Utf8PathBuf,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -68,6 +106,20 @@ struct JobRecordRow {
     finished_at: Option<String>,
     summary: Option<String>,
     error: Option<String>,
+}
+
+struct PortAssignmentRow {
+    owner_kind: String,
+    owner_id: String,
+    owner_track: String,
+    port: u16,
+    updated_at: String,
+}
+
+struct PortIdentity {
+    owner_kind: &'static str,
+    owner_id: String,
+    owner_track: String,
 }
 
 impl Database {
@@ -201,6 +253,100 @@ impl Database {
         Ok(jobs)
     }
 
+    pub fn assign_port(
+        &mut self,
+        request: PortRequest,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<PortAssignment, StateError> {
+        let identity = request.owner.identity()?;
+        let request_name = identity.display_name();
+        let candidates = request.candidates();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)?
+            && is_available(existing.port)
+        {
+            transaction.commit()?;
+
+            return Ok(existing);
+        }
+
+        let assigned_ports = assigned_port_numbers_except_in_transaction(&transaction, &identity)?;
+
+        for candidate in candidates.iter().copied() {
+            if assigned_ports.contains(&candidate) || !is_available(candidate) {
+                continue;
+            }
+
+            let updated_at = timestamp()?;
+            upsert_port_in_transaction(&transaction, &identity, candidate, &updated_at)?;
+            transaction.commit()?;
+
+            return Ok(PortAssignment {
+                owner: request.owner,
+                port: candidate,
+                updated_at,
+            });
+        }
+
+        Err(StateError::NoAvailablePort {
+            name: request_name,
+            preferred_port: request.preferred_port,
+            fallback_start: request.fallback_start,
+            fallback_end: request.fallback_end,
+            attempts: candidates.len(),
+        })
+    }
+
+    pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {
+        let identity = owner.identity()?;
+        let deleted = self.connection.execute(
+            "DELETE FROM ports WHERE owner_kind = ?1 AND owner_id = ?2 AND owner_track = ?3",
+            params![
+                identity.owner_kind,
+                identity.owner_id.as_str(),
+                identity.owner_track.as_str(),
+            ],
+        )?;
+
+        Ok(deleted > 0)
+    }
+
+    pub fn assigned_ports(&self) -> Result<Vec<PortAssignment>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT owner_kind, owner_id, owner_track, port, updated_at FROM ports ORDER BY owner_kind, owner_id, owner_track",
+        )?;
+        let rows = statement.query_map([], port_assignment_from_row)?;
+        let mut assignments = Vec::new();
+
+        for row in rows {
+            assignments.push(row?.into_assignment()?);
+        }
+
+        Ok(assignments)
+    }
+
+    pub fn project_config_watches(&self) -> Result<Vec<ProjectConfigWatch>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, config_path FROM projects WHERE config_path IS NOT NULL ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(ProjectConfigWatch {
+                project_id: row.get(0)?,
+                config_path: Utf8PathBuf::from(row.get::<_, String>(1)?),
+            })
+        })?;
+        let mut watches = Vec::new();
+
+        for row in rows {
+            watches.push(row?);
+        }
+
+        Ok(watches)
+    }
+
     pub(crate) fn transaction<T>(
         &mut self,
         operation: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
@@ -259,6 +405,309 @@ impl Database {
 
         Ok(tables)
     }
+}
+
+impl PortRequest {
+    pub fn dns(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
+        Self::new(PortOwner::Dns, preferred_port, fallback_start, fallback_end)
+    }
+
+    pub fn gateway(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
+        Self::new(
+            PortOwner::Gateway,
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn project_worker(
+        project_id: impl Into<String>,
+        php_track: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::ProjectWorker {
+                project_id: project_id.into(),
+                php_track: php_track.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn resource(
+        name: impl Into<String>,
+        track: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::Resource {
+                name: name.into(),
+                track: track.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn new(
+        owner: PortOwner,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self {
+            owner,
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        }
+    }
+
+    pub fn name(&self) -> String {
+        self.owner.display_name()
+    }
+
+    fn candidates(&self) -> Vec<u16> {
+        let mut candidates = vec![self.preferred_port];
+
+        for port in self.fallback_start..=self.fallback_end {
+            if candidates.len() >= PORT_CANDIDATE_LIMIT {
+                break;
+            }
+
+            if port != self.preferred_port {
+                candidates.push(port);
+            }
+        }
+
+        candidates
+    }
+}
+
+impl PortOwner {
+    fn identity(&self) -> Result<PortIdentity, StateError> {
+        match self {
+            Self::Dns => Ok(PortIdentity {
+                owner_kind: "dns",
+                owner_id: "dns".to_string(),
+                owner_track: String::new(),
+            }),
+            Self::Gateway => Ok(PortIdentity {
+                owner_kind: "gateway",
+                owner_id: "gateway".to_string(),
+                owner_track: String::new(),
+            }),
+            Self::ProjectWorker {
+                project_id,
+                php_track,
+            } => {
+                self.validate_component("project_id", project_id)?;
+                self.validate_component("php_track", php_track)?;
+
+                Ok(PortIdentity {
+                    owner_kind: "project_worker",
+                    owner_id: project_id.clone(),
+                    owner_track: php_track.clone(),
+                })
+            }
+            Self::Resource { name, track } => {
+                self.validate_component("name", name)?;
+                self.validate_component("track", track)?;
+
+                Ok(PortIdentity {
+                    owner_kind: "resource",
+                    owner_id: name.clone(),
+                    owner_track: track.clone(),
+                })
+            }
+        }
+    }
+
+    fn from_database(
+        owner_kind: String,
+        owner_id: String,
+        owner_track: String,
+    ) -> Result<Self, StateError> {
+        match owner_kind.as_str() {
+            "dns" if owner_id == "dns" && owner_track.is_empty() => Ok(Self::Dns),
+            "dns" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "dns ports must use owner id `dns` and an empty owner track",
+            }),
+            "gateway" if owner_id == "gateway" && owner_track.is_empty() => Ok(Self::Gateway),
+            "gateway" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "gateway ports must use owner id `gateway` and an empty owner track",
+            }),
+            "project_worker" if !owner_id.is_empty() && !owner_track.is_empty() => {
+                Ok(Self::ProjectWorker {
+                    project_id: owner_id,
+                    php_track: owner_track,
+                })
+            }
+            "project_worker" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "project worker ports must include a project id and php track",
+            }),
+            "resource" if !owner_id.is_empty() && !owner_track.is_empty() => Ok(Self::Resource {
+                name: owner_id,
+                track: owner_track,
+            }),
+            "resource" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
+                reason: "resource ports must include a resource name and track",
+            }),
+            _ => Err(StateError::UnknownPortOwnerKind { owner_kind }),
+        }
+    }
+
+    fn validate_component(&self, component: &'static str, value: &str) -> Result<(), StateError> {
+        if value.is_empty() {
+            return Err(StateError::InvalidPortOwner {
+                owner: self.display_name(),
+                reason: match component {
+                    "project_id" => "project worker port owner project id must not be empty",
+                    "php_track" => "project worker port owner php track must not be empty",
+                    "name" => "resource port owner name must not be empty",
+                    "track" => "resource port owner track must not be empty",
+                    _ => "port owner component must not be empty",
+                },
+            });
+        }
+
+        Ok(())
+    }
+
+    fn display_name(&self) -> String {
+        match self {
+            Self::Dns => "dns".to_string(),
+            Self::Gateway => "gateway".to_string(),
+            Self::ProjectWorker {
+                project_id,
+                php_track,
+            } => format!("project worker {project_id:?} php {php_track:?}"),
+            Self::Resource { name, track } => format!("resource {name:?} track {track:?}"),
+        }
+    }
+}
+
+impl PortAssignmentRow {
+    fn into_assignment(self) -> Result<PortAssignment, StateError> {
+        let owner = PortOwner::from_database(self.owner_kind, self.owner_id, self.owner_track)?;
+
+        Ok(PortAssignment {
+            owner,
+            port: self.port,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+impl PortIdentity {
+    fn display_name(&self) -> String {
+        describe_port_identity(self.owner_kind, &self.owner_id, &self.owner_track)
+    }
+}
+
+fn port_assignment_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &PortIdentity,
+) -> Result<Option<PortAssignment>, StateError> {
+    let mut statement = transaction.prepare(
+        "SELECT owner_kind, owner_id, owner_track, port, updated_at
+        FROM ports
+        WHERE owner_kind = ?1 AND owner_id = ?2 AND owner_track = ?3",
+    )?;
+    let mut rows = statement.query_map(
+        params![
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
+        ],
+        port_assignment_from_row,
+    )?;
+
+    match rows.next() {
+        Some(row) => Ok(Some(row?.into_assignment()?)),
+        None => Ok(None),
+    }
+}
+
+fn assigned_port_numbers_except_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &PortIdentity,
+) -> Result<BTreeSet<u16>, StateError> {
+    let mut statement = transaction.prepare(
+        "SELECT port
+        FROM ports
+        WHERE owner_kind != ?1 OR owner_id != ?2 OR owner_track != ?3
+        ORDER BY port",
+    )?;
+    let rows = statement.query_map(
+        params![
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
+        ],
+        |row| row.get::<_, u16>(0),
+    )?;
+    let mut ports = BTreeSet::new();
+
+    for row in rows {
+        ports.insert(row?);
+    }
+
+    Ok(ports)
+}
+
+fn upsert_port_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &PortIdentity,
+    port: u16,
+    updated_at: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
+            port = excluded.port,
+            updated_at = excluded.updated_at",
+        params![
+            identity.owner_kind,
+            identity.owner_id.as_str(),
+            identity.owner_track.as_str(),
+            port,
+            updated_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn port_assignment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PortAssignmentRow> {
+    Ok(PortAssignmentRow {
+        owner_kind: row.get(0)?,
+        owner_id: row.get(1)?,
+        owner_track: row.get(2)?,
+        port: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn describe_port_identity(owner_kind: &str, owner_id: &str, owner_track: &str) -> String {
+    if owner_track.is_empty() {
+        return format!("{owner_kind} {owner_id:?}");
+    }
+
+    format!("{owner_kind} {owner_id:?} track {owner_track:?}")
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {

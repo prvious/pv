@@ -1,0 +1,58 @@
+---
+source: crates/state/tests/state_foundation.rs
+assertion_line: 500
+expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nreassigned_mysql, database.assigned_ports()?,)"
+---
+(
+    PortAssignment {
+        owner: Resource {
+            name: "mysql",
+            track: "8.4",
+        },
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Resource {
+            name: "mysql",
+            track: "8.4",
+        },
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Resource {
+            name: "redis",
+            track: "8.6",
+        },
+        port: 45001,
+        updated_at: "<timestamp>",
+    },
+    true,
+    PortAssignment {
+        owner: Resource {
+            name: "mysql",
+            track: "8.4",
+        },
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mysql",
+                track: "8.4",
+            },
+            port: 45000,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "redis",
+                track: "8.6",
+            },
+            port: 45001,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

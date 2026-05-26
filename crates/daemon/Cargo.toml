@@ -8,17 +8,22 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+camino = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rustix = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
+time = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

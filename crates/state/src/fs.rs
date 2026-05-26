@@ -1,9 +1,13 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
+
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::{PvPaths, StateError, backup};
 
 const USER_ONLY_DIR_MODE: u32 = 0o700;
 const SENSITIVE_FILE_MODE: u32 = 0o600;
+static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -57,6 +61,40 @@ pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
     }
 
     remove_file(&path)
+}
+
+pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    ensure_parent_dir(path)?;
+    write_atomically(path, content)?;
+    secure_sensitive_file(path)
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn open_append_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    ensure_parent_dir(path)?;
+    let file = open_append_file_handle(path)?;
+    secure_sensitive_file(path)?;
+
+    Ok(file)
+}
+
+pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
+    read_utf8_file(path)
+}
+
+pub fn modified_at(path: &Utf8Path) -> Result<Option<SystemTime>, StateError> {
+    match file_modified_at(path) {
+        Ok(modified_at) => Ok(Some(modified_at)),
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspection>, StateError> {
@@ -114,6 +152,70 @@ fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
     validate_mode(path, USER_ONLY_DIR_MODE)?;
     validate_owner(path)
+}
+
+fn ensure_parent_dir(path: &Utf8Path) -> Result<(), StateError> {
+    if let Some(parent) = path.parent() {
+        ensure_user_dir(parent)?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns atomic file writes"
+)]
+fn write_atomically(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    let temporary_path = temporary_path_for(path);
+
+    std::fs::write(&temporary_path, content)
+        .map_err(|source| StateError::filesystem(temporary_path.clone(), source))?;
+    secure_sensitive_file(&temporary_path)?;
+    std::fs::rename(&temporary_path, path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+fn temporary_path_for(path: &Utf8Path) -> Utf8PathBuf {
+    let file_name = path.file_name().unwrap_or("pv");
+    let process_id = std::process::id();
+    let counter = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    path.with_file_name(format!("{file_name}.{process_id}.{counter}.tmp"))
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+fn open_append_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct file reads"
+)]
+fn read_utf8_file(path: &Utf8Path) -> Result<String, StateError> {
+    std::fs::read_to_string(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct file metadata reads"
+)]
+fn file_modified_at(path: &Utf8Path) -> Result<SystemTime, StateError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+
+    metadata
+        .modified()
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
 #[expect(
@@ -233,3 +335,28 @@ fn current_uid() -> u32 {
 
 #[cfg(not(unix))]
 compile_error!("PV v1 targets macOS and requires Unix filesystem permissions");
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8Path;
+
+    use super::temporary_path_for;
+
+    #[test]
+    fn temporary_paths_keep_the_target_extension_in_the_derived_name() {
+        let pid_temporary_path = temporary_path_for(Utf8Path::new("/tmp/pv/runtime.pid"));
+        let metadata_temporary_path = temporary_path_for(Utf8Path::new("/tmp/pv/runtime.json"));
+
+        assert_ne!(pid_temporary_path, metadata_temporary_path);
+        assert!(
+            pid_temporary_path
+                .file_name()
+                .is_some_and(|name| name.starts_with("runtime.pid."))
+        );
+        assert!(
+            metadata_temporary_path
+                .file_name()
+                .is_some_and(|name| name.starts_with("runtime.json."))
+        );
+    }
+}

@@ -233,13 +233,17 @@ name = "daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "camino",
  "camino-tempfile",
  "futures-util",
  "insta",
+ "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "state",
  "thiserror",
+ "time",
  "tokio",
  "tokio-util",
 ]

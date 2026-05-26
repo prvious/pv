@@ -9,13 +9,19 @@ use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
-use crate::jobs::run_job;
+use crate::jobs::{
+    record_background_reconciliation_error, run_background_reconciliation_job, run_job,
+};
 use crate::protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
     ResponseStatus, write_line,
 };
+use crate::reconciliation::ReconciliationQueue;
+use crate::watcher::ProjectConfigWatcher;
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
+const PROJECT_CONFIG_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
@@ -24,22 +30,55 @@ pub(crate) async fn serve(
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
+    let queue = ReconciliationQueue::new();
+    let background_paths = paths.clone();
+    let background_queue = queue.clone();
+    let debouncer = crate::reconciliation::ReconciliationDebouncer::new(
+        PROJECT_CONFIG_DEBOUNCE,
+        move |scope| {
+            let paths = background_paths.clone();
+            let queue = background_queue.clone();
+            let _task = tokio::spawn(async move {
+                let scope_text = scope.to_string();
+                if let Err(error) =
+                    run_background_reconciliation_job(paths.clone(), queue, scope).await
+                {
+                    let _result =
+                        record_background_reconciliation_error(&paths, &scope_text, &error);
+                }
+            });
+        },
+    );
+    let watcher =
+        ProjectConfigWatcher::new(paths.clone(), debouncer, PROJECT_CONFIG_WATCH_INTERVAL);
+    let mut watcher_task = tokio::spawn(watcher.run());
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                watcher_task.abort();
+                let _join_result = watcher_task.await;
                 connections.abort_all();
                 while connections.join_next().await.is_some() {}
 
                 return Ok(());
             }
+            watcher_result = &mut watcher_task => {
+                match watcher_result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(error)) => return Err(error),
+                    Err(error) if error.is_panic() => return Err(error.into()),
+                    Err(_error) => return Ok(()),
+                }
+            }
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _address)) => {
                         let connection_paths = paths.clone();
+                        let connection_queue = queue.clone();
 
                         connections.spawn(async move {
-                            handle_connection(connection_paths, stream).await
+                            handle_connection(connection_paths, connection_queue, stream).await
                         });
                     }
                     Err(_error) => {
@@ -59,7 +98,11 @@ pub(crate) async fn serve(
     }
 }
 
-async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), DaemonError> {
+async fn handle_connection(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    stream: LocalStream,
+) -> Result<(), DaemonError> {
     let mut transport = crate::protocol::transport(stream);
     let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
         return Ok(());
@@ -94,7 +137,9 @@ async fn handle_connection(paths: PvPaths, stream: LocalStream) -> Result<(), Da
             )
             .await
         }
-        DaemonCommand::RunJob { kind, scope } => run_job(paths, transport, &kind, &scope).await,
+        DaemonCommand::RunJob { kind, scope } => {
+            run_job(paths, queue, transport, &kind, &scope).await
+        }
     }
 }
 

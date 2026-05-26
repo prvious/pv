@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, JobStatus, PvPaths, StateError};
+use state::{Database, JobStatus, PortOwner, PortRequest, PvPaths, StateError};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -207,6 +207,13 @@ fn with_normalized_backup_names(assertion: impl FnOnce() -> Result<()>) -> Resul
         r"pv\.db\.\d{8}-\d{6}(?:-\d+)?\.bak",
         "pv.db.<timestamp>.bak",
     );
+
+    settings.bind(assertion)
+}
+
+fn with_normalized_timestamps(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
 
     settings.bind(assertion)
 }
@@ -467,6 +474,105 @@ fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
         jobs.first().map(|job| job.id.as_str()),
         jobs.last().map(|job| job.id.as_str()),
         stored_job_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let mysql = PortRequest::resource("mysql", "8.4", 3306, 45000, 45009);
+    let redis = PortRequest::resource("redis", "8.6", 45000, 45000, 45009);
+
+    let assigned_mysql = database.assign_port(mysql.clone(), |port| port != 3306)?;
+    let reused_mysql = database.assign_port(mysql.clone(), |port| port == assigned_mysql.port)?;
+    let assigned_redis = database.assign_port(redis, |_port| true)?;
+    let released_mysql = database.release_port(PortOwner::Resource {
+        name: "mysql".to_string(),
+        track: "8.4".to_string(),
+    })?;
+    let reassigned_mysql = database.assign_port(mysql, |port| port != 3306)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            assigned_mysql,
+            reused_mysql,
+            assigned_redis,
+            released_mysql,
+            reassigned_mysql,
+            database.assigned_ports()?,
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_keeps_owner_components_structured() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let mysql_debug = PortRequest::resource("mysql", "8.4:debug", 45000, 45000, 45009);
+    let mysql_track_resource = PortRequest::resource("mysql:8.4", "debug", 45000, 45000, 45009);
+
+    let assigned_mysql_debug = database.assign_port(mysql_debug, |_port| true)?;
+    let assigned_mysql_track_resource = database.assign_port(mysql_track_resource, |_port| true)?;
+    let released_mysql_debug = database.release_port(PortOwner::Resource {
+        name: "mysql".to_string(),
+        track: "8.4:debug".to_string(),
+    })?;
+
+    assert_eq!(
+        assigned_mysql_debug.owner,
+        PortOwner::Resource {
+            name: "mysql".to_string(),
+            track: "8.4:debug".to_string(),
+        }
+    );
+    assert_eq!(assigned_mysql_debug.port, 45000);
+    assert_eq!(
+        assigned_mysql_track_resource.owner,
+        PortOwner::Resource {
+            name: "mysql:8.4".to_string(),
+            track: "debug".to_string(),
+        }
+    );
+    assert_eq!(assigned_mysql_track_resource.port, 45001);
+    assert!(released_mysql_debug);
+    assert_eq!(
+        database.assigned_ports()?,
+        vec![assigned_mysql_track_resource]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn port_allocator_reports_the_documented_candidate_cap() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let single_candidate = database.assign_port(
+        PortRequest::resource("mysql", "8.4", 45000, 45000, 45000),
+        |_port| false,
+    );
+    let capped_candidates = database.assign_port(
+        PortRequest::resource("redis", "8.6", 45000, 45000, 45099),
+        |_port| false,
+    );
+
+    assert!(matches!(
+        single_candidate,
+        Err(StateError::NoAvailablePort { attempts: 1, .. })
+    ));
+    assert!(matches!(
+        capped_candidates,
+        Err(StateError::NoAvailablePort { attempts: 10, .. })
     ));
 
     Ok(())
