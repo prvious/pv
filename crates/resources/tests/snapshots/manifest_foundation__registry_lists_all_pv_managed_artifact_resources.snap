@@ -1,0 +1,15 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 14
+expression: names
+---
+[
+    "php",
+    "frankenphp",
+    "composer",
+    "mysql",
+    "postgres",
+    "redis",
+    "mailpit",
+    "rustfs",
+]

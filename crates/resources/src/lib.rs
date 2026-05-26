@@ -1,5 +1,10 @@
-use thiserror::Error;
+pub mod error;
+pub mod identity;
+pub mod manifest;
+pub mod platform;
+pub mod registry;
 
-#[derive(Debug, Error)]
-#[error("Managed Resource error")]
-pub struct ResourcesError;
+pub use error::{ResourcesError, Result};
+pub use identity::{ArtifactVersion, PublishedAt, ResourceName, Sha256Digest, TrackName};
+pub use platform::{ArtifactPlatform, TargetPlatform};
+pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
