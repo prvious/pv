@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 176
+expression: parse_manifest_error(&published_at_manifest)?
+---
+InvalidPublishedAt {
+    value: "not-a-date",
+}

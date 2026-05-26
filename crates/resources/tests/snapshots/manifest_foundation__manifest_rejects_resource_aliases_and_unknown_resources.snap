@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 100
+expression: parse_manifest_error(&alias_manifest)?
+---
+ManifestUsesAlias {
+    alias: "pg",
+    canonical: "postgres",
+}

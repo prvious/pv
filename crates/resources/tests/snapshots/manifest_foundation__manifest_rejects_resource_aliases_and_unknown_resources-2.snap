@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 101
+expression: parse_manifest_error(&unknown_manifest)?
+---
+UnknownResource {
+    name: "unknown",
+}

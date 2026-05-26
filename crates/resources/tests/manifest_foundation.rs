@@ -1,6 +1,7 @@
 use anyhow::Result;
 use insta::assert_debug_snapshot;
 use resources::ArtifactManifest;
+use resources::ResourcesError;
 use resources::registry;
 use resources::{ArtifactPlatform, TargetPlatform};
 use resources::{ArtifactVersion, ResourceName, Sha256Digest, TrackName};
@@ -35,7 +36,7 @@ fn identity_types_reject_empty_values_and_bad_checksums() -> Result<()> {
     assert!(TrackName::new("").is_err());
     assert!(ArtifactVersion::new("").is_err());
     assert!(Sha256Digest::new("not-a-sha").is_err());
-    assert!(Sha256Digest::new(&"a".repeat(64)).is_ok());
+    assert!(Sha256Digest::new("a".repeat(64)).is_ok());
 
     Ok(())
 }
@@ -86,6 +87,97 @@ fn latest_track_alias_resolves_to_default_track() -> Result<()> {
     let track = manifest.resolve_track("redis", "latest")?;
 
     assert_eq!(track.as_str(), "7");
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_resource_aliases_and_unknown_resources() -> Result<()> {
+    let alias_manifest = VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"pg\"", 1);
+    let unknown_manifest =
+        VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"unknown\"", 1);
+
+    assert_debug_snapshot!(parse_manifest_error(&alias_manifest)?);
+    assert_debug_snapshot!(parse_manifest_error(&unknown_manifest)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_duplicate_tracks_and_artifacts() -> Result<()> {
+    let duplicate_track = VALID_MANIFEST.replacen(
+        "\"tracks\": [",
+        r#""tracks": [
+        {
+          "name": "7",
+          "artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            }
+          ]
+        },"#,
+        1,
+    );
+    let duplicate_artifact = VALID_MANIFEST.replacen(
+        "\"artifacts\": [",
+        r#""artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            },"#,
+        1,
+    );
+
+    assert_debug_snapshot!(parse_manifest_error(&duplicate_track)?);
+    assert_debug_snapshot!(parse_manifest_error(&duplicate_artifact)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_ambiguous_published_at_candidates() -> Result<()> {
+    let ambiguous = SELECTION_MANIFEST.replacen(
+        "\"published_at\": \"2026-05-25T14:30:00Z\"",
+        "\"published_at\": \"2026-05-26T14:30:00Z\"",
+        1,
+    );
+    let manifest = ArtifactManifest::parse(&ambiguous)?;
+    let error = select_latest_error(
+        &manifest,
+        "redis",
+        "7",
+        TargetPlatform::new("darwin-arm64")?,
+    )?;
+
+    assert_debug_snapshot!(error);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
+    let checksum_manifest = VALID_MANIFEST.replacen(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bad",
+        1,
+    );
+    let published_at_manifest = VALID_MANIFEST.replacen("2026-05-26T14:30:00Z", "not-a-date", 1);
+
+    assert_debug_snapshot!(parse_manifest_error(&checksum_manifest)?);
+    assert_debug_snapshot!(parse_manifest_error(&published_at_manifest)?);
 
     Ok(())
 }
@@ -223,3 +315,28 @@ const SELECTION_MANIFEST: &str = r#"
   ]
 }
 "#;
+
+fn parse_manifest_error(json: &str) -> Result<ResourcesError> {
+    match ArtifactManifest::parse(json) {
+        Ok(manifest) => Err(anyhow::anyhow!(
+            "manifest parsed successfully: {:#?}",
+            manifest.summary()
+        )),
+        Err(error) => Ok(error),
+    }
+}
+
+fn select_latest_error(
+    manifest: &ArtifactManifest,
+    resource: &str,
+    track: &str,
+    target: TargetPlatform,
+) -> Result<ResourcesError> {
+    match manifest.select_latest(resource, track, target) {
+        Ok(artifact) => Err(anyhow::anyhow!(
+            "artifact selected successfully: {}",
+            artifact.artifact_version().as_str()
+        )),
+        Err(error) => Ok(error),
+    }
+}

@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 144
+expression: parse_manifest_error(&duplicate_track)?
+---
+InvalidManifest {
+    reason: "duplicate track `7` for resource `redis`",
+}
