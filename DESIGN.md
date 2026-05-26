@@ -588,7 +588,7 @@ Database-style Managed Resource initialization happens only when a resource trac
 
 PV application releases are separate from Managed Resource artifact releases. The PV app update manifest is separate from the Managed Resource artifact manifest. Managed Resource artifacts are PV-owned rolling releases that can be rebuilt on their own cadence, such as weekly or when upstream dependencies change.
 
-PV discovers available Managed Resource artifacts through a PV-owned remote artifact manifest. The manifest lists artifact metadata: resources, tracks, versions, platforms, download URLs, checksums, sizes, default versions, manifest schema version, and minimum supported PV version. The manifest and artifact archives are published to PV-owned object storage/CDN endpoints, such as Cloudflare R2 behind a PV-owned HTTPS domain. PV does not scrape GitHub release asset names at runtime and does not hardcode artifact versions in the app binary.
+PV discovers available Managed Resource artifacts through a PV-owned remote artifact manifest. The manifest lists artifact metadata: resources, tracks, versions, platforms, download URLs, checksums, sizes, publication timestamps, default versions, manifest schema version, and minimum supported PV version. The manifest and artifact archives are published to PV-owned object storage/CDN endpoints, such as Cloudflare R2 behind a PV-owned HTTPS domain. PV does not scrape GitHub release asset names at runtime and does not hardcode artifact versions in the app binary.
 
 The Managed Resource artifact manifest points only to PV-owned packaged artifacts, not raw upstream archives or local build recipes. PV never builds Managed Resource binaries on the user's machine during setup, install, update, or reconciliation.
 
@@ -628,7 +628,7 @@ Published Managed Resource artifact archive URLs are immutable. Artifact object 
 
 Managed Resource artifact identity includes both the upstream resource version and a PV build revision. For example, a Redis artifact may represent upstream Redis `7.2.5` with PV build revision `pv1`; if PV changes packaging, patches, build flags, or validation for the same upstream version, it publishes `pv2` rather than mutating `pv1`.
 
-The artifact manifest stores upstream version and PV build revision as separate fields, such as `upstream_version` and `pv_build_revision`, plus a derived display/install identity such as `artifact_version: "7.2.5-pv1"`. PV uses the separate fields for update logic and diagnostics while showing the combined artifact version where concise output is useful.
+The artifact manifest stores upstream version and PV build revision as separate fields, such as `upstream_version` and `pv_build_revision`, plus a derived display/install identity such as `artifact_version: "7.2.5-pv1"`. Each artifact also records `published_at`, the timestamp when that artifact became installable through the public manifest. PV uses the separate version fields and `published_at` for update logic and diagnostics while showing the combined artifact version where concise output is useful.
 
 The artifact manifest may include artifact provenance metadata such as upstream source URL, upstream checksum, applied patch identifiers, PV repository commit SHA, recipe path/version, build run ID, and build timestamp. Provenance metadata is for diagnostics, audit, and release operations; it is not a client-side build instruction set.
 
@@ -644,7 +644,7 @@ The artifact manifest defines resource-specific update tracks. Project config ve
 
 Examples: MySQL `8.0` tracks update within `8.0.x`, MySQL `8.4` tracks update within `8.4.x`, PostgreSQL `17` tracks update within `17.x`, and PostgreSQL `18` tracks update within `18.x`.
 
-Install commands and Project config versions resolve to the latest artifact in the requested track. For example, `pv mysql:install 8.0` installs the latest available MySQL artifact in the `8.0` track.
+Install commands and Project config versions resolve to the latest artifact in the requested track. "Latest" means the non-revoked artifact with the newest `published_at` timestamp after platform selection. If two candidate artifacts for the same resource, track, and platform have the same `published_at`, the manifest is ambiguous and invalid. For example, `pv mysql:install 8.0` installs the latest available MySQL artifact in the `8.0` track.
 
 `latest` is accepted as a version alias that resolves to the manifest's default track for that Managed Resource. PV stores the resolved track, not `latest`, so existing Projects do not float when manifest defaults change later.
 
