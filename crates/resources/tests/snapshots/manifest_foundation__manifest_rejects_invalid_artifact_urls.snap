@@ -1,0 +1,54 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: invalid_urls
+---
+[
+    InvalidUrlSnapshot {
+        name: "non_https",
+        error: InvalidArtifactUrl {
+            url: "http://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "missing_host",
+        error: InvalidArtifactUrl {
+            url: "https:///redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "missing_file_name",
+        error: InvalidArtifactUrl {
+            url: "https://artifacts.example.test/",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "dot_file_name",
+        error: InvalidArtifactUrl {
+            url: "https://artifacts.example.test/.",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "parent_file_name",
+        error: InvalidArtifactUrl {
+            url: "https://artifacts.example.test/..",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "backslash_file_name",
+        error: InvalidArtifactUrl {
+            url: "https://artifacts.example.test/redis\\7.2.5-pv1-darwin-arm64.tar.gz",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "invalid_authority",
+        error: InvalidArtifactUrl {
+            url: "https://exa mple.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        },
+    },
+    InvalidUrlSnapshot {
+        name: "invalid_ipv6_authority",
+        error: InvalidArtifactUrl {
+            url: "https://[:::1]/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        },
+    },
+]

@@ -66,6 +66,38 @@ pub enum ResourcesError {
 
     #[error("failed to parse published_at `{value}`")]
     InvalidPublishedAt { value: String },
+
+    #[error("artifact manifest is unavailable from `{url}` and cache `{cache_path}`: {reason}")]
+    ManifestUnavailable {
+        url: String,
+        cache_path: String,
+        reason: String,
+    },
+
+    #[error("HTTP request failed for `{url}`: {reason}")]
+    HttpRequestFailed { url: String, reason: String },
+
+    #[error("HTTP status {status_code} for `{url}`")]
+    HttpStatusFailed { url: String, status_code: u16 },
+
+    #[error("failed to write download from `{url}`: {reason}")]
+    DownloadWriteFailed { url: String, reason: String },
+
+    #[error("invalid artifact manifest URL `{url}`")]
+    InvalidManifestUrl { url: String },
+
+    #[error("invalid artifact URL `{url}`")]
+    InvalidArtifactUrl { url: String },
+
+    #[error("artifact checksum mismatch for `{url}`: expected {expected}, got {actual}")]
+    ArtifactChecksumMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("filesystem error at `{path}`: {reason}")]
+    Filesystem { path: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, ResourcesError>;

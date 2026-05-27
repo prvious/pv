@@ -337,8 +337,9 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 4 | Daemon mode, socket protocol, job progress, daemon lifecycle stubs | PV-024, PV-025, PV-026, PV-027 | PR 2, PR 3 | No | Yes (#239) |
 | PR 5 | Reconciliation queue, supervisor, ports, readiness, logs, watchers | PV-030, PV-031, PV-032, PV-033, PV-034, PV-035, PV-036 | PR 4 | No | Yes (#240) |
 | PR 6A | Artifact resource identity/registry and manifest parser/selection validation | PV-041 (manifest identity), PV-042 | PR 5 | No | Yes (#241) |
-| PR 6B | Adapter trait, installed-track state model, manifest fetch/cache, downloader, atomic install, fixture artifacts | PV-040, PV-041 (installed state), PV-043, PV-044, PV-045, PV-049 | PR 6A | No | No |
-| PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6B | No | No |
+| PR 6B | Manifest fetch/cache and verified artifact download cache | PV-043, PV-044 | PR 6A | No | No |
+| PR 6C | Adapter trait, installed-track state model, atomic install, fixture artifacts | PV-040, PV-041 (installed state), PV-045, PV-049 | PR 6B | No | No |
+| PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6C | No | No |
 | PR 8 | Project state, `link`, `unlink`, config parser, `open`, base `list` | PV-060, PV-061, PV-062, PV-063, PV-068, PV-069 | PR 2, PR 4 | Yes, can overlap PR 5-7 with coordination | No |
 | PR 9 | Resource allocation contract, allocation names, env rendering | PV-047, PV-064, PV-065, PV-066, PV-067 | PR 7, PR 8 | No | No |
 | PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes | No |
@@ -354,7 +355,7 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 20 | RustFS adapter | PV-084 | PR 7, PR 9 | Yes | No |
 | PR 21 | Status, logs, doctor, jobs, JSON outputs | PV-090, PV-091, PV-092, PV-093, PV-094, PV-095 | PR 8, PR 13, and at least one of PR 14 or PR 16-20 | Yes, staged | No |
 | PR 22 | Self-update, update checks, Managed Resource update orchestration, installer contract, PV app release metadata | PV-100, PV-101, PV-102, PV-103, PV-104, PV-105, PV-106, PV-107 | PR 7, PR 13; PV-105 needs at least one real adapter | Yes, after update lock foundations | No |
-| PR 23 | Artifact release metadata, manifest generation tooling, packaging/validation harness | PV-108, PV-109, PV-110 | PR 6A | Yes, can overlap PR 6B and PR 14-22 | No |
+| PR 23 | Artifact release metadata, manifest generation tooling, packaging/validation harness | PV-108, PV-109, PV-110 | PR 6A | Yes, can overlap PR 6B-6C and PR 14-22 | No |
 | PR 24 | PHP/FrankenPHP and Composer artifact recipes | PV-112, PV-113 | PR 23 | Yes, blocks public setup artifacts | No |
 | PR 25 | Artifact publication workflow and backing Managed Resource artifact recipes | PV-111, PV-114, PV-115, PV-116, PV-117 | PR 23, PR 24 | Yes, can split per resource | No |
 | PR 26 | End-to-end hardening and release candidate validation | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125 | PR 14-25 | No | No |

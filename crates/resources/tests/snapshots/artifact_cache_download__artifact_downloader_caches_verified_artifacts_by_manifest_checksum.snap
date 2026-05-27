@@ -1,0 +1,7 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: cached.path().file_name()
+---
+Some(
+    "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9-redis-7.2.5-pv1-darwin-arm64.tar.gz",
+)

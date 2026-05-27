@@ -1,0 +1,10 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: "downloader.download(&artifact, &client)"
+---
+Err(
+    HttpStatusFailed {
+        url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        status_code: 404,
+    },
+)

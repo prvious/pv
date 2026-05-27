@@ -19,6 +19,16 @@ struct DescriptorSnapshot {
     capabilities: Vec<String>,
 }
 
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct InvalidUrlSnapshot {
+    name: &'static str,
+    error: ResourcesError,
+}
+
 #[test]
 fn registry_lists_all_pv_managed_artifact_resources() -> Result<()> {
     let descriptors = registry::all()
@@ -440,6 +450,49 @@ fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
+    let invalid_urls = [
+        (
+            "non_https",
+            "http://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        ),
+        (
+            "missing_host",
+            "https:///redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        ),
+        ("missing_file_name", "https://artifacts.example.test/"),
+        ("dot_file_name", "https://artifacts.example.test/."),
+        ("parent_file_name", "https://artifacts.example.test/.."),
+        (
+            "backslash_file_name",
+            "https://artifacts.example.test/redis\\7.2.5-pv1-darwin-arm64.tar.gz",
+        ),
+        (
+            "invalid_authority",
+            "https://exa mple.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        ),
+        (
+            "invalid_ipv6_authority",
+            "https://[:::1]/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, url)| {
+        let manifest = manifest_with_artifact_url(url);
+
+        Ok(InvalidUrlSnapshot {
+            name,
+            error: parse_manifest_error(&manifest)?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(invalid_urls);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Result<()> {
     let manifest_json = VALID_MANIFEST.replacen(
         "\"artifacts\": [",
@@ -653,6 +706,16 @@ fn parse_manifest_error(json: &str) -> Result<ResourcesError> {
         )),
         Err(error) => Ok(error),
     }
+}
+
+fn manifest_with_artifact_url(url: &str) -> String {
+    let escaped_url = url.replace('\\', "\\\\").replace('"', "\\\"");
+
+    VALID_MANIFEST.replacen(
+        "\"url\": \"https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        &format!("\"url\": \"{escaped_url}\""),
+        1,
+    )
 }
 
 fn select_latest_error(

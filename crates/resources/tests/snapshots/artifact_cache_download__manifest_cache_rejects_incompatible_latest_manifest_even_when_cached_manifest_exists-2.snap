@@ -1,0 +1,10 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: "cache.refresh(MANIFEST_URL, &unsupported_client)"
+---
+Err(
+    UnsupportedManifestSchema {
+        schema_version: 2,
+        supported_schema_version: 1,
+    },
+)

@@ -6,6 +6,7 @@ use crate::platform::{ArtifactPlatform, TargetPlatform};
 use crate::registry;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use url::Url;
 
 #[derive(Debug)]
 pub struct ArtifactManifest {
@@ -419,7 +420,7 @@ impl ManifestArtifact {
             upstream_version: raw.upstream_version,
             pv_build_revision: raw.pv_build_revision,
             platform: ArtifactPlatform::new(&raw.platform)?,
-            url: raw.url,
+            url: validate_artifact_url(raw.url)?,
             sha256: Sha256Digest::new(raw.sha256)?,
             size: raw.size,
             published_at: PublishedAt::parse(raw.published_at)?,
@@ -466,6 +467,32 @@ impl ManifestArtifact {
     fn matches(&self, target: TargetPlatform) -> bool {
         self.platform.matches(target)
     }
+}
+
+fn validate_artifact_url(url: String) -> Result<String> {
+    if url.contains('\\') {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    let parsed = match Url::parse(&url) {
+        Ok(parsed) => parsed,
+        Err(_error) => return Err(ResourcesError::InvalidArtifactUrl { url }),
+    };
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    let Some(file_name) = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+    else {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    };
+    if file_name.is_empty() || file_name == "." || file_name == ".." || file_name.contains('\\') {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    Ok(url)
 }
 
 impl RevocationState {
