@@ -1,6 +1,8 @@
-use std::io::Write;
+use std::io::{Read, Write};
 
 use crate::{ResourcesError, Result};
+
+const DOWNLOAD_BUFFER_SIZE: usize = 8192;
 
 pub trait ResourceHttpClient {
     fn get_text(&self, url: &str) -> Result<String>;
@@ -30,13 +32,28 @@ impl ResourceHttpClient for UreqResourceHttpClient {
         let mut response = ureq::get(url)
             .call()
             .map_err(|source| http_error(url, source))?;
+        let mut reader = response.body_mut().as_reader();
+        let mut buffer = [0_u8; DOWNLOAD_BUFFER_SIZE];
 
-        std::io::copy(&mut response.body_mut().as_reader(), writer)
-            .map(|_bytes| ())
-            .map_err(|source| ResourcesError::HttpRequestFailed {
-                url: url.to_string(),
-                reason: source.to_string(),
-            })
+        loop {
+            let read =
+                reader
+                    .read(&mut buffer)
+                    .map_err(|source| ResourcesError::HttpRequestFailed {
+                        url: url.to_string(),
+                        reason: source.to_string(),
+                    })?;
+            if read == 0 {
+                return Ok(());
+            }
+
+            writer.write_all(&buffer[..read]).map_err(|source| {
+                ResourcesError::DownloadWriteFailed {
+                    url: url.to_string(),
+                    reason: source.to_string(),
+                }
+            })?;
+        }
     }
 }
 

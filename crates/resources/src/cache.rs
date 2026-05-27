@@ -23,19 +23,21 @@ impl ArtifactManifestCache {
         manifest_url: &str,
         client: &impl ResourceHttpClient,
     ) -> Result<ArtifactManifest> {
-        match client.get_text(manifest_url) {
-            Ok(json) => {
-                let manifest = ArtifactManifest::parse(&json)?;
-                fs::write_string_atomically(&self.cache_path, &json)?;
+        let latest = client.get_text(manifest_url).and_then(|json| {
+            let manifest = ArtifactManifest::parse(&json)?;
+            fs::write_string_atomically(&self.cache_path, &json)?;
 
-                Ok(manifest)
-            }
-            Err(fetch_error) => {
+            Ok(manifest)
+        });
+
+        match latest {
+            Ok(manifest) => Ok(manifest),
+            Err(refresh_error) => {
                 self.load_cached()
                     .map_err(|cache_error| ResourcesError::ManifestUnavailable {
                         url: manifest_url.to_string(),
                         cache_path: self.cache_path.to_string(),
-                        reason: format!("{fetch_error}; cache fallback failed: {cache_error}"),
+                        reason: format!("{refresh_error}; cache fallback failed: {cache_error}"),
                     })
             }
         }

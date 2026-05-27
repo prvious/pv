@@ -77,6 +77,9 @@ pub enum ResourcesError {
     #[error("HTTP request failed for `{url}`: {reason}")]
     HttpRequestFailed { url: String, reason: String },
 
+    #[error("failed to write download from `{url}`: {reason}")]
+    DownloadWriteFailed { url: String, reason: String },
+
     #[error("invalid artifact URL `{url}`")]
     InvalidArtifactUrl { url: String },
 

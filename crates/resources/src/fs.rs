@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -35,9 +35,8 @@ pub(crate) fn write_atomically_with<T>(
 
     match result {
         Ok(value) => {
-            set_file_mode(&temporary_path, CACHE_FILE_MODE)?;
             rename(&temporary_path, path)?;
-            set_file_mode(path, CACHE_FILE_MODE)?;
+            sync_parent_directory(path)?;
 
             Ok(value)
         }
@@ -59,11 +58,11 @@ pub(crate) fn read_with<T>(
 }
 
 pub(crate) fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
+    match remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(filesystem_error(path, source)),
     }
-
-    remove_file(path)
 }
 
 pub(crate) fn path_exists(path: &Utf8Path) -> bool {
@@ -100,11 +99,23 @@ fn write_temporary_file<T>(
     operation: impl FnOnce(&mut dyn Write) -> Result<T>,
 ) -> Result<T> {
     let mut file = create_file(path)?;
+    set_file_mode(path, CACHE_FILE_MODE)?;
     let value = operation(&mut file)?;
-    file.flush()
+    file.sync_all()
         .map_err(|source| filesystem_error(path, source))?;
 
     Ok(value)
+}
+
+fn sync_parent_directory(path: &Utf8Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        let directory = open_file(parent)?;
+        directory
+            .sync_all()
+            .map_err(|source| filesystem_error(parent, source))?;
+    }
+
+    Ok(())
 }
 
 #[expect(
@@ -143,8 +154,8 @@ fn rename(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
-fn remove_file(path: &Utf8Path) -> Result<()> {
-    std::fs::remove_file(path).map_err(|source| filesystem_error(path, source))
+fn remove_file(path: &Utf8Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
 }
 
 #[cfg(unix)]
