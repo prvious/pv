@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::io::Error;
-use std::io::Write;
+use std::io::{Error, Read, Write};
 use std::net::TcpListener;
 
 use anyhow::Result;
@@ -413,6 +412,8 @@ fn serve_once_status(
     std::thread::scope(|scope| {
         let server = scope.spawn(move || -> Result<()> {
             let (mut stream, _address) = listener.accept()?;
+            read_http_request(&mut stream)?;
+
             let response = format!(
                 "HTTP/1.1 {status_code} {reason_phrase}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -432,6 +433,21 @@ fn serve_once_status(
 
         Ok(())
     })
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> Result<()> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") && request.len() < 8192 {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+
+    Ok(())
 }
 
 #[expect(
