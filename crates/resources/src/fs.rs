@@ -35,7 +35,11 @@ pub(crate) fn write_atomically_with<T>(
 
     match result {
         Ok(value) => {
-            rename(&temporary_path, path)?;
+            if let Err(error) = rename(&temporary_path, path) {
+                if let Err(_cleanup_error) = remove_file_if_exists(&temporary_path) {}
+
+                return Err(error);
+            }
             sync_parent_directory(path)?;
 
             Ok(value)
@@ -202,5 +206,47 @@ fn filesystem_error(path: &Utf8Path, source: std::io::Error) -> ResourcesError {
     ResourcesError::Filesystem {
         path: path.to_string(),
         reason: source.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use camino::Utf8Path;
+    use camino_tempfile::tempdir;
+
+    use super::{create_dir_all, filesystem_error, write_atomically_with};
+
+    #[test]
+    fn write_atomically_with_removes_temporary_file_when_rename_fails() -> Result<()> {
+        let tempdir = tempdir()?;
+        let target = tempdir.path().join("manifest.json");
+        create_dir_all(&target)?;
+
+        let result = write_atomically_with(&target, |writer| {
+            writer
+                .write_all(b"manifest")
+                .map_err(|source| filesystem_error(&target, source))
+        });
+        assert!(result.is_err());
+
+        let file_names = sorted_file_names(tempdir.path())?;
+        assert_eq!(file_names, vec!["manifest.json"]);
+
+        Ok(())
+    }
+
+    fn sorted_file_names(path: &Utf8Path) -> Result<Vec<String>> {
+        let mut file_names = path
+            .read_dir_utf8()?
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.file_name().to_string())
+                    .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        file_names.sort();
+
+        Ok(file_names)
     }
 }

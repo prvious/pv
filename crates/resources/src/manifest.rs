@@ -419,7 +419,7 @@ impl ManifestArtifact {
             upstream_version: raw.upstream_version,
             pv_build_revision: raw.pv_build_revision,
             platform: ArtifactPlatform::new(&raw.platform)?,
-            url: raw.url,
+            url: validate_artifact_url(raw.url)?,
             sha256: Sha256Digest::new(raw.sha256)?,
             size: raw.size,
             published_at: PublishedAt::parse(raw.published_at)?,
@@ -466,6 +466,30 @@ impl ManifestArtifact {
     fn matches(&self, target: TargetPlatform) -> bool {
         self.platform.matches(target)
     }
+}
+
+fn validate_artifact_url(url: String) -> Result<String> {
+    let Some(remainder) = url.strip_prefix("https://") else {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    };
+    let Some((authority, path)) = remainder.split_once('/') else {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    };
+    if authority.is_empty() {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    let without_fragment = path.split('#').next().unwrap_or(path);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let file_name = without_query.rsplit('/').next().unwrap_or("");
+    if file_name.is_empty() || file_name == "." || file_name == ".." || file_name.contains('\\') {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    Ok(url)
 }
 
 impl RevocationState {

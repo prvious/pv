@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ResourcesError {
     #[error("unknown Managed Resource `{name}`")]
     UnknownResource { name: String },

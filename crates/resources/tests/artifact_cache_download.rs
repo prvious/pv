@@ -22,10 +22,11 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
     let manifest = cache.refresh(MANIFEST_URL, &client)?;
     assert_eq!(manifest.schema_version(), 1);
 
-    let fallback_client = ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
-        url: MANIFEST_URL.to_string(),
-        reason: "offline".to_string(),
-    });
+    let fallback_client =
+        ScriptedClient::new().with_text_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
     let cached = cache.refresh(MANIFEST_URL, &fallback_client)?;
 
     assert_debug_snapshot!(cached);
@@ -34,7 +35,7 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
 }
 
 #[test]
-fn manifest_cache_uses_cached_manifest_when_latest_payload_is_invalid() -> Result<()> {
+fn manifest_cache_rejects_invalid_latest_payload_even_when_cached_manifest_exists() -> Result<()> {
     let tempdir = tempdir()?;
     let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
     let client = ScriptedClient::new().with_text(VALID_MANIFEST);
@@ -42,9 +43,34 @@ fn manifest_cache_uses_cached_manifest_when_latest_payload_is_invalid() -> Resul
     cache.refresh(MANIFEST_URL, &client)?;
 
     let invalid_client = ScriptedClient::new().with_text("{");
-    let cached = cache.refresh(MANIFEST_URL, &invalid_client)?;
+    let result = cache.refresh(MANIFEST_URL, &invalid_client);
 
-    assert_debug_snapshot!(cached);
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_cache_rejects_incompatible_latest_manifest_even_when_cached_manifest_exists()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+
+    cache.refresh(MANIFEST_URL, &client)?;
+
+    let newer_manifest = VALID_MANIFEST.replacen(
+        "\"minimum_pv_version\": \"0.1.0\"",
+        "\"minimum_pv_version\": \"999.0.0\"",
+        1,
+    );
+    let newer_client = ScriptedClient::new().with_text(&newer_manifest);
+    assert_debug_snapshot!(cache.refresh(MANIFEST_URL, &newer_client));
+
+    let unsupported_manifest =
+        VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1);
+    let unsupported_client = ScriptedClient::new().with_text(&unsupported_manifest);
+    assert_debug_snapshot!(cache.refresh(MANIFEST_URL, &unsupported_client));
 
     Ok(())
 }
@@ -59,10 +85,11 @@ fn artifact_downloader_caches_verified_artifacts_by_manifest_checksum() -> Resul
     let downloaded = downloader.download(&artifact, &client)?;
     assert!(!downloaded.is_from_cache());
 
-    let cache_only_client = ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
-        url: artifact.url().to_string(),
-        reason: "network should not be used".to_string(),
-    });
+    let cache_only_client =
+        ScriptedClient::new().with_download_error(ResourcesError::HttpRequestFailed {
+            url: artifact.url().to_string(),
+            reason: "network should not be used".to_string(),
+        });
     let cached = downloader.download(&artifact, &cache_only_client)?;
 
     assert!(cached.is_from_cache());
@@ -100,11 +127,15 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
 #[test]
 fn artifact_downloader_deletes_bad_downloads_and_reports_checksum_mismatch() -> Result<()> {
     let tempdir = tempdir()?;
-    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
+    let downloads_dir = tempdir.path().join("downloads");
+    let downloader = ArtifactDownloader::new(downloads_dir.clone());
     let artifact = redis_artifact()?;
     let client = ScriptedClient::new().with_bytes(b"tampered");
+    let cached_path = downloads_dir
+        .join("87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9-redis-7.2.5-pv1-darwin-arm64.tar.gz");
 
     assert_debug_snapshot!(downloader.download(&artifact, &client));
+    assert!(!cached_path.exists());
 
     Ok(())
 }
@@ -115,7 +146,7 @@ fn artifact_downloader_retries_transient_download_failures() -> Result<()> {
     let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
     let artifact = redis_artifact()?;
     let client = ScriptedClient::new()
-        .with_error(ResourcesError::HttpRequestFailed {
+        .with_download_error(ResourcesError::HttpRequestFailed {
             url: artifact.url().to_string(),
             reason: "connection reset".to_string(),
         })
@@ -167,10 +198,12 @@ impl ScriptedClient {
         self
     }
 
-    fn with_error(self, error: ResourcesError) -> Self {
-        self.text_responses
-            .borrow_mut()
-            .push_back(Err(error.clone()));
+    fn with_text_error(self, error: ResourcesError) -> Self {
+        self.text_responses.borrow_mut().push_back(Err(error));
+        self
+    }
+
+    fn with_download_error(self, error: ResourcesError) -> Self {
         self.byte_responses.borrow_mut().push_back(Err(error));
         self
     }

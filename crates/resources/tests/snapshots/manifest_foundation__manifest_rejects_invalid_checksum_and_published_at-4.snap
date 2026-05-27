@@ -1,0 +1,7 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: parse_manifest_error(&url_manifest)?
+---
+InvalidArtifactUrl {
+    url: "http://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+}

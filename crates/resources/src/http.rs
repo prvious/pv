@@ -5,8 +5,16 @@ use crate::{ResourcesError, Result};
 const DOWNLOAD_BUFFER_SIZE: usize = 8192;
 
 pub trait ResourceHttpClient {
+    /// Fetches UTF-8 text from `url`.
     fn get_text(&self, url: &str) -> Result<String>;
 
+    /// Streams bytes from `url` into `writer`.
+    ///
+    /// Implementations should return [`ResourcesError::HttpRequestFailed`] for
+    /// transport or response-body read failures. Destination write failures
+    /// must use a non-retriable error such as
+    /// [`ResourcesError::DownloadWriteFailed`] so the downloader does not retry
+    /// local filesystem failures as network failures.
     fn download(&self, url: &str, writer: &mut dyn Write) -> Result<()>;
 }
 

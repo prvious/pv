@@ -75,19 +75,16 @@ impl ArtifactDownloader {
         client: &impl ResourceHttpClient,
         path: &Utf8Path,
     ) -> Result<()> {
-        for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        for _ in 1..DOWNLOAD_ATTEMPTS {
             match write_download(artifact, client, path) {
-                Err(ResourcesError::HttpRequestFailed { .. }) if attempt < DOWNLOAD_ATTEMPTS => {
-                    thread::sleep(DOWNLOAD_RETRY_BACKOFF);
+                Err(ResourcesError::HttpRequestFailed { .. }) => {
+                    thread::sleep(DOWNLOAD_RETRY_BACKOFF)
                 }
                 result => return result,
             }
         }
 
-        Err(ResourcesError::HttpRequestFailed {
-            url: artifact.url().to_string(),
-            reason: "download attempts exhausted".to_string(),
-        })
+        write_download(artifact, client, path)
     }
 
     fn cache_path(&self, artifact: &ManifestArtifact) -> Result<Utf8PathBuf> {

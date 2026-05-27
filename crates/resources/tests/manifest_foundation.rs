@@ -431,10 +431,16 @@ fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
         "\"platform\": \"linux-amd64\"",
         1,
     );
+    let url_manifest = VALID_MANIFEST.replacen(
+        "\"url\": \"https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        "\"url\": \"http://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        1,
+    );
 
     assert_debug_snapshot!(parse_manifest_error(&checksum_manifest)?);
     assert_debug_snapshot!(parse_manifest_error(&published_at_manifest)?);
     assert_debug_snapshot!(parse_manifest_error(&platform_manifest)?);
+    assert_debug_snapshot!(parse_manifest_error(&url_manifest)?);
 
     Ok(())
 }
