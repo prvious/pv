@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 212
+expression: parse_manifest_error(&unexpected_reason)?
+---
+InvalidRevocationState {
+    reason: "revocation_reason requires revoked=true",
+}

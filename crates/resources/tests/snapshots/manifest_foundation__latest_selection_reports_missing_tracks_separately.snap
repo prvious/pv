@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 237
+expression: "select_latest_error(&manifest, &resource, &track)?"
+---
+TrackNotFound {
+    resource: "redis",
+    track: "8",
+}

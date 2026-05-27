@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 226
+expression: "select_latest_error(&manifest, &resource, &track)?"
+---
+ResourceNotInManifest {
+    resource: "mysql",
+}

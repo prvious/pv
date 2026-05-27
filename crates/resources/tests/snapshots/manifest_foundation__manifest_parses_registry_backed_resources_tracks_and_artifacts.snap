@@ -1,0 +1,84 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 89
+expression: manifest
+---
+ArtifactManifest {
+    schema_version: V1,
+    minimum_pv_version: PvVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        raw: "0.1.0",
+    },
+    resources: [
+        ManifestResource {
+            name: ResourceName(
+                "redis",
+            ),
+            default_track: TrackName(
+                "7",
+            ),
+            tracks: [
+                ManifestTrack {
+                    name: TrackName(
+                        "7",
+                    ),
+                    artifacts: [
+                        ManifestArtifact {
+                            artifact_version: ArtifactVersion(
+                                "7.2.5-pv1",
+                            ),
+                            upstream_version: "7.2.5",
+                            pv_build_revision: "pv1",
+                            platform: DarwinArm64,
+                            url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                            sha256: Sha256Digest(
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            ),
+                            size: 12345,
+                            published_at: PublishedAt(
+                                2026-05-26 14:30:00.0 +00:00:00,
+                            ),
+                            revocation_state: Active,
+                        },
+                    ],
+                },
+            ],
+        },
+        ManifestResource {
+            name: ResourceName(
+                "composer",
+            ),
+            default_track: TrackName(
+                "2",
+            ),
+            tracks: [
+                ManifestTrack {
+                    name: TrackName(
+                        "2",
+                    ),
+                    artifacts: [
+                        ManifestArtifact {
+                            artifact_version: ArtifactVersion(
+                                "2.8.0-pv1",
+                            ),
+                            upstream_version: "2.8.0",
+                            pv_build_revision: "pv1",
+                            platform: Any,
+                            url: "https://artifacts.example.test/composer-2.8.0-pv1.tar.gz",
+                            sha256: Sha256Digest(
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            ),
+                            size: 23456,
+                            published_at: PublishedAt(
+                                2026-05-26 15:30:00.0 +00:00:00,
+                            ),
+                            revocation_state: Active,
+                        },
+                    ],
+                },
+            ],
+        },
+    ],
+}

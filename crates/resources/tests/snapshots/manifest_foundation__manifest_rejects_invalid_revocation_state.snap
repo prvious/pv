@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 205
+expression: parse_manifest_error(&missing_reason)?
+---
+InvalidRevocationState {
+    reason: "revoked artifacts require a non-empty revocation_reason",
+}

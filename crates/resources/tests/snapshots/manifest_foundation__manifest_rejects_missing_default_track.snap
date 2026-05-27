@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 178
+expression: parse_manifest_error(&missing_default_track)?
+---
+InvalidManifest {
+    reason: "default track `8` does not exist for resource `redis`",
+}

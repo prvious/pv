@@ -1,0 +1,128 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 34
+expression: descriptors
+---
+[
+    DescriptorSnapshot {
+        name: "php",
+        aliases: [],
+        kind: "Runtime",
+        capabilities: [
+            "Install",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "frankenphp",
+        aliases: [],
+        kind: "Runtime",
+        capabilities: [
+            "Install",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "composer",
+        aliases: [],
+        kind: "Tool",
+        capabilities: [
+            "Install",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "mysql",
+        aliases: [],
+        kind: "BackingService",
+        capabilities: [
+            "Install",
+            "Init",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Allocation",
+            "EnvValues",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "postgres",
+        aliases: [
+            "postgresql",
+            "pg",
+        ],
+        kind: "BackingService",
+        capabilities: [
+            "Install",
+            "Init",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Allocation",
+            "EnvValues",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "redis",
+        aliases: [],
+        kind: "BackingService",
+        capabilities: [
+            "Install",
+            "Init",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Allocation",
+            "EnvValues",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "mailpit",
+        aliases: [
+            "mail",
+        ],
+        kind: "BackingService",
+        capabilities: [
+            "Install",
+            "Init",
+            "Start",
+            "Stop",
+            "Readiness",
+            "EnvValues",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
+        name: "rustfs",
+        aliases: [
+            "s3",
+        ],
+        kind: "BackingService",
+        capabilities: [
+            "Install",
+            "Init",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Allocation",
+            "EnvValues",
+            "Logs",
+            "Commands",
+        ],
+    },
+]

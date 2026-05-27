@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 139
+expression: parse_manifest_error(&default_latest)?
+---
+ReservedTrackName {
+    name: "latest",
+}

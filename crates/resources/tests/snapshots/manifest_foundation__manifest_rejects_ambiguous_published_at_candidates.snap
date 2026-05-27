@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 262
+expression: parse_manifest_error(&ambiguous)?
+---
+InvalidManifest {
+    reason: "duplicate published_at candidate in resource `redis` track `7`",
+}

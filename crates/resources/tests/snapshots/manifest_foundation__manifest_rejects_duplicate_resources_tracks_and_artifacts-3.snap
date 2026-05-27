@@ -1,0 +1,7 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: parse_manifest_error(&duplicate_artifact)?
+---
+InvalidManifest {
+    reason: "duplicate artifact identity in resource `redis` track `7`",
+}
