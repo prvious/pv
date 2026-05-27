@@ -5,11 +5,12 @@ use std::io::Write;
 use std::net::TcpListener;
 
 use anyhow::Result;
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
 use resources::{
-    ArtifactDownloader, ArtifactManifest, ArtifactManifestCache, ManifestArtifact,
-    ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
+    ArtifactDownloader, ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource,
+    ManifestArtifact, ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
     UreqResourceHttpClient,
 };
 
@@ -20,7 +21,8 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
     let client = ScriptedClient::new().with_text(VALID_MANIFEST);
 
     let manifest = cache.refresh(MANIFEST_URL, &client)?;
-    assert_eq!(manifest.schema_version(), 1);
+    assert_eq!(manifest.manifest().schema_version(), 1);
+    assert_eq!(manifest.source(), &ArtifactManifestSource::Latest);
 
     let fallback_client =
         ScriptedClient::new().with_text_error(ResourcesError::HttpRequestFailed {
@@ -29,7 +31,67 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
         });
     let cached = cache.refresh(MANIFEST_URL, &fallback_client)?;
 
-    assert_debug_snapshot!(cached);
+    assert!(cached.is_from_cache());
+    assert_debug_snapshot!(cached.source());
+    assert_debug_snapshot!(cached.manifest());
+
+    Ok(())
+}
+
+#[test]
+fn manifest_cache_rejects_invalid_manifest_url_even_when_cached_manifest_exists() -> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+
+    cache.refresh(MANIFEST_URL, &client)?;
+
+    let result = cache.refresh(
+        "http://artifacts.example.test/manifest.json",
+        &ScriptedClient::new(),
+    );
+
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_cache_rejects_invalid_manifest_url_without_cached_manifest() -> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let result = cache.refresh(
+        "http://artifacts.example.test/manifest.json",
+        &ScriptedClient::new(),
+    );
+
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_cache_rejects_http_status_errors_even_when_cached_manifest_exists() -> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+
+    cache.refresh(MANIFEST_URL, &client)?;
+
+    let results = [403, 404, 500]
+        .into_iter()
+        .map(|status_code| {
+            let status_client =
+                ScriptedClient::new().with_text_error(ResourcesError::HttpStatusFailed {
+                    url: MANIFEST_URL.to_string(),
+                    status_code,
+                });
+
+            (status_code, cache.refresh(MANIFEST_URL, &status_client))
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!(results);
 
     Ok(())
 }
@@ -100,9 +162,29 @@ fn artifact_downloader_caches_verified_artifacts_by_manifest_checksum() -> Resul
 }
 
 #[test]
+fn artifact_downloader_replaces_corrupt_cached_artifact_with_verified_download() -> Result<()> {
+    let tempdir = tempdir()?;
+    let downloads_dir = tempdir.path().join("downloads");
+    let downloader = ArtifactDownloader::new(downloads_dir.clone());
+    let artifact = redis_artifact()?;
+    let cached_path = downloads_dir
+        .join("87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9-redis-7.2.5-pv1-darwin-arm64.tar.gz");
+    write_test_file(&cached_path, b"old corrupt cache")?;
+
+    let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
+    let downloaded = downloader.download(&artifact, &client)?;
+
+    assert!(!downloaded.is_from_cache());
+    assert_eq!(downloaded.path(), cached_path);
+    assert_eq!(read_test_file(&cached_path)?, ARTIFACT_BYTES);
+
+    Ok(())
+}
+
+#[test]
 fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
     serve_once(ARTIFACT_BYTES, |url| {
-        let client = UreqResourceHttpClient;
+        let client = UreqResourceHttpClient::default();
         let mut writer = FailingWriter;
         let result = client.download(&url, &mut writer);
 
@@ -117,6 +199,30 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
 
         assert_eq!(error_url, url);
         assert_eq!(reason, "disk full");
+
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn ureq_client_reports_http_status_responses_separately() -> Result<()> {
+    serve_once_status(404, "Not Found", b"missing", |url| {
+        let client = UreqResourceHttpClient::default();
+        let result = client.get_text(&url);
+
+        let Err(ResourcesError::HttpStatusFailed {
+            url: error_url,
+            status_code,
+        }) = result
+        else {
+            assert_debug_snapshot!(result);
+            return Ok(());
+        };
+
+        assert_eq!(error_url, url);
+        assert_eq!(status_code, 404);
 
         Ok(())
     })?;
@@ -255,6 +361,15 @@ impl Write for FailingWriter {
 }
 
 fn serve_once(body: &[u8], operation: impl FnOnce(String) -> Result<()>) -> Result<()> {
+    serve_once_status(200, "OK", body, operation)
+}
+
+fn serve_once_status(
+    status_code: u16,
+    reason_phrase: &str,
+    body: &[u8],
+    operation: impl FnOnce(String) -> Result<()>,
+) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let url = format!("http://{}/artifact.tar.gz", listener.local_addr()?);
 
@@ -262,7 +377,7 @@ fn serve_once(body: &[u8], operation: impl FnOnce(String) -> Result<()>) -> Resu
         let server = scope.spawn(move || -> Result<()> {
             let (mut stream, _address) = listener.accept()?;
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status_code} {reason_phrase}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _header_result = stream.write_all(response.as_bytes());
@@ -280,6 +395,27 @@ fn serve_once(body: &[u8], operation: impl FnOnce(String) -> Result<()>) -> Resu
 
         Ok(())
     })
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource integration tests seed cache fixtures directly"
+)]
+fn write_test_file(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, bytes)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource integration tests inspect cache fixture bytes directly"
+)]
+fn read_test_file(path: &Utf8Path) -> Result<Vec<u8>> {
+    Ok(std::fs::read(path)?)
 }
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";

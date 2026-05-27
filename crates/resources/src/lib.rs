@@ -8,7 +8,7 @@ pub mod manifest;
 pub mod platform;
 pub mod registry;
 
-pub use cache::ArtifactManifestCache;
+pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource};
 pub use download::{ArtifactDownload, ArtifactDownloader};
 pub use error::{ResourcesError, Result};
 pub use http::{ResourceHttpClient, UreqResourceHttpClient};

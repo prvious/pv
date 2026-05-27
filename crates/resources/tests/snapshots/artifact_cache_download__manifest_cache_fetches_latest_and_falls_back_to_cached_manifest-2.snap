@@ -1,0 +1,49 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: cached.manifest()
+---
+ArtifactManifest {
+    schema_version: V1,
+    minimum_pv_version: PvVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        raw: "0.1.0",
+    },
+    resources: [
+        ManifestResource {
+            name: ResourceName(
+                "redis",
+            ),
+            default_track: TrackName(
+                "7.2",
+            ),
+            tracks: [
+                ManifestTrack {
+                    name: TrackName(
+                        "7.2",
+                    ),
+                    artifacts: [
+                        ManifestArtifact {
+                            artifact_version: ArtifactVersion(
+                                "7.2.5-pv1",
+                            ),
+                            upstream_version: "7.2.5",
+                            pv_build_revision: "1",
+                            platform: DarwinArm64,
+                            url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                            sha256: Sha256Digest(
+                                "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9",
+                            ),
+                            size: 22,
+                            published_at: PublishedAt(
+                                2026-05-26 14:30:00.0 +00:00:00,
+                            ),
+                            revocation_state: Active,
+                        },
+                    ],
+                },
+            ],
+        },
+    ],
+}
