@@ -15,6 +15,7 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 time = { workspace = true, features = ["parsing"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+url = "2"
 
 [dev-dependencies]
 anyhow = { workspace = true }

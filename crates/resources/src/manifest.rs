@@ -6,6 +6,7 @@ use crate::platform::{ArtifactPlatform, TargetPlatform};
 use crate::registry;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use url::Url;
 
 #[derive(Debug)]
 pub struct ArtifactManifest {
@@ -469,22 +470,24 @@ impl ManifestArtifact {
 }
 
 fn validate_artifact_url(url: String) -> Result<String> {
-    let Some(remainder) = url.strip_prefix("https://") else {
-        return Err(ResourcesError::InvalidArtifactUrl { url });
-    };
-    let Some((authority, path)) = remainder.split_once('/') else {
-        return Err(ResourcesError::InvalidArtifactUrl { url });
-    };
-    if authority.is_empty() {
+    if url.contains('\\') {
         return Err(ResourcesError::InvalidArtifactUrl { url });
     }
 
-    let without_fragment = path.split('#').next().unwrap_or(path);
-    let without_query = without_fragment
-        .split('?')
-        .next()
-        .unwrap_or(without_fragment);
-    let file_name = without_query.rsplit('/').next().unwrap_or("");
+    let parsed = match Url::parse(&url) {
+        Ok(parsed) => parsed,
+        Err(_error) => return Err(ResourcesError::InvalidArtifactUrl { url }),
+    };
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    }
+
+    let Some(file_name) = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+    else {
+        return Err(ResourcesError::InvalidArtifactUrl { url });
+    };
     if file_name.is_empty() || file_name == "." || file_name == ".." || file_name.contains('\\') {
         return Err(ResourcesError::InvalidArtifactUrl { url });
     }
