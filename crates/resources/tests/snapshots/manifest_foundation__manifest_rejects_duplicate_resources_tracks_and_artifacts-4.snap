@@ -1,0 +1,7 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: parse_manifest_error(&empty_artifacts)?
+---
+InvalidManifest {
+    reason: "resource `redis` track `7` has no artifacts",
+}

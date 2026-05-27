@@ -1,0 +1,7 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: parse_manifest_error(&mixed_platforms)?
+---
+InvalidManifest {
+    reason: "artifact version `7.2.5-pv1` in resource `redis` track `7` mixes `any` with exact platforms",
+}

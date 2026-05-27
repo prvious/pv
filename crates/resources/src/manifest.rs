@@ -274,6 +274,7 @@ impl ManifestTrack {
         }
 
         let track = Self { name, artifacts };
+        track.validate_platform_specificity(resource)?;
         track.validate_unique_published_at_slots(resource)?;
 
         Ok(track)
@@ -358,6 +359,38 @@ impl ManifestTrack {
         }
 
         candidates.into_values().collect()
+    }
+
+    fn validate_platform_specificity(&self, resource: &str) -> Result<()> {
+        let mut seen = BTreeMap::new();
+        for artifact in &self.artifacts {
+            let has_any_and_exact = seen
+                .entry(artifact.artifact_version.clone())
+                .and_modify(|(has_any, has_exact)| {
+                    if artifact.platform == ArtifactPlatform::Any {
+                        *has_any = true;
+                    } else {
+                        *has_exact = true;
+                    }
+                })
+                .or_insert_with(|| {
+                    (
+                        artifact.platform == ArtifactPlatform::Any,
+                        artifact.platform.is_exact(),
+                    )
+                });
+
+            if has_any_and_exact.0 && has_any_and_exact.1 {
+                return Err(ResourcesError::InvalidManifest {
+                    reason: format!(
+                        "artifact version `{}` in resource `{resource}` track `{}` mixes `any` with exact platforms",
+                        artifact.artifact_version, self.name
+                    ),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     fn validate_unique_published_at_slots(&self, resource: &str) -> Result<()> {

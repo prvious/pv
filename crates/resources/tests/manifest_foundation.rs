@@ -78,6 +78,8 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
     assert!(ArtifactPlatform::new("darwin-arm64")?.matches(target));
     assert!(ArtifactPlatform::new("any")?.matches(target));
     assert!(!ArtifactPlatform::new("darwin-amd64")?.matches(target));
+    assert!(ArtifactPlatform::new("linux-amd64").is_err());
+    assert!(TargetPlatform::new("linux-amd64").is_err());
 
     Ok(())
 }
@@ -92,19 +94,14 @@ fn manifest_parses_registry_backed_resources_tracks_and_artifacts() -> Result<()
 }
 
 #[test]
-fn latest_selection_uses_published_at_with_exact_platform_preference() -> Result<()> {
-    let manifest_json = SELECTION_MANIFEST.replacen(
+fn manifest_rejects_mixed_any_and_exact_artifacts_for_one_version() -> Result<()> {
+    let mixed_platforms = SELECTION_MANIFEST.replacen(
         "\"artifact_version\": \"7.2.6-pv1\"",
         "\"artifact_version\": \"7.2.5-pv1\"",
         1,
     );
-    let manifest = ArtifactManifest::parse(&manifest_json)?;
-    let resource = ResourceName::new("redis")?;
-    let track = TrackName::new("7")?;
-    let selected =
-        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
-    assert_eq!(selected.artifact().artifact_version().as_str(), "7.2.5-pv1");
+    assert_debug_snapshot!(parse_manifest_error(&mixed_platforms)?);
 
     Ok(())
 }
@@ -149,8 +146,14 @@ fn manifest_rejects_newer_minimum_pv_versions() -> Result<()> {
         "\"minimum_pv_version\": \"999.0.0\"",
         1,
     );
+    let invalid = VALID_MANIFEST.replacen(
+        "\"minimum_pv_version\": \"0.1.0\"",
+        "\"minimum_pv_version\": \"0.01.0\"",
+        1,
+    );
 
     assert_debug_snapshot!(parse_manifest_error(&newer)?);
+    assert_debug_snapshot!(parse_manifest_error(&invalid)?);
 
     Ok(())
 }
@@ -256,6 +259,22 @@ fn latest_selection_errors_when_no_installable_artifact_exists() -> Result<()> {
 }
 
 #[test]
+fn latest_selection_errors_when_no_platform_candidate_matches() -> Result<()> {
+    let amd64_only = VALID_MANIFEST.replacen(
+        "\"platform\": \"darwin-arm64\"",
+        "\"platform\": \"darwin-amd64\"",
+        1,
+    );
+    let manifest = ArtifactManifest::parse(&amd64_only)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+
+    assert_debug_snapshot!(select_latest_error(&manifest, &resource, &track)?);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_rejects_resource_aliases_and_unknown_resources() -> Result<()> {
     let alias_manifest = VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"pg\"", 1);
     let unknown_manifest =
@@ -287,7 +306,9 @@ fn manifest_rejects_invalid_revocation_state() -> Result<()> {
 }
 
 #[test]
-fn manifest_rejects_duplicate_tracks_and_artifacts() -> Result<()> {
+fn manifest_rejects_duplicate_resources_tracks_and_artifacts() -> Result<()> {
+    let duplicate_resource =
+        VALID_MANIFEST.replacen("\"name\": \"composer\"", "\"name\": \"redis\"", 1);
     let duplicate_track = VALID_MANIFEST.replacen(
         "\"tracks\": [",
         r#""tracks": [
@@ -323,9 +344,27 @@ fn manifest_rejects_duplicate_tracks_and_artifacts() -> Result<()> {
             },"#,
         1,
     );
+    let empty_artifacts = VALID_MANIFEST.replacen(
+        r#""artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            }
+          ]"#,
+        r#""artifacts": []"#,
+        1,
+    );
 
+    assert_debug_snapshot!(parse_manifest_error(&duplicate_resource)?);
     assert_debug_snapshot!(parse_manifest_error(&duplicate_track)?);
     assert_debug_snapshot!(parse_manifest_error(&duplicate_artifact)?);
+    assert_debug_snapshot!(parse_manifest_error(&empty_artifacts)?);
 
     Ok(())
 }
@@ -368,6 +407,18 @@ fn manifest_rejects_revoked_ambiguous_published_at_candidates() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_active_revoked_ambiguous_published_at_candidates() -> Result<()> {
+    let ambiguous = REVOKED_SELECTION_MANIFEST.replacen(
+        "\"published_at\": \"2026-05-26T14:30:00Z\"",
+        "\"published_at\": \"2026-05-27T14:30:00Z\"",
+        1,
+    );
+    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
     let checksum_manifest = VALID_MANIFEST.replacen(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -375,9 +426,45 @@ fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
         1,
     );
     let published_at_manifest = VALID_MANIFEST.replacen("2026-05-26T14:30:00Z", "not-a-date", 1);
+    let platform_manifest = VALID_MANIFEST.replacen(
+        "\"platform\": \"darwin-arm64\"",
+        "\"platform\": \"linux-amd64\"",
+        1,
+    );
 
     assert_debug_snapshot!(parse_manifest_error(&checksum_manifest)?);
     assert_debug_snapshot!(parse_manifest_error(&published_at_manifest)?);
+    assert_debug_snapshot!(parse_manifest_error(&platform_manifest)?);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Result<()> {
+    let manifest_json = VALID_MANIFEST.replacen(
+        "\"artifacts\": [",
+        r#""artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-amd64.tar.gz",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            },"#,
+        1,
+    );
+    let manifest = ArtifactManifest::parse(&manifest_json)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+
+    let arm64 = manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
+    let amd64 = manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-amd64")?)?;
+
+    assert_eq!(arm64.artifact().platform(), ArtifactPlatform::DarwinArm64);
+    assert_eq!(amd64.artifact().platform(), ArtifactPlatform::DarwinAmd64);
 
     Ok(())
 }

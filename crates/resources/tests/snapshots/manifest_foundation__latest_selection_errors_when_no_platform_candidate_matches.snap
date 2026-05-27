@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: "select_latest_error(&manifest, &resource, &track)?"
+---
+NoInstallableArtifact {
+    resource: "redis",
+    track: "7",
+    platform: "darwin-arm64",
+}

@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+expression: parse_manifest_error(&invalid)?
+---
+InvalidIdentity {
+    kind: "PV version",
+    value: "0.01.0",
+}
