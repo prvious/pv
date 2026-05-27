@@ -142,7 +142,7 @@ fn create_file(path: &Utf8Path) -> Result<std::fs::File> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
-fn create_dir_all(path: &Utf8Path) -> Result<()> {
+pub(crate) fn create_dir_all(path: &Utf8Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|source| filesystem_error(path, source))
 }
 
@@ -150,7 +150,7 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
-fn rename(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
+pub(crate) fn rename(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
     std::fs::rename(from, to).map_err(|source| filesystem_error(to, source))
 }
 
@@ -160,6 +160,29 @@ fn rename(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
 )]
 fn remove_file(path: &Utf8Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
+}
+
+pub(crate) fn remove_dir_all_if_exists(path: &Utf8Path) -> Result<()> {
+    match remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(filesystem_error(path, source)),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
+fn remove_dir_all(path: &Utf8Path) -> std::io::Result<()> {
+    std::fs::remove_dir_all(path)
+}
+
+pub(crate) fn sync_directory(path: &Utf8Path) -> Result<()> {
+    let directory = open_file(path)?;
+    directory
+        .sync_all()
+        .map_err(|source| filesystem_error(path, source))
 }
 
 #[cfg(unix)]

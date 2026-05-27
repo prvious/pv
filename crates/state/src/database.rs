@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -97,6 +97,23 @@ pub struct ProjectConfigWatch {
     pub config_path: Utf8PathBuf,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ManagedResourceDesiredState {
+    Installed,
+    Removed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackRecord {
+    pub resource_name: String,
+    pub track: String,
+    pub desired_state: ManagedResourceDesiredState,
+    pub installed_version: Option<String>,
+    pub current_artifact_path: Option<Utf8PathBuf>,
+    pub usage_count: i64,
+    pub updated_at: String,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -113,6 +130,16 @@ struct PortAssignmentRow {
     owner_id: String,
     owner_track: String,
     port: u16,
+    updated_at: String,
+}
+
+struct ManagedResourceTrackRow {
+    resource_name: String,
+    track: String,
+    desired_state: String,
+    installed_version: Option<String>,
+    current_artifact_path: Option<String>,
+    usage_count: i64,
     updated_at: String,
 }
 
@@ -251,6 +278,77 @@ impl Database {
         }
 
         Ok(jobs)
+    }
+
+    pub fn record_managed_resource_track_desired(
+        &mut self,
+        resource_name: &str,
+        track: &str,
+        desired_state: ManagedResourceDesiredState,
+    ) -> Result<ManagedResourceTrackRecord, StateError> {
+        let updated_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, updated_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(resource_name, track) DO UPDATE SET
+                desired_state = excluded.desired_state,
+                updated_at = excluded.updated_at",
+            params![resource_name, track, desired_state.as_str(), updated_at],
+        )?;
+
+        self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn record_managed_resource_track_installed(
+        &mut self,
+        resource_name: &str,
+        track: &str,
+        installed_version: &str,
+        current_artifact_path: &Utf8Path,
+    ) -> Result<ManagedResourceTrackRecord, StateError> {
+        let updated_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                installed_version,
+                current_artifact_path,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(resource_name, track) DO UPDATE SET
+                desired_state = excluded.desired_state,
+                installed_version = excluded.installed_version,
+                current_artifact_path = excluded.current_artifact_path,
+                updated_at = excluded.updated_at",
+            params![
+                resource_name,
+                track,
+                ManagedResourceDesiredState::Installed.as_str(),
+                installed_version,
+                current_artifact_path.as_str(),
+                updated_at,
+            ],
+        )?;
+
+        self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn managed_resource_tracks(&self) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, updated_at
+            FROM managed_resource_tracks
+            ORDER BY resource_name, track",
+        )?;
+        let rows = statement.query_map([], managed_resource_track_from_row)?;
+        let mut tracks = Vec::new();
+
+        for row in rows {
+            tracks.push(row?.into_record()?);
+        }
+
+        Ok(tracks)
     }
 
     pub fn assign_port(
@@ -404,6 +502,41 @@ impl Database {
         }
 
         Ok(tables)
+    }
+
+    fn managed_resource_track(
+        &self,
+        resource_name: &str,
+        track: &str,
+    ) -> Result<ManagedResourceTrackRecord, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, updated_at
+            FROM managed_resource_tracks
+            WHERE resource_name = ?1 AND track = ?2",
+        )?;
+        let row = statement.query_row(
+            params![resource_name, track],
+            managed_resource_track_from_row,
+        )?;
+
+        row.into_record()
+    }
+}
+
+impl ManagedResourceDesiredState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::Removed => "removed",
+        }
+    }
+
+    fn from_database(desired_state: String) -> Result<Self, StateError> {
+        match desired_state.as_str() {
+            "installed" => Ok(Self::Installed),
+            "removed" => Ok(Self::Removed),
+            _ => Err(StateError::UnknownManagedResourceDesiredState { desired_state }),
+        }
     }
 }
 
@@ -611,6 +744,20 @@ impl PortAssignmentRow {
     }
 }
 
+impl ManagedResourceTrackRow {
+    fn into_record(self) -> Result<ManagedResourceTrackRecord, StateError> {
+        Ok(ManagedResourceTrackRecord {
+            resource_name: self.resource_name,
+            track: self.track,
+            desired_state: ManagedResourceDesiredState::from_database(self.desired_state)?,
+            installed_version: self.installed_version,
+            current_artifact_path: self.current_artifact_path.map(Utf8PathBuf::from),
+            usage_count: self.usage_count,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
 impl PortIdentity {
     fn display_name(&self) -> String {
         describe_port_identity(self.owner_kind, &self.owner_id, &self.owner_track)
@@ -699,6 +846,20 @@ fn port_assignment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PortAss
         owner_track: row.get(2)?,
         port: row.get(3)?,
         updated_at: row.get(4)?,
+    })
+}
+
+fn managed_resource_track_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ManagedResourceTrackRow> {
+    Ok(ManagedResourceTrackRow {
+        resource_name: row.get(0)?,
+        track: row.get(1)?,
+        desired_state: row.get(2)?,
+        installed_version: row.get(3)?,
+        current_artifact_path: row.get(4)?,
+        usage_count: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 

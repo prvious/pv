@@ -96,6 +96,12 @@ pub enum ResourcesError {
         actual: String,
     },
 
+    #[error("invalid artifact archive `{path}`: {reason}")]
+    InvalidArtifactArchive { path: String, reason: String },
+
+    #[error("invalid artifact layout for `{resource}`: {reason}")]
+    InvalidArtifactLayout { resource: String, reason: String },
+
     #[error("filesystem error at `{path}`: {reason}")]
     Filesystem { path: String, reason: String },
 }

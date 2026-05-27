@@ -4,7 +4,9 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, JobStatus, PortOwner, PortRequest, PvPaths, StateError};
+use state::{
+    Database, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest, PvPaths, StateError,
+};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -353,6 +355,32 @@ fn resource_allocations_reject_duplicate_generated_names_per_resource_track() ->
         &database,
         "SELECT COUNT(*) FROM resource_allocations"
     )?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Installed,
+    )?;
+    database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "7.2.5-pv1",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    )?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!(database.managed_resource_tracks()?);
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }

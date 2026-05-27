@@ -51,6 +51,9 @@ pub enum StateError {
     #[error("unknown daemon job status `{status}`")]
     UnknownJobStatus { status: String },
 
+    #[error("unknown managed resource desired state `{desired_state}`")]
+    UnknownManagedResourceDesiredState { desired_state: String },
+
     #[error("daemon job `{id}` was not found")]
     JobNotFound { id: String },
 

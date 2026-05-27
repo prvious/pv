@@ -6,8 +6,8 @@ mod migrations;
 mod paths;
 
 pub use database::{
-    Database, DatabaseInspection, JobRecord, JobStatus, PortAssignment, PortOwner, PortRequest,
-    ProjectConfigWatch,
+    Database, DatabaseInspection, JobRecord, JobStatus, ManagedResourceDesiredState,
+    ManagedResourceTrackRecord, PortAssignment, PortOwner, PortRequest, ProjectConfigWatch,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
