@@ -1,0 +1,11 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: "downloader.download(&artifact, &client)"
+---
+Err(
+    ArtifactChecksumMismatch {
+        url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+        expected: "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9",
+        actual: "d121be3103007b41edf96f8262925f8c7d61894afe9a041843b631f69445bc57",
+    },
+)
