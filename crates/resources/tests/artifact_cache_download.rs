@@ -266,6 +266,43 @@ fn artifact_downloader_retries_transient_download_failures() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn artifact_downloader_retries_transient_http_status_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
+    let artifact = redis_artifact()?;
+    let client = ScriptedClient::new()
+        .with_download_error(ResourcesError::HttpStatusFailed {
+            url: artifact.url().to_string(),
+            status_code: 500,
+        })
+        .with_bytes(ARTIFACT_BYTES);
+
+    let downloaded = downloader.download(&artifact, &client)?;
+
+    assert!(!downloaded.is_from_cache());
+    assert_debug_snapshot!(downloaded.path().file_name());
+
+    Ok(())
+}
+
+#[test]
+fn artifact_downloader_does_not_retry_permanent_http_status_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
+    let artifact = redis_artifact()?;
+    let client = ScriptedClient::new()
+        .with_download_error(ResourcesError::HttpStatusFailed {
+            url: artifact.url().to_string(),
+            status_code: 404,
+        })
+        .with_bytes(ARTIFACT_BYTES);
+
+    assert_debug_snapshot!(downloader.download(&artifact, &client));
+
+    Ok(())
+}
+
 fn redis_artifact() -> Result<ManifestArtifact> {
     let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
     let resource = ResourceName::new("redis")?;

@@ -77,7 +77,7 @@ impl ArtifactDownloader {
     ) -> Result<()> {
         for _ in 1..DOWNLOAD_ATTEMPTS {
             match write_download(artifact, client, path) {
-                Err(ResourcesError::HttpRequestFailed { .. }) => {
+                Err(error) if is_retriable_download_error(&error) => {
                     thread::sleep(DOWNLOAD_RETRY_BACKOFF)
                 }
                 result => return result,
@@ -92,6 +92,16 @@ impl ArtifactDownloader {
         let cached_file_name = format!("{}-{file_name}", artifact.sha256().as_str());
 
         Ok(self.downloads_dir.join(cached_file_name))
+    }
+}
+
+fn is_retriable_download_error(error: &ResourcesError) -> bool {
+    match error {
+        ResourcesError::HttpRequestFailed { .. } => true,
+        ResourcesError::HttpStatusFailed { status_code, .. } => {
+            *status_code == 429 || (500..=599).contains(status_code)
+        }
+        _error => false,
     }
 }
 
