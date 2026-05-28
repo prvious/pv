@@ -175,6 +175,8 @@ impl fmt::Display for PvVersion {
 
 fn validate_identity(kind: &'static str, value: String) -> Result<String> {
     let is_valid = !value.is_empty()
+        && value != "."
+        && value != ".."
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));

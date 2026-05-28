@@ -4,7 +4,9 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
-use state::{Database, JobStatus, PortOwner, PortRequest, PvPaths, StateError};
+use state::{
+    Database, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest, PvPaths, StateError,
+};
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -353,6 +355,153 @@ fn resource_allocations_reject_duplicate_generated_names_per_resource_track() ->
         &database,
         "SELECT COUNT(*) FROM resource_allocations"
     )?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Installed,
+    )?;
+    database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "7.2.5-pv1",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    )?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!(database.managed_resource_tracks()?);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_installed_update_preserves_removed_desired_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Removed,
+    )?;
+    let record = database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "7.2.5-pv1",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    )?;
+
+    assert_eq!(record.desired_state, ManagedResourceDesiredState::Removed);
+    assert_eq!(record.installed_version.as_deref(), Some("7.2.5-pv1"));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_reject_unknown_desired_state_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, updated_at)
+            VALUES (?1, ?2, ?3, ?4)",
+            params!["redis", "7.2", "mystery", "2026-05-23T00:00:00Z"],
+        )?;
+
+        Ok(())
+    })?;
+    let result = database.managed_resource_tracks();
+
+    assert!(matches!(
+        result,
+        Err(StateError::UnknownManagedResourceDesiredState { desired_state })
+            if desired_state == "mystery"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_track_writes_reject_invalid_identities() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let invalid_resource = database.record_managed_resource_track_desired(
+        ".",
+        "7.2",
+        ManagedResourceDesiredState::Installed,
+    );
+    assert!(matches!(
+        invalid_resource,
+        Err(StateError::InvalidManagedResourceIdentity { kind: "name", value })
+            if value == "."
+    ));
+
+    let invalid_track = database.record_managed_resource_track_desired(
+        "redis",
+        "..",
+        ManagedResourceDesiredState::Installed,
+    );
+    assert!(matches!(
+        invalid_track,
+        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
+            if value == ".."
+    ));
+
+    let invalid_version = database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "..",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    );
+    assert!(matches!(
+        invalid_version,
+        Err(StateError::InvalidManagedResourceIdentity {
+            kind: "artifact version",
+            value
+        }) if value == ".."
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_reject_invalid_persisted_identities() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, installed_version, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![".", "7.2", "installed", "7.2.5-pv1", "2026-05-23T00:00:00Z"],
+        )?;
+
+        Ok(())
+    })?;
+    let result = database.managed_resource_tracks();
+
+    assert!(matches!(
+        result,
+        Err(StateError::InvalidManagedResourceIdentity { kind: "name", value })
+            if value == "."
+    ));
 
     Ok(())
 }

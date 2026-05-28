@@ -1,6 +1,6 @@
 ---
 source: crates/resources/tests/manifest_foundation.rs
-assertion_line: 89
+assertion_line: 107
 expression: manifest
 ---
 ArtifactManifest {
@@ -26,6 +26,12 @@ ArtifactManifest {
                     ),
                     artifacts: [
                         ManifestArtifact {
+                            resource_name: ResourceName(
+                                "redis",
+                            ),
+                            track: TrackName(
+                                "7",
+                            ),
                             artifact_version: ArtifactVersion(
                                 "7.2.5-pv1",
                             ),
@@ -60,6 +66,12 @@ ArtifactManifest {
                     ),
                     artifacts: [
                         ManifestArtifact {
+                            resource_name: ResourceName(
+                                "composer",
+                            ),
+                            track: TrackName(
+                                "2",
+                            ),
                             artifact_version: ArtifactVersion(
                                 "2.8.0-pv1",
                             ),

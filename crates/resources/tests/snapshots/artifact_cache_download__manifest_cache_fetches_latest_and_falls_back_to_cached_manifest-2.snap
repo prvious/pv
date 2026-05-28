@@ -1,5 +1,6 @@
 ---
 source: crates/resources/tests/artifact_cache_download.rs
+assertion_line: 35
 expression: cached.manifest()
 ---
 ArtifactManifest {
@@ -25,6 +26,12 @@ ArtifactManifest {
                     ),
                     artifacts: [
                         ManifestArtifact {
+                            resource_name: ResourceName(
+                                "redis",
+                            ),
+                            track: TrackName(
+                                "7.2",
+                            ),
                             artifact_version: ArtifactVersion(
                                 "7.2.5-pv1",
                             ),

@@ -75,6 +75,12 @@ fn identity_types_reject_empty_values_and_bad_checksums() -> Result<()> {
     assert!(ResourceName::new("").is_err());
     assert!(TrackName::new("").is_err());
     assert!(ArtifactVersion::new("").is_err());
+    assert!(ResourceName::new(".").is_err());
+    assert!(ResourceName::new("..").is_err());
+    assert!(TrackName::new(".").is_err());
+    assert!(TrackName::new("..").is_err());
+    assert!(ArtifactVersion::new(".").is_err());
+    assert!(ArtifactVersion::new("..").is_err());
     assert!(Sha256Digest::new("not-a-sha").is_err());
     assert!(Sha256Digest::new("a".repeat(64)).is_ok());
 

@@ -1,0 +1,19 @@
+---
+source: crates/resources/tests/artifact_install.rs
+expression: "(failed_install, read_link(&first_install.current_path())?,\nfirst_install.release_path().exists(),\nfirst_install.release_path().parent().map(|path|\nsorted_file_names(path)).transpose()?,)"
+---
+(
+    Err(
+        InvalidArtifactLayout {
+            resource: "redis",
+            reason: "missing required path `bin/redis-server`",
+        },
+    ),
+    "releases/7.2.5-pv1",
+    true,
+    Some(
+        [
+            "7.2.5-pv1",
+        ],
+    ),
+)
