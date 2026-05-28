@@ -30,6 +30,8 @@ struct ManifestTrack {
 
 #[derive(Debug, Clone)]
 pub struct ManifestArtifact {
+    resource_name: ResourceName,
+    track: TrackName,
     artifact_version: ArtifactVersion,
     upstream_version: String,
     pv_build_revision: String,
@@ -212,7 +214,7 @@ impl ManifestResource {
                     });
                 }
 
-                ManifestTrack::from_raw(track, &raw.name)
+                ManifestTrack::from_raw(track, &name)
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -243,7 +245,7 @@ impl ManifestResource {
 }
 
 impl ManifestTrack {
-    fn from_raw(raw: RawTrack, resource: &str) -> Result<Self> {
+    fn from_raw(raw: RawTrack, resource: &ResourceName) -> Result<Self> {
         reject_reserved_track_name(&raw.name)?;
         let name = TrackName::new(raw.name.clone())?;
         let mut seen_artifacts = BTreeSet::new();
@@ -255,13 +257,14 @@ impl ManifestTrack {
                 if !seen_artifacts.insert(identity) {
                     return Err(ResourcesError::InvalidManifest {
                         reason: format!(
-                            "duplicate artifact identity in resource `{resource}` track `{}`",
+                            "duplicate artifact identity in resource `{}` track `{}`",
+                            resource.as_str(),
                             raw.name
                         ),
                     });
                 }
 
-                ManifestArtifact::from_raw(artifact)
+                ManifestArtifact::from_raw(artifact, resource, &name)
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -275,8 +278,8 @@ impl ManifestTrack {
         }
 
         let track = Self { name, artifacts };
-        track.validate_platform_specificity(resource)?;
-        track.validate_unique_published_at_slots(resource)?;
+        track.validate_platform_specificity(resource.as_str())?;
+        track.validate_unique_published_at_slots(resource.as_str())?;
 
         Ok(track)
     }
@@ -414,8 +417,10 @@ impl ManifestTrack {
 }
 
 impl ManifestArtifact {
-    fn from_raw(raw: RawArtifact) -> Result<Self> {
+    fn from_raw(raw: RawArtifact, resource_name: &ResourceName, track: &TrackName) -> Result<Self> {
         Ok(Self {
+            resource_name: resource_name.clone(),
+            track: track.clone(),
             artifact_version: ArtifactVersion::new(raw.artifact_version)?,
             upstream_version: raw.upstream_version,
             pv_build_revision: raw.pv_build_revision,
@@ -426,6 +431,14 @@ impl ManifestArtifact {
             published_at: PublishedAt::parse(raw.published_at)?,
             revocation_state: RevocationState::from_raw(raw.revoked, raw.revocation_reason)?,
         })
+    }
+
+    pub fn resource_name(&self) -> &ResourceName {
+        &self.resource_name
+    }
+
+    pub fn track(&self) -> &TrackName {
+        &self.track
     }
 
     pub fn artifact_version(&self) -> &ArtifactVersion {

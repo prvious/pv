@@ -37,6 +37,44 @@ fn artifact_installer_unpacks_single_root_archive_and_updates_current_pointer() 
 }
 
 #[test]
+fn artifact_installer_rejects_artifacts_selected_for_another_resource_or_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let redis_track = TrackName::new("7.2")?;
+
+    let mysql_archive = tempdir.path().join("mysql.tar.gz");
+    write_fixture_archive(
+        &mysql_archive,
+        &[("7.2.5-pv1/bin/mysql", b"mysql executable" as &[u8])],
+    )?;
+    let mysql_artifact = manifest_artifact("mysql", "7.2", "7.2.5-pv1")?;
+    let resource_result =
+        installer.install(&adapter, &redis_track, &mysql_artifact, &mysql_archive);
+
+    assert!(matches!(
+        resource_result,
+        Err(ResourcesError::InvalidArtifactLayout { .. })
+    ));
+
+    let redis_8_archive = tempdir.path().join("redis-8.0.tar.gz");
+    write_fixture_archive(
+        &redis_8_archive,
+        &[("8.0.1-pv1/bin/redis-server", b"redis executable" as &[u8])],
+    )?;
+    let redis_8_artifact = manifest_artifact("redis", "8.0", "8.0.1-pv1")?;
+    let track_result =
+        installer.install(&adapter, &redis_track, &redis_8_artifact, &redis_8_archive);
+
+    assert!(matches!(
+        track_result,
+        Err(ResourcesError::InvalidArtifactLayout { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn artifact_installer_keeps_current_release_when_new_archive_fails_validation() -> Result<()> {
     let tempdir = tempdir()?;
     let first_archive_path = tempdir.path().join("redis-7.2.5.tar.gz");
@@ -162,6 +200,45 @@ fn artifact_installer_rejects_entries_that_can_escape_or_create_special_nodes() 
 }
 
 #[test]
+fn artifact_installer_rejects_relative_and_absolute_archive_paths() -> Result<()> {
+    let tempdir = tempdir()?;
+    let resources_dir = tempdir.path().join("resources");
+    let external_dir = tempdir.path().join("outside");
+    create_dir_all(&external_dir)?;
+    let installer = ArtifactInstaller::new(&resources_dir);
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let artifact = redis_artifact()?;
+    let track = TrackName::new("7.2")?;
+
+    let relative_escape_archive = tempdir.path().join("relative-escape.tar.gz");
+    write_unchecked_path_archive(
+        &relative_escape_archive,
+        "redis-7.2.5-pv1/../../outside/redis-server",
+        b"redis executable",
+    )?;
+    let relative_result = installer.install(&adapter, &track, &artifact, &relative_escape_archive);
+
+    assert!(matches!(
+        relative_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+    assert!(!external_dir.join("redis-server").exists());
+
+    let absolute_archive = tempdir.path().join("absolute.tar.gz");
+    let absolute_entry_path = format!("/tmp/pv-absolute-artifact-install-{}", std::process::id());
+    write_unchecked_path_archive(&absolute_archive, &absolute_entry_path, b"redis executable")?;
+    let absolute_result = installer.install(&adapter, &track, &artifact, &absolute_archive);
+
+    assert!(matches!(
+        absolute_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+    assert!(!Utf8Path::new(&absolute_entry_path).exists());
+
+    Ok(())
+}
+
+#[test]
 fn artifact_installer_rejects_single_top_level_file_archive() -> Result<()> {
     let tempdir = tempdir()?;
     let archive_path = tempdir.path().join("redis.tar.gz");
@@ -178,6 +255,45 @@ fn artifact_installer_rejects_single_top_level_file_archive() -> Result<()> {
 
     assert!(matches!(
         result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn artifact_installer_rejects_empty_and_multi_root_archives() -> Result<()> {
+    let tempdir = tempdir()?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let artifact = redis_artifact()?;
+    let track = TrackName::new("7.2")?;
+
+    let empty_archive = tempdir.path().join("empty.tar.gz");
+    write_fixture_archive(&empty_archive, &[])?;
+    let empty_result = installer.install(&adapter, &track, &artifact, &empty_archive);
+    assert!(matches!(
+        empty_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+
+    let multi_root_archive = tempdir.path().join("multi-root.tar.gz");
+    write_fixture_archive(
+        &multi_root_archive,
+        &[
+            (
+                "redis-7.2.5-pv1/bin/redis-server",
+                b"redis executable" as &[u8],
+            ),
+            (
+                "redis-7.2.5-pv1-extra/bin/redis-server",
+                b"redis executable" as &[u8],
+            ),
+        ],
+    )?;
+    let multi_root_result = installer.install(&adapter, &track, &artifact, &multi_root_archive);
+    assert!(matches!(
+        multi_root_result,
         Err(ResourcesError::InvalidArtifactArchive { .. })
     ));
 
@@ -231,6 +347,54 @@ fn artifact_installer_keeps_current_release_when_pruning_fails() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[cfg(unix)]
+fn artifact_installer_rejects_malformed_current_pointer_before_pruning() -> Result<()> {
+    let tempdir = tempdir()?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &["bin/redis-server"])?;
+    let track = TrackName::new("7.2")?;
+    let current_archive = tempdir.path().join("7.2.5-pv1.tar.gz");
+    let next_archive = tempdir.path().join("7.2.6-pv1.tar.gz");
+    write_fixture_archive(
+        &current_archive,
+        &[("7.2.5-pv1/bin/redis-server", b"redis executable" as &[u8])],
+    )?;
+    write_fixture_archive(
+        &next_archive,
+        &[("7.2.6-pv1/bin/redis-server", b"redis executable" as &[u8])],
+    )?;
+    installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.5-pv1")?,
+        &current_archive,
+    )?;
+    let track_dir = tempdir.path().join("resources/redis/7.2");
+    let current_path = track_dir.join("current");
+    remove_file(&current_path)?;
+    symlink_dir("../outside-current", &current_path)?;
+
+    let result = installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.6-pv1")?,
+        &next_archive,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ResourcesError::InvalidArtifactLayout { .. })
+    ));
+    assert_eq!(
+        sorted_file_names(&track_dir.join("releases"))?,
+        vec!["7.2.5-pv1"]
+    );
+    assert_eq!(read_link(&current_path)?, "../outside-current");
+
+    Ok(())
+}
+
 struct RequiredPathAdapter {
     resource_name: ResourceName,
     required_paths: Vec<Utf8PathBuf>,
@@ -266,14 +430,32 @@ impl ResourceAdapter for RequiredPathAdapter {
 }
 
 fn redis_artifact() -> Result<ManifestArtifact> {
-    redis_artifact_with_version("7.2.5-pv1")
+    manifest_artifact("redis", "7.2", "7.2.5-pv1")
 }
 
 fn redis_artifact_with_version(version: &str) -> Result<ManifestArtifact> {
-    let manifest = VALID_MANIFEST.replace("7.2.5-pv1", version);
+    manifest_artifact("redis", "7.2", version)
+}
+
+fn manifest_artifact(
+    resource_name: &str,
+    track_name: &str,
+    version: &str,
+) -> Result<ManifestArtifact> {
+    let manifest = VALID_MANIFEST
+        .replace(
+            "\"name\": \"redis\"",
+            &format!("\"name\": \"{resource_name}\""),
+        )
+        .replace(
+            "\"default_track\": \"7.2\"",
+            &format!("\"default_track\": \"{track_name}\""),
+        )
+        .replace("\"name\": \"7.2\"", &format!("\"name\": \"{track_name}\""))
+        .replace("7.2.5-pv1", version);
     let parsed = ArtifactManifest::parse(&manifest)?;
-    let resource = ResourceName::new("redis")?;
-    let track = TrackName::new("7.2")?;
+    let resource = ResourceName::new(resource_name)?;
+    let track = TrackName::new(track_name)?;
     let selected = parsed.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
     Ok(selected.artifact().clone())
@@ -321,6 +503,29 @@ fn write_fixture_archive(path: &Utf8Path, entries: &[(&str, &[u8])]) -> Result<(
         header.set_cksum();
         builder.append_data(&mut header, path, *content)?;
     }
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "resource install tests create malformed fixture archives directly"
+)]
+fn write_unchecked_path_archive(path: &Utf8Path, entry_path: &str, content: &[u8]) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    let entry_path = entry_path.as_bytes();
+
+    header.as_mut_bytes()[..entry_path.len()].copy_from_slice(entry_path);
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder.append(&header, content)?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
@@ -414,6 +619,28 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
 )]
 fn write_file(path: &Utf8Path, content: &[u8]) -> Result<()> {
     std::fs::write(path, content)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests replace current symlinks directly"
+)]
+fn remove_file(path: &Utf8Path) -> Result<()> {
+    std::fs::remove_file(path)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests create current symlinks directly"
+)]
+fn symlink_dir(target: &str, link: &Utf8Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
 
     Ok(())
 }

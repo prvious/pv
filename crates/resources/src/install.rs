@@ -43,6 +43,8 @@ impl ArtifactInstaller {
         artifact: &ManifestArtifact,
         archive_path: &Utf8Path,
     ) -> Result<ArtifactInstall> {
+        validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
+
         let track_dir = self
             .resources_dir
             .join(adapter.resource_name().as_str())
@@ -50,7 +52,7 @@ impl ArtifactInstaller {
         let releases_dir = track_dir.join("releases");
         let release_path = releases_dir.join(artifact.artifact_version().as_str());
         let current_path = track_dir.join("current");
-        let previous_release = current_release_name(&current_path)?;
+        let previous_release = current_release_name(adapter.resource_name(), &current_path)?;
 
         if fs::path_exists(&release_path) {
             adapter.validate_installation(&release_path)?;
@@ -88,6 +90,27 @@ impl ArtifactInstaller {
             current_path,
         ))
     }
+}
+
+fn validate_artifact_matches_request(
+    resource_name: &ResourceName,
+    track: &TrackName,
+    artifact: &ManifestArtifact,
+) -> Result<()> {
+    if artifact.resource_name() == resource_name && artifact.track() == track {
+        return Ok(());
+    }
+
+    Err(ResourcesError::InvalidArtifactLayout {
+        resource: resource_name.as_str().to_string(),
+        reason: format!(
+            "artifact belongs to `{}` track `{}`, not `{}` track `{}`",
+            artifact.resource_name(),
+            artifact.track(),
+            resource_name,
+            track
+        ),
+    })
 }
 
 impl ArtifactInstall {
@@ -324,20 +347,61 @@ fn update_current_pointer(track_dir: &Utf8Path, artifact_version: &ArtifactVersi
     Ok(())
 }
 
-fn current_release_name(current_path: &Utf8Path) -> Result<Option<String>> {
-    if !fs::path_exists(current_path) {
+fn current_release_name(
+    resource_name: &ResourceName,
+    current_path: &Utf8Path,
+) -> Result<Option<String>> {
+    if !fs::path_entry_exists(current_path)? {
         return Ok(None);
     }
 
     let target = read_link(current_path)?;
     let Some(version) = target.strip_prefix("releases/") else {
-        return Ok(None);
+        return Err(invalid_current_pointer(
+            resource_name,
+            current_path,
+            &target,
+        ));
     };
-    if version.contains('/') || version.is_empty() {
-        return Ok(None);
+    if version.contains('/')
+        || version.is_empty()
+        || ArtifactVersion::new(version.to_string()).is_err()
+    {
+        return Err(invalid_current_pointer(
+            resource_name,
+            current_path,
+            &target,
+        ));
+    }
+
+    let Some(track_dir) = current_path.parent() else {
+        return Err(invalid_current_pointer(
+            resource_name,
+            current_path,
+            &target,
+        ));
+    };
+    let target_path = track_dir.join(&target);
+    if !fs::path_entry_exists(&target_path)? || !fs::path_is_directory(&target_path)? {
+        return Err(invalid_current_pointer(
+            resource_name,
+            current_path,
+            &target,
+        ));
     }
 
     Ok(Some(version.to_string()))
+}
+
+fn invalid_current_pointer(
+    resource_name: &ResourceName,
+    current_path: &Utf8Path,
+    target: &str,
+) -> ResourcesError {
+    ResourcesError::InvalidArtifactLayout {
+        resource: resource_name.as_str().to_string(),
+        reason: format!("current pointer `{current_path}` targets invalid release `{target}`"),
+    }
 }
 
 fn prune_old_releases(

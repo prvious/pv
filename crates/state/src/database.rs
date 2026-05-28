@@ -286,6 +286,9 @@ impl Database {
         track: &str,
         desired_state: ManagedResourceDesiredState,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_managed_resource_identity("track", track)?;
+
         let updated_at = timestamp()?;
         self.connection.execute(
             "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, updated_at)
@@ -306,6 +309,10 @@ impl Database {
         installed_version: &str,
         current_artifact_path: &Utf8Path,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_managed_resource_identity("track", track)?;
+        validate_managed_resource_identity("artifact version", installed_version)?;
+
         let updated_at = timestamp()?;
         self.connection.execute(
             "INSERT INTO managed_resource_tracks (
@@ -745,6 +752,12 @@ impl PortAssignmentRow {
 
 impl ManagedResourceTrackRow {
     fn into_record(self) -> Result<ManagedResourceTrackRecord, StateError> {
+        validate_managed_resource_identity("name", &self.resource_name)?;
+        validate_managed_resource_identity("track", &self.track)?;
+        if let Some(installed_version) = &self.installed_version {
+            validate_managed_resource_identity("artifact version", installed_version)?;
+        }
+
         Ok(ManagedResourceTrackRecord {
             resource_name: self.resource_name,
             track: self.track,
@@ -860,6 +873,24 @@ fn managed_resource_track_from_row(
         usage_count: row.get(5)?,
         updated_at: row.get(6)?,
     })
+}
+
+fn validate_managed_resource_identity(kind: &'static str, value: &str) -> Result<(), StateError> {
+    let is_valid = !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(StateError::InvalidManagedResourceIdentity {
+            kind,
+            value: value.to_string(),
+        })
+    }
 }
 
 fn describe_port_identity(owner_kind: &str, owner_id: &str, owner_track: &str) -> String {

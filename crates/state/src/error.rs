@@ -54,6 +54,9 @@ pub enum StateError {
     #[error("unknown managed resource desired state `{desired_state}`")]
     UnknownManagedResourceDesiredState { desired_state: String },
 
+    #[error("invalid managed resource {kind} `{value}`")]
+    InvalidManagedResourceIdentity { kind: &'static str, value: String },
+
     #[error("daemon job `{id}` was not found")]
     JobNotFound { id: String },
 
