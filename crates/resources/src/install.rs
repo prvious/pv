@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use flate2::read::GzDecoder;
-use tar::Archive;
+use tar::{Archive, EntryType};
 
 use crate::fs;
 use crate::{ArtifactVersion, ManifestArtifact, ResourceName, ResourcesError, Result, TrackName};
@@ -54,45 +54,31 @@ impl ArtifactInstaller {
 
         if fs::path_exists(&release_path) {
             adapter.validate_installation(&release_path)?;
-            update_current_pointer(&track_dir, artifact.artifact_version())?;
-            prune_old_releases(
-                &releases_dir,
+        } else {
+            fs::create_dir_all(&releases_dir)?;
+            let staging_dir = staging_dir(&track_dir, artifact.artifact_version());
+
+            let result = unpack_validate_and_promote(
+                archive_path,
+                &staging_dir,
+                &release_path,
+                adapter,
                 artifact.artifact_version(),
-                previous_release.as_deref(),
-            )?;
+            );
+            if let Err(error) = result {
+                if let Err(_cleanup_error) = fs::remove_dir_all_if_exists(&staging_dir) {}
 
-            return Ok(ArtifactInstall::new(
-                adapter.resource_name().clone(),
-                track.clone(),
-                artifact.artifact_version().clone(),
-                release_path,
-                current_path,
-            ));
+                return Err(error);
+            }
+            fs::remove_dir_all_if_exists(&staging_dir)?;
         }
 
-        fs::create_dir_all(&releases_dir)?;
-        let staging_dir = staging_dir(&track_dir, artifact.artifact_version());
-
-        let result = unpack_validate_and_promote(
-            archive_path,
-            &staging_dir,
-            &release_path,
-            adapter,
-            artifact.artifact_version(),
-        );
-        if let Err(error) = result {
-            if let Err(_cleanup_error) = fs::remove_dir_all_if_exists(&staging_dir) {}
-
-            return Err(error);
-        }
-
-        update_current_pointer(&track_dir, artifact.artifact_version())?;
         prune_old_releases(
             &releases_dir,
             artifact.artifact_version(),
             previous_release.as_deref(),
         )?;
-        fs::remove_dir_all_if_exists(&staging_dir)?;
+        update_current_pointer(&track_dir, artifact.artifact_version())?;
 
         Ok(ArtifactInstall::new(
             adapter.resource_name().clone(),
@@ -183,6 +169,10 @@ fn unpack_single_root_archive(
 
     for entry in entries {
         let mut entry = entry.map_err(|source| invalid_archive(archive_path, source))?;
+        if should_skip_archive_entry(entry.header().entry_type()) {
+            continue;
+        }
+        validate_archive_entry_type(archive_path, entry.header().entry_type())?;
         let entry_path = entry
             .path()
             .map_err(|source| invalid_archive(archive_path, source))?;
@@ -219,7 +209,56 @@ fn unpack_single_root_archive(
         });
     };
 
-    Ok(staging_dir.join(root_name))
+    let root_path = staging_dir.join(root_name);
+    if !fs::path_is_directory(&root_path)? {
+        return Err(ResourcesError::InvalidArtifactArchive {
+            path: archive_path.to_string(),
+            reason: "archive root is not a directory".to_string(),
+        });
+    }
+
+    Ok(root_path)
+}
+
+fn should_skip_archive_entry(entry_type: EntryType) -> bool {
+    entry_type.is_pax_global_extensions()
+        || entry_type.is_pax_local_extensions()
+        || entry_type.is_gnu_longname()
+        || entry_type.is_gnu_longlink()
+}
+
+fn validate_archive_entry_type(archive_path: &Utf8Path, entry_type: EntryType) -> Result<()> {
+    if entry_type.is_file() || entry_type.is_dir() {
+        return Ok(());
+    }
+
+    Err(ResourcesError::InvalidArtifactArchive {
+        path: archive_path.to_string(),
+        reason: format!(
+            "unsupported archive entry type `{}`",
+            archive_entry_type_name(entry_type)
+        ),
+    })
+}
+
+fn archive_entry_type_name(entry_type: EntryType) -> &'static str {
+    if entry_type.is_hard_link() {
+        "hard link"
+    } else if entry_type.is_symlink() {
+        "symlink"
+    } else if entry_type.is_character_special() {
+        "character special"
+    } else if entry_type.is_block_special() {
+        "block special"
+    } else if entry_type.is_fifo() {
+        "fifo"
+    } else if entry_type.is_contiguous() {
+        "contiguous file"
+    } else if entry_type.is_gnu_sparse() {
+        "sparse file"
+    } else {
+        "unknown"
+    }
 }
 
 fn clean_archive_path(archive_path: &Utf8Path, path: &Path) -> Result<Utf8PathBuf> {

@@ -386,6 +386,30 @@ fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
 }
 
 #[test]
+fn managed_resource_installed_update_preserves_removed_desired_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Removed,
+    )?;
+    let record = database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "7.2.5-pv1",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    )?;
+
+    assert_eq!(record.desired_state, ManagedResourceDesiredState::Removed);
+    assert_eq!(record.installed_version.as_deref(), Some("7.2.5-pv1"));
+
+    Ok(())
+}
+
+#[test]
 fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

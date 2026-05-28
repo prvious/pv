@@ -318,7 +318,6 @@ impl Database {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             ON CONFLICT(resource_name, track) DO UPDATE SET
-                desired_state = excluded.desired_state,
                 installed_version = excluded.installed_version,
                 current_artifact_path = excluded.current_artifact_path,
                 updated_at = excluded.updated_at",

@@ -1,3 +1,6 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
@@ -8,7 +11,7 @@ use resources::{
     ArtifactInstall, ArtifactInstaller, ArtifactManifest, ManifestArtifact, ResourceAdapter,
     ResourceName, ResourcesError, TargetPlatform, TrackName,
 };
-use tar::{Builder, Header};
+use tar::{Builder, EntryType, Header};
 
 #[test]
 fn artifact_installer_unpacks_single_root_archive_and_updates_current_pointer() -> Result<()> {
@@ -109,6 +112,125 @@ fn artifact_installer_retains_current_and_previous_releases() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn artifact_installer_rejects_entries_that_can_escape_or_create_special_nodes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let resources_dir = tempdir.path().join("resources");
+    let external_dir = tempdir.path().join("outside");
+    create_dir_all(&external_dir)?;
+    let installer = ArtifactInstaller::new(&resources_dir);
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let track = TrackName::new("7.2")?;
+
+    let symlink_archive = tempdir.path().join("symlink.tar.gz");
+    write_symlink_escape_archive(&symlink_archive, "redis-7.2.5-pv1", &external_dir)?;
+    let symlink_result = installer.install(&adapter, &track, &redis_artifact()?, &symlink_archive);
+
+    assert!(matches!(
+        symlink_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+    assert!(!external_dir.join("redis-server").exists());
+
+    let hardlink_archive = tempdir.path().join("hardlink.tar.gz");
+    write_link_archive(&hardlink_archive, EntryType::Link)?;
+    let hardlink_result = installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.6-pv1")?,
+        &hardlink_archive,
+    );
+    assert!(matches!(
+        hardlink_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+
+    let fifo_archive = tempdir.path().join("fifo.tar.gz");
+    write_link_archive(&fifo_archive, EntryType::Fifo)?;
+    let fifo_result = installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.7-pv1")?,
+        &fifo_archive,
+    );
+    assert!(matches!(
+        fifo_result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn artifact_installer_rejects_single_top_level_file_archive() -> Result<()> {
+    let tempdir = tempdir()?;
+    let archive_path = tempdir.path().join("redis.tar.gz");
+    write_fixture_archive(
+        &archive_path,
+        &[("redis-server", b"redis executable" as &[u8])],
+    )?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let artifact = redis_artifact()?;
+    let track = TrackName::new("7.2")?;
+
+    let result = installer.install(&adapter, &track, &artifact, &archive_path);
+
+    assert!(matches!(
+        result,
+        Err(ResourcesError::InvalidArtifactArchive { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn artifact_installer_keeps_current_release_when_pruning_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &["bin/redis-server"])?;
+    let track = TrackName::new("7.2")?;
+    let current_archive = tempdir.path().join("7.2.5-pv1.tar.gz");
+    let next_archive = tempdir.path().join("7.2.6-pv1.tar.gz");
+    write_fixture_archive(
+        &current_archive,
+        &[("7.2.5-pv1/bin/redis-server", b"redis executable" as &[u8])],
+    )?;
+    write_fixture_archive(
+        &next_archive,
+        &[("7.2.6-pv1/bin/redis-server", b"redis executable" as &[u8])],
+    )?;
+    installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.5-pv1")?,
+        &current_archive,
+    )?;
+    let releases_dir = tempdir.path().join("resources/redis/7.2/releases");
+    let stale_locked_dir = releases_dir.join("7.2.4-pv1/locked");
+    create_dir_all(&stale_locked_dir)?;
+    write_file(&stale_locked_dir.join("file"), b"locked")?;
+    set_dir_mode(&stale_locked_dir, 0o500)?;
+
+    let result = installer.install(
+        &adapter,
+        &track,
+        &redis_artifact_with_version("7.2.6-pv1")?,
+        &next_archive,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(
+        read_link(&tempdir.path().join("resources/redis/7.2/current"))?,
+        "releases/7.2.5-pv1"
+    );
+
+    set_dir_mode(&stale_locked_dir, 0o700)?;
+
+    Ok(())
+}
+
 struct RequiredPathAdapter {
     resource_name: ResourceName,
     required_paths: Vec<Utf8PathBuf>,
@@ -202,6 +324,96 @@ fn write_fixture_archive(path: &Utf8Path, entries: &[(&str, &[u8])]) -> Result<(
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "resource install tests create fixture archives directly"
+)]
+fn write_symlink_escape_archive(
+    path: &Utf8Path,
+    root: &str,
+    external_dir: &Utf8Path,
+) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_size(0);
+    header.set_entry_type(EntryType::Symlink);
+    header.set_cksum();
+    builder.append_link(&mut header, format!("{root}/bin"), external_dir)?;
+
+    let mut header = Header::new_gnu();
+    header.set_size(b"redis executable".len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder.append_data(
+        &mut header,
+        format!("{root}/bin/redis-server"),
+        b"redis executable" as &[u8],
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "resource install tests create fixture archives directly"
+)]
+fn write_link_archive(path: &Utf8Path, entry_type: EntryType) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_size(0);
+    header.set_entry_type(entry_type);
+    header.set_cksum();
+
+    if entry_type.is_hard_link() {
+        builder.append_link(&mut header, "redis-7.2.6-pv1/bin/redis-server", "target")?;
+    } else {
+        builder.append_data(&mut header, "redis-7.2.7-pv1/pipe", &[] as &[u8])?;
+    }
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests create pruning failure fixtures directly"
+)]
+fn set_dir_mode(path: &Utf8Path, mode: u32) -> Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests create fixture directories directly"
+)]
+fn create_dir_all(path: &Utf8Path) -> Result<()> {
+    std::fs::create_dir_all(path)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests create fixture files directly"
+)]
+fn write_file(path: &Utf8Path, content: &[u8]) -> Result<()> {
+    std::fs::write(path, content)?;
 
     Ok(())
 }

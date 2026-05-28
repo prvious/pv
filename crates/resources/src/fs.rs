@@ -73,6 +73,12 @@ pub(crate) fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }
 
+pub(crate) fn path_is_directory(path: &Utf8Path) -> Result<bool> {
+    symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .map_err(|source| filesystem_error(path, source))
+}
+
 fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
@@ -176,6 +182,14 @@ pub(crate) fn remove_dir_all_if_exists(path: &Utf8Path) -> Result<()> {
 )]
 fn remove_dir_all(path: &Utf8Path) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
+fn symlink_metadata(path: &Utf8Path) -> std::io::Result<std::fs::Metadata> {
+    std::fs::symlink_metadata(path)
 }
 
 pub(crate) fn sync_directory(path: &Utf8Path) -> Result<()> {
