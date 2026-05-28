@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::io::Write;
+use std::io::{Error, Write};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use flate2::Compression;
@@ -76,6 +76,27 @@ fn managed_resource_commands_keep_installed_state_when_update_validation_fails()
         failed_update,
         track_records_summary(&listed_after_failure, tempdir.path())?,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn scripted_client_reports_destination_write_failures_separately() -> Result<()> {
+    let client = ScriptedClient::new().with_bytes(b"artifact");
+    let mut writer = FailingWriter;
+    let url = "https://artifacts.example.test/redis.tar.gz";
+    let result = client.download(url, &mut writer);
+
+    let Err(ResourcesError::DownloadWriteFailed {
+        url: error_url,
+        reason,
+    }) = result
+    else {
+        bail!("expected DownloadWriteFailed, got {result:?}");
+    };
+
+    assert_eq!(error_url, url);
+    assert_eq!(reason, "disk full");
 
     Ok(())
 }
@@ -269,10 +290,22 @@ impl ResourceHttpClient for ScriptedClient {
             })?;
         writer
             .write_all(&bytes)
-            .map_err(|source| ResourcesError::HttpRequestFailed {
+            .map_err(|source| ResourcesError::DownloadWriteFailed {
                 url: url.to_string(),
                 reason: source.to_string(),
             })
+    }
+}
+
+struct FailingWriter;
+
+impl Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(Error::other("disk full"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
