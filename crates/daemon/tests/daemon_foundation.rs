@@ -107,6 +107,34 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
 }
 
 #[tokio::test]
+async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let client_paths = paths.clone();
+
+    let submitted = tokio::task::spawn_blocking(move || {
+        daemon::submit_job_blocking(client_paths, "reconcile", "project:project_1")
+    })
+    .await??;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.id == submitted.id)
+        .ok_or_else(|| anyhow!("missing submitted job"))?;
+
+    assert_eq!(job.kind, "reconcile");
+    assert_eq!(job.scope, "project:project_1");
+    assert_eq!(job.status, JobStatus::Succeeded);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

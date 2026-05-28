@@ -9,6 +9,7 @@ mod completions;
 mod daemon;
 mod env;
 mod php;
+mod project;
 
 pub(crate) fn execute(
     cli: Cli,
@@ -22,6 +23,10 @@ pub(crate) fn execute(
         Command::DaemonDisable => daemon::disable(),
         Command::DaemonRestart => daemon::restart(),
         Command::DaemonRun => daemon::run(),
+        Command::Link(args) => project::link(args, environment, stdout),
+        Command::Unlink(args) => project::unlink(args, environment, stdout),
+        Command::Open(args) => project::open(args, environment, stdout),
+        Command::List => project::list(stdout),
         Command::PhpInstall(args) => php::install(args),
     }
 }

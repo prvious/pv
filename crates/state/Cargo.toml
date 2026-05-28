@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+fastrand = { workspace = true }
 home = { workspace = true }
 rusqlite = { workspace = true }
 rustix = { workspace = true }

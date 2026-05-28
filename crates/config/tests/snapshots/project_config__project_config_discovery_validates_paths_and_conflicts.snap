@@ -1,0 +1,22 @@
+---
+source: crates/config/tests/project_config.rs
+assertion_line: 67
+expression: "(config_file.path.file_name(), config_file.exists, config_file.config,)"
+---
+(
+    Some(
+        "pv.yml",
+    ),
+    true,
+    ProjectConfig {
+        php: None,
+        document_root: Some(
+            "public",
+        ),
+        hostnames: [
+            "admin.acme.test",
+        ],
+        env: {},
+        resources: {},
+    },
+)

@@ -38,6 +38,18 @@ pub(crate) enum Command {
     #[command(name = "daemon:run", about = "Run the internal PV daemon", hide = true)]
     DaemonRun,
 
+    #[command(name = "link", about = "Link a Project")]
+    Link(LinkArgs),
+
+    #[command(name = "unlink", about = "Unlink a Project")]
+    Unlink(UnlinkArgs),
+
+    #[command(name = "open", about = "Open a linked Project")]
+    Open(OpenArgs),
+
+    #[command(name = "list", about = "List linked Projects")]
+    List,
+
     #[command(name = "php:install", about = "Install a PHP track")]
     PhpInstall(PhpInstallArgs),
 }
@@ -58,4 +70,25 @@ pub(crate) struct CompletionsArgs {
 pub(crate) struct PhpInstallArgs {
     #[arg(value_name = "version", help = "PHP track to install")]
     pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct LinkArgs {
+    #[arg(value_name = "path", help = "Project path to link")]
+    pub(crate) path: Option<String>,
+
+    #[arg(long, value_name = "hostname", help = "Primary .test hostname")]
+    pub(crate) hostname: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UnlinkArgs {
+    #[arg(value_name = "hostname", help = "Project hostname to unlink")]
+    pub(crate) hostname: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct OpenArgs {
+    #[arg(value_name = "hostname", help = "Project hostname to open")]
+    pub(crate) hostname: Option<String>,
 }

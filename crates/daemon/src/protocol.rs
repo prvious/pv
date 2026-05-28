@@ -10,7 +10,7 @@ const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
 pub(crate) type DaemonTransport<Stream> = Framed<Stream, LinesCodec>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct DaemonRequest {
     pub(crate) protocol_version: u16,
 
@@ -18,7 +18,7 @@ pub(crate) struct DaemonRequest {
     pub(crate) command: DaemonCommand,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub(crate) enum DaemonCommand {
     Health,
@@ -37,7 +37,7 @@ pub(crate) struct DaemonResponse<'message> {
     pub(crate) job_id: Option<&'message str>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ResponseStatus {
     Ok,

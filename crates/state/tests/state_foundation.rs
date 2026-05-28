@@ -663,21 +663,25 @@ fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
 
     assert!(duplicate_primary.is_err());
 
-    let mismatched_project_update = state::testing::transaction(&mut database, |transaction| {
+    state::testing::transaction(&mut database, |transaction| {
         transaction.execute(
             "UPDATE projects SET primary_hostname = ?1 WHERE id = ?2",
             params!["renamed.test", "project_1"],
         )?;
 
         Ok(())
-    });
+    })?;
+    let renamed_primary = state::testing::query_i64(
+        &database,
+        "SELECT COUNT(*) FROM project_hostnames WHERE hostname = 'renamed.test' AND is_primary = 1",
+    )?;
 
-    assert!(mismatched_project_update.is_err());
+    assert_eq!(renamed_primary, 1);
 
     let delete_primary = state::testing::transaction(&mut database, |transaction| {
         transaction.execute(
             "DELETE FROM project_hostnames WHERE hostname = ?1",
-            params!["acme.test"],
+            params!["renamed.test"],
         )?;
 
         Ok(())
@@ -690,6 +694,107 @@ fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
 
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn linked_projects_preserve_ids_and_refresh_hostnames() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project_path = tempdir.path().join("acme");
+    let config_path = project_path.join("pv.yml");
+
+    let created = database.link_project(state::LinkProjectInput {
+        path: project_path.clone(),
+        primary_hostname: "acme.test".to_string(),
+        config_path: config_path.clone(),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: vec!["api.acme.test".to_string()],
+    })?;
+    let updated = database.link_project(state::LinkProjectInput {
+        path: project_path,
+        primary_hostname: "store.test".to_string(),
+        config_path,
+        desired_php_track: Some("8.3".to_string()),
+        additional_hostnames: vec!["admin.store.test".to_string()],
+    })?;
+
+    assert_eq!(created.project.id, updated.project.id);
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((created.status, updated.status, database.projects()?));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn linked_project_hostname_collisions_are_rejected() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let first = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: vec!["api.acme.test".to_string()],
+    })?;
+    let collision = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("other"),
+        primary_hostname: "api.acme.test".to_string(),
+        config_path: tempdir.path().join("other/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    });
+
+    assert!(matches!(
+        collision,
+        Err(StateError::ProjectHostnameCollision {
+            hostname,
+            project_id,
+        }) if hostname == "api.acme.test" && project_id == first.project.id
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn nearest_project_resolution_prefers_nested_projects() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let parent_path = tempdir.path().join("acme");
+    let nested_path = parent_path.join("packages/admin");
+    let nested_child_path = nested_path.join("src");
+
+    database.link_project(state::LinkProjectInput {
+        path: parent_path,
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    let nested = database.link_project(state::LinkProjectInput {
+        path: nested_path,
+        primary_hostname: "admin.acme.test".to_string(),
+        config_path: tempdir.path().join("acme/packages/admin/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+
+    let resolved = database
+        .nearest_project_for_path(&nested_child_path)?
+        .ok_or_else(|| anyhow!("missing nearest project"))?;
+
+    assert_eq!(resolved.id, nested.project.id);
 
     Ok(())
 }

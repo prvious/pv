@@ -1,14 +1,17 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
 const PORT_CANDIDATE_LIMIT: usize = 10;
+const PROJECT_ID_LENGTH: usize = 10;
+const PROJECT_ID_ATTEMPTS: usize = 16;
+const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 #[derive(Debug)]
 pub struct Database {
@@ -116,6 +119,40 @@ pub struct ManagedResourceTrackRecord {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkProjectInput {
+    pub path: Utf8PathBuf,
+    pub primary_hostname: String,
+    pub config_path: Utf8PathBuf,
+    pub desired_php_track: Option<String>,
+    pub additional_hostnames: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkProjectResult {
+    pub status: LinkProjectStatus,
+    pub project: ProjectRecord,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum LinkProjectStatus {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectRecord {
+    pub id: String,
+    pub path: Utf8PathBuf,
+    pub primary_hostname: String,
+    pub config_path: Utf8PathBuf,
+    pub desired_php_track: Option<String>,
+    pub additional_hostnames: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -144,6 +181,16 @@ struct ManagedResourceTrackRow {
     usage_count: i64,
     removal_prune: bool,
     removal_force: bool,
+    updated_at: String,
+}
+
+struct ProjectRow {
+    id: String,
+    path: String,
+    primary_hostname: String,
+    config_path: Option<String>,
+    desired_php_track: Option<String>,
+    created_at: String,
     updated_at: String,
 }
 
@@ -282,6 +329,123 @@ impl Database {
         }
 
         Ok(jobs)
+    }
+
+    pub fn link_project(
+        &mut self,
+        input: LinkProjectInput,
+    ) -> Result<LinkProjectResult, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = project_by_path_in_transaction(&transaction, &input.path)?;
+        let project_id = match &existing {
+            Some(project) => project.id.clone(),
+            None => generate_project_id(&transaction)?,
+        };
+        validate_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        let status = match &existing {
+            Some(project) if project_matches_input(project, &input) => LinkProjectStatus::Unchanged,
+            Some(_) => LinkProjectStatus::Updated,
+            None => LinkProjectStatus::Created,
+        };
+
+        match &existing {
+            Some(project) => update_project_in_transaction(&transaction, &project.id, &input)?,
+            None => insert_project_in_transaction(&transaction, &project_id, &input)?,
+        }
+        replace_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        transaction.commit()?;
+
+        let project =
+            self.project_by_id(&project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.clone(),
+                })?;
+
+        Ok(LinkProjectResult { status, project })
+    }
+
+    pub fn unlink_project(&mut self, project_id: &str) -> Result<ProjectRecord, StateError> {
+        let project =
+            self.project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_string(),
+                })?;
+        self.connection
+            .execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+
+        Ok(project)
+    }
+
+    pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            FROM projects
+            WHERE id = ?1",
+        )?;
+        let mut rows = statement.query_map(params![project_id], project_from_row)?;
+
+        match rows.next() {
+            Some(row) => row?.into_record(&self.connection).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn project_by_path(&self, path: &Utf8Path) -> Result<Option<ProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            FROM projects
+            WHERE path = ?1",
+        )?;
+        let mut rows = statement.query_map(params![path.as_str()], project_from_row)?;
+
+        match rows.next() {
+            Some(row) => row?.into_record(&self.connection).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn project_by_hostname(&self, hostname: &str) -> Result<Option<ProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT projects.id, projects.path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at
+            FROM projects
+            INNER JOIN project_hostnames ON project_hostnames.project_id = projects.id
+            WHERE project_hostnames.hostname = ?1",
+        )?;
+        let mut rows = statement.query_map(params![hostname], project_from_row)?;
+
+        match rows.next() {
+            Some(row) => row?.into_record(&self.connection).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn nearest_project_for_path(
+        &self,
+        path: &Utf8Path,
+    ) -> Result<Option<ProjectRecord>, StateError> {
+        Ok(self
+            .projects()?
+            .into_iter()
+            .filter(|project| path.starts_with(&project.path))
+            .max_by_key(|project| project.path.as_str().len()))
+    }
+
+    pub fn projects(&self) -> Result<Vec<ProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            FROM projects
+            ORDER BY primary_hostname",
+        )?;
+        let rows = statement.query_map([], project_from_row)?;
+        let mut projects = Vec::new();
+
+        for row in rows {
+            projects.push(row?.into_record(&self.connection)?);
+        }
+
+        Ok(projects)
     }
 
     pub fn record_managed_resource_track_desired(
@@ -824,10 +988,233 @@ impl ManagedResourceTrackRow {
     }
 }
 
+impl ProjectRow {
+    fn into_record(self, connection: &Connection) -> Result<ProjectRecord, StateError> {
+        let additional_hostnames = additional_hostnames_for_project(connection, &self.id)?;
+        let path = Utf8PathBuf::from(self.path);
+        let config_path = self
+            .config_path
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|| path.join("pv.yml"));
+
+        Ok(ProjectRecord {
+            id: self.id,
+            path,
+            primary_hostname: self.primary_hostname,
+            config_path,
+            desired_php_track: self.desired_php_track,
+            additional_hostnames,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
 impl PortIdentity {
     fn display_name(&self) -> String {
         describe_port_identity(self.owner_kind, &self.owner_id, &self.owner_track)
     }
+}
+
+fn project_by_path_in_transaction(
+    transaction: &Transaction<'_>,
+    path: &Utf8Path,
+) -> Result<Option<ProjectRecord>, StateError> {
+    let row = transaction
+        .query_row(
+            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            FROM projects
+            WHERE path = ?1",
+            params![path.as_str()],
+            project_from_row,
+        )
+        .optional()?;
+
+    match row {
+        Some(row) => row.into_record(transaction).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn project_matches_input(project: &ProjectRecord, input: &LinkProjectInput) -> bool {
+    project.path == input.path
+        && project.primary_hostname == input.primary_hostname
+        && project.config_path == input.config_path
+        && project.desired_php_track == input.desired_php_track
+        && sorted_hostnames(&project.additional_hostnames)
+            == sorted_hostnames(&input.additional_hostnames)
+}
+
+fn sorted_hostnames(hostnames: &[String]) -> Vec<String> {
+    let mut hostnames = hostnames.to_vec();
+    hostnames.sort();
+
+    hostnames
+}
+
+fn insert_project_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    input: &LinkProjectInput,
+) -> Result<(), StateError> {
+    let created_at = timestamp()?;
+    transaction.execute(
+        "INSERT INTO projects (id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            project_id,
+            input.path.as_str(),
+            input.primary_hostname.as_str(),
+            input.config_path.as_str(),
+            input.desired_php_track.as_deref(),
+            created_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn update_project_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    input: &LinkProjectInput,
+) -> Result<(), StateError> {
+    let updated_at = timestamp()?;
+    transaction.execute(
+        "UPDATE projects
+        SET primary_hostname = ?1,
+            config_path = ?2,
+            desired_php_track = ?3,
+            updated_at = ?4
+        WHERE id = ?5",
+        params![
+            input.primary_hostname.as_str(),
+            input.config_path.as_str(),
+            input.desired_php_track.as_deref(),
+            updated_at,
+            project_id,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn replace_project_hostnames_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    input: &LinkProjectInput,
+) -> Result<(), StateError> {
+    let created_at = timestamp()?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO project_hostnames (hostname, project_id, is_primary, created_at)
+        VALUES (?1, ?2, 1, ?3)",
+        params![input.primary_hostname.as_str(), project_id, created_at],
+    )?;
+    transaction.execute(
+        "DELETE FROM project_hostnames WHERE project_id = ?1 AND is_primary = 0",
+        params![project_id],
+    )?;
+
+    for hostname in &input.additional_hostnames {
+        transaction.execute(
+            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at)
+            VALUES (?1, ?2, 0, ?3)",
+            params![hostname.as_str(), project_id, created_at],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_project_hostnames_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    input: &LinkProjectInput,
+) -> Result<(), StateError> {
+    let mut hostnames = BTreeMap::new();
+    for hostname in std::iter::once(&input.primary_hostname).chain(&input.additional_hostnames) {
+        if hostnames.insert(hostname, ()).is_some() {
+            return Err(StateError::DuplicateProjectHostname {
+                hostname: hostname.clone(),
+            });
+        }
+
+        if let Some(owner) = project_owner_for_hostname(transaction, hostname)?
+            && owner != project_id
+        {
+            return Err(StateError::ProjectHostnameCollision {
+                hostname: hostname.clone(),
+                project_id: owner,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn project_owner_for_hostname(
+    transaction: &Transaction<'_>,
+    hostname: &str,
+) -> Result<Option<String>, StateError> {
+    Ok(transaction
+        .query_row(
+            "SELECT project_id FROM project_hostnames WHERE hostname = ?1",
+            params![hostname],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn generate_project_id(transaction: &Transaction<'_>) -> Result<String, StateError> {
+    let mut rng = fastrand::Rng::new();
+
+    for _attempt in 0..PROJECT_ID_ATTEMPTS {
+        let id = random_project_id(&mut rng);
+        let count = transaction.query_row(
+            "SELECT COUNT(*) FROM projects WHERE id = ?1",
+            params![id.as_str()],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        if count == 0 {
+            return Ok(id);
+        }
+    }
+
+    Err(StateError::ProjectIdExhausted {
+        attempts: PROJECT_ID_ATTEMPTS,
+    })
+}
+
+fn random_project_id(rng: &mut fastrand::Rng) -> String {
+    let mut id = String::with_capacity(PROJECT_ID_LENGTH);
+
+    for _index in 0..PROJECT_ID_LENGTH {
+        let character_index = rng.usize(..PROJECT_ID_ALPHABET.len());
+        id.push(PROJECT_ID_ALPHABET[character_index] as char);
+    }
+
+    id
+}
+
+fn additional_hostnames_for_project(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<String>, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT hostname
+        FROM project_hostnames
+        WHERE project_id = ?1 AND is_primary = 0
+        ORDER BY hostname",
+    )?;
+    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+    let mut hostnames = Vec::new();
+
+    for row in rows {
+        hostnames.push(row?);
+    }
+
+    Ok(hostnames)
 }
 
 fn port_assignment_in_transaction(
@@ -928,6 +1315,18 @@ fn managed_resource_track_from_row(
         removal_prune: row.get(6)?,
         removal_force: row.get(7)?,
         updated_at: row.get(8)?,
+    })
+}
+
+fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
+    Ok(ProjectRow {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        primary_hostname: row.get(2)?,
+        config_path: row.get(3)?,
+        desired_php_track: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 

@@ -1,3 +1,4 @@
+mod client;
 mod error;
 mod ipc;
 mod jobs;
@@ -15,6 +16,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use client::{SubmittedJob, submit_job_blocking};
 pub use error::DaemonError;
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{

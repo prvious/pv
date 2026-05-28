@@ -9,8 +9,10 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+camino = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+config = { path = "../config" }
 daemon = { path = "../daemon" }
 state = { path = "../state" }
 thiserror = { workspace = true }

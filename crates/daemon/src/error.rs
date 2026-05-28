@@ -20,6 +20,9 @@ pub enum DaemonError {
     #[error("daemon protocol frame error: {0}")]
     Frame(#[from] LinesCodecError),
 
+    #[error("daemon protocol error: {0}")]
+    Protocol(String),
+
     #[error("state error: {0}")]
     State(#[from] StateError),
 

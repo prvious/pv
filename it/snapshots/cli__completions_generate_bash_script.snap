@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 229
 expression: output.stdout
 ---
 _pv() {
@@ -38,8 +39,20 @@ _pv() {
             pv,env)
                 cmd="pv__subcmd__env"
                 ;;
+            pv,link)
+                cmd="pv__subcmd__link"
+                ;;
+            pv,list)
+                cmd="pv__subcmd__list"
+                ;;
+            pv,open)
+                cmd="pv__subcmd__open"
+                ;;
             pv,php:install)
                 cmd="pv__subcmd__php:install"
+                ;;
+            pv,unlink)
+                cmd="pv__subcmd__unlink"
                 ;;
             *)
                 ;;
@@ -48,7 +61,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run php:install"
+            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run link unlink open list php:install"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -149,8 +162,68 @@ _pv() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        pv__subcmd__link)
+            opts="-h --hostname --no-color --help [path]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --hostname)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__list)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__open)
+            opts="-h --no-color --help [hostname]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         pv__subcmd__php:install)
             opts="-h --no-color --help [version]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__unlink)
+            opts="-h --no-color --help [hostname]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

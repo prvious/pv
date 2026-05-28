@@ -7,6 +7,8 @@ use crate::{PvPaths, StateError, backup};
 const CORE_SCHEMA_SQL: &str = include_str!("sql/001_core_state_schema.sql");
 const MANAGED_RESOURCE_REMOVAL_INTENT_SQL: &str =
     include_str!("sql/002_managed_resource_removal_intent.sql");
+const PROJECT_PRIMARY_HOSTNAME_UPDATES_SQL: &str =
+    include_str!("sql/003_project_primary_hostname_updates.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -14,6 +16,11 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         2,
         "managed_resource_removal_intent",
         MANAGED_RESOURCE_REMOVAL_INTENT_SQL,
+    ),
+    Migration::new(
+        3,
+        "project_primary_hostname_updates",
+        PROJECT_PRIMARY_HOSTNAME_UPDATES_SQL,
     ),
 ];
 
