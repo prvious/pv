@@ -1,0 +1,65 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(installed.summary(tempdir.path()), updated.summary(tempdir.path()),\ntrack_records_summary(&listed_after_update, tempdir.path())?,\ntrack_record_summary(uninstalled.record(), tempdir.path())?,\ntrack_records_summary(&listed_after_uninstall, tempdir.path())?,)"
+---
+(
+    Ok(
+        [
+            InstallSnapshot {
+                resource_name: "redis",
+                track: "7.2",
+                artifact_version: "7.2.5-pv1",
+                current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+                downloaded_from_cache: false,
+            },
+        ],
+    ),
+    Ok(
+        [
+            InstallSnapshot {
+                resource_name: "redis",
+                track: "7.2",
+                artifact_version: "7.2.6-pv1",
+                current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+                downloaded_from_cache: false,
+            },
+        ],
+    ),
+    [
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            desired_state: "Installed",
+            installed_version: Some(
+                "7.2.6-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            ),
+        },
+    ],
+    TrackRecordSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        desired_state: "Removed",
+        installed_version: Some(
+            "7.2.6-pv1",
+        ),
+        current_artifact_path: Some(
+            "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+        ),
+    },
+    [
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            desired_state: "Removed",
+            installed_version: Some(
+                "7.2.6-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            ),
+        },
+    ],
+)

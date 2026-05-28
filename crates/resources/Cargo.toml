@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 flate2 = "1.1.9"
+state = { path = "../state" }
 tar = "0.4.45"
 thiserror = { workspace = true }
 time = { workspace = true, features = ["parsing"] }
