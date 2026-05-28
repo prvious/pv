@@ -1,0 +1,17 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "install_summary(&installed, tempdir.path())?"
+---
+InstallSnapshot {
+    resource_name: "redis",
+    track: "7.2",
+    artifact_version: "7.2.6-pv1",
+    current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+    revoked_latest: Some(
+        RevokedLatestSnapshot {
+            artifact_version: "7.2.7-pv1",
+            reason: "bad package",
+        },
+    ),
+    downloaded_from_cache: false,
+}

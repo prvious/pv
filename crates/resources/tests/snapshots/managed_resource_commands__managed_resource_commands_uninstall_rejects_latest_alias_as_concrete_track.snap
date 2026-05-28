@@ -1,0 +1,11 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: result
+---
+Err(
+    Resources(
+        ReservedTrackName {
+            name: "latest",
+        },
+    ),
+)

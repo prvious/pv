@@ -1,0 +1,41 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(&listed_after_update, tempdir.path())?,\nmanifest_request_count,)"
+---
+(
+    [
+        InstallSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            artifact_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "redis",
+            track: "8.0",
+            artifact_version: "8.0.2-pv1",
+            current_artifact_path: "home/.pv/resources/redis/8.0/releases/8.0.2-pv1",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+    ],
+    [
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            installed_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "8.0",
+            installed_version: "8.0.2-pv1",
+            current_artifact_path: "home/.pv/resources/redis/8.0/releases/8.0.2-pv1",
+            usage_count: 0,
+        },
+    ],
+    3,
+)

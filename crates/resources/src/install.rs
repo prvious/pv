@@ -45,6 +45,10 @@ impl ArtifactInstaller {
     ) -> Result<ArtifactInstall> {
         validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
 
+        if let Some(existing_install) = self.install_existing_release(adapter, track, artifact)? {
+            return Ok(existing_install);
+        }
+
         let track_dir = self
             .resources_dir
             .join(adapter.resource_name().as_str())
@@ -54,26 +58,22 @@ impl ArtifactInstaller {
         let current_path = track_dir.join("current");
         let previous_release = current_release_name(adapter.resource_name(), &current_path)?;
 
-        if fs::path_exists(&release_path) {
-            adapter.validate_installation(&release_path)?;
-        } else {
-            fs::create_dir_all(&releases_dir)?;
-            let staging_dir = staging_dir(&track_dir, artifact.artifact_version());
+        fs::create_dir_all(&releases_dir)?;
+        let staging_dir = staging_dir(&track_dir, artifact.artifact_version());
 
-            let result = unpack_validate_and_promote(
-                archive_path,
-                &staging_dir,
-                &release_path,
-                adapter,
-                artifact.artifact_version(),
-            );
-            if let Err(error) = result {
-                if let Err(_cleanup_error) = fs::remove_dir_all_if_exists(&staging_dir) {}
+        let result = unpack_validate_and_promote(
+            archive_path,
+            &staging_dir,
+            &release_path,
+            adapter,
+            artifact.artifact_version(),
+        );
+        if let Err(error) = result {
+            if let Err(_cleanup_error) = fs::remove_dir_all_if_exists(&staging_dir) {}
 
-                return Err(error);
-            }
-            fs::remove_dir_all_if_exists(&staging_dir)?;
+            return Err(error);
         }
+        fs::remove_dir_all_if_exists(&staging_dir)?;
 
         prune_old_releases(
             &releases_dir,
@@ -89,6 +89,44 @@ impl ArtifactInstaller {
             release_path,
             current_path,
         ))
+    }
+
+    pub fn install_existing_release(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: &TrackName,
+        artifact: &ManifestArtifact,
+    ) -> Result<Option<ArtifactInstall>> {
+        validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
+
+        let track_dir = self
+            .resources_dir
+            .join(adapter.resource_name().as_str())
+            .join(track.as_str());
+        let releases_dir = track_dir.join("releases");
+        let release_path = releases_dir.join(artifact.artifact_version().as_str());
+        let current_path = track_dir.join("current");
+
+        if !fs::path_exists(&release_path) {
+            return Ok(None);
+        }
+
+        let previous_release = current_release_name(adapter.resource_name(), &current_path)?;
+        adapter.validate_installation(&release_path)?;
+        prune_old_releases(
+            &releases_dir,
+            artifact.artifact_version(),
+            previous_release.as_deref(),
+        )?;
+        update_current_pointer(&track_dir, artifact.artifact_version())?;
+
+        Ok(Some(ArtifactInstall::new(
+            adapter.resource_name().clone(),
+            track.clone(),
+            artifact.artifact_version().clone(),
+            release_path,
+            current_path,
+        )))
     }
 }
 

@@ -1,19 +1,16 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
-expression: "(installed.summary(tempdir.path()), failed_update,\ntrack_records_summary(&listed_after_failure, tempdir.path())?,)"
+expression: "(install_summary(&installed, tempdir.path())?, failed_update,\ntrack_records_summary(&listed_after_failure, tempdir.path())?,)"
 ---
 (
-    Ok(
-        [
-            InstallSnapshot {
-                resource_name: "redis",
-                track: "7.2",
-                artifact_version: "7.2.5-pv1",
-                current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
-                downloaded_from_cache: false,
-            },
-        ],
-    ),
+    InstallSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        artifact_version: "7.2.5-pv1",
+        current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
     Err(
         Resources(
             InvalidArtifactLayout {
@@ -26,13 +23,9 @@ expression: "(installed.summary(tempdir.path()), failed_update,\ntrack_records_s
         TrackRecordSnapshot {
             resource_name: "redis",
             track: "7.2",
-            desired_state: "Installed",
-            installed_version: Some(
-                "7.2.5-pv1",
-            ),
-            current_artifact_path: Some(
-                "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
-            ),
+            installed_version: "7.2.5-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+            usage_count: 0,
         },
     ],
 )

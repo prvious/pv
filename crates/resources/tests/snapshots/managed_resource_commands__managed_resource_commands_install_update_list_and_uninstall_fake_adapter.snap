@@ -1,56 +1,44 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
-expression: "(installed.summary(tempdir.path()), updated.summary(tempdir.path()),\ntrack_records_summary(&listed_after_update, tempdir.path())?,\ntrack_record_summary(uninstalled.record(), tempdir.path())?,\ntrack_records_summary(&listed_after_uninstall, tempdir.path())?,)"
+expression: "(install_summary(&installed, tempdir.path())?,\nupdate_summary(&updated, tempdir.path())?,\ntrack_records_summary(&listed_after_update, tempdir.path())?,\nremoval_intent_summary(&removal_intent),\ntrack_records_summary(&listed_after_uninstall, tempdir.path())?,\nstate_after_uninstall,)"
 ---
 (
-    Ok(
-        [
-            InstallSnapshot {
-                resource_name: "redis",
-                track: "7.2",
-                artifact_version: "7.2.5-pv1",
-                current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
-                downloaded_from_cache: false,
-            },
-        ],
-    ),
-    Ok(
-        [
-            InstallSnapshot {
-                resource_name: "redis",
-                track: "7.2",
-                artifact_version: "7.2.6-pv1",
-                current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
-                downloaded_from_cache: false,
-            },
-        ],
-    ),
+    InstallSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        artifact_version: "7.2.5-pv1",
+        current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    [
+        InstallSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            artifact_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+    ],
     [
         TrackRecordSnapshot {
             resource_name: "redis",
             track: "7.2",
-            desired_state: "Installed",
-            installed_version: Some(
-                "7.2.6-pv1",
-            ),
-            current_artifact_path: Some(
-                "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
-            ),
+            installed_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+            usage_count: 0,
         },
     ],
-    TrackRecordSnapshot {
+    RemovalIntentSnapshot {
         resource_name: "redis",
         track: "7.2",
-        desired_state: "Removed",
-        installed_version: Some(
-            "7.2.6-pv1",
-        ),
-        current_artifact_path: Some(
-            "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
-        ),
+        prune: false,
+        force: false,
     },
+    [],
     [
-        TrackRecordSnapshot {
+        RawTrackRecordSnapshot {
             resource_name: "redis",
             track: "7.2",
             desired_state: "Removed",
@@ -60,6 +48,7 @@ expression: "(installed.summary(tempdir.path()), updated.summary(tempdir.path())
             current_artifact_path: Some(
                 "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
             ),
+            usage_count: 0,
         },
     ],
 )

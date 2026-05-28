@@ -91,6 +91,20 @@ impl ArtifactManifestCache {
         Ok(ArtifactManifestRefresh::latest(manifest))
     }
 
+    pub fn refresh_latest(
+        &self,
+        manifest_url: &str,
+        client: &impl ResourceHttpClient,
+    ) -> Result<ArtifactManifestRefresh> {
+        validate_manifest_url(manifest_url)?;
+
+        let json = client.get_text(manifest_url)?;
+        let manifest = ArtifactManifest::parse(&json)?;
+        fs::write_string_atomically(&self.cache_path, &json)?;
+
+        Ok(ArtifactManifestRefresh::latest(manifest))
+    }
+
     pub fn load_cached(&self) -> Result<ArtifactManifest> {
         let json = fs::read_to_string(&self.cache_path)?;
 

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io::{Error, Write};
 
@@ -9,11 +9,12 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use resources::{
-    ManagedResourceCommands, ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError,
-    TargetPlatform, TrackSelector,
+    ManagedResourceCommands, ManagedResourceInstall, ManagedResourceRemovalIntent,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate, ResourceAdapter,
+    ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector,
 };
 use sha2::{Digest, Sha256};
-use state::PvPaths;
+use state::{Database, ManagedResourceTrackRecord, PvPaths};
 use tar::{Builder, Header};
 
 #[test]
@@ -36,15 +37,21 @@ fn managed_resource_commands_install_update_list_and_uninstall_fake_adapter() ->
     let installed = commands.install(&adapter, TrackSelector::Latest, &client)?;
     let updated = commands.update(&adapter, &client)?;
     let listed_after_update = commands.list(Some(adapter.resource_name()))?;
-    let uninstalled = commands.uninstall(adapter.resource_name(), updated.installs()[0].track())?;
+    let removal_intent = commands.uninstall(
+        adapter.resource_name(),
+        updated.installs()[0].track(),
+        ManagedResourceUninstallOptions::default(),
+    )?;
     let listed_after_uninstall = commands.list(Some(adapter.resource_name()))?;
+    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
 
     assert_debug_snapshot!((
-        installed.summary(tempdir.path()),
-        updated.summary(tempdir.path()),
+        install_summary(&installed, tempdir.path())?,
+        update_summary(&updated, tempdir.path())?,
         track_records_summary(&listed_after_update, tempdir.path())?,
-        track_record_summary(uninstalled.record(), tempdir.path())?,
+        removal_intent_summary(&removal_intent),
         track_records_summary(&listed_after_uninstall, tempdir.path())?,
+        state_after_uninstall,
     ));
 
     Ok(())
@@ -72,10 +79,218 @@ fn managed_resource_commands_keep_installed_state_when_update_validation_fails()
     let listed_after_failure = commands.list(Some(adapter.resource_name()))?;
 
     assert_debug_snapshot!((
-        installed.summary(tempdir.path()),
+        install_summary(&installed, tempdir.path())?,
         failed_update,
         track_records_summary(&listed_after_failure, tempdir.path())?,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_report_revoked_latest_fallback() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let fallback_artifact = fixture_artifact("7.2.6-pv1", "fallback")?;
+    let revoked_artifact = revoked_fixture_artifact("7.2.7-pv1", "revoked", "bad package")?;
+    let manifest = manifest_with_artifacts(&[&fallback_artifact, &revoked_artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(fallback_artifact.bytes());
+
+    let installed = commands.install(&adapter, TrackSelector::Latest, &client)?;
+
+    assert_debug_snapshot!(install_summary(&installed, tempdir.path())?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_all_installed_tracks_from_one_manifest_refresh() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_72_artifact = fixture_artifact("7.2.5-pv1", "7.2 first")?;
+    let second_72_artifact = fixture_artifact("7.2.6-pv1", "7.2 second")?;
+    let first_80_artifact = fixture_artifact("8.0.1-pv1", "8.0 first")?;
+    let second_80_artifact = fixture_artifact("8.0.2-pv1", "8.0 second")?;
+    let initial_manifest = manifest_with_tracks(&[
+        ("7.2", &[&first_72_artifact]),
+        ("8.0", &[&first_80_artifact]),
+    ]);
+    let updated_manifest = manifest_with_tracks(&[
+        ("7.2", &[&first_72_artifact, &second_72_artifact]),
+        ("8.0", &[&first_80_artifact, &second_80_artifact]),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(first_72_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(first_80_artifact.bytes())
+        .with_text(&updated_manifest)
+        .with_bytes(second_72_artifact.bytes())
+        .with_bytes(second_80_artifact.bytes());
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    commands.install(
+        &adapter,
+        TrackSelector::Track(TrackName::new("8.0")?),
+        &client,
+    )?;
+    let updated = commands.update(&adapter, &client)?;
+    let listed_after_update = commands.list(Some(adapter.resource_name()))?;
+    let manifest_request_count = client.text_request_count();
+
+    assert_debug_snapshot!((
+        update_summary(&updated, tempdir.path())?,
+        track_records_summary(&listed_after_update, tempdir.path())?,
+        manifest_request_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_without_installed_tracks_does_not_refresh_manifest()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let client = ScriptedClient::new();
+
+    let updated = commands.update(&adapter, &client)?;
+
+    assert_debug_snapshot!(update_summary(&updated, tempdir.path())?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_requires_fresh_manifest_after_cache_exists() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes())
+        .with_text_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let update = commands.update(&adapter, &client);
+
+    assert_debug_snapshot!(update);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_uses_existing_release_without_downloading_again() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes())
+        .with_text(&manifest);
+
+    let installed = commands.install(&adapter, TrackSelector::Latest, &client)?;
+    remove_download_cache(&paths)?;
+    let reinstalled = commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let artifact_download_count = client.byte_request_count();
+
+    assert_debug_snapshot!((
+        install_summary(&installed, tempdir.path())?,
+        install_summary(&reinstalled, tempdir.path())?,
+        artifact_download_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_records_prune_and_force_intent() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let resource_name = ResourceName::new("redis")?;
+    let track = TrackName::new("7.2")?;
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let intent = commands.uninstall(
+        &resource_name,
+        &track,
+        ManagedResourceUninstallOptions::new()
+            .prune(true)
+            .force(true),
+    )?;
+
+    assert_debug_snapshot!(removal_intent_summary(&intent));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_rejects_tracks_that_are_not_installed() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let resource_name = ResourceName::new("redis")?;
+    let track = TrackName::new("7.2")?;
+
+    let result = commands.uninstall(
+        &resource_name,
+        &track,
+        ManagedResourceUninstallOptions::default(),
+    );
+
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_rejects_latest_alias_as_concrete_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let resource_name = ResourceName::new("redis")?;
+    let latest = TrackName::new("latest")?;
+
+    let result = commands.uninstall(
+        &resource_name,
+        &latest,
+        ManagedResourceUninstallOptions::default(),
+    );
+
+    assert_debug_snapshot!(result);
 
     Ok(())
 }
@@ -139,6 +354,7 @@ struct FixtureArtifact {
     version: String,
     bytes: Vec<u8>,
     sha256: String,
+    revoked_reason: Option<String>,
 }
 
 impl FixtureArtifact {
@@ -157,6 +373,7 @@ struct InstallSnapshot {
     track: String,
     artifact_version: String,
     current_artifact_path: String,
+    revoked_latest: Option<RevokedLatestSnapshot>,
     downloaded_from_cache: bool,
 }
 
@@ -168,34 +385,62 @@ struct InstallSnapshot {
 struct TrackRecordSnapshot {
     resource_name: String,
     track: String,
+    installed_version: String,
+    current_artifact_path: String,
+    usage_count: i64,
+}
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct RevokedLatestSnapshot {
+    artifact_version: String,
+    reason: String,
+}
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct RemovalIntentSnapshot {
+    resource_name: String,
+    track: String,
+    prune: bool,
+    force: bool,
+}
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct RawTrackRecordSnapshot {
+    resource_name: String,
+    track: String,
     desired_state: String,
     installed_version: Option<String>,
     current_artifact_path: Option<String>,
+    usage_count: i64,
 }
 
-trait InstallSummary {
-    fn summary(&self, root: &Utf8Path) -> Result<Vec<InstallSnapshot>>;
+fn update_summary(update: &ManagedResourceUpdate, root: &Utf8Path) -> Result<Vec<InstallSnapshot>> {
+    install_summaries(update.installs(), root)
 }
 
-impl InstallSummary for resources::ManagedResourceInstall {
-    fn summary(&self, root: &Utf8Path) -> Result<Vec<InstallSnapshot>> {
-        Ok(vec![install_summary(self, root)?])
-    }
-}
-
-impl InstallSummary for resources::ManagedResourceUpdate {
-    fn summary(&self, root: &Utf8Path) -> Result<Vec<InstallSnapshot>> {
-        self.installs()
-            .iter()
-            .map(|install| install_summary(install, root))
-            .collect()
-    }
-}
-
-fn install_summary(
-    install: &resources::ManagedResourceInstall,
+fn install_summaries(
+    installs: &[ManagedResourceInstall],
     root: &Utf8Path,
-) -> Result<InstallSnapshot> {
+) -> Result<Vec<InstallSnapshot>> {
+    installs
+        .iter()
+        .map(|install| install_summary(install, root))
+        .collect()
+}
+
+fn install_summary(install: &ManagedResourceInstall, root: &Utf8Path) -> Result<InstallSnapshot> {
     Ok(InstallSnapshot {
         resource_name: install.resource_name().as_str().to_string(),
         track: install.track().as_str().to_string(),
@@ -204,12 +449,18 @@ fn install_summary(
             .current_artifact_path()
             .strip_prefix(root)?
             .to_string(),
+        revoked_latest: install
+            .revoked_latest()
+            .map(|revoked_latest| RevokedLatestSnapshot {
+                artifact_version: revoked_latest.artifact_version().as_str().to_string(),
+                reason: revoked_latest.reason().to_string(),
+            }),
         downloaded_from_cache: install.downloaded_from_cache(),
     })
 }
 
 fn track_records_summary(
-    records: &[state::ManagedResourceTrackRecord],
+    records: &[ManagedResourceTrack],
     root: &Utf8Path,
 ) -> Result<Vec<TrackRecordSnapshot>> {
     records
@@ -219,10 +470,47 @@ fn track_records_summary(
 }
 
 fn track_record_summary(
-    record: &state::ManagedResourceTrackRecord,
+    record: &ManagedResourceTrack,
     root: &Utf8Path,
 ) -> Result<TrackRecordSnapshot> {
     Ok(TrackRecordSnapshot {
+        resource_name: record.resource_name().as_str().to_string(),
+        track: record.track().as_str().to_string(),
+        installed_version: record.installed_version().as_str().to_string(),
+        current_artifact_path: record
+            .current_artifact_path()
+            .strip_prefix(root)?
+            .to_string(),
+        usage_count: record.usage_count(),
+    })
+}
+
+fn removal_intent_summary(intent: &ManagedResourceRemovalIntent) -> RemovalIntentSnapshot {
+    RemovalIntentSnapshot {
+        resource_name: intent.resource_name().as_str().to_string(),
+        track: intent.track().as_str().to_string(),
+        prune: intent.prune(),
+        force: intent.force(),
+    }
+}
+
+fn raw_track_records_summary(
+    paths: &PvPaths,
+    root: &Utf8Path,
+) -> Result<Vec<RawTrackRecordSnapshot>> {
+    let database = Database::open(paths)?;
+    database
+        .managed_resource_tracks()?
+        .iter()
+        .map(|record| raw_track_record_summary(record, root))
+        .collect()
+}
+
+fn raw_track_record_summary(
+    record: &ManagedResourceTrackRecord,
+    root: &Utf8Path,
+) -> Result<RawTrackRecordSnapshot> {
+    Ok(RawTrackRecordSnapshot {
         resource_name: record.resource_name.clone(),
         track: record.track.clone(),
         desired_state: format!("{:?}", record.desired_state),
@@ -232,6 +520,7 @@ fn track_record_summary(
             .as_ref()
             .map(|path| path.strip_prefix(root).map(Utf8Path::to_string))
             .transpose()?,
+        usage_count: record.usage_count,
     })
 }
 
@@ -239,6 +528,8 @@ fn track_record_summary(
 struct ScriptedClient {
     text_responses: RefCell<VecDeque<Result<String, ResourcesError>>>,
     byte_responses: RefCell<VecDeque<Result<Vec<u8>, ResourcesError>>>,
+    text_request_count: Cell<usize>,
+    byte_request_count: Cell<usize>,
 }
 
 impl ScriptedClient {
@@ -246,6 +537,8 @@ impl ScriptedClient {
         Self {
             text_responses: RefCell::new(VecDeque::new()),
             byte_responses: RefCell::new(VecDeque::new()),
+            text_request_count: Cell::new(0),
+            byte_request_count: Cell::new(0),
         }
     }
 
@@ -256,16 +549,31 @@ impl ScriptedClient {
         self
     }
 
+    fn with_text_error(self, error: ResourcesError) -> Self {
+        self.text_responses.borrow_mut().push_back(Err(error));
+        self
+    }
+
     fn with_bytes(self, bytes: &[u8]) -> Self {
         self.byte_responses
             .borrow_mut()
             .push_back(Ok(bytes.to_vec()));
         self
     }
+
+    fn text_request_count(&self) -> usize {
+        self.text_request_count.get()
+    }
+
+    fn byte_request_count(&self) -> usize {
+        self.byte_request_count.get()
+    }
 }
 
 impl ResourceHttpClient for ScriptedClient {
     fn get_text(&self, url: &str) -> resources::Result<String> {
+        self.text_request_count
+            .set(self.text_request_count.get() + 1);
         self.text_responses
             .borrow_mut()
             .pop_front()
@@ -278,6 +586,8 @@ impl ResourceHttpClient for ScriptedClient {
     }
 
     fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+        self.byte_request_count
+            .set(self.byte_request_count.get() + 1);
         let bytes = self
             .byte_responses
             .borrow_mut()
@@ -316,6 +626,13 @@ fn fixture_artifact(version: &str, marker: &str) -> Result<FixtureArtifact> {
     )
 }
 
+fn revoked_fixture_artifact(version: &str, marker: &str, reason: &str) -> Result<FixtureArtifact> {
+    let mut artifact = fixture_artifact(version, marker)?;
+    artifact.revoked_reason = Some(reason.to_string());
+
+    Ok(artifact)
+}
+
 fn fixture_artifact_with_entries(
     version: &str,
     entries: &[(&str, &str)],
@@ -328,6 +645,7 @@ fn fixture_artifact_with_entries(
         version: version.to_string(),
         bytes,
         sha256,
+        revoked_reason: None,
     })
 }
 
@@ -362,11 +680,30 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn manifest_with_artifacts(artifacts: &[&FixtureArtifact]) -> String {
-    let artifacts = artifacts
+    manifest_with_tracks(&[("7.2", artifacts)])
+}
+
+fn manifest_with_tracks(tracks: &[(&str, &[&FixtureArtifact])]) -> String {
+    let tracks = tracks
         .iter()
-        .map(|artifact| {
-            format!(
-                r#"{{
+        .map(|(track, artifacts)| {
+            let artifacts = artifacts
+                .iter()
+                .map(|artifact| {
+                    let revocation =
+                        artifact
+                            .revoked_reason
+                            .as_ref()
+                            .map_or_else(String::new, |reason| {
+                                format!(
+                                    r#",
+              "revoked": true,
+              "revocation_reason": "{reason}""#
+                                )
+                            });
+
+                    format!(
+                        r#"{{
               "artifact_version": "{}",
               "upstream_version": "{}",
               "pv_build_revision": "1",
@@ -374,14 +711,26 @@ fn manifest_with_artifacts(artifacts: &[&FixtureArtifact]) -> String {
               "url": "https://artifacts.example.test/redis-{}-darwin-arm64.tar.gz",
               "sha256": "{}",
               "size": {},
-              "published_at": "{}"
+              "published_at": "{}"{revocation}
             }}"#,
-                artifact.version,
-                artifact.version.trim_end_matches("-pv1"),
-                artifact.version,
-                artifact.sha256,
-                artifact.bytes.len(),
-                published_at_for(&artifact.version),
+                        artifact.version,
+                        artifact.version.trim_end_matches("-pv1"),
+                        artifact.version,
+                        artifact.sha256,
+                        artifact.bytes.len(),
+                        published_at_for(&artifact.version),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+
+            format!(
+                r#"{{
+          "name": "{track}",
+          "artifacts": [
+            {artifacts}
+          ]
+        }}"#
             )
         })
         .collect::<Vec<_>>()
@@ -397,12 +746,7 @@ fn manifest_with_artifacts(artifacts: &[&FixtureArtifact]) -> String {
       "name": "redis",
       "default_track": "7.2",
       "tracks": [
-        {{
-          "name": "7.2",
-          "artifacts": [
-            {artifacts}
-          ]
-        }}
+        {tracks}
       ]
     }}
   ]
@@ -415,8 +759,23 @@ fn published_at_for(version: &str) -> &'static str {
     match version {
         "7.2.5-pv1" => "2026-05-26T14:30:00Z",
         "7.2.6-pv1" => "2026-05-27T14:30:00Z",
+        "7.2.7-pv1" => "2026-05-28T14:30:00Z",
+        "8.0.1-pv1" => "2026-05-26T15:30:00Z",
+        "8.0.2-pv1" => "2026-05-27T15:30:00Z",
         _ => "2026-05-28T14:30:00Z",
     }
 }
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test removes the artifact cache to prove existing releases avoid downloads"
+)]
+fn remove_download_cache(paths: &PvPaths) -> Result<()> {
+    match std::fs::remove_dir_all(paths.downloads()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}

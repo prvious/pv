@@ -13,7 +13,8 @@ pub mod registry;
 pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource};
 pub use command::{
     ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
-    ManagedResourceInstall, ManagedResourceUninstall, ManagedResourceUpdate,
+    ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceRevokedLatest,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
 };
 pub use download::{ArtifactDownload, ArtifactDownloader};
 pub use error::{ResourcesError, Result};

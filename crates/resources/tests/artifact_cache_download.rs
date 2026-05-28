@@ -38,6 +38,25 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
 }
 
 #[test]
+fn manifest_cache_refresh_latest_does_not_fall_back_to_cached_manifest() -> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+
+    cache.refresh(MANIFEST_URL, &client)?;
+
+    let offline_client = ScriptedClient::new().with_text_error(ResourcesError::HttpRequestFailed {
+        url: MANIFEST_URL.to_string(),
+        reason: "offline".to_string(),
+    });
+    let result = cache.refresh_latest(MANIFEST_URL, &offline_client);
+
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_cache_rejects_invalid_manifest_url_even_when_cached_manifest_exists() -> Result<()> {
     let tempdir = tempdir()?;
     let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));

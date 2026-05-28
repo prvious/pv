@@ -1,0 +1,23 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summary(&installed, tempdir.path())?,\ninstall_summary(&reinstalled, tempdir.path())?, artifact_download_count,)"
+---
+(
+    InstallSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        artifact_version: "7.2.5-pv1",
+        current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    InstallSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        artifact_version: "7.2.5-pv1",
+        current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    1,
+)
