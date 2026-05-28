@@ -338,7 +338,7 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 5 | Reconciliation queue, supervisor, ports, readiness, logs, watchers | PV-030, PV-031, PV-032, PV-033, PV-034, PV-035, PV-036 | PR 4 | No | Yes (#240) |
 | PR 6A | Artifact resource identity/registry and manifest parser/selection validation | PV-041 (manifest identity), PV-042 | PR 5 | No | Yes (#241) |
 | PR 6B | Manifest fetch/cache and verified artifact download cache; parallel downloads deferred | PV-043, PV-044 (parallel limit deferred) | PR 6A | No | Yes (#242) |
-| PR 6C | Adapter trait, installed-track state model, atomic install, fixture artifacts | PV-040, PV-041 (installed state), PV-045, PV-049 | PR 6B | No | No |
+| PR 6C | Adapter trait, installed-track state model, atomic install, fixture artifacts | PV-040, PV-041 (installed state), PV-045, PV-049 | PR 6B | No | Yes (#243) |
 | PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6C | No | No |
 | PR 8 | Project state, `link`, `unlink`, config parser, `open`, base `list` | PV-060, PV-061, PV-062, PV-063, PV-068, PV-069 | PR 2, PR 4 | Yes, can overlap PR 5-7 with coordination | No |
 | PR 9 | Resource allocation contract, allocation names, env rendering | PV-047, PV-064, PV-065, PV-066, PV-067 | PR 7, PR 8 | No | No |
