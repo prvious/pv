@@ -112,7 +112,16 @@ impl ArtifactInstaller {
         }
 
         let previous_release = current_release_name(adapter.resource_name(), &current_path)?;
-        adapter.validate_installation(&release_path)?;
+        if adapter.validate_installation(&release_path).is_err() {
+            fs::remove_dir_all_if_exists(&release_path)?;
+            fs::sync_directory(&releases_dir)?;
+            if previous_release.as_deref() == Some(artifact.artifact_version().as_str()) {
+                fs::remove_file_if_exists(&current_path)?;
+                fs::sync_directory(&track_dir)?;
+            }
+
+            return Ok(None);
+        }
         prune_old_releases(
             &releases_dir,
             artifact.artifact_version(),

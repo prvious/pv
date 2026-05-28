@@ -1,0 +1,17 @@
+---
+source: crates/resources/tests/artifact_install.rs
+expression: "(install_summary(&reinstalled, tempdir.path())?, required_path.exists(),\nreinstalled.release_path().parent().map(sorted_file_names).transpose()?,)"
+---
+(
+    (
+        "resources/redis/7.2/releases/7.2.5-pv1",
+        "resources/redis/7.2/current",
+        "releases/7.2.5-pv1",
+    ),
+    true,
+    Some(
+        [
+            "7.2.5-pv1",
+        ],
+    ),
+)

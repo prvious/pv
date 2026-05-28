@@ -75,6 +75,40 @@ fn artifact_installer_rejects_artifacts_selected_for_another_resource_or_track()
 }
 
 #[test]
+fn artifact_installer_replaces_corrupt_existing_release_from_archive() -> Result<()> {
+    let tempdir = tempdir()?;
+    let archive_path = tempdir.path().join("redis-7.2.5.tar.gz");
+    write_fixture_archive(
+        &archive_path,
+        &[(
+            "redis-7.2.5-pv1/bin/redis-server",
+            b"redis executable" as &[u8],
+        )],
+    )?;
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &["bin/redis-server"])?;
+    let track = TrackName::new("7.2")?;
+    let artifact = redis_artifact()?;
+    let first_install = installer.install(&adapter, &track, &artifact, &archive_path)?;
+    let required_path = first_install.release_path().join("bin/redis-server");
+    remove_fixture_file(&required_path)?;
+
+    let reinstalled = installer.install(&adapter, &track, &artifact, &archive_path)?;
+
+    assert_debug_snapshot!((
+        install_summary(&reinstalled, tempdir.path())?,
+        required_path.exists(),
+        reinstalled
+            .release_path()
+            .parent()
+            .map(sorted_file_names)
+            .transpose()?,
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn artifact_installer_keeps_current_release_when_new_archive_fails_validation() -> Result<()> {
     let tempdir = tempdir()?;
     let first_archive_path = tempdir.path().join("redis-7.2.5.tar.gz");
@@ -619,6 +653,16 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
 )]
 fn write_file(path: &Utf8Path, content: &[u8]) -> Result<()> {
     std::fs::write(path, content)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "resource install tests corrupt fixture files directly"
+)]
+fn remove_fixture_file(path: &Utf8Path) -> Result<()> {
+    std::fs::remove_file(path)?;
 
     Ok(())
 }
