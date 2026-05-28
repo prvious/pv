@@ -410,6 +410,96 @@ fn managed_resource_installed_update_preserves_removed_desired_state() -> Result
 }
 
 #[test]
+fn managed_resource_tracks_record_removal_intent_options() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_installed(
+        "redis",
+        "7.2",
+        "7.2.5-pv1",
+        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
+    )?;
+    database.record_managed_resource_track_removal_intent("redis", "7.2", true, true)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!(database.managed_resource_tracks()?);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Installed,
+    )?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!(
+            "after_reinstall_intent",
+            database.managed_resource_tracks()?
+        );
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_removal_intent_migration_backfills_existing_tracks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let old_schema = r#"
+        CREATE TABLE managed_resource_tracks (
+            resource_name TEXT NOT NULL,
+            track TEXT NOT NULL,
+            desired_state TEXT NOT NULL,
+            installed_version TEXT,
+            current_artifact_path TEXT,
+            usage_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (resource_name, track)
+        );
+
+        INSERT INTO managed_resource_tracks (
+            resource_name,
+            track,
+            desired_state,
+            installed_version,
+            current_artifact_path,
+            usage_count,
+            updated_at
+        )
+        VALUES (
+            'redis',
+            '7.2',
+            'installed',
+            '7.2.5-pv1',
+            '/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1',
+            3,
+            '2026-05-23T00:00:00Z'
+        );
+    "#;
+    let old_migration = [Migration::new(1, "core_state_schema", old_schema)];
+    let old_database = state::testing::open_with_migrations(&paths, &old_migration)?;
+    drop(old_database);
+
+    let upgraded_migrations = [
+        Migration::new(1, "core_state_schema", old_schema),
+        Migration::new(
+            2,
+            "managed_resource_removal_intent",
+            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+    ];
+    let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
+
+    assert_debug_snapshot!(database.managed_resource_tracks()?);
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_tracks_reject_unknown_desired_state_values() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

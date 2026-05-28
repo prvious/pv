@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod command;
 pub mod download;
 pub mod error;
 mod fs;
@@ -10,6 +11,11 @@ pub mod platform;
 pub mod registry;
 
 pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource};
+pub use command::{
+    ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
+    ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceRevokedLatest,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
+};
 pub use download::{ArtifactDownload, ArtifactDownloader};
 pub use error::{ResourcesError, Result};
 pub use http::{ResourceHttpClient, UreqResourceHttpClient};

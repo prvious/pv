@@ -5,9 +5,17 @@ use rusqlite::{Connection, Transaction, params};
 use crate::{PvPaths, StateError, backup};
 
 const CORE_SCHEMA_SQL: &str = include_str!("sql/001_core_state_schema.sql");
+const MANAGED_RESOURCE_REMOVAL_INTENT_SQL: &str =
+    include_str!("sql/002_managed_resource_removal_intent.sql");
 
-pub(crate) const DEFAULT_MIGRATIONS: &[Migration] =
-    &[Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL)];
+pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
+    Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
+    Migration::new(
+        2,
+        "managed_resource_removal_intent",
+        MANAGED_RESOURCE_REMOVAL_INTENT_SQL,
+    ),
+];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Migration {

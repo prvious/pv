@@ -1,0 +1,10 @@
+---
+source: crates/resources/tests/artifact_cache_download.rs
+expression: result
+---
+Err(
+    HttpRequestFailed {
+        url: "https://artifacts.example.test/manifest.json",
+        reason: "offline",
+    },
+)

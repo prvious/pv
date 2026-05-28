@@ -1,0 +1,19 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(rejected, removal_intent_summary(&forced))"
+---
+(
+    Err(
+        TrackInUse {
+            resource: "redis",
+            track: "7.2",
+            usage_count: 2,
+        },
+    ),
+    RemovalIntentSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        prune: false,
+        force: true,
+    },
+)

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::io::{Error, Read, Write};
 use std::net::TcpListener;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
@@ -33,6 +33,25 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
     assert!(cached.is_from_cache());
     assert_debug_snapshot!(cached.source());
     assert_debug_snapshot!(cached.manifest());
+
+    Ok(())
+}
+
+#[test]
+fn manifest_cache_refresh_latest_does_not_fall_back_to_cached_manifest() -> Result<()> {
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+
+    cache.refresh(MANIFEST_URL, &client)?;
+
+    let offline_client = ScriptedClient::new().with_text_error(ResourcesError::HttpRequestFailed {
+        url: MANIFEST_URL.to_string(),
+        reason: "offline".to_string(),
+    });
+    let result = cache.refresh_latest(MANIFEST_URL, &offline_client);
+
+    assert_debug_snapshot!(result);
 
     Ok(())
 }
@@ -201,6 +220,27 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
 
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn scripted_client_reports_destination_write_failures_separately() -> Result<()> {
+    let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
+    let mut writer = FailingWriter;
+    let url = "https://artifacts.example.test/redis.tar.gz";
+    let result = client.download(url, &mut writer);
+
+    let Err(ResourcesError::DownloadWriteFailed {
+        url: error_url,
+        reason,
+    }) = result
+    else {
+        bail!("expected DownloadWriteFailed, got {result:?}");
+    };
+
+    assert_eq!(error_url, url);
+    assert_eq!(reason, "disk full");
 
     Ok(())
 }
@@ -377,7 +417,7 @@ impl ResourceHttpClient for ScriptedClient {
             })?;
         writer
             .write_all(&bytes)
-            .map_err(|source| ResourcesError::HttpRequestFailed {
+            .map_err(|source| ResourcesError::DownloadWriteFailed {
                 url: url.to_string(),
                 reason: source.to_string(),
             })

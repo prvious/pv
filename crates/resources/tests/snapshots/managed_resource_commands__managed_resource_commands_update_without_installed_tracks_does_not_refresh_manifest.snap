@@ -1,0 +1,5 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "update_summary(&updated, tempdir.path())?"
+---
+[]

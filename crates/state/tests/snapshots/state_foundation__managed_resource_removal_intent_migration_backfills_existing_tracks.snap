@@ -13,9 +13,9 @@ expression: database.managed_resource_tracks()?
         current_artifact_path: Some(
             "/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1",
         ),
-        usage_count: 0,
+        usage_count: 3,
         removal_prune: false,
         removal_force: false,
-        updated_at: "<timestamp>",
+        updated_at: "2026-05-23T00:00:00Z",
     },
 ]

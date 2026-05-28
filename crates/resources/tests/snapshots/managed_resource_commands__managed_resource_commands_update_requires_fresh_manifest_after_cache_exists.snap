@@ -1,0 +1,12 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: update
+---
+Err(
+    Resources(
+        HttpRequestFailed {
+            url: "https://artifacts.example.test/manifest.json",
+            reason: "offline",
+        },
+    ),
+)
