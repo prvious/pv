@@ -111,6 +111,8 @@ pub struct ManagedResourceTrackRecord {
     pub installed_version: Option<String>,
     pub current_artifact_path: Option<Utf8PathBuf>,
     pub usage_count: i64,
+    pub removal_prune: bool,
+    pub removal_force: bool,
     pub updated_at: String,
 }
 
@@ -140,6 +142,8 @@ struct ManagedResourceTrackRow {
     installed_version: Option<String>,
     current_artifact_path: Option<String>,
     usage_count: i64,
+    removal_prune: bool,
+    removal_force: bool,
     updated_at: String,
 }
 
@@ -291,12 +295,60 @@ impl Database {
 
         let updated_at = timestamp()?;
         self.connection.execute(
-            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, updated_at)
-            VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                removal_prune,
+                removal_force,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, 0, 0, ?4)
             ON CONFLICT(resource_name, track) DO UPDATE SET
                 desired_state = excluded.desired_state,
+                removal_prune = 0,
+                removal_force = 0,
                 updated_at = excluded.updated_at",
             params![resource_name, track, desired_state.as_str(), updated_at],
+        )?;
+
+        self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn record_managed_resource_track_removal_intent(
+        &mut self,
+        resource_name: &str,
+        track: &str,
+        prune: bool,
+        force: bool,
+    ) -> Result<ManagedResourceTrackRecord, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_managed_resource_identity("track", track)?;
+
+        let updated_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                removal_prune,
+                removal_force,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(resource_name, track) DO UPDATE SET
+                desired_state = excluded.desired_state,
+                removal_prune = excluded.removal_prune,
+                removal_force = excluded.removal_force,
+                updated_at = excluded.updated_at",
+            params![
+                resource_name,
+                track,
+                ManagedResourceDesiredState::Removed.as_str(),
+                prune,
+                force,
+                updated_at
+            ],
         )?;
 
         self.managed_resource_track(resource_name, track)
@@ -343,7 +395,7 @@ impl Database {
 
     pub fn managed_resource_tracks(&self) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, updated_at
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, removal_prune, removal_force, updated_at
             FROM managed_resource_tracks
             ORDER BY resource_name, track",
         )?;
@@ -516,7 +568,7 @@ impl Database {
         track: &str,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, updated_at
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, removal_prune, removal_force, updated_at
             FROM managed_resource_tracks
             WHERE resource_name = ?1 AND track = ?2",
         )?;
@@ -765,6 +817,8 @@ impl ManagedResourceTrackRow {
             installed_version: self.installed_version,
             current_artifact_path: self.current_artifact_path.map(Utf8PathBuf::from),
             usage_count: self.usage_count,
+            removal_prune: self.removal_prune,
+            removal_force: self.removal_force,
             updated_at: self.updated_at,
         })
     }
@@ -871,7 +925,9 @@ fn managed_resource_track_from_row(
         installed_version: row.get(3)?,
         current_artifact_path: row.get(4)?,
         usage_count: row.get(5)?,
-        updated_at: row.get(6)?,
+        removal_prune: row.get(6)?,
+        removal_force: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 

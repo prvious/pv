@@ -8,6 +8,7 @@ DatabaseInspection {
     journal_mode: "wal",
     migrations: [
         "001:core_state_schema",
+        "002:managed_resource_removal_intent",
     ],
     tables: [
         "jobs",

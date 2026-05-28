@@ -1,0 +1,13 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "install_summary(&reinstalled, tempdir.path())?"
+---
+InstallSnapshot {
+    resource_name: "redis",
+    track: "7.2",
+    artifact_version: "7.2.5-pv1",
+    current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+    manifest_source: "Cached: HTTP request failed for `https://artifacts.example.test/manifest.json`: offline",
+    revoked_latest: None,
+    downloaded_from_cache: false,
+}

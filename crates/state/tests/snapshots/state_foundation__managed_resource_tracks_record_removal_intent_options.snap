@@ -6,7 +6,7 @@ expression: database.managed_resource_tracks()?
     ManagedResourceTrackRecord {
         resource_name: "redis",
         track: "7.2",
-        desired_state: Installed,
+        desired_state: Removed,
         installed_version: Some(
             "7.2.5-pv1",
         ),
@@ -14,8 +14,8 @@ expression: database.managed_resource_tracks()?
             "/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1",
         ),
         usage_count: 0,
-        removal_prune: false,
-        removal_force: false,
+        removal_prune: true,
+        removal_force: true,
         updated_at: "<timestamp>",
     },
 ]

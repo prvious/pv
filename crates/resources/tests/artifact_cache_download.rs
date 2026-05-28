@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::io::{Error, Read, Write};
 use std::net::TcpListener;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
@@ -225,6 +225,27 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
 }
 
 #[test]
+fn scripted_client_reports_destination_write_failures_separately() -> Result<()> {
+    let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
+    let mut writer = FailingWriter;
+    let url = "https://artifacts.example.test/redis.tar.gz";
+    let result = client.download(url, &mut writer);
+
+    let Err(ResourcesError::DownloadWriteFailed {
+        url: error_url,
+        reason,
+    }) = result
+    else {
+        bail!("expected DownloadWriteFailed, got {result:?}");
+    };
+
+    assert_eq!(error_url, url);
+    assert_eq!(reason, "disk full");
+
+    Ok(())
+}
+
+#[test]
 fn ureq_client_reports_http_status_responses_separately() -> Result<()> {
     serve_once_status(404, "Not Found", b"missing", |url| {
         let client = UreqResourceHttpClient::default();
@@ -396,7 +417,7 @@ impl ResourceHttpClient for ScriptedClient {
             })?;
         writer
             .write_all(&bytes)
-            .map_err(|source| ResourcesError::HttpRequestFailed {
+            .map_err(|source| ResourcesError::DownloadWriteFailed {
                 url: url.to_string(),
                 reason: source.to_string(),
             })

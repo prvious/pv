@@ -239,10 +239,11 @@ impl ManagedResourceCommands {
 
         // Uninstall records intent. Daemon reconciliation owns runtime stops,
         // artifact removal, mutable data pruning, and installed metadata cleanup.
-        database.record_managed_resource_track_desired(
+        database.record_managed_resource_track_removal_intent(
             resource_name.as_str(),
             track.as_str(),
-            ManagedResourceDesiredState::Removed,
+            options.prune,
+            options.force,
         )?;
 
         Ok(ManagedResourceRemovalIntent {

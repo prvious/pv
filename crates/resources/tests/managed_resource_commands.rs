@@ -9,9 +9,10 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use resources::{
-    ManagedResourceCommands, ManagedResourceInstall, ManagedResourceRemovalIntent,
-    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate, ResourceAdapter,
-    ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector,
+    ArtifactManifestSource, ManagedResourceCommands, ManagedResourceInstall,
+    ManagedResourceRemovalIntent, ManagedResourceTrack, ManagedResourceUninstallOptions,
+    ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError,
+    TargetPlatform, TrackName, TrackSelector,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -198,6 +199,31 @@ fn managed_resource_commands_update_requires_fresh_manifest_after_cache_exists()
 }
 
 #[test]
+fn managed_resource_commands_install_reports_cached_manifest_fallback() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes())
+        .with_text_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let reinstalled = commands.install(&adapter, TrackSelector::Latest, &client)?;
+
+    assert_debug_snapshot!(install_summary(&reinstalled, tempdir.path())?);
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_install_uses_existing_release_without_downloading_again() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -249,8 +275,55 @@ fn managed_resource_commands_uninstall_records_prune_and_force_intent() -> Resul
             .prune(true)
             .force(true),
     )?;
+    let database = Database::open(&paths)?;
+    let removal_prune = state::testing::query_i64(
+        &database,
+        "SELECT removal_prune FROM managed_resource_tracks WHERE resource_name = 'redis' AND track = '7.2'",
+    )?;
+    let removal_force = state::testing::query_i64(
+        &database,
+        "SELECT removal_force FROM managed_resource_tracks WHERE resource_name = 'redis' AND track = '7.2'",
+    )?;
 
-    assert_debug_snapshot!(removal_intent_summary(&intent));
+    assert_debug_snapshot!((
+        removal_intent_summary(&intent),
+        removal_prune,
+        removal_force
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_rejects_in_use_tracks_without_force() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let resource_name = ResourceName::new("redis")?;
+    let track = TrackName::new("7.2")?;
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    set_usage_count(&paths, "redis", "7.2", 2)?;
+
+    let rejected = commands.uninstall(
+        &resource_name,
+        &track,
+        ManagedResourceUninstallOptions::default(),
+    );
+    let forced = commands.uninstall(
+        &resource_name,
+        &track,
+        ManagedResourceUninstallOptions::new().force(true),
+    )?;
+
+    assert_debug_snapshot!((rejected, removal_intent_summary(&forced)));
 
     Ok(())
 }
@@ -373,6 +446,7 @@ struct InstallSnapshot {
     track: String,
     artifact_version: String,
     current_artifact_path: String,
+    manifest_source: String,
     revoked_latest: Option<RevokedLatestSnapshot>,
     downloaded_from_cache: bool,
 }
@@ -424,6 +498,8 @@ struct RawTrackRecordSnapshot {
     installed_version: Option<String>,
     current_artifact_path: Option<String>,
     usage_count: i64,
+    removal_prune: bool,
+    removal_force: bool,
 }
 
 fn update_summary(update: &ManagedResourceUpdate, root: &Utf8Path) -> Result<Vec<InstallSnapshot>> {
@@ -449,6 +525,7 @@ fn install_summary(install: &ManagedResourceInstall, root: &Utf8Path) -> Result<
             .current_artifact_path()
             .strip_prefix(root)?
             .to_string(),
+        manifest_source: manifest_source_summary(install.manifest_source()),
         revoked_latest: install
             .revoked_latest()
             .map(|revoked_latest| RevokedLatestSnapshot {
@@ -457,6 +534,13 @@ fn install_summary(install: &ManagedResourceInstall, root: &Utf8Path) -> Result<
             }),
         downloaded_from_cache: install.downloaded_from_cache(),
     })
+}
+
+fn manifest_source_summary(source: &ArtifactManifestSource) -> String {
+    match source {
+        ArtifactManifestSource::Latest => "Latest".to_string(),
+        ArtifactManifestSource::Cached { reason } => format!("Cached: {reason}"),
+    }
 }
 
 fn track_records_summary(
@@ -521,6 +605,8 @@ fn raw_track_record_summary(
             .map(|path| path.strip_prefix(root).map(Utf8Path::to_string))
             .transpose()?,
         usage_count: record.usage_count,
+        removal_prune: record.removal_prune,
+        removal_force: record.removal_force,
     })
 }
 
@@ -778,4 +864,25 @@ fn remove_download_cache(paths: &PvPaths) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn set_usage_count(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    usage_count: i64,
+) -> Result<()> {
+    let mut database = Database::open(paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE managed_resource_tracks
+            SET usage_count = ?1
+            WHERE resource_name = ?2 AND track = ?3",
+            (usage_count, resource_name, track),
+        )?;
+
+        Ok(())
+    })?;
+
+    Ok(())
 }

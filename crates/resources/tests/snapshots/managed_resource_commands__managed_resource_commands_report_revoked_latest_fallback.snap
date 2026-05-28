@@ -7,6 +7,7 @@ InstallSnapshot {
     track: "7.2",
     artifact_version: "7.2.6-pv1",
     current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.6-pv1",
+    manifest_source: "Latest",
     revoked_latest: Some(
         RevokedLatestSnapshot {
             artifact_version: "7.2.7-pv1",

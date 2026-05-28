@@ -1,10 +1,14 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
-expression: removal_intent_summary(&intent)
+expression: "(removal_intent_summary(&intent), removal_prune, removal_force)"
 ---
-RemovalIntentSnapshot {
-    resource_name: "redis",
-    track: "7.2",
-    prune: true,
-    force: true,
-}
+(
+    RemovalIntentSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        prune: true,
+        force: true,
+    },
+    1,
+    1,
+)
