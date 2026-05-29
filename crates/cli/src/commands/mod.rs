@@ -26,7 +26,7 @@ pub(crate) fn execute(
         Command::Link(args) => project::link(args, environment, stdout),
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),
-        Command::List => project::list(stdout),
+        Command::List => project::list(environment, stdout),
         Command::PhpInstall(args) => php::install(args),
     }
 }

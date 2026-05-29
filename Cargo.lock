@@ -219,10 +219,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "camino",
+ "camino-tempfile",
  "clap",
  "clap_complete",
  "config",
  "daemon",
+ "home",
  "state",
  "thiserror",
 ]

@@ -25,6 +25,7 @@ const ALLOWED_ENV_PLACEHOLDERS: &[&str] = &[
     "secret_key",
     "smtp_host",
     "smtp_port",
+    "url",
     "username",
 ];
 

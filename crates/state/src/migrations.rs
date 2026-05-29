@@ -9,6 +9,7 @@ const MANAGED_RESOURCE_REMOVAL_INTENT_SQL: &str =
     include_str!("sql/002_managed_resource_removal_intent.sql");
 const PROJECT_PRIMARY_HOSTNAME_UPDATES_SQL: &str =
     include_str!("sql/003_project_primary_hostname_updates.sql");
+const PROJECT_ORIGINAL_PATH_SQL: &str = include_str!("sql/004_project_original_path.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -22,6 +23,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         "project_primary_hostname_updates",
         PROJECT_PRIMARY_HOSTNAME_UPDATES_SQL,
     ),
+    Migration::new(4, "project_original_path", PROJECT_ORIGINAL_PATH_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

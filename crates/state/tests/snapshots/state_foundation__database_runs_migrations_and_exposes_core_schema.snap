@@ -11,6 +11,7 @@ DatabaseInspection {
         "001:core_state_schema",
         "002:managed_resource_removal_intent",
         "003:project_primary_hostname_updates",
+        "004:project_original_path",
     ],
     tables: [
         "jobs",

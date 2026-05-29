@@ -125,6 +125,7 @@ pub struct ManagedResourceTrackRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkProjectInput {
     pub path: Utf8PathBuf,
+    pub original_path: Utf8PathBuf,
     pub primary_hostname: String,
     pub config_path: Utf8PathBuf,
     pub desired_php_track: Option<String>,
@@ -148,6 +149,7 @@ pub enum LinkProjectStatus {
 pub struct ProjectRecord {
     pub id: String,
     pub path: Utf8PathBuf,
+    pub original_path: Utf8PathBuf,
     pub primary_hostname: String,
     pub config_path: Utf8PathBuf,
     pub desired_php_track: Option<String>,
@@ -190,6 +192,7 @@ struct ManagedResourceTrackRow {
 struct ProjectRow {
     id: String,
     path: String,
+    original_path: Option<String>,
     primary_hostname: String,
     config_path: Option<String>,
     desired_php_track: Option<String>,
@@ -400,7 +403,7 @@ impl Database {
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
             FROM projects
             WHERE id = ?1",
         )?;
@@ -414,7 +417,7 @@ impl Database {
 
     pub fn project_by_path(&self, path: &Utf8Path) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
             FROM projects
             WHERE path = ?1",
         )?;
@@ -428,7 +431,7 @@ impl Database {
 
     pub fn project_by_hostname(&self, hostname: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT projects.id, projects.path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at
             FROM projects
             INNER JOIN project_hostnames ON project_hostnames.project_id = projects.id
             WHERE project_hostnames.hostname = ?1",
@@ -454,7 +457,7 @@ impl Database {
 
     pub fn projects(&self) -> Result<Vec<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
             FROM projects
             ORDER BY primary_hostname",
         )?;
@@ -1012,6 +1015,10 @@ impl ProjectRow {
     fn into_record(self, connection: &Connection) -> Result<ProjectRecord, StateError> {
         let additional_hostnames = additional_hostnames_for_project(connection, &self.id)?;
         let path = Utf8PathBuf::from(self.path);
+        let original_path = self
+            .original_path
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|| path.clone());
         let config_path = self
             .config_path
             .map(Utf8PathBuf::from)
@@ -1020,6 +1027,7 @@ impl ProjectRow {
         Ok(ProjectRecord {
             id: self.id,
             path,
+            original_path,
             primary_hostname: self.primary_hostname,
             config_path,
             desired_php_track: self.desired_php_track,
@@ -1042,7 +1050,7 @@ fn project_by_path_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
             FROM projects
             WHERE path = ?1",
             params![path.as_str()],
@@ -1062,7 +1070,7 @@ fn project_by_id_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
             FROM projects
             WHERE id = ?1",
             params![project_id],
@@ -1078,6 +1086,7 @@ fn project_by_id_in_transaction(
 
 fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateError> {
     validate_project_path("path", &input.path)?;
+    validate_project_path("original path", &input.original_path)?;
     validate_project_path("config path", &input.config_path)?;
     validate_project_hostname(&input.primary_hostname)?;
     for hostname in &input.additional_hostnames {
@@ -1188,6 +1197,7 @@ fn validate_project_hostname_label(hostname: &str, label: &str) -> Result<(), St
 
 fn project_matches_input(project: &ProjectRecord, input: &LinkProjectInput) -> bool {
     project.path == input.path
+        && project.original_path == input.original_path
         && project.primary_hostname == input.primary_hostname
         && project.config_path == input.config_path
         && project.desired_php_track == input.desired_php_track
@@ -1209,11 +1219,12 @@ fn insert_project_in_transaction(
 ) -> Result<(), StateError> {
     let created_at = timestamp()?;
     transaction.execute(
-        "INSERT INTO projects (id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        "INSERT INTO projects (id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
         params![
             project_id,
             input.path.as_str(),
+            input.original_path.as_str(),
             input.primary_hostname.as_str(),
             input.config_path.as_str(),
             input.desired_php_track.as_deref(),
@@ -1233,12 +1244,14 @@ fn update_project_in_transaction(
     transaction.execute(
         "UPDATE projects
         SET primary_hostname = ?1,
-            config_path = ?2,
-            desired_php_track = ?3,
-            updated_at = ?4
-        WHERE id = ?5",
+            original_path = ?2,
+            config_path = ?3,
+            desired_php_track = ?4,
+            updated_at = ?5
+        WHERE id = ?6",
         params![
             input.primary_hostname.as_str(),
+            input.original_path.as_str(),
             input.config_path.as_str(),
             input.desired_php_track.as_deref(),
             updated_at,
@@ -1485,11 +1498,12 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
     Ok(ProjectRow {
         id: row.get(0)?,
         path: row.get(1)?,
-        primary_hostname: row.get(2)?,
-        config_path: row.get(3)?,
-        desired_php_track: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
+        original_path: row.get(2)?,
+        primary_hostname: row.get(3)?,
+        config_path: row.get(4)?,
+        desired_php_track: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 

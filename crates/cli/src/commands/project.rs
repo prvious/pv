@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
-use state::{Database, LinkProjectInput, LinkProjectStatus, ProjectRecord, PvPaths};
+use state::{Database, LinkProjectInput, LinkProjectStatus, ProjectRecord, PvPaths, StateError};
 
 use crate::args::{LinkArgs, OpenArgs, UnlinkArgs};
 use crate::environment::Environment;
@@ -16,9 +16,9 @@ pub(crate) fn link(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let paths = PvPaths::default_home()?;
-    let project_path = resolve_project_path(args.path.as_deref(), environment)?;
-    let config_file = ProjectConfigFile::read_from_root(&project_path)?;
+    let paths = pv_paths(environment)?;
+    let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
+    let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
@@ -29,6 +29,7 @@ pub(crate) fn link(
     };
     let result = database.link_project(LinkProjectInput {
         path: project_path.clone(),
+        original_path: original_project_path,
         primary_hostname,
         config_path: config_file.path,
         desired_php_track: config_file.config.php,
@@ -60,7 +61,7 @@ pub(crate) fn unlink(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let paths = PvPaths::default_home()?;
+    let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     let project = database.unlink_project(&project.id)?;
@@ -80,7 +81,7 @@ pub(crate) fn open(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let paths = PvPaths::default_home()?;
+    let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let (project, hostname) = match args.hostname {
         Some(hostname) => {
@@ -91,15 +92,7 @@ pub(crate) fn open(
 
             (project, hostname)
         }
-        None => {
-            let current_dir = current_dir(environment)?;
-            let project = database
-                .nearest_project_for_path(&current_dir)?
-                .ok_or(CliError::ProjectNotResolved)?;
-            let hostname = project.primary_hostname.clone();
-
-            (project, hostname)
-        }
+        None => resolve_open_project(&database, environment, stdout)?,
     };
     let url = format!("https://{hostname}");
 
@@ -111,8 +104,11 @@ pub(crate) fn open(
     Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) fn list(stdout: &mut impl Write) -> Result<ExitCode, ExecuteError> {
-    let paths = PvPaths::default_home()?;
+pub(crate) fn list(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let projects = database.projects()?;
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -126,7 +122,7 @@ pub(crate) fn list(stdout: &mut impl Write) -> Result<ExitCode, ExecuteError> {
     for project in projects {
         let env_status = project_env_status(&project);
         output.line(&format!(
-            "{}  {}  pending  pending  {}  {}",
+            "{}  {}  unknown  unknown  {}  {}",
             project.primary_hostname,
             project.desired_php_track.as_deref().unwrap_or("default"),
             env_status.as_str(),
@@ -149,12 +145,81 @@ fn request_project_reconciliation(
             job.id, project.primary_hostname
         ))?,
         Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => output.line(
-            "warning: PV daemon is not running; run `pv setup` before this Project is reachable",
+            "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
         )?,
         Err(error) => return Err(error.into()),
     }
 
     Ok(())
+}
+
+fn resolve_open_project(
+    database: &Database,
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<(ProjectRecord, String), ExecuteError> {
+    let current_dir = current_dir(environment)?;
+    if let Some(project) = database.nearest_project_for_path(&current_dir)? {
+        let hostname = project.primary_hostname.clone();
+        return Ok((project, hostname));
+    }
+
+    if !environment.stdin_is_terminal() {
+        return Err(CliError::ProjectNotResolved.into());
+    }
+
+    let project = select_project(database.projects()?, environment, stdout)?;
+    let hostname = project.primary_hostname.clone();
+
+    Ok((project, hostname))
+}
+
+fn select_project(
+    projects: Vec<ProjectRecord>,
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ProjectRecord, ExecuteError> {
+    if projects.is_empty() {
+        return Err(CliError::ProjectNotResolved.into());
+    }
+
+    let mut output = Output::new(stdout, OutputMode::plain());
+    output.line("Select a Project:")?;
+    for (index, project) in projects.iter().enumerate() {
+        output.line(&format!(
+            "{}. {}  {}",
+            index + 1,
+            project.primary_hostname,
+            project.path
+        ))?;
+    }
+    output.line("Enter selection:")?;
+
+    let selection = environment.read_line()?;
+    let selected_index =
+        selection
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| CliError::InvalidProjectSelection {
+                selection: selection.trim().to_string(),
+                count: projects.len(),
+            })?;
+    let Some(index) = selected_index.checked_sub(1) else {
+        return Err(CliError::InvalidProjectSelection {
+            selection: selection.trim().to_string(),
+            count: projects.len(),
+        }
+        .into());
+    };
+    let Some(project) = projects.get(index).cloned() else {
+        return Err(CliError::InvalidProjectSelection {
+            selection: selection.trim().to_string(),
+            count: projects.len(),
+        }
+        .into());
+    };
+
+    Ok(project)
 }
 
 fn daemon_is_unavailable(error: &io::Error) -> bool {
@@ -211,6 +276,13 @@ fn project_root_from_config_path(config_path: &Utf8Path) -> Result<Utf8PathBuf, 
         .parent()
         .map(Utf8Path::to_path_buf)
         .ok_or_else(|| CliError::ProjectNotResolved.into())
+}
+
+fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
+    let home = environment.home_dir().ok_or(StateError::MissingHome)?;
+    let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
+
+    Ok(PvPaths::for_home(home))
 }
 
 enum ProjectEnvStatus {

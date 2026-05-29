@@ -91,6 +91,7 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
             if placeholder == "ProjectUrl"
     ));
     assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
+    assert!(ProjectConfig::parse("rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n").is_ok());
 
     Ok(())
 }

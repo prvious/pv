@@ -1,11 +1,18 @@
 use std::ffi::OsString;
 use std::io;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 pub trait Environment {
     fn var_os(&self, key: &str) -> Option<OsString>;
 
+    fn home_dir(&self) -> Option<PathBuf>;
+
     fn current_dir(&self) -> io::Result<PathBuf>;
+
+    fn stdin_is_terminal(&self) -> bool;
+
+    fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
 }
@@ -18,8 +25,23 @@ impl Environment for ProcessEnvironment {
         process_var_os(key)
     }
 
+    fn home_dir(&self) -> Option<PathBuf> {
+        home::home_dir()
+    }
+
     fn current_dir(&self) -> io::Result<PathBuf> {
         process_current_dir()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        io::stdin().is_terminal()
+    }
+
+    fn read_line(&self) -> io::Result<String> {
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+
+        Ok(line)
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {

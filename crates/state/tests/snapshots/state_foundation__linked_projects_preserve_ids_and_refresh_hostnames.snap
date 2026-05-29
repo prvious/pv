@@ -10,6 +10,7 @@ expression: "(created.status, updated.status, database.projects()?)"
         ProjectRecord {
             id: "<project_id>",
             path: "<tempdir>/acme",
+            original_path: "<tempdir>/acme",
             primary_hostname: "store.test",
             config_path: "<tempdir>/acme/pv.yml",
             desired_php_track: Some(

@@ -23,6 +23,9 @@ pub enum CliError {
 
     #[error("could not resolve a linked Project; pass a hostname")]
     ProjectNotResolved,
+
+    #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
+    InvalidProjectSelection { selection: String, count: usize },
 }
 
 #[derive(Debug, Error)]
