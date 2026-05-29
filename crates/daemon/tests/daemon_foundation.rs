@@ -167,7 +167,10 @@ async fn blocking_client_rejects_protocol_mismatch_response() -> Result<()> {
     server.await??;
     assert!(matches!(
         result,
-        Err(daemon::DaemonError::Protocol(message)) if message.contains("protocol")
+        Err(daemon::DaemonError::ProtocolMismatch {
+            expected: daemon::PROTOCOL_VERSION,
+            actual,
+        }) if actual == daemon::PROTOCOL_VERSION + 1
     ));
 
     Ok(())
@@ -198,7 +201,7 @@ async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()
     server.abort();
     assert!(matches!(
         result,
-        Err(daemon::DaemonError::Protocol(message)) if message.contains("timed out")
+        Err(daemon::DaemonError::ProtocolTimedOut { phase }) if phase == "response"
     ));
 
     Ok(())

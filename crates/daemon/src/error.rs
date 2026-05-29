@@ -20,8 +20,17 @@ pub enum DaemonError {
     #[error("daemon protocol frame error: {0}")]
     Frame(#[from] LinesCodecError),
 
-    #[error("daemon protocol error: {0}")]
-    Protocol(String),
+    #[error("daemon protocol error: daemon {phase} timed out")]
+    ProtocolTimedOut { phase: &'static str },
+
+    #[error("daemon protocol error: daemon protocol mismatch; run `pv daemon:restart`")]
+    ProtocolMismatch { expected: u16, actual: u16 },
+
+    #[error("daemon protocol error: {reason}")]
+    UnexpectedProtocolResponse { reason: String },
+
+    #[error("daemon protocol error: {message}")]
+    DaemonRejected { message: String },
 
     #[error("state error: {0}")]
     State(#[from] StateError),
