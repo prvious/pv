@@ -278,6 +278,30 @@ fn project_link_list_and_unlink_use_injected_home() -> Result<()> {
 }
 
 #[test]
+fn project_link_accepts_relative_path_arguments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let parent = tempdir.path().join("parent");
+    let project = parent.join("Acme Store");
+    let work = parent.join("work");
+    create_dir(&project.join("public"))?;
+    create_dir(&work)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link", "../Acme Store"], &work, &home)?;
+    let list = run_pv_in_dir_with_home(&["list"], &work, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn project_list_reports_invalid_linked_config() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

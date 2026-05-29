@@ -818,6 +818,29 @@ fn linked_projects_store_original_and_canonical_paths() -> Result<()> {
 }
 
 #[test]
+fn linked_projects_allow_noncanonical_original_paths() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project_path = tempdir.path().join("acme");
+    let original_path = tempdir.path().join("work").join("..").join("acme");
+
+    let created = database.link_project(state::LinkProjectInput {
+        path: project_path.clone(),
+        original_path: original_path.clone(),
+        primary_hostname: "acme.test".to_string(),
+        config_path: project_path.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+
+    assert_eq!(created.project.path, project_path);
+    assert_eq!(created.project.original_path, original_path);
+
+    Ok(())
+}
+
+#[test]
 fn linked_projects_can_promote_additional_hostname_to_primary() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -865,6 +888,20 @@ fn link_project_rejects_invalid_input_shapes() -> Result<()> {
             additional_hostnames: Vec::new(),
         }),
         Err(state::StateError::InvalidProjectPath { kind: "path", .. })
+    ));
+    assert!(matches!(
+        database.link_project(state::LinkProjectInput {
+            path: tempdir.path().join("acme"),
+            original_path: "relative".into(),
+            primary_hostname: "acme.test".to_string(),
+            config_path: tempdir.path().join("acme/pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        }),
+        Err(state::StateError::InvalidProjectPath {
+            kind: "original path",
+            ..
+        })
     ));
     assert!(matches!(
         database.link_project(state::LinkProjectInput {

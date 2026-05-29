@@ -1086,7 +1086,7 @@ fn project_by_id_in_transaction(
 
 fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateError> {
     validate_project_path("path", &input.path)?;
-    validate_project_path("original path", &input.original_path)?;
+    validate_original_project_path(&input.original_path)?;
     validate_project_path("config path", &input.config_path)?;
     validate_project_hostname(&input.primary_hostname)?;
     for hostname in &input.additional_hostnames {
@@ -1097,6 +1097,18 @@ fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateErro
     {
         return Err(StateError::InvalidProjectTrack {
             track: track.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_original_project_path(path: &Utf8Path) -> Result<(), StateError> {
+    if !path.is_absolute() {
+        return Err(StateError::InvalidProjectPath {
+            kind: "original path",
+            path: path.to_path_buf(),
+            reason: "path must be absolute",
         });
     }
 
