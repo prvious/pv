@@ -55,6 +55,87 @@ s3:
 }
 
 #[test]
+fn project_config_rejects_invalid_scalar_shapes() -> Result<()> {
+    assert!(matches!(
+        ProjectConfig::parse("php: false\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("mysql:\n  version: true\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "mysql.version"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("document_root: true\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "document_root"
+    ));
+
+    let config = ProjectConfig::parse("env:\n  FEATURE_ENABLED: true\n")?;
+    assert_eq!(
+        config.env.get("FEATURE_ENABLED").map(String::as_str),
+        Some("true")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
+    assert!(matches!(
+        ProjectConfig::parse("env:\n  APP_URL: \"${missing_value}\"\n"),
+        Err(ConfigError::UnknownEnvPlaceholder { placeholder, .. })
+            if placeholder == "missing_value"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("env:\n  APP_URL: \"${ProjectUrl}\"\n"),
+        Err(ConfigError::InvalidEnvPlaceholder { placeholder, .. })
+            if placeholder == "ProjectUrl"
+    ));
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_unsupported_and_colliding_allocations() -> Result<()> {
+    assert!(matches!(
+        ProjectConfig::parse("mailpit:\n  allocations:\n    inbox: {}\n"),
+        Err(ConfigError::UnsupportedResourceAllocations { resource }) if resource == "mailpit"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse(
+            r#"
+mysql:
+  allocations:
+    app-db: {}
+    app_db: {}
+"#
+        ),
+        Err(ConfigError::DuplicateNormalizedAllocation {
+            resource,
+            normalized,
+            ..
+        }) if resource == "mysql" && normalized == "app_db"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse(
+            r#"
+rustfs:
+  allocations:
+    media_bucket: {}
+    media-bucket: {}
+"#
+        ),
+        Err(ConfigError::DuplicateNormalizedAllocation {
+            resource,
+            normalized,
+            ..
+        }) if resource == "rustfs" && normalized == "media-bucket"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn project_config_rejects_duplicate_resource_aliases() -> Result<()> {
     let result = ProjectConfig::parse(
         r#"
@@ -78,6 +159,7 @@ fn project_config_rejects_anchors_unknown_keys_and_invalid_hostnames() -> Result
     let anchored = ProjectConfig::parse("php: &php 8.4\nother: *php\n");
     let unknown = ProjectConfig::parse("php: 8.4\nunexpected: true\n");
     let invalid_hostname = ProjectConfig::parse("hostnames:\n  - api.example.com\n");
+    let long_label = ProjectConfig::parse(&format!("hostnames:\n  - {}.test\n", "a".repeat(64)));
 
     assert!(matches!(anchored, Err(ConfigError::AnchorsUnsupported)));
     assert!(matches!(
@@ -87,6 +169,10 @@ fn project_config_rejects_anchors_unknown_keys_and_invalid_hostnames() -> Result
     assert!(matches!(
         invalid_hostname,
         Err(ConfigError::InvalidHostname { hostname, .. }) if hostname == "api.example.com"
+    ));
+    assert!(matches!(
+        long_label,
+        Err(ConfigError::InvalidHostname { hostname, .. }) if hostname.ends_with(".test")
     ));
 
     Ok(())
@@ -117,6 +203,20 @@ fn project_config_discovery_validates_paths_and_conflicts() -> Result<()> {
         conflict,
         Err(ConfigError::ConfigFileConflict { .. })
     ));
+
+    Ok(())
+}
+
+#[test]
+fn project_config_discovery_reports_broken_config_symlinks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    create_symlink(&project.join("missing.yml"), &project.join("pv.yml"))?;
+
+    let result = ProjectConfigFile::read_from_root(&project);
+
+    assert!(matches!(result, Err(ConfigError::Filesystem { .. })));
 
     Ok(())
 }
@@ -155,6 +255,16 @@ fn create_dir(path: &Utf8Path) -> Result<()> {
 )]
 fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests create symlink fixtures"
+)]
+fn create_symlink(target: &Utf8Path, link: &Utf8Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
 
     Ok(())
 }

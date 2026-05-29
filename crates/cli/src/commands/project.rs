@@ -124,15 +124,12 @@ pub(crate) fn list(stdout: &mut impl Write) -> Result<ExitCode, ExecuteError> {
 
     output.line("Hostname  PHP  Status  Resources  Env  Path")?;
     for project in projects {
+        let env_status = project_env_status(&project);
         output.line(&format!(
             "{}  {}  pending  pending  {}  {}",
             project.primary_hostname,
             project.desired_php_track.as_deref().unwrap_or("default"),
-            if project_has_env_config(&project) {
-                "configured"
-            } else {
-                "none"
-            },
+            env_status.as_str(),
             project.path
         ))?;
     }
@@ -216,12 +213,29 @@ fn project_root_from_config_path(config_path: &Utf8Path) -> Result<Utf8PathBuf, 
         .ok_or_else(|| CliError::ProjectNotResolved.into())
 }
 
-fn project_has_env_config(project: &ProjectRecord) -> bool {
-    let Ok(config_file) = ProjectConfigFile::read_from_root(&project.path) else {
-        return false;
+enum ProjectEnvStatus {
+    Configured,
+    Invalid,
+    None,
+}
+
+impl ProjectEnvStatus {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Configured => "configured",
+            Self::Invalid => "invalid",
+            Self::None => "none",
+        }
+    }
+}
+
+fn project_env_status(project: &ProjectRecord) -> ProjectEnvStatus {
+    let config_file = match ProjectConfigFile::read_from_root(&project.path) {
+        Ok(config_file) => config_file,
+        Err(_error) => return ProjectEnvStatus::Invalid,
     };
 
-    !config_file.config.env.is_empty()
+    if !config_file.config.env.is_empty()
         || config_file.config.resources.values().any(|resource| {
             !resource.env.is_empty()
                 || resource
@@ -229,4 +243,9 @@ fn project_has_env_config(project: &ProjectRecord) -> bool {
                     .values()
                     .any(|allocation| !allocation.env.is_empty())
         })
+    {
+        ProjectEnvStatus::Configured
+    } else {
+        ProjectEnvStatus::None
+    }
 }

@@ -2,13 +2,31 @@ use std::collections::BTreeMap;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use resources::{ResourceKind, registry};
+use resources::{ResourceCapability, ResourceKind, registry};
 use thiserror::Error;
 use yaml_serde::{Mapping, Number, Value};
 
 const PREFERRED_CONFIG_FILE: &str = "pv.yml";
 const ALTERNATE_CONFIG_FILE: &str = "pv.yaml";
 const RESERVED_HOSTNAME: &str = "pv.test";
+const MAX_DNS_LABEL_LENGTH: usize = 63;
+const MAX_HOSTNAME_LENGTH: usize = 253;
+const ALLOWED_ENV_PLACEHOLDERS: &[&str] = &[
+    "access_key",
+    "bucket",
+    "dashboard_url",
+    "database",
+    "endpoint",
+    "host",
+    "password",
+    "port",
+    "prefix",
+    "project_url",
+    "secret_key",
+    "smtp_host",
+    "smtp_port",
+    "username",
+];
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectConfig {
@@ -123,6 +141,28 @@ pub enum ConfigError {
 
     #[error("duplicate Project config resource `{resource}`")]
     DuplicateResource { resource: String },
+
+    #[error("Project config resource `{resource}` does not support allocations")]
+    UnsupportedResourceAllocations { resource: String },
+
+    #[error(
+        "duplicate Project config allocation `{allocation}` for resource `{resource}` after normalizing to `{normalized}`"
+    )]
+    DuplicateNormalizedAllocation {
+        resource: String,
+        allocation: String,
+        normalized: String,
+    },
+
+    #[error("invalid Project config env placeholder `{placeholder}` in `{field}`: {reason}")]
+    InvalidEnvPlaceholder {
+        field: String,
+        placeholder: String,
+        reason: &'static str,
+    },
+
+    #[error("unknown Project config env placeholder `{placeholder}` in `{field}`")]
+    UnknownEnvPlaceholder { field: String, placeholder: String },
 }
 
 impl ProjectConfig {
@@ -162,8 +202,8 @@ impl ProjectConfigFile {
 
         let preferred = canonical_root.join(PREFERRED_CONFIG_FILE);
         let alternate = canonical_root.join(ALTERNATE_CONFIG_FILE);
-        let preferred_exists = preferred.exists();
-        let alternate_exists = alternate.exists();
+        let preferred_exists = path_present(&preferred)?;
+        let alternate_exists = path_present(&alternate)?;
 
         if preferred_exists && alternate_exists {
             return Err(ConfigError::ConfigFileConflict {
@@ -247,10 +287,10 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
         let key = string_key(key)?;
         match key.as_str() {
             "php" => {
-                config.php = Some(non_empty_scalar("php", &value)?);
+                config.php = Some(non_empty_string_or_number("php", &value)?);
             }
             "document_root" => {
-                let document_root = non_empty_scalar("document_root", &value)?;
+                let document_root = non_empty_string("document_root", &value)?;
                 config.document_root = Some(Utf8PathBuf::from(document_root));
             }
             "hostnames" => {
@@ -301,12 +341,20 @@ fn parse_resource_config(
         let key = string_key_ref(key)?;
         match key.as_str() {
             "version" => {
-                config.track = Some(non_empty_scalar(&format!("{resource}.version"), value)?);
+                config.track = Some(non_empty_string_or_number(
+                    &format!("{resource}.version"),
+                    value,
+                )?);
             }
             "env" => {
                 config.env = parse_env_mapping(&format!("{resource}.env"), value)?;
             }
             "allocations" => {
+                if !resource_supports_allocations(resource) {
+                    return Err(ConfigError::UnsupportedResourceAllocations {
+                        resource: resource.to_string(),
+                    });
+                }
                 config.allocations = parse_allocations(resource, value)?;
             }
             _ => {
@@ -337,10 +385,23 @@ fn parse_allocations(
         }
     };
     let mut allocations = BTreeMap::new();
+    let mut normalized_allocations = BTreeMap::new();
 
     for (key, value) in mapping {
         let allocation = string_key_ref(key)?;
         validate_allocation_name(&allocation)?;
+        let normalized = normalized_allocation_name(resource, &allocation);
+        if normalized_allocations
+            .insert(normalized.clone(), allocation.clone())
+            .is_some()
+        {
+            return Err(ConfigError::DuplicateNormalizedAllocation {
+                resource: resource.to_string(),
+                allocation,
+                normalized,
+            });
+        }
+
         let config = parse_allocation_config(resource, &allocation, value)?;
         allocations.insert(allocation, config);
     }
@@ -401,7 +462,7 @@ fn parse_hostnames(value: &Value) -> Result<Vec<String>, ConfigError> {
     let mut hostnames = Vec::new();
 
     for value in sequence {
-        let hostname = non_empty_scalar("hostnames", value)?;
+        let hostname = non_empty_string("hostnames", value)?;
         let hostname = normalize_additional_hostname(&hostname)?;
         if hostnames.contains(&hostname) {
             return Err(ConfigError::DuplicateHostname { hostname });
@@ -430,7 +491,9 @@ fn parse_env_mapping(field: &str, value: &Value) -> Result<BTreeMap<String, Stri
     for (key, value) in mapping {
         let key = string_key_ref(key)?;
         validate_env_key(&key)?;
-        let value = scalar_to_string(&format!("{field}.{key}"), value)?;
+        let value_field = format!("{field}.{key}");
+        let value = env_scalar_to_string(&value_field, value)?;
+        validate_env_placeholders(&value_field, &value)?;
         env.insert(key, value);
     }
 
@@ -524,6 +587,13 @@ fn validate_hostname(
         });
     }
 
+    if hostname.len() > MAX_HOSTNAME_LENGTH {
+        return Err(ConfigError::InvalidHostname {
+            hostname: original.to_string(),
+            reason: "hostname must be at most 253 bytes",
+        });
+    }
+
     for label in hostname.split('.') {
         validate_dns_label(label, original)?;
     }
@@ -536,6 +606,13 @@ fn validate_dns_label(label: &str, original: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidHostname {
             hostname: original.to_string(),
             reason: "hostname labels must not be empty",
+        });
+    }
+
+    if label.len() > MAX_DNS_LABEL_LENGTH {
+        return Err(ConfigError::InvalidHostname {
+            hostname: original.to_string(),
+            reason: "hostname labels must be at most 63 bytes",
         });
     }
 
@@ -555,8 +632,8 @@ fn validate_dns_label(label: &str, original: &str) -> Result<(), ConfigError> {
     }
 }
 
-fn non_empty_scalar(field: &str, value: &Value) -> Result<String, ConfigError> {
-    let scalar = scalar_to_string(field, value)?;
+fn non_empty_string(field: &str, value: &Value) -> Result<String, ConfigError> {
+    let scalar = string_scalar(field, value)?;
     if scalar.trim().is_empty() {
         return Err(ConfigError::EmptyField {
             field: field.to_string(),
@@ -566,14 +643,48 @@ fn non_empty_scalar(field: &str, value: &Value) -> Result<String, ConfigError> {
     Ok(scalar)
 }
 
-fn scalar_to_string(field: &str, value: &Value) -> Result<String, ConfigError> {
+fn non_empty_string_or_number(field: &str, value: &Value) -> Result<String, ConfigError> {
+    let scalar = string_or_number_to_string(field, value)?;
+    if scalar.trim().is_empty() {
+        return Err(ConfigError::EmptyField {
+            field: field.to_string(),
+        });
+    }
+
+    Ok(scalar)
+}
+
+fn string_scalar(field: &str, value: &Value) -> Result<String, ConfigError> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        value => Err(ConfigError::InvalidFieldType {
+            field: field.to_string(),
+            expected: "a string",
+            found: value_type(value),
+        }),
+    }
+}
+
+fn string_or_number_to_string(field: &str, value: &Value) -> Result<String, ConfigError> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Number(number) => Ok(number_to_string(number)),
+        value => Err(ConfigError::InvalidFieldType {
+            field: field.to_string(),
+            expected: "a string or number",
+            found: value_type(value),
+        }),
+    }
+}
+
+fn env_scalar_to_string(field: &str, value: &Value) -> Result<String, ConfigError> {
     match value {
         Value::String(value) => Ok(value.clone()),
         Value::Number(number) => Ok(number_to_string(number)),
         Value::Bool(value) => Ok(value.to_string()),
         value => Err(ConfigError::InvalidFieldType {
             field: field.to_string(),
-            expected: "a scalar",
+            expected: "a string, number, or boolean",
             found: value_type(value),
         }),
     }
@@ -610,6 +721,94 @@ fn project_config_resource_name(name: &str) -> Option<&'static str> {
         .ok()
         .filter(|descriptor| descriptor.kind() == ResourceKind::BackingService)
         .map(|descriptor| descriptor.name())
+}
+
+fn resource_supports_allocations(resource: &str) -> bool {
+    matches!(
+        registry::resolve_canonical(resource),
+        Ok(descriptor) if descriptor.capabilities().contains(&ResourceCapability::Allocation)
+    )
+}
+
+fn normalized_allocation_name(resource: &str, allocation: &str) -> String {
+    match resource {
+        "mysql" | "postgres" => allocation.replace('-', "_"),
+        "redis" | "rustfs" => allocation.replace('_', "-"),
+        _ => allocation.to_string(),
+    }
+}
+
+fn validate_env_placeholders(field: &str, value: &str) -> Result<(), ConfigError> {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut index = 0;
+
+    while index < characters.len() {
+        if characters[index] != '$' {
+            index += 1;
+            continue;
+        }
+
+        if characters.get(index + 1) == Some(&'$') {
+            index += 2;
+            continue;
+        }
+
+        if characters.get(index + 1) != Some(&'{') {
+            return Err(ConfigError::InvalidEnvPlaceholder {
+                field: field.to_string(),
+                placeholder: "$".to_string(),
+                reason: "literal dollar signs must be escaped as `$$`",
+            });
+        }
+
+        let Some(end_index) = characters[index + 2..]
+            .iter()
+            .position(|character| *character == '}')
+            .map(|offset| index + 2 + offset)
+        else {
+            return Err(ConfigError::InvalidEnvPlaceholder {
+                field: field.to_string(),
+                placeholder: characters[index..].iter().collect(),
+                reason: "placeholder must end with `}`",
+            });
+        };
+        let placeholder = characters[index + 2..end_index].iter().collect::<String>();
+        validate_placeholder_name(field, &placeholder)?;
+        if !ALLOWED_ENV_PLACEHOLDERS.contains(&placeholder.as_str()) {
+            return Err(ConfigError::UnknownEnvPlaceholder {
+                field: field.to_string(),
+                placeholder,
+            });
+        }
+
+        index = end_index + 1;
+    }
+
+    Ok(())
+}
+
+fn validate_placeholder_name(field: &str, placeholder: &str) -> Result<(), ConfigError> {
+    let mut bytes = placeholder.bytes();
+    let Some(first) = bytes.next() else {
+        return Err(ConfigError::InvalidEnvPlaceholder {
+            field: field.to_string(),
+            placeholder: placeholder.to_string(),
+            reason: "placeholder name must not be empty",
+        });
+    };
+    let first_valid = first.is_ascii_lowercase();
+    let rest_valid =
+        bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+
+    if first_valid && rest_valid {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidEnvPlaceholder {
+            field: field.to_string(),
+            placeholder: placeholder.to_string(),
+            reason: "placeholder names must use lowercase snake_case",
+        })
+    }
 }
 
 fn validate_env_key(key: &str) -> Result<(), ConfigError> {
@@ -733,6 +932,21 @@ fn value_type(value: &Value) -> &'static str {
         Value::Sequence(_) => "sequence",
         Value::Mapping(_) => "mapping",
         Value::Tagged(_) => "tagged value",
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config discovery owns symlink-aware config file probing"
+)]
+fn path_present(path: &Utf8Path) -> Result<bool, ConfigError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_metadata) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(ConfigError::Filesystem {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 

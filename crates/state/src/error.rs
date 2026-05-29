@@ -57,6 +57,22 @@ pub enum StateError {
     #[error("Project `{target}` was not found")]
     ProjectNotFound { target: String },
 
+    #[error("invalid Project {kind} `{path}`: {reason}")]
+    InvalidProjectPath {
+        kind: &'static str,
+        path: Utf8PathBuf,
+        reason: &'static str,
+    },
+
+    #[error("invalid Project hostname `{hostname}`: {reason}")]
+    InvalidProjectHostname {
+        hostname: String,
+        reason: &'static str,
+    },
+
+    #[error("invalid Project PHP track `{track}`")]
+    InvalidProjectTrack { track: String },
+
     #[error("Project hostname `{hostname}` is already owned by Project `{project_id}`")]
     ProjectHostnameCollision {
         hostname: String,

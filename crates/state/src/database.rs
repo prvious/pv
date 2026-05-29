@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -12,6 +12,9 @@ const PORT_CANDIDATE_LIMIT: usize = 10;
 const PROJECT_ID_LENGTH: usize = 10;
 const PROJECT_ID_ATTEMPTS: usize = 16;
 const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+const MAX_DNS_LABEL_LENGTH: usize = 63;
+const MAX_HOSTNAME_LENGTH: usize = 253;
+const RESERVED_HOSTNAME: &str = "pv.test";
 
 #[derive(Debug)]
 pub struct Database {
@@ -335,6 +338,7 @@ impl Database {
         &mut self,
         input: LinkProjectInput,
     ) -> Result<LinkProjectResult, StateError> {
+        validate_link_project_input(&input)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -351,29 +355,45 @@ impl Database {
         };
 
         match &existing {
-            Some(project) => update_project_in_transaction(&transaction, &project.id, &input)?,
+            Some(project) => {
+                delete_same_project_additional_hostname_in_transaction(
+                    &transaction,
+                    &project.id,
+                    &input.primary_hostname,
+                )?;
+                update_project_in_transaction(&transaction, &project.id, &input)?;
+            }
             None => insert_project_in_transaction(&transaction, &project_id, &input)?,
         }
         replace_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
-        transaction.commit()?;
-
         let project =
-            self.project_by_id(&project_id)?
-                .ok_or_else(|| StateError::ProjectNotFound {
+            project_by_id_in_transaction(&transaction, &project_id)?.ok_or_else(|| {
+                StateError::ProjectNotFound {
                     target: project_id.clone(),
-                })?;
+                }
+            })?;
+        transaction.commit()?;
 
         Ok(LinkProjectResult { status, project })
     }
 
     pub fn unlink_project(&mut self, project_id: &str) -> Result<ProjectRecord, StateError> {
-        let project =
-            self.project_by_id(project_id)?
-                .ok_or_else(|| StateError::ProjectNotFound {
-                    target: project_id.to_string(),
-                })?;
-        self.connection
-            .execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        let deleted =
+            transaction.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+        if deleted == 0 {
+            return Err(StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            });
+        }
+        transaction.commit()?;
 
         Ok(project)
     }
@@ -1036,6 +1056,136 @@ fn project_by_path_in_transaction(
     }
 }
 
+fn project_by_id_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<Option<ProjectRecord>, StateError> {
+    let row = transaction
+        .query_row(
+            "SELECT id, path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            FROM projects
+            WHERE id = ?1",
+            params![project_id],
+            project_from_row,
+        )
+        .optional()?;
+
+    match row {
+        Some(row) => row.into_record(transaction).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateError> {
+    validate_project_path("path", &input.path)?;
+    validate_project_path("config path", &input.config_path)?;
+    validate_project_hostname(&input.primary_hostname)?;
+    for hostname in &input.additional_hostnames {
+        validate_project_hostname(hostname)?;
+    }
+    if let Some(track) = &input.desired_php_track
+        && track.trim().is_empty()
+    {
+        return Err(StateError::InvalidProjectTrack {
+            track: track.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_project_path(kind: &'static str, path: &Utf8Path) -> Result<(), StateError> {
+    if !path.is_absolute() {
+        return Err(StateError::InvalidProjectPath {
+            kind,
+            path: path.to_path_buf(),
+            reason: "path must be absolute",
+        });
+    }
+
+    if path
+        .components()
+        .any(|component| matches!(component, Utf8Component::CurDir | Utf8Component::ParentDir))
+    {
+        return Err(StateError::InvalidProjectPath {
+            kind,
+            path: path.to_path_buf(),
+            reason: "path must be canonical",
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_project_hostname(hostname: &str) -> Result<(), StateError> {
+    if hostname.is_empty() {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname must not be empty",
+        });
+    }
+    if hostname != hostname.to_ascii_lowercase() {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname must be normalized lowercase",
+        });
+    }
+    if hostname == RESERVED_HOSTNAME {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "`pv.test` is reserved",
+        });
+    }
+    if !hostname.ends_with(".test") {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname must end in `.test`",
+        });
+    }
+    if hostname.len() > MAX_HOSTNAME_LENGTH {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname must be at most 253 bytes",
+        });
+    }
+
+    for label in hostname.split('.') {
+        validate_project_hostname_label(hostname, label)?;
+    }
+
+    Ok(())
+}
+
+fn validate_project_hostname_label(hostname: &str, label: &str) -> Result<(), StateError> {
+    if label.is_empty() {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname labels must not be empty",
+        });
+    }
+    if label.len() > MAX_DNS_LABEL_LENGTH {
+        return Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname labels must be at most 63 bytes",
+        });
+    }
+
+    let is_valid = label
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !label.starts_with('-')
+        && !label.ends_with('-');
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(StateError::InvalidProjectHostname {
+            hostname: hostname.to_string(),
+            reason: "hostname labels must contain only lowercase letters, numbers, or interior hyphens",
+        })
+    }
+}
+
 fn project_matches_input(project: &ProjectRecord, input: &LinkProjectInput) -> bool {
     project.path == input.path
         && project.primary_hostname == input.primary_hostname
@@ -1094,6 +1244,19 @@ fn update_project_in_transaction(
             updated_at,
             project_id,
         ],
+    )?;
+
+    Ok(())
+}
+
+fn delete_same_project_additional_hostname_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    hostname: &str,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "DELETE FROM project_hostnames WHERE project_id = ?1 AND hostname = ?2 AND is_primary = 0",
+        params![project_id, hostname],
     )?;
 
     Ok(())
