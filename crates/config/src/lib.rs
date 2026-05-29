@@ -81,9 +81,6 @@ pub enum ConfigError {
     #[error("Project config symlink escapes the Project root: {path}")]
     ConfigPathEscapesRoot { path: Utf8PathBuf },
 
-    #[error("Project config uses YAML anchors or aliases, which PV does not support")]
-    AnchorsUnsupported,
-
     #[error("Project config YAML parse error: {source}")]
     Parse {
         #[source]
@@ -172,12 +169,12 @@ impl ProjectConfig {
             return Ok(Self::default());
         }
 
-        if contains_anchor_or_alias(source) {
-            return Err(ConfigError::AnchorsUnsupported);
-        }
-
-        let value = yaml_serde::from_str::<Value>(source)
+        let mut value = yaml_serde::from_str::<Value>(source)
             .map_err(|source| ConfigError::Parse { source })?;
+        value
+            .apply_merge()
+            .map_err(|source| ConfigError::Parse { source })?;
+
         Self::from_value(value)
     }
 
@@ -867,61 +864,6 @@ fn validate_config_path(
             path: config_path.to_path_buf(),
         })
     }
-}
-
-fn contains_anchor_or_alias(source: &str) -> bool {
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut in_comment = false;
-    let mut escaped = false;
-    let mut previous = '\n';
-
-    for character in source.chars() {
-        if in_comment {
-            if character == '\n' {
-                in_comment = false;
-                previous = character;
-            }
-            continue;
-        }
-
-        if in_double_quote {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                in_double_quote = false;
-            }
-            previous = character;
-            continue;
-        }
-
-        if in_single_quote {
-            if character == '\'' {
-                in_single_quote = false;
-            }
-            previous = character;
-            continue;
-        }
-
-        match character {
-            '#' => {
-                in_comment = true;
-                continue;
-            }
-            '\'' => in_single_quote = true,
-            '"' => in_double_quote = true,
-            '&' | '*' if previous.is_whitespace() || matches!(previous, ':' | '[' | '{' | ',') => {
-                return true;
-            }
-            _ => {}
-        }
-
-        previous = character;
-    }
-
-    false
 }
 
 fn value_type(value: &Value) -> &'static str {

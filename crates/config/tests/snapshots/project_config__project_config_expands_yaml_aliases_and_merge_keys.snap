@@ -1,0 +1,33 @@
+---
+source: crates/config/tests/project_config.rs
+expression: config
+---
+ProjectConfig {
+    php: None,
+    document_root: None,
+    hostnames: [],
+    env: {
+        "MATH": "2 * 3",
+        "TEAM": "R&D & QA",
+    },
+    resources: {
+        "mysql": ResourceConfig {
+            track: Some(
+                "8.4",
+            ),
+            env: {
+                "DB_HOST": "${host}",
+            },
+            allocations: {},
+        },
+        "postgres": ResourceConfig {
+            track: Some(
+                "16",
+            ),
+            env: {
+                "DB_HOST": "${host}",
+            },
+            allocations: {},
+        },
+    },
+}

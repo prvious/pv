@@ -156,13 +156,45 @@ pg:
 }
 
 #[test]
-fn project_config_rejects_anchors_unknown_keys_and_invalid_hostnames() -> Result<()> {
-    let anchored = ProjectConfig::parse("php: &php 8.4\nother: *php\n");
+fn project_config_expands_yaml_aliases_and_merge_keys() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+env:
+  MATH: 2 * 3
+  TEAM: R&D & QA
+postgres: &database
+  version: 16
+  env:
+    DB_HOST: "${host}"
+mysql:
+  <<: *database
+  version: 8.4
+"#,
+    )?;
+
+    assert_debug_snapshot!(config);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_helper_keys_unknown_keys_and_invalid_hostnames() -> Result<()> {
+    let helper = ProjectConfig::parse(
+        r#"
+defaults: &database
+  version: 16
+postgres:
+  <<: *database
+"#,
+    );
     let unknown = ProjectConfig::parse("php: 8.4\nunexpected: true\n");
     let invalid_hostname = ProjectConfig::parse("hostnames:\n  - api.example.com\n");
     let long_label = ProjectConfig::parse(&format!("hostnames:\n  - {}.test\n", "a".repeat(64)));
 
-    assert!(matches!(anchored, Err(ConfigError::AnchorsUnsupported)));
+    assert!(matches!(
+        helper,
+        Err(ConfigError::UnknownTopLevelKey { key }) if key == "defaults"
+    ));
     assert!(matches!(
         unknown,
         Err(ConfigError::UnknownTopLevelKey { key }) if key == "unexpected"

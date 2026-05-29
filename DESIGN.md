@@ -776,7 +776,7 @@ Project config can override the served document root with `document_root:`. The 
 
 Project config validation rejects unknown top-level keys and unknown nested keys with clear errors. Typos in resource, env, or allocation sections fail validation and keep the last valid desired state active.
 
-PV v1 rejects YAML anchors and aliases in Project config to keep configuration explicit and simple.
+Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV resolves them before validation. Helper keys are not a PV feature; unknown keys that remain after YAML merge and alias resolution fail validation.
 
 If Project config asks for a Managed Resource track that is not installed, daemon reconciliation installs it automatically.
 
