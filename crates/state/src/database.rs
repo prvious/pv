@@ -100,7 +100,7 @@ pub struct PortAssignment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectConfigWatch {
     pub project_id: String,
-    pub config_path: Utf8PathBuf,
+    pub project_path: Utf8PathBuf,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -669,13 +669,13 @@ impl Database {
     }
 
     pub fn project_config_watches(&self) -> Result<Vec<ProjectConfigWatch>, StateError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, config_path FROM projects WHERE config_path IS NOT NULL ORDER BY id",
-        )?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, path FROM projects ORDER BY id")?;
         let rows = statement.query_map([], |row| {
             Ok(ProjectConfigWatch {
                 project_id: row.get(0)?,
-                config_path: Utf8PathBuf::from(row.get::<_, String>(1)?),
+                project_path: Utf8PathBuf::from(row.get::<_, String>(1)?),
             })
         })?;
         let mut watches = Vec::new();
