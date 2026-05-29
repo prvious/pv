@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use resources::{ResourceCapability, ResourceKind, registry};
+use resources::{ResourceCapability, ResourceKind, TrackSelector, registry};
 use thiserror::Error;
 use yaml_serde::{Mapping, Number, Value};
 
@@ -112,6 +112,16 @@ pub enum ConfigError {
 
     #[error("Project config field `{field}` must not be empty")]
     EmptyField { field: String },
+
+    #[error("invalid Project config PHP track `{track}`: {reason}")]
+    InvalidPhpTrack { track: String, reason: String },
+
+    #[error("invalid Project config resource `{resource}` version `{track}`: {reason}")]
+    InvalidResourceTrack {
+        resource: String,
+        track: String,
+        reason: String,
+    },
 
     #[error("invalid Project hostname `{hostname}`: {reason}")]
     InvalidHostname {
@@ -285,7 +295,7 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
         let key = string_key(key)?;
         match key.as_str() {
             "php" => {
-                config.php = Some(non_empty_string_or_number("php", &value)?);
+                config.php = Some(php_track(&value)?);
             }
             "document_root" => {
                 let document_root = non_empty_string("document_root", &value)?;
@@ -339,10 +349,7 @@ fn parse_resource_config(
         let key = string_key_ref(key)?;
         match key.as_str() {
             "version" => {
-                config.track = Some(non_empty_string_or_number(
-                    &format!("{resource}.version"),
-                    value,
-                )?);
+                config.track = Some(resource_track(resource, value)?);
             }
             "env" => {
                 config.env = parse_env_mapping(&format!("{resource}.env"), value)?;
@@ -650,6 +657,28 @@ fn non_empty_string_or_number(field: &str, value: &Value) -> Result<String, Conf
     }
 
     Ok(scalar)
+}
+
+fn php_track(value: &Value) -> Result<String, ConfigError> {
+    let track = non_empty_string_or_number("php", value)?;
+    TrackSelector::parse(track.clone()).map_err(|source| ConfigError::InvalidPhpTrack {
+        track: track.clone(),
+        reason: source.to_string(),
+    })?;
+
+    Ok(track)
+}
+
+fn resource_track(resource: &str, value: &Value) -> Result<String, ConfigError> {
+    let field = format!("{resource}.version");
+    let track = non_empty_string_or_number(&field, value)?;
+    TrackSelector::parse(track.clone()).map_err(|source| ConfigError::InvalidResourceTrack {
+        resource: resource.to_string(),
+        track: track.clone(),
+        reason: source.to_string(),
+    })?;
+
+    Ok(track)
 }
 
 fn string_scalar(field: &str, value: &Value) -> Result<String, ConfigError> {

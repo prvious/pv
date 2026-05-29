@@ -79,6 +79,35 @@ fn project_config_rejects_invalid_scalar_shapes() -> Result<()> {
 }
 
 #[test]
+fn project_config_validates_php_and_resource_tracks() -> Result<()> {
+    assert_eq!(
+        ProjectConfig::parse("php: latest\n")?.php.as_deref(),
+        Some("latest")
+    );
+    assert_eq!(
+        ProjectConfig::parse("mysql:\n  version: 8.4\n")?
+            .resources
+            .get("mysql")
+            .and_then(|resource| resource.track.as_deref()),
+        Some("8.4")
+    );
+    assert!(matches!(
+        ProjectConfig::parse("php: ../8.4\n"),
+        Err(ConfigError::InvalidPhpTrack { track, .. }) if track == "../8.4"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("mysql:\n  version: ../8.4\n"),
+        Err(ConfigError::InvalidResourceTrack {
+            resource,
+            track,
+            ..
+        }) if resource == "mysql" && track == "../8.4"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("env:\n  APP_URL: \"${missing_value}\"\n"),
