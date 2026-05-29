@@ -120,14 +120,18 @@ pub(crate) fn list(
 
     output.line("Hostname  PHP  Status  Resources  Env  Path")?;
     for project in projects {
-        let env_status = project_env_status(&project);
+        let status = project_list_status(&project);
         output.line(&format!(
-            "{}  {}  unknown  unknown  {}  {}",
+            "{}  {}  {}  unknown  {}  {}",
             project.primary_hostname,
             project.desired_php_track.as_deref().unwrap_or("default"),
-            env_status.as_str(),
+            status.project.as_str(),
+            status.env.as_str(),
             project.path
         ))?;
+        if let Some(error) = status.config_error {
+            output.line(&format!("  config: {error}"))?;
+        }
     }
 
     Ok(ExitCode::SUCCESS)
@@ -285,6 +289,26 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     Ok(PvPaths::for_home(home))
 }
 
+struct ProjectListStatus {
+    project: ProjectStatus,
+    env: ProjectEnvStatus,
+    config_error: Option<String>,
+}
+
+enum ProjectStatus {
+    ConfigInvalid,
+    Unknown,
+}
+
+impl ProjectStatus {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ConfigInvalid => "config-invalid",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 enum ProjectEnvStatus {
     Configured,
     Invalid,
@@ -301,23 +325,34 @@ impl ProjectEnvStatus {
     }
 }
 
-fn project_env_status(project: &ProjectRecord) -> ProjectEnvStatus {
+fn project_list_status(project: &ProjectRecord) -> ProjectListStatus {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
-        Err(_error) => return ProjectEnvStatus::Invalid,
+        Err(error) => {
+            return ProjectListStatus {
+                project: ProjectStatus::ConfigInvalid,
+                env: ProjectEnvStatus::Invalid,
+                config_error: Some(error.to_string()),
+            };
+        }
     };
 
-    if !config_file.config.env.is_empty()
+    let env = if !config_file.config.env.is_empty()
         || config_file.config.resources.values().any(|resource| {
             !resource.env.is_empty()
                 || resource
                     .allocations
                     .values()
                     .any(|allocation| !allocation.env.is_empty())
-        })
-    {
+        }) {
         ProjectEnvStatus::Configured
     } else {
         ProjectEnvStatus::None
+    };
+
+    ProjectListStatus {
+        project: ProjectStatus::Unknown,
+        env,
+        config_error: None,
     }
 }
