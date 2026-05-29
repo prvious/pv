@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use resources::{ResourceKind, registry};
 use thiserror::Error;
 use yaml_serde::{Mapping, Number, Value};
 
 const PREFERRED_CONFIG_FILE: &str = "pv.yml";
 const ALTERNATE_CONFIG_FILE: &str = "pv.yaml";
 const RESERVED_HOSTNAME: &str = "pv.test";
-const RESOURCE_NAMES: &[&str] = &["mailpit", "mysql", "postgres", "redis", "rustfs"];
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectConfig {
@@ -259,9 +259,10 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             "env" => {
                 config.env = parse_env_mapping("env", &value)?;
             }
-            resource if canonical_resource_name(resource).is_some() => {
-                let resource_name = canonical_resource_name(resource)
-                    .ok_or_else(|| ConfigError::UnknownTopLevelKey { key: key.clone() })?;
+            resource => {
+                let Some(resource_name) = project_config_resource_name(resource) else {
+                    return Err(ConfigError::UnknownTopLevelKey { key: key.clone() });
+                };
                 let resource_config = parse_resource_config(resource_name, &value)?;
                 if config
                     .resources
@@ -273,7 +274,6 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
                     });
                 }
             }
-            _ => return Err(ConfigError::UnknownTopLevelKey { key }),
         }
     }
 
@@ -605,14 +605,11 @@ fn string_key_ref(value: &Value) -> Result<String, ConfigError> {
     }
 }
 
-fn canonical_resource_name(name: &str) -> Option<&'static str> {
-    match name {
-        "postgresql" => Some("postgres"),
-        name => RESOURCE_NAMES
-            .iter()
-            .copied()
-            .find(|resource_name| *resource_name == name),
-    }
+fn project_config_resource_name(name: &str) -> Option<&'static str> {
+    registry::resolve(name)
+        .ok()
+        .filter(|descriptor| descriptor.kind() == ResourceKind::BackingService)
+        .map(|descriptor| descriptor.name())
 }
 
 fn validate_env_key(key: &str) -> Result<(), ConfigError> {

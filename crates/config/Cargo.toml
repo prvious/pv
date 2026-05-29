@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+resources = { path = "../resources" }
 thiserror = { workspace = true }
 yaml_serde = { workspace = true }
 

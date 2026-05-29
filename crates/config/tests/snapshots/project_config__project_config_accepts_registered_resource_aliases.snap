@@ -1,0 +1,32 @@
+---
+source: crates/config/tests/project_config.rs
+assertion_line: 52
+expression: config.resources
+---
+{
+    "mailpit": ResourceConfig {
+        track: None,
+        env: {
+            "MAIL_HOST": "${host}",
+        },
+        allocations: {},
+    },
+    "postgres": ResourceConfig {
+        track: Some(
+            "latest",
+        ),
+        env: {},
+        allocations: {},
+    },
+    "rustfs": ResourceConfig {
+        track: None,
+        env: {},
+        allocations: {
+            "app": AllocationConfig {
+                env: {
+                    "S3_BUCKET": "${bucket}",
+                },
+            },
+        },
+    },
+}

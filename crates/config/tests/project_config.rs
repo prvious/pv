@@ -33,6 +33,47 @@ postgresql:
 }
 
 #[test]
+fn project_config_accepts_registered_resource_aliases() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+pg:
+  version: latest
+mail:
+  env:
+    MAIL_HOST: "${host}"
+s3:
+  allocations:
+    app:
+      env:
+        S3_BUCKET: "${bucket}"
+"#,
+    )?;
+
+    assert_debug_snapshot!(config.resources);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_duplicate_resource_aliases() -> Result<()> {
+    let result = ProjectConfig::parse(
+        r#"
+postgres:
+  version: "16"
+pg:
+  version: latest
+"#,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::DuplicateResource { resource }) if resource == "postgres"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn project_config_rejects_anchors_unknown_keys_and_invalid_hostnames() -> Result<()> {
     let anchored = ProjectConfig::parse("php: &php 8.4\nother: *php\n");
     let unknown = ProjectConfig::parse("php: 8.4\nunexpected: true\n");
