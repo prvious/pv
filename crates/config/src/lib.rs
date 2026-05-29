@@ -520,13 +520,16 @@ fn validate_project_paths(
     }
 
     let absolute_document_root = project_root.join(document_root);
-    if !absolute_document_root.exists() {
-        return Err(ConfigError::DocumentRootNotDirectory {
-            document_root: document_root.clone(),
-        });
-    }
+    let canonical_document_root = match canonicalize_utf8(&absolute_document_root) {
+        Ok(path) => path,
+        Err(ConfigError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(ConfigError::DocumentRootNotDirectory {
+                document_root: document_root.clone(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
 
-    let canonical_document_root = canonicalize_utf8(&absolute_document_root)?;
     if !canonical_document_root.starts_with(project_root) {
         return Err(ConfigError::DocumentRootEscapesProject {
             document_root: document_root.clone(),

@@ -1,3 +1,5 @@
+use std::io;
+
 use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
@@ -296,6 +298,37 @@ fn project_config_rejects_document_roots_that_escape_project() -> Result<()> {
     assert!(matches!(
         result,
         Err(ConfigError::DocumentRootEscapesProject { document_root }) if document_root.as_str() == "../outside"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn project_config_distinguishes_missing_document_roots_from_filesystem_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "document_root: missing\n")?;
+
+    let missing = ProjectConfigFile::read_from_root(&project);
+
+    assert!(matches!(
+        missing,
+        Err(ConfigError::DocumentRootNotDirectory { document_root })
+            if document_root.as_str() == "missing"
+    ));
+
+    write_file(&project.join("not-a-directory"), "")?;
+    write_file(
+        &project.join("pv.yml"),
+        "document_root: not-a-directory/public\n",
+    )?;
+    let filesystem_error = ProjectConfigFile::read_from_root(&project);
+
+    assert!(matches!(
+        filesystem_error,
+        Err(ConfigError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::NotADirectory
     ));
 
     Ok(())
