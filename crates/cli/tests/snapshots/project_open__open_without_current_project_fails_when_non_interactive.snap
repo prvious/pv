@@ -1,0 +1,25 @@
+---
+source: crates/cli/tests/project_open.rs
+expression: "(link, open, opened_urls)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Linked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: could not resolve a linked Project; pass a hostname\n",
+    },
+    [],
+)

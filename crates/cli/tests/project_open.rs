@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
+use insta::assert_debug_snapshot;
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -90,16 +91,19 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     let link = run_pv(&["link"], &environment)?;
     environment.set_current_dir(&outside);
     let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
 
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
-    assert_eq!(environment.opened_urls(), vec!["https://acme.test"]);
-    assert!(open.stdout.contains("Select a Project:"));
-    assert!(open.stdout.contains("1. acme.test"));
-    assert!(
-        open.stdout
-            .contains("Opened https://acme.test for acme.test")
-    );
+    assert_eq!(opened_urls, vec!["https://acme.test"]);
+    assert!(link.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
 
     Ok(())
 }
@@ -117,11 +121,19 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     let link = run_pv(&["link"], &environment)?;
     environment.set_current_dir(&outside);
     let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
 
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::FAILURE);
-    assert!(environment.opened_urls().is_empty());
-    assert!(open.stderr.contains("could not resolve a linked Project"));
+    assert!(opened_urls.is_empty());
+    assert!(link.stderr.is_empty());
+    assert!(open.stdout.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
 
     Ok(())
 }

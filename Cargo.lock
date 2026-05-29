@@ -225,6 +225,7 @@ dependencies = [
  "config",
  "daemon",
  "home",
+ "insta",
  "state",
  "thiserror",
 ]

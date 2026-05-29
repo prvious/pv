@@ -20,3 +20,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }
+insta = { workspace = true }
