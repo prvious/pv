@@ -101,6 +101,9 @@ pub(crate) struct OpenArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ProjectEnvArgs {
+    #[arg(long, help = "Print generated Project environment values as JSON")]
+    pub(crate) json: bool,
+
     #[arg(value_name = "hostname", help = "Project hostname to render env for")]
     pub(crate) hostname: Option<String>,
 }

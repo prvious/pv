@@ -65,6 +65,7 @@ complete -c pv -n "__fish_pv_using_subcommand unlink" -l no-color -d 'Disable co
 complete -c pv -n "__fish_pv_using_subcommand unlink" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand open" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand open" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand project:env" -l json -d 'Print generated Project environment values as JSON'
 complete -c pv -n "__fish_pv_using_subcommand project:env" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand project:env" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand list" -l no-color -d 'Disable colored output'

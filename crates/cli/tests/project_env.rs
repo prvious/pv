@@ -115,6 +115,40 @@ mysql:
 }
 
 #[test]
+fn project_env_json_renders_generated_values() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"hostnames:
+  - api.acme.test
+mysql:
+  version: "8.0"
+  env:
+    DB_HOST: "${host}"
+  allocations:
+    app:
+      env:
+        DATABASE_URL: "mysql://${username}:${password}@${host}:${port}/${database}"
+        DB_DATABASE: "${database}"
+"#,
+    )?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    record_mysql_context(&home, &project_record)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let output = run_pv(&["project:env", "--json", "api.acme.test"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn project_env_returns_empty_output_for_no_mappings() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -128,6 +162,26 @@ fn project_env_returns_empty_output_for_no_mappings() -> anyhow::Result<()> {
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn project_env_json_returns_empty_object_for_no_mappings() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let environment = TestEnvironment::new(&home, &project_record.path);
+
+    let output = run_pv(&["project:env", "--json"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(output.stdout, "{}\n");
     assert!(output.stderr.is_empty());
     assert_debug_snapshot!(output);
 
@@ -159,6 +213,32 @@ fn project_env_writes_duplicate_warnings_to_stderr_without_mutating_dotenv() -> 
     assert_eq!(env_after, existing_env);
     assert!(jobs.is_empty());
     assert_debug_snapshot!((output, env_after, jobs));
+
+    Ok(())
+}
+
+#[test]
+fn project_env_json_keeps_duplicate_warnings_on_stderr() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    let env_path = project.join(".env");
+    let existing_env = "APP_URL=https://user.test\nOTHER=value\n";
+    write_file(&env_path, existing_env)?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let environment = TestEnvironment::new(&home, &project_record.path);
+
+    let output = run_pv(&["project:env", "--json"], &environment)?;
+    let env_after = read_file(&env_path)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(env_after, existing_env);
+    assert_debug_snapshot!((output, env_after));
 
     Ok(())
 }
@@ -284,6 +364,7 @@ fn record_mysql_context(home: &Utf8Path, project: &ProjectRecord) -> anyhow::Res
     database.mark_resource_allocation_ready(
         &project.id,
         "mysql",
+        "8.0",
         "app",
         &env_values(&[
             ("database", "acme_test_app"),

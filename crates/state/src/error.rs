@@ -115,6 +115,16 @@ pub enum StateError {
         allocation: String,
     },
 
+    #[error(
+        "Resource allocation `{allocation}` for Project `{project_id}` resource `{resource}` track `{track}` is not in desired state"
+    )]
+    ResourceAllocationNotDesired {
+        project_id: String,
+        resource: String,
+        track: String,
+        allocation: String,
+    },
+
     #[error("invalid Project env observed warning {kind} `{value}`")]
     InvalidProjectEnvObservedWarning { kind: &'static str, value: String },
 

@@ -23,37 +23,36 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project `<project_id>` resource `mysql` uses `latest`, but daemon reconciliation has no default-track resolver wired"),
             "job_id": String("job_000001"),
-            "type": String("job_failed"),
+            "message": String("Project env unchanged; no mappings configured"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "summary": String("Project env unchanged; no mappings configured"),
+            "type": String("job_completed"),
         },
     ],
-    None,
-    [],
-    [],
     Some(
-        ProjectEnvObservedStateRecord {
-            project_id: "<project_id>",
-            status: Failed,
-            message: Some(
-                "Project `<project_id>` resource `mysql` uses `latest`, but daemon reconciliation has no default-track resolver wired",
-            ),
-            observed_at: "<timestamp>",
-            warnings: [],
-        },
+        [
+            "api.acme.test",
+        ],
+    ),
+    Some(
+        "acme.test",
     ),
     JobRecord {
         id: "job_000001",
         kind: "reconcile",
         scope: "project:<project_id>",
-        status: Failed,
+        status: Succeeded,
         started_at: "<timestamp>",
         finished_at: Some(
             "<timestamp>",
         ),
-        summary: None,
-        error: Some(
-            "Project `<project_id>` resource `mysql` uses `latest`, but daemon reconciliation has no default-track resolver wired",
+        summary: Some(
+            "Project env unchanged; no mappings configured",
         ),
+        error: None,
     },
 )

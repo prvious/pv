@@ -8,8 +8,8 @@ use config::{
     ResourceEnvContext,
 };
 use state::{
-    Database, LinkProjectInput, LinkProjectStatus, ProjectEnvStateContext, ProjectRecord, PvPaths,
-    StateError,
+    Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
+    ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectRecord, PvPaths, StateError,
 };
 
 use crate::args::{LinkArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
@@ -128,13 +128,21 @@ pub(crate) fn env(
 
     let context = project_env_context(database.project_env_context(&project.id)?);
     let rendered = config::render_project_env(&config_file.config, &context)?;
+    let existing_env = read_project_env_file(&project.path)?;
+    let transform = config::transform_managed_env_block(existing_env.as_deref(), &rendered)?;
+
+    if args.json {
+        serde_json::to_writer(&mut *stdout, &rendered.values)?;
+        writeln!(stdout)?;
+        write_project_env_warnings(&transform.warnings, stderr)?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let content = config::format_project_env(&rendered);
     if content.is_empty() {
         return Ok(ExitCode::SUCCESS);
     }
-
-    let existing_env = read_project_env_file(&project.path)?;
-    let transform = config::transform_managed_env_block(existing_env.as_deref(), &rendered)?;
 
     write!(stdout, "{content}")?;
     write_project_env_warnings(&transform.warnings, stderr)?;
@@ -158,7 +166,7 @@ pub(crate) fn list(
 
     output.line("Hostname  PHP  Status  Resources  Env  Path")?;
     for project in projects {
-        let status = project_list_status(&database, &project);
+        let status = project_list_status(&database, &project)?;
         output.line(&format!(
             "{}  {}  {}  unknown  {}  {}",
             project.primary_hostname,
@@ -169,6 +177,9 @@ pub(crate) fn list(
         ))?;
         if let Some(error) = status.config_error {
             output.line(&format!("  config: {error}"))?;
+        }
+        if let Some(detail) = status.env_detail {
+            output.line(&format!("  env: {detail}"))?;
         }
     }
 
@@ -399,6 +410,7 @@ struct ProjectListStatus {
     project: ProjectStatus,
     env: ProjectEnvStatus,
     config_error: Option<String>,
+    env_detail: Option<String>,
 }
 
 enum ProjectStatus {
@@ -416,30 +428,40 @@ impl ProjectStatus {
 }
 
 enum ProjectEnvStatus {
-    Configured,
+    Failed,
     Invalid,
     None,
+    Pending,
+    Rendered,
+    Warning,
 }
 
 impl ProjectEnvStatus {
     const fn as_str(&self) -> &'static str {
         match self {
-            Self::Configured => "configured",
+            Self::Failed => "failed",
             Self::Invalid => "invalid",
             Self::None => "none",
+            Self::Pending => "pending",
+            Self::Rendered => "rendered",
+            Self::Warning => "warning",
         }
     }
 }
 
-fn project_list_status(database: &Database, project: &ProjectRecord) -> ProjectListStatus {
+fn project_list_status(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectListStatus, ExecuteError> {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
-            return ProjectListStatus {
+            return Ok(ProjectListStatus {
                 project: ProjectStatus::ConfigInvalid,
                 env: ProjectEnvStatus::Invalid,
                 config_error: Some(error.to_string()),
-            };
+                env_detail: None,
+            });
         }
     };
     if let Err(error) = database.validate_project_hostnames(
@@ -447,29 +469,72 @@ fn project_list_status(database: &Database, project: &ProjectRecord) -> ProjectL
         &project.primary_hostname,
         &config_file.config.hostnames,
     ) {
-        return ProjectListStatus {
+        return Ok(ProjectListStatus {
             project: ProjectStatus::ConfigInvalid,
             env: ProjectEnvStatus::Invalid,
             config_error: Some(error.to_string()),
-        };
+            env_detail: None,
+        });
     }
 
-    let env = if !config_file.config.env.is_empty()
+    let has_env_mappings = !config_file.config.env.is_empty()
         || config_file.config.resources.values().any(|resource| {
             !resource.env.is_empty()
                 || resource
                     .allocations
                     .values()
                     .any(|allocation| !allocation.env.is_empty())
-        }) {
-        ProjectEnvStatus::Configured
-    } else {
-        ProjectEnvStatus::None
-    };
+        });
+    let (env, env_detail) = project_list_env_status(
+        has_env_mappings,
+        database.project_env_observed_state(&project.id)?,
+    );
 
-    ProjectListStatus {
+    Ok(ProjectListStatus {
         project: ProjectStatus::Unknown,
         env,
         config_error: None,
+        env_detail,
+    })
+}
+
+fn project_list_env_status(
+    has_env_mappings: bool,
+    observed: Option<ProjectEnvObservedStateRecord>,
+) -> (ProjectEnvStatus, Option<String>) {
+    let Some(observed) = observed else {
+        return if has_env_mappings {
+            (ProjectEnvStatus::Pending, None)
+        } else {
+            (ProjectEnvStatus::None, None)
+        };
+    };
+
+    match observed.status {
+        ProjectEnvObservedStatus::Failed => (
+            ProjectEnvStatus::Failed,
+            observed.message.map(|message| format!("failed: {message}")),
+        ),
+        ProjectEnvObservedStatus::Pending => (ProjectEnvStatus::Pending, None),
+        ProjectEnvObservedStatus::Rendered if has_env_mappings => {
+            (ProjectEnvStatus::Rendered, None)
+        }
+        ProjectEnvObservedStatus::Rendered => (ProjectEnvStatus::None, None),
+        ProjectEnvObservedStatus::Warning => (
+            ProjectEnvStatus::Warning,
+            Some(project_env_observed_warning_summary(&observed)),
+        ),
+    }
+}
+
+fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord) -> String {
+    match observed.warnings.as_slice() {
+        [warning] => format!("warning: {}", warning.message),
+        [] => observed
+            .message
+            .as_ref()
+            .map(|message| format!("warning: {message}"))
+            .unwrap_or_else(|| "warning".to_string()),
+        warnings => format!("warning: {} warnings", warnings.len()),
     }
 }

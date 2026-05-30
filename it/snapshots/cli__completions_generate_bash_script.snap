@@ -225,7 +225,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__project:env)
-            opts="-h --no-color --help [hostname]"
+            opts="-h --json --no-color --help [hostname]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

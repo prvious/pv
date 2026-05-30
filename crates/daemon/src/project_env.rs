@@ -4,10 +4,14 @@ use config::{
     AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
     ResourceEnvContext,
 };
-use resources::{ConcreteTrackName, ResourceName, TrackSelector, generated_allocation_name};
+use resources::{
+    ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector,
+    generated_allocation_name,
+};
 use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectEnvStateContext,
-    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
+    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
+    ResourceAllocationRecord, StateError,
 };
 
 use crate::DaemonError;
@@ -47,7 +51,7 @@ pub(crate) fn reconcile_project_env(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(&mut database, &project) {
+    match reconcile_loaded_project(paths, &mut database, &project) {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();
@@ -59,6 +63,7 @@ pub(crate) fn reconcile_project_env(
 }
 
 fn reconcile_loaded_project(
+    paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
@@ -69,19 +74,21 @@ fn reconcile_loaded_project(
         &project.primary_hostname,
         &config_file.config.hostnames,
     )?;
+    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+    config::validate_project_env_shape(&config_file.config)?;
 
-    let plan = project_resource_plan(project, &config_file.config)?;
+    let plan = project_resource_plan(paths, database, project, &config_file.config)?;
     apply_project_resource_plan(database, &project.id, plan)?;
 
     let context = project_env_context(database.project_env_context(&project.id)?);
     let rendered = config::render_project_env(&config_file.config, &context)?;
 
     if !has_env_mappings(&config_file.config) {
-        database.replace_project_env_observed_warnings(&project.id, &[])?;
-        database.record_project_env_observed_state(
+        database.record_project_env_observed_snapshot(
             &project.id,
             ProjectEnvObservedStatus::Rendered,
             Some("no Project env mappings configured"),
+            &[],
         )?;
 
         return Ok(ProjectEnvReconciliationSummary {
@@ -102,8 +109,7 @@ fn reconcile_loaded_project(
         "rendered Project env with warnings"
     };
 
-    database.replace_project_env_observed_warnings(&project.id, &warnings)?;
-    database.record_project_env_observed_state(&project.id, status, Some(message))?;
+    database.record_project_env_observed_snapshot(&project.id, status, Some(message), &warnings)?;
 
     let summary = if warnings.is_empty() {
         ProjectEnvReconciliationSummary {
@@ -119,6 +125,8 @@ fn reconcile_loaded_project(
 }
 
 fn project_resource_plan(
+    paths: &PvPaths,
+    database: &Database,
     project: &ProjectRecord,
     config: &ProjectConfig,
 ) -> Result<ProjectResourcePlan, DaemonError> {
@@ -126,35 +134,31 @@ fn project_resource_plan(
     let mut allocation_plans = BTreeMap::new();
 
     for (resource, resource_config) in &config.resources {
-        if resource_config
-            .track
-            .as_deref()
-            .is_some_and(TrackSelector::is_reserved_alias)
-        {
-            return Err(DaemonError::UnresolvedProjectResourceLatest {
-                project_id: project.id.clone(),
-                resource: resource.clone(),
-            });
-        }
-
         let resource_name = ResourceName::new(resource.clone())?;
-        let concrete_track =
-            ConcreteTrackName::required(&resource_name, resource_config.track.as_deref())?;
-        let track = concrete_track.as_str().to_string();
+        let track = resolved_project_resource_track(
+            paths,
+            &resource_name,
+            resource_config.track.as_deref(),
+        )?;
 
         resources.push(ProjectManagedResourceInput {
             resource_name: resource.clone(),
             track: track.clone(),
         });
 
+        let existing_allocations = database
+            .resource_allocations(&project.id, resource)?
+            .into_iter()
+            .map(|allocation| (allocation.allocation_name.clone(), allocation))
+            .collect::<BTreeMap<_, _>>();
         let mut allocations = Vec::new();
         for allocation in resource_config.allocations.keys() {
-            let generated =
-                generated_allocation_name(resource, &project.primary_hostname, allocation)?;
+            let generated_name =
+                allocation_generated_name(resource, project, allocation, &existing_allocations)?;
 
             allocations.push(ResourceAllocationInput {
                 allocation_name: allocation.clone(),
-                generated_name: generated.generated_name().to_string(),
+                generated_name,
             });
         }
 
@@ -168,6 +172,44 @@ fn project_resource_plan(
         resources,
         allocations: allocation_plans,
     })
+}
+
+fn allocation_generated_name(
+    resource: &str,
+    project: &ProjectRecord,
+    allocation: &str,
+    existing_allocations: &BTreeMap<String, ResourceAllocationRecord>,
+) -> Result<String, DaemonError> {
+    if let Some(existing) = existing_allocations.get(allocation) {
+        return Ok(existing.generated_name.clone());
+    }
+
+    let generated = generated_allocation_name(resource, &project.primary_hostname, allocation)?;
+
+    Ok(generated.generated_name().to_string())
+}
+
+fn resolved_project_resource_track(
+    paths: &PvPaths,
+    resource_name: &ResourceName,
+    selector: Option<&str>,
+) -> Result<String, DaemonError> {
+    let Some(selector) = selector else {
+        let concrete_track = ConcreteTrackName::required(resource_name, None)?;
+        return Ok(concrete_track.as_str().to_string());
+    };
+    let selector = TrackSelector::parse(selector.to_string())?;
+    let track = match selector {
+        TrackSelector::Latest => ArtifactManifestCache::new(paths.downloads())
+            .load_cached()?
+            .resolve_track(resource_name, TrackSelector::Latest)?
+            .as_str()
+            .to_string(),
+        TrackSelector::Track(track) => track.as_str().to_string(),
+    };
+    let concrete_track = ConcreteTrackName::new(track)?;
+
+    Ok(concrete_track.as_str().to_string())
 }
 
 fn apply_project_resource_plan(
@@ -273,11 +315,11 @@ fn record_project_env_failure(
     project_id: &str,
     message: &str,
 ) -> Result<(), DaemonError> {
-    database.replace_project_env_observed_warnings(project_id, &[])?;
-    database.record_project_env_observed_state(
+    database.record_project_env_observed_snapshot(
         project_id,
         ProjectEnvObservedStatus::Failed,
         Some(message),
+        &[],
     )?;
 
     Ok(())

@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use state::{Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths};
 
 #[derive(Debug)]
 struct CommandOutput {
@@ -343,6 +344,54 @@ fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_reports_env_observed_status() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let list_pending = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    let paths = PvPaths::for_home(home.clone());
+    let mut database = Database::open(&paths)?;
+    let linked_project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    let list_warning = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("Project config error: duplicate rendered Project env key `DATABASE_URL`"),
+        &[],
+    )?;
+    let list_failed = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list_pending, list_warning, list_failed));
     });
 
     Ok(())

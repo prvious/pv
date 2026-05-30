@@ -1,6 +1,5 @@
 ---
 source: crates/state/tests/state_foundation.rs
-assertion_line: 40
 expression: database.inspect()?
 ---
 DatabaseInspection {
@@ -12,13 +11,16 @@ DatabaseInspection {
         "002:managed_resource_removal_intent",
         "003:project_primary_hostname_updates",
         "004:project_original_path",
+        "005:project_resource_requirements",
     ],
     tables: [
         "jobs",
         "managed_resource_tracks",
         "observed_states",
         "ports",
+        "project_env_observed_warnings",
         "project_hostnames",
+        "project_managed_resources",
         "projects",
         "pv_migrations",
         "resource_allocations",

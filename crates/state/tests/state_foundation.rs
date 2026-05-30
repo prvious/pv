@@ -617,6 +617,7 @@ fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()>
     let ready = database.mark_resource_allocation_ready(
         &project.id,
         "mysql",
+        "8.0",
         "app-db",
         &env_context(&[("database", "acme_test_app_db")]),
     )?;
@@ -637,6 +638,94 @@ fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()>
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!((created, ready, context, removed, after_removal, readded));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_allocation_ready_requires_desired_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    let desired = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let wrong_track = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.4",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let ready = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let already_ready = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let switched = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.4",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let stale_track = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let removed =
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.4", &[])?;
+    let inactive = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.4",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+
+    assert!(matches!(
+        wrong_track,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.4"
+    ));
+    assert!(matches!(
+        already_ready,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.0"
+    ));
+    assert!(matches!(
+        stale_track,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.0"
+    ));
+    assert!(matches!(
+        inactive,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.4"
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((desired, ready, switched, removed));
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -763,13 +852,16 @@ fn project_env_observed_status_and_warnings_round_trip() -> Result<()> {
     let mut database = Database::open(&paths)?;
     let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
 
-    let pending = database.record_project_env_observed_state(
+    let pending = database.record_project_env_observed_snapshot(
         &project.id,
         ProjectEnvObservedStatus::Pending,
         None,
+        &[],
     )?;
-    let warnings = database.replace_project_env_observed_warnings(
+    let warning_state = database.record_project_env_observed_snapshot(
         &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
         &[
             ProjectEnvObservedWarningInput {
                 kind: "duplicate_key".to_string(),
@@ -781,14 +873,60 @@ fn project_env_observed_status_and_warnings_round_trip() -> Result<()> {
             },
         ],
     )?;
-    let warning_state = database.record_project_env_observed_state(
+    let failed = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("render failed"),
+        &[],
+    )?;
+    let invalid_warning = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("invalid warning"),
+        &[ProjectEnvObservedWarningInput {
+            kind: String::new(),
+            message: "invalid warning should not change stored state".to_string(),
+        }],
+    );
+    let after_invalid_warning = database.project_env_observed_state(&project.id)?;
+
+    assert!(matches!(
+        invalid_warning,
+        Err(StateError::InvalidProjectEnvObservedWarning { kind: "kind", .. })
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((pending, warning_state, failed, after_invalid_warning));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn unlink_project_clears_project_env_observed_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.record_project_env_observed_snapshot(
         &project.id,
         ProjectEnvObservedStatus::Warning,
         Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
     )?;
 
+    let before_unlink = database.project_env_observed_state(&project.id)?;
+    let unlinked = database.unlink_project(&project.id)?;
+    let after_unlink = database.project_env_observed_state(&project.id)?;
+
+    assert_eq!(unlinked.id, project.id);
     with_normalized_timestamps(|| {
-        assert_debug_snapshot!((pending, warnings, warning_state));
+        assert_debug_snapshot!((before_unlink, after_unlink));
         Ok::<(), anyhow::Error>(())
     })?;
 

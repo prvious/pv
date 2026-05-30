@@ -37,6 +37,9 @@ pub(crate) enum ExecuteError {
     Io(#[from] io::Error),
 
     #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
     Daemon(#[from] daemon::DaemonError),
 
     #[error(transparent)]

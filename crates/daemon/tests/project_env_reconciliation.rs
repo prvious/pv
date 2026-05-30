@@ -81,6 +81,46 @@ async fn seeded_resource_and_allocation_contexts_render_dotenv() -> Result<()> {
 }
 
 #[tokio::test]
+async fn existing_allocation_name_survives_primary_hostname_change() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DB_DATABASE: "${database}"
+"#,
+    )?;
+    seed_mysql_context(&paths, &project)?;
+    let project = update_project_primary_hostname(
+        &paths,
+        &project,
+        "renamed-primary-hostname-that-would-exceed-db-name-limit.test",
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "existing_allocation_name_survives_primary_hostname_change",
+        (
+            lines,
+            read_optional_dotenv(&project)?,
+            database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn missing_context_leaves_dotenv_unchanged_and_records_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -168,6 +208,44 @@ async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<(
 }
 
 #[tokio::test]
+async fn duplicate_rendered_env_key_leaves_resource_state_unchanged() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    analytics:
+      env:
+        DATABASE_URL: "mysql://${database}"
+    app:
+      env:
+        DATABASE_URL: "mysql://${database}"
+"#,
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "duplicate_rendered_env_key_leaves_resource_state_unchanged",
+        (
+            lines,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn no_mappings_do_not_touch_existing_dotenv_and_record_noop_success() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -196,7 +274,41 @@ async fn no_mappings_do_not_touch_existing_dotenv_and_record_noop_success() -> R
 }
 
 #[tokio::test]
-async fn latest_resource_track_fails_before_state_or_dotenv_writes() -> Result<()> {
+async fn config_declared_hostnames_are_persisted_during_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "hostnames:\n  - api.acme.test\nphp: \"8.4\"\n",
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let linked_hostnames = database
+        .project_by_id(&project.id)?
+        .map(|project| project.additional_hostnames);
+    let resolved_primary = database
+        .project_by_hostname("api.acme.test")?
+        .map(|project| project.primary_hostname);
+
+    assert_with_normalized_timestamps(
+        "config_declared_hostnames_are_persisted_during_reconciliation",
+        (
+            lines,
+            linked_hostnames,
+            resolved_primary,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_writes() -> Result<()>
+{
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project(
@@ -205,12 +317,14 @@ async fn latest_resource_track_fails_before_state_or_dotenv_writes() -> Result<(
         "acme.test",
         "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
+    seed_manifest(&paths)?;
+    seed_mysql_resource_context(&paths)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
 
     assert_with_normalized_timestamps(
-        "latest_resource_track_fails_before_state_or_dotenv_writes",
+        "latest_resource_track_resolves_default_track_before_state_and_dotenv_writes",
         (
             lines,
             read_optional_dotenv(&project)?,
@@ -291,19 +405,28 @@ fn link_project(
     Ok(result.project)
 }
 
+fn update_project_primary_hostname(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    primary_hostname: &str,
+) -> Result<ProjectRecord> {
+    let mut database = Database::open(paths)?;
+    let result = database.link_project(LinkProjectInput {
+        path: project.path.clone(),
+        original_path: project.original_path.clone(),
+        primary_hostname: primary_hostname.to_string(),
+        config_path: project.config_path.clone(),
+        desired_php_track: project.desired_php_track.clone(),
+        additional_hostnames: project.additional_hostnames.clone(),
+    })?;
+
+    Ok(result.project)
+}
+
 fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
     let mut database = Database::open(paths)?;
 
-    database.record_managed_resource_track_env_context(
-        "mysql",
-        "8.0",
-        &env_context(&[
-            ("host", "127.0.0.1"),
-            ("password", "secret"),
-            ("port", "3306"),
-            ("username", "root"),
-        ]),
-    )?;
+    seed_mysql_resource_context_in_database(&mut database)?;
     database.replace_project_managed_resources(
         &project.id,
         &[ProjectManagedResourceInput {
@@ -323,9 +446,36 @@ fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
     database.mark_resource_allocation_ready(
         &project.id,
         "mysql",
+        "8.0",
         "app-db",
         &env_context(&[("database", "acme_test_app_db")]),
     )?;
+
+    Ok(())
+}
+
+fn seed_mysql_resource_context(paths: &PvPaths) -> Result<()> {
+    let mut database = Database::open(paths)?;
+    seed_mysql_resource_context_in_database(&mut database)
+}
+
+fn seed_mysql_resource_context_in_database(database: &mut Database) -> Result<()> {
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[
+            ("host", "127.0.0.1"),
+            ("password", "secret"),
+            ("port", "3306"),
+            ("username", "root"),
+        ]),
+    )?;
+
+    Ok(())
+}
+
+fn seed_manifest(paths: &PvPaths) -> Result<()> {
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), TEST_MANIFEST)?;
 
     Ok(())
 }
@@ -376,3 +526,33 @@ fn assert_with_normalized_timestamps(
         Ok::<(), anyhow::Error>(())
     })
 }
+
+const TEST_MANIFEST: &str = r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "mysql",
+      "default_track": "8.0",
+      "tracks": [
+        {
+          "name": "8.0",
+          "artifacts": [
+            {
+              "artifact_version": "8.0.42-pv1",
+              "upstream_version": "8.0.42",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/mysql-8.0.42-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#;

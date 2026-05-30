@@ -124,6 +124,30 @@ pub fn render_project_env(
     Ok(RenderedProjectEnv { values })
 }
 
+pub fn validate_project_env_shape(config: &ProjectConfig) -> Result<(), ConfigError> {
+    let mut resource_values = BTreeMap::new();
+    for (resource, resource_config) in &config.resources {
+        for key in resource_config.env.keys() {
+            insert_same_depth_key(&mut resource_values, key, format!("{resource}.env.{key}"))?;
+        }
+    }
+
+    let mut allocation_values = BTreeMap::new();
+    for (resource, resource_config) in &config.resources {
+        for (allocation, allocation_config) in &resource_config.allocations {
+            for key in allocation_config.env.keys() {
+                insert_same_depth_key(
+                    &mut allocation_values,
+                    key,
+                    format!("{resource}.allocations.{allocation}.env.{key}"),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn format_project_env(rendered: &RenderedProjectEnv) -> String {
     if rendered.values.is_empty() {
         return String::new();
@@ -349,6 +373,23 @@ fn insert_same_depth_entries(
         }
         entries.insert(key, entry);
     }
+
+    Ok(())
+}
+
+fn insert_same_depth_key(
+    entries: &mut BTreeMap<String, String>,
+    key: &str,
+    source: String,
+) -> Result<(), ConfigError> {
+    if let Some(existing) = entries.get(key) {
+        return Err(ConfigError::DuplicateRenderedEnvKey {
+            key: key.to_string(),
+            first: existing.clone(),
+            second: source,
+        });
+    }
+    entries.insert(key.to_string(), source);
 
     Ok(())
 }

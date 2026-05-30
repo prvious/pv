@@ -1,6 +1,6 @@
 ---
 source: crates/state/tests/state_foundation.rs
-expression: "(pending, warnings, warning_state)"
+expression: "(pending, warning_state, failed, after_invalid_warning)"
 ---
 (
     ProjectEnvObservedStateRecord {
@@ -10,20 +10,6 @@ expression: "(pending, warnings, warning_state)"
         observed_at: "<timestamp>",
         warnings: [],
     },
-    [
-        ProjectEnvObservedWarningRecord {
-            project_id: "<project_id>",
-            kind: "duplicate_key",
-            message: "APP_URL already exists outside the PV block",
-            observed_at: "<timestamp>",
-        },
-        ProjectEnvObservedWarningRecord {
-            project_id: "<project_id>",
-            kind: "duplicate_key",
-            message: "DATABASE_URL already exists outside the PV block",
-            observed_at: "<timestamp>",
-        },
-    ],
     ProjectEnvObservedStateRecord {
         project_id: "<project_id>",
         status: Warning,
@@ -46,4 +32,24 @@ expression: "(pending, warnings, warning_state)"
             },
         ],
     },
+    ProjectEnvObservedStateRecord {
+        project_id: "<project_id>",
+        status: Failed,
+        message: Some(
+            "render failed",
+        ),
+        observed_at: "<timestamp>",
+        warnings: [],
+    },
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Failed,
+            message: Some(
+                "render failed",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
 )

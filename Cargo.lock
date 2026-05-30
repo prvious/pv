@@ -226,6 +226,7 @@ dependencies = [
  "daemon",
  "home",
  "insta",
+ "serde_json",
  "state",
  "thiserror",
 ]
@@ -919,6 +920,7 @@ dependencies = [
  "camino-tempfile",
  "cli",
  "insta",
+ "state",
 ]
 
 [[package]]

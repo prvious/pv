@@ -10,7 +10,7 @@ pub use env::{
     AllocationEnvContext, MANAGED_ENV_END_MARKER, MANAGED_ENV_START_MARKER,
     ManagedEnvBlockTransform, ProjectEnvContext, ProjectEnvWarning, RenderedProjectEnv,
     ResourceEnvContext, format_env_value, format_project_env, render_project_env,
-    transform_managed_env_block, write_project_env_file,
+    transform_managed_env_block, validate_project_env_shape, write_project_env_file,
 };
 pub use error::ConfigError;
 pub use hostname::{

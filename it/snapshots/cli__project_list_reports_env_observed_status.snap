@@ -1,0 +1,34 @@
+---
+source: it/cli.rs
+expression: "(link, list_pending, list_warning, list_failed)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  pending  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: APP_URL already exists outside the PV block\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  failed  <tempdir>/Acme Store\n  env: failed: Project config error: duplicate rendered Project env key `DATABASE_URL`\n",
+        stderr: "",
+    },
+)

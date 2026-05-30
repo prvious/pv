@@ -104,6 +104,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (project:env)
 _arguments "${_arguments_options[@]}" : \
+'--json[Print generated Project environment values as JSON]' \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \

@@ -535,6 +535,10 @@ impl Database {
                 target: project_id.to_string(),
             }
         })?;
+        transaction.execute(
+            "DELETE FROM observed_states WHERE subject_kind = ?1 AND subject_id = ?2",
+            params![PROJECT_ENV_OBSERVED_SUBJECT_KIND, project_id],
+        )?;
         let deleted =
             transaction.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
         if deleted == 0 {
@@ -560,6 +564,50 @@ impl Database {
             primary_hostname,
             additional_hostnames,
         )
+    }
+
+    pub fn replace_project_additional_hostnames(
+        &mut self,
+        project_id: &str,
+        additional_hostnames: &[String],
+    ) -> Result<ProjectRecord, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        validate_project_hostname_set(
+            &transaction,
+            project_id,
+            &project.primary_hostname,
+            additional_hostnames,
+        )?;
+
+        if sorted_hostnames(&project.additional_hostnames) != sorted_hostnames(additional_hostnames)
+        {
+            let input = LinkProjectInput {
+                path: project.path.clone(),
+                original_path: project.original_path.clone(),
+                primary_hostname: project.primary_hostname.clone(),
+                config_path: project.config_path.clone(),
+                desired_php_track: project.desired_php_track.clone(),
+                additional_hostnames: additional_hostnames.to_vec(),
+            };
+            update_project_in_transaction(&transaction, project_id, &input)?;
+            replace_project_hostnames_in_transaction(&transaction, project_id, &input)?;
+        }
+
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        transaction.commit()?;
+
+        Ok(project)
     }
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
@@ -980,13 +1028,16 @@ impl Database {
         &mut self,
         project_id: &str,
         resource_name: &str,
+        track: &str,
         allocation_name: &str,
         env: &EnvContextValues,
     ) -> Result<ResourceAllocationRecord, StateError> {
         validate_resource_allocation_identity("resource", resource_name)?;
+        validate_concrete_track(track)?;
         validate_resource_allocation_identity("allocation", allocation_name)?;
-        let context =
-            format!("resource allocation {project_id:?}/{resource_name:?}/{allocation_name:?}");
+        let context = format!(
+            "resource allocation {project_id:?}/{resource_name:?}/{track:?}/{allocation_name:?}"
+        );
         let env_json = serialize_env_context(&context, env)?;
         let updated_at = timestamp()?;
         let updated = self.connection.execute(
@@ -996,20 +1047,31 @@ impl Database {
                 updated_at = ?3
             WHERE project_id = ?4
             AND resource_name = ?5
-            AND allocation_name = ?6",
+            AND track = ?6
+            AND allocation_name = ?7
+            AND status = ?8",
             params![
                 ResourceAllocationStatus::Ready.as_str(),
                 env_json,
                 updated_at,
                 project_id,
                 resource_name,
+                track,
                 allocation_name,
+                ResourceAllocationStatus::Desired.as_str(),
             ],
         )?;
         if updated == 0 {
-            return Err(StateError::ResourceAllocationNotFound {
+            resource_allocation_by_key(
+                &self.connection,
+                project_id,
+                resource_name,
+                allocation_name,
+            )?;
+            return Err(StateError::ResourceAllocationNotDesired {
                 project_id: project_id.to_string(),
                 resource: resource_name.to_string(),
+                track: track.to_string(),
                 allocation: allocation_name.to_string(),
             });
         }
@@ -1067,12 +1129,14 @@ impl Database {
         })
     }
 
-    pub fn record_project_env_observed_state(
+    pub fn record_project_env_observed_snapshot(
         &mut self,
         project_id: &str,
         status: ProjectEnvObservedStatus,
         message: Option<&str>,
+        warnings: &[ProjectEnvObservedWarningInput],
     ) -> Result<ProjectEnvObservedStateRecord, StateError> {
+        validate_project_env_observed_warnings(warnings)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1099,25 +1163,6 @@ impl Database {
                 observed_at,
             ],
         )?;
-        transaction.commit()?;
-
-        self.project_env_observed_state(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            })
-    }
-
-    pub fn replace_project_env_observed_warnings(
-        &mut self,
-        project_id: &str,
-        warnings: &[ProjectEnvObservedWarningInput],
-    ) -> Result<Vec<ProjectEnvObservedWarningRecord>, StateError> {
-        validate_project_env_observed_warnings(warnings)?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_project_exists_in_transaction(&transaction, project_id)?;
-        let observed_at = timestamp()?;
         transaction.execute(
             "DELETE FROM project_env_observed_warnings WHERE project_id = ?1",
             params![project_id],
@@ -1141,10 +1186,12 @@ impl Database {
             )?;
         }
 
-        let records = project_env_observed_warnings_in_connection(&transaction, project_id)?;
         transaction.commit()?;
 
-        Ok(records)
+        self.project_env_observed_state(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            })
     }
 
     pub fn project_env_observed_state(
