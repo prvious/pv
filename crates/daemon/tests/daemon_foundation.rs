@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use state::{Database, JobRecord, JobStatus, PvPaths};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
 #[tokio::test]
@@ -102,6 +102,107 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
         "valid_reconciliation_scopes_stream_stub_completion",
         (project_lines, resource_lines, database.recent_jobs()?),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let client_paths = paths.clone();
+
+    let submitted = tokio::task::spawn_blocking(move || {
+        daemon::submit_job_blocking(client_paths, "reconcile", "project:project_1")
+    })
+    .await??;
+    let job = wait_for_succeeded_job_id(&paths, &submitted.id).await?;
+    daemon.shutdown().await?;
+
+    assert_eq!(job.kind, "reconcile");
+    assert_eq!(job.scope, "project:project_1");
+    assert_eq!(job.status, JobStatus::Succeeded);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocking_client_rejects_protocol_mismatch_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let listener = UnixListener::bind(paths.daemon_socket())?;
+    let server = tokio::spawn(async move {
+        let (mut stream, _address) = listener.accept().await?;
+        let mut request = String::new();
+        let mut reader = BufReader::new(&mut stream);
+        reader.read_line(&mut request).await?;
+        drop(reader);
+        stream
+            .write_all(
+                format!(
+                    "{}\n",
+                    json!({
+                        "type": "response",
+                        "protocol_version": daemon::PROTOCOL_VERSION + 1,
+                        "status": "accepted",
+                        "message": "job accepted",
+                        "job_id": "job_1",
+                    })
+                )
+                .as_bytes(),
+            )
+            .await?;
+
+        Ok::<(), anyhow::Error>(())
+    });
+    let client_paths = paths.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        daemon::submit_job_blocking(client_paths, "reconcile", "system")
+    })
+    .await?;
+
+    server.await??;
+    assert!(matches!(
+        result,
+        Err(daemon::DaemonError::ProtocolMismatch {
+            expected: daemon::PROTOCOL_VERSION,
+            actual,
+        }) if actual == daemon::PROTOCOL_VERSION + 1
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let listener = UnixListener::bind(paths.daemon_socket())?;
+    let server = tokio::spawn(async move {
+        let (mut stream, _address) = listener.accept().await?;
+        let mut request = String::new();
+        let mut reader = BufReader::new(&mut stream);
+        reader.read_line(&mut request).await?;
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        Ok::<(), anyhow::Error>(())
+    });
+    let client_paths = paths.clone();
+    let client = tokio::task::spawn_blocking(move || {
+        daemon::submit_job_blocking(client_paths, "reconcile", "system")
+    });
+
+    let result = timeout(Duration::from_secs(5), client).await??;
+
+    server.abort();
+    assert!(matches!(
+        result,
+        Err(daemon::DaemonError::ProtocolTimedOut { phase }) if phase == "response"
+    ));
 
     Ok(())
 }
@@ -369,6 +470,23 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     }
 
     Ok(lines)
+}
+
+async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecord> {
+    for _attempt in 0..50 {
+        let database = Database::open(paths)?;
+        if let Some(job) = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == id && job.status == JobStatus::Succeeded)
+        {
+            return Ok(job);
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    Err(anyhow!("succeeded job with id {id:?} was not recorded"))
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {

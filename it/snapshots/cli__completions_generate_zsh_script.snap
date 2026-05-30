@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 219
 expression: output.stdout
 ---
 #compdef pv
@@ -77,6 +78,38 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(link)
+_arguments "${_arguments_options[@]}" : \
+'--hostname=[Primary .test hostname]:hostname:_default' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::path -- Project path to link:_default' \
+&& ret=0
+;;
+(unlink)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::hostname -- Project hostname to unlink:_default' \
+&& ret=0
+;;
+(open)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::hostname -- Project hostname to open:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (php:install)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -99,6 +132,10 @@ _pv_commands() {
 'daemon:disable:Disable the PV login daemon' \
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
+'link:Link a Project' \
+'unlink:Unlink a Project' \
+'open:Open a linked Project' \
+'list:List linked Projects' \
 'php:install:Install a PHP track' \
     )
     _describe -t commands 'pv commands' commands "$@"
@@ -133,10 +170,30 @@ _pv__subcmd__env_commands() {
     local commands; commands=()
     _describe -t commands 'pv env commands' commands "$@"
 }
+(( $+functions[_pv__subcmd__link_commands] )) ||
+_pv__subcmd__link_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv link commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__list_commands] )) ||
+_pv__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__open_commands] )) ||
+_pv__subcmd__open_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv open commands' commands "$@"
+}
 (( $+functions[_pv__subcmd__php:install_commands] )) ||
 _pv__subcmd__php:install_commands() {
     local commands; commands=()
     _describe -t commands 'pv php:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__unlink_commands] )) ||
+_pv__subcmd__unlink_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv unlink commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_pv" ]; then

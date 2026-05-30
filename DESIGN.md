@@ -458,9 +458,9 @@ Managed Resource list commands, such as `pv php:list` and `pv mysql:list`, list 
 
 `pv php:list` marks the global default PHP track and may show Project usage counts for each installed track.
 
-PV supports command aliases for ergonomics: `pg` for Postgres, `mail` for Mailpit, and `s3` for RustFS. Help output and documentation show canonical resource namespaces first, such as `postgres:*`, while documenting aliases as secondary.
+PV supports Managed Resource aliases for ergonomics: `pg` for Postgres, `mail` for Mailpit, and `s3` for RustFS. Command help output and documentation show canonical resource namespaces first, such as `postgres:*`, while documenting aliases as secondary.
 
-The canonical Managed Resource name is `postgres` for commands, filesystem paths, and internal state. Project config may accept `postgresql` as an alias.
+The canonical Managed Resource name is `postgres` for commands, filesystem paths, Project config storage, and internal state. Project config accepts registered Managed Resource aliases, including `postgresql`, and normalizes them to canonical names.
 
 Project config, command namespaces, filesystem paths, and internal state use canonical lowercase Managed Resource names: `mysql`, `postgres`, `redis`, `mailpit`, and `rustfs`. Prose may use display names such as MySQL, Postgres, Redis, Mailpit, and RustFS.
 
@@ -776,7 +776,7 @@ Project config can override the served document root with `document_root:`. The 
 
 Project config validation rejects unknown top-level keys and unknown nested keys with clear errors. Typos in resource, env, or allocation sections fail validation and keep the last valid desired state active.
 
-PV v1 rejects YAML anchors and aliases in Project config to keep configuration explicit and simple.
+Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV resolves them before validation. Helper keys are not a PV feature; unknown keys that remain after YAML merge and alias resolution fail validation.
 
 If Project config asks for a Managed Resource track that is not installed, daemon reconciliation installs it automatically.
 

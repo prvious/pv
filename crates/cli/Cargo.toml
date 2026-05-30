@@ -9,8 +9,15 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+camino = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+config = { path = "../config" }
 daemon = { path = "../daemon" }
+home = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+camino-tempfile = { workspace = true }
+insta = { workspace = true }

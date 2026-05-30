@@ -80,6 +80,12 @@ fn finish_execution(
 
             Ok(ExitCode::FAILURE)
         }
+        Err(ExecuteError::Config(error)) => {
+            let mut output = Output::new(stderr, output_mode);
+            output.error(&error.to_string())?;
+
+            Ok(ExitCode::FAILURE)
+        }
         Err(ExecuteError::Io(error)) => {
             let mut output = Output::new(stderr, output_mode);
             output.error(&error.to_string())?;

@@ -8,4 +8,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+camino = { workspace = true }
+resources = { path = "../resources" }
 thiserror = { workspace = true }
+yaml_serde = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+camino-tempfile = { workspace = true }
+insta = { workspace = true }

@@ -2,6 +2,8 @@ use std::process::ExitStatus;
 
 use anyhow::Result;
 use assert_cmd::Command;
+use camino::Utf8Path;
+use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
 
 #[derive(Debug)]
@@ -23,6 +25,24 @@ fn run_pv_with_env(args: &[&str], env: &[(&str, &str)]) -> Result<CommandOutput>
         command.env(key, value);
     }
 
+    let output = command.args(args).output()?;
+
+    Ok(CommandOutput {
+        code: status_code(output.status),
+        stdout: String::from_utf8(output.stdout)?,
+        stderr: String::from_utf8(output.stderr)?,
+    })
+}
+
+fn run_pv_in_dir_with_home(
+    args: &[&str],
+    current_dir: &Utf8Path,
+    home: &Utf8Path,
+) -> Result<CommandOutput> {
+    let mut command = Command::cargo_bin("pv")?;
+    command.env_remove("NO_COLOR");
+    command.env("HOME", home.as_str());
+    command.current_dir(current_dir);
     let output = command.args(args).output()?;
 
     Ok(CommandOutput {
@@ -227,6 +247,123 @@ fn completions_reject_unsupported_shells() -> Result<()> {
     let output = run_pv(&["completions", "tcsh"])?;
 
     assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn project_link_list_and_unlink_use_injected_home() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project.join("public"))?;
+    write_file(
+        &project.join("pv.yml"),
+        "php: 8.4\nhostnames:\n  - api.acme-store.test\nenv:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let list_after_link = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    let unlink = run_pv_in_dir_with_home(&["unlink", "api.acme-store.test"], &project, &home)?;
+    let list_after_unlink = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list_after_link, unlink, list_after_unlink));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_link_accepts_relative_path_arguments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let parent = tempdir.path().join("parent");
+    let project = parent.join("Acme Store");
+    let work = parent.join("work");
+    create_dir(&project.join("public"))?;
+    create_dir(&work)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link", "../Acme Store"], &work, &home)?;
+    let list = run_pv_in_dir_with_home(&["list"], &work, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_reports_invalid_linked_config() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    write_file(&project.join("pv.yml"), "unexpected: true\n")?;
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php: 8.4\nhostnames:\n  - acme-store.test\n",
+    )?;
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests create fixture directories"
+)]
+fn create_dir(path: &Utf8Path) -> Result<()> {
+    std::fs::create_dir_all(path)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests write fixture files"
+)]
+fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
+    std::fs::write(path, contents)?;
 
     Ok(())
 }

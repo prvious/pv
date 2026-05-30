@@ -17,6 +17,15 @@ pub enum CliError {
 
     #[error("{command} is routed, but LaunchAgent lifecycle management starts after PV-055")]
     DeferredDaemonLifecycle { command: &'static str },
+
+    #[error("path is not valid UTF-8: {path:?}")]
+    NonUtf8Path { path: std::path::PathBuf },
+
+    #[error("could not resolve a linked Project; pass a hostname")]
+    ProjectNotResolved,
+
+    #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
+    InvalidProjectSelection { selection: String, count: usize },
 }
 
 #[derive(Debug, Error)]
@@ -29,6 +38,9 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Daemon(#[from] daemon::DaemonError),
+
+    #[error(transparent)]
+    Config(#[from] config::ConfigError),
 
     #[error(transparent)]
     State(#[from] state::StateError),

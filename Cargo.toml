@@ -27,6 +27,7 @@ camino = "1"
 camino-tempfile = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+fastrand = "2"
 futures-util = { version = "0", features = ["sink"] }
 home = "0"
 insta = { version = "1", features = ["filters"] }
@@ -38,6 +39,7 @@ thiserror = "2"
 time = { version = "0", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "0", features = ["codec"] }
+yaml_serde = "0.10.4"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
@@ -62,6 +64,8 @@ cli = { path = "crates/cli" }
 [dev-dependencies]
 anyhow = { workspace = true }
 assert_cmd = { workspace = true }
+camino = { workspace = true }
+camino-tempfile = { workspace = true }
 insta = { workspace = true }
 
 [[test]]

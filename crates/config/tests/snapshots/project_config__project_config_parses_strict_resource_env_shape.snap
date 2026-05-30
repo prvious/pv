@@ -1,0 +1,43 @@
+---
+source: crates/config/tests/project_config.rs
+assertion_line: 30
+expression: config
+---
+ProjectConfig {
+    php: Some(
+        "8.4",
+    ),
+    document_root: Some(
+        "public",
+    ),
+    hostnames: [
+        "api.acme.test",
+    ],
+    env: {
+        "APP_URL": "${project_url}",
+    },
+    resources: {
+        "mysql": ResourceConfig {
+            track: Some(
+                "8.0",
+            ),
+            env: {
+                "DB_HOST": "${host}",
+            },
+            allocations: {
+                "app-db": AllocationConfig {
+                    env: {
+                        "DB_DATABASE": "${database}",
+                    },
+                },
+            },
+        },
+        "postgres": ResourceConfig {
+            track: Some(
+                "latest",
+            ),
+            env: {},
+            allocations: {},
+        },
+    },
+}

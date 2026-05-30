@@ -1,0 +1,169 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::ffi::OsString;
+use std::io;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use camino::Utf8Path;
+use camino_tempfile::tempdir;
+use cli::{Environment, run_with_environment};
+use insta::assert_debug_snapshot;
+
+#[derive(Debug)]
+struct TestEnvironment {
+    home: PathBuf,
+    current_dir: RefCell<PathBuf>,
+    input_lines: RefCell<VecDeque<String>>,
+    opened_urls: RefCell<Vec<String>>,
+    stdin_terminal: bool,
+}
+
+impl TestEnvironment {
+    fn new(home: &Utf8Path, current_dir: &Utf8Path) -> Self {
+        Self {
+            home: home.as_std_path().to_path_buf(),
+            current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
+            input_lines: RefCell::new(VecDeque::new()),
+            opened_urls: RefCell::new(Vec::new()),
+            stdin_terminal: false,
+        }
+    }
+
+    fn interactive(mut self, input_lines: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.stdin_terminal = true;
+        self.input_lines = RefCell::new(input_lines.into_iter().map(Into::into).collect());
+
+        self
+    }
+
+    fn set_current_dir(&self, current_dir: &Utf8Path) {
+        *self.current_dir.borrow_mut() = current_dir.as_std_path().to_path_buf();
+    }
+
+    fn opened_urls(&self) -> Vec<String> {
+        self.opened_urls.borrow().clone()
+    }
+}
+
+impl Environment for TestEnvironment {
+    fn var_os(&self, _key: &str) -> Option<OsString> {
+        None
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        Some(self.home.clone())
+    }
+
+    fn current_dir(&self) -> io::Result<PathBuf> {
+        Ok(self.current_dir.borrow().clone())
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        self.stdin_terminal
+    }
+
+    fn read_line(&self) -> io::Result<String> {
+        Ok(self
+            .input_lines
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_default())
+    }
+
+    fn open_url(&self, url: &str) -> io::Result<()> {
+        self.opened_urls.borrow_mut().push(url.to_string());
+
+        Ok(())
+    }
+}
+
+#[test]
+fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+    let environment = TestEnvironment::new(&home, &project).interactive(["1\n"]);
+
+    let link = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, vec!["https://acme.test"]);
+    assert!(link.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::FAILURE);
+    assert!(opened_urls.is_empty());
+    assert!(link.stderr.is_empty());
+    assert!(open.stdout.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RunOutput {
+    exit_code: ExitCode,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let args = std::iter::once("pv").chain(args.iter().copied());
+    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
+
+    Ok(RunOutput {
+        exit_code,
+        stdout: String::from_utf8(stdout)?,
+        stderr: String::from_utf8(stderr)?,
+    })
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI project open tests create fixture directories"
+)]
+fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path)?;
+
+    Ok(())
+}
