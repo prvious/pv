@@ -1,0 +1,26 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(&rendered, format_project_env(&rendered))"
+---
+(
+    RenderedProjectEnv {
+        values: {
+            "APP_URL": "https://acme.test",
+            "AWS_ACCESS_KEY_ID": "pv-access",
+            "AWS_BUCKET": "acme-test-uploads",
+            "AWS_ENDPOINT": "http://127.0.0.1:9000",
+            "AWS_SECRET_ACCESS_KEY": "pv-secret",
+            "AWS_URL": "http://127.0.0.1:9001",
+            "BOOL_VALUE": "true",
+            "DATABASE_URL": "mysql://root:secret@127.0.0.1:3306/acme_test_app",
+            "DB_DATABASE": "acme_test_app",
+            "DB_HOST": "127.0.0.1",
+            "DB_PORT": "3306",
+            "ESCAPED_VALUE": "${database} $acme_test_app $",
+            "NUMBER_VALUE": "42",
+            "RESOURCE_URL": "https://acme.test/mysql",
+            "SHARED_VALUE": "allocation",
+        },
+    },
+    "APP_URL=https://acme.test\nAWS_ACCESS_KEY_ID=pv-access\nAWS_BUCKET=acme-test-uploads\nAWS_ENDPOINT=http://127.0.0.1:9000\nAWS_SECRET_ACCESS_KEY=pv-secret\nAWS_URL=http://127.0.0.1:9001\nBOOL_VALUE=true\nDATABASE_URL=mysql://root:secret@127.0.0.1:3306/acme_test_app\nDB_DATABASE=acme_test_app\nDB_HOST=127.0.0.1\nDB_PORT=3306\nESCAPED_VALUE=\"\\${database} \\$acme_test_app \\$\"\nNUMBER_VALUE=42\nRESOURCE_URL=https://acme.test/mysql\nSHARED_VALUE=allocation\n",
+)

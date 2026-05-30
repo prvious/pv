@@ -13,6 +13,7 @@ expression: database.managed_resource_tracks()?
         current_artifact_path: Some(
             "/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1",
         ),
+        env: {},
         usage_count: 0,
         removal_prune: false,
         removal_force: false,

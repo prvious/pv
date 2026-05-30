@@ -42,7 +42,7 @@ pg:
   version: latest
 mail:
   env:
-    MAIL_HOST: "${host}"
+    MAIL_HOST: "${smtp_host}"
 s3:
   allocations:
     app:
@@ -140,11 +140,28 @@ fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
             if field == "mysql.env.DB_DATABASE" && placeholder == "database"
     ));
     assert!(matches!(
-        ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n"),
+        ProjectConfig::parse("mysql:\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n"),
         Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.env.APP_URL" && placeholder == "project_url"
+            if field == "mysql.env.MAIL_HOST" && placeholder == "smtp_host"
     ));
     assert!(matches!(
+        ProjectConfig::parse(
+            r#"
+redis:
+  allocations:
+    app:
+      env:
+        S3_BUCKET: "${bucket}"
+"#
+        ),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "redis.allocations.app.env.S3_BUCKET" && placeholder == "bucket"
+    ));
+
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
+    assert!(
         ProjectConfig::parse(
             r#"
 mysql:
@@ -153,13 +170,9 @@ mysql:
       env:
         APP_URL: "${project_url}"
 "#
-        ),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.allocations.app.env.APP_URL" && placeholder == "project_url"
-    ));
-
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
+        )
+        .is_ok()
+    );
     assert!(
         ProjectConfig::parse(
             r#"

@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 219
 expression: output.stdout
 ---
 #compdef pv
@@ -103,6 +102,14 @@ _arguments "${_arguments_options[@]}" : \
 '::hostname -- Project hostname to open:_default' \
 && ret=0
 ;;
+(project:env)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::hostname -- Project hostname to render env for:_default' \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -135,6 +142,7 @@ _pv_commands() {
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
+'project:env:Print generated Project environment values' \
 'list:List linked Projects' \
 'php:install:Install a PHP track' \
     )
@@ -189,6 +197,11 @@ _pv__subcmd__open_commands() {
 _pv__subcmd__php:install_commands() {
     local commands; commands=()
     _describe -t commands 'pv php:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__project:env_commands] )) ||
+_pv__subcmd__project:env_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv project:env commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__unlink_commands] )) ||
 _pv__subcmd__unlink_commands() {

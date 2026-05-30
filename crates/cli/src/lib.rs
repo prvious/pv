@@ -61,7 +61,7 @@ where
     };
 
     finish_execution(
-        commands::execute(cli, environment, stdout),
+        commands::execute(cli, environment, stdout, stderr),
         output_mode,
         stderr,
     )

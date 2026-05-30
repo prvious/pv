@@ -47,6 +47,12 @@ pub(crate) enum Command {
     #[command(name = "open", about = "Open a linked Project")]
     Open(OpenArgs),
 
+    #[command(
+        name = "project:env",
+        about = "Print generated Project environment values"
+    )]
+    ProjectEnv(ProjectEnvArgs),
+
     #[command(name = "list", about = "List linked Projects")]
     List,
 
@@ -90,5 +96,11 @@ pub(crate) struct UnlinkArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct OpenArgs {
     #[arg(value_name = "hostname", help = "Project hostname to open")]
+    pub(crate) hostname: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ProjectEnvArgs {
+    #[arg(value_name = "hostname", help = "Project hostname to render env for")]
     pub(crate) hostname: Option<String>,
 }

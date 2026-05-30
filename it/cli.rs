@@ -348,6 +348,34 @@ fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn project_env_renders_values_from_binary_without_mutating_dotenv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    let env_path = project.join(".env");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    write_file(&env_path, "APP_URL=https://user.test\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let project_env = run_pv_in_dir_with_home(&["project:env"], &project, &home)?;
+    let env_after = read_file(&env_path)?;
+
+    assert_eq!(env_after, "APP_URL=https://user.test\n");
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, project_env, env_after));
+    });
+
+    Ok(())
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "CLI integration tests create fixture directories"
@@ -366,4 +394,12 @@ fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests read fixture files"
+)]
+fn read_file(path: &Utf8Path) -> Result<String> {
+    Ok(std::fs::read_to_string(path)?)
 }

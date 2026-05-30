@@ -1,0 +1,11 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "&duplicate"
+---
+Err(
+    DuplicateRenderedEnvKey {
+        key: "DATABASE_URL",
+        first: "mysql.allocations.analytics.env.DATABASE_URL",
+        second: "mysql.allocations.app.env.DATABASE_URL",
+    },
+)

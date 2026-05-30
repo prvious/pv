@@ -10,6 +10,9 @@ pub struct ResourceName(String);
 pub struct TrackName(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConcreteTrackName(TrackName);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ArtifactVersion(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -49,6 +52,39 @@ impl TrackName {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl ConcreteTrackName {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if TrackSelector::is_reserved_alias(&value) {
+            return Err(ResourcesError::ReservedTrackName { name: value });
+        }
+
+        TrackName::new(value).map(Self)
+    }
+
+    pub fn required(resource_name: &ResourceName, value: Option<&str>) -> Result<Self> {
+        let Some(value) = value else {
+            return Err(ResourcesError::MissingConcreteTrack {
+                resource: resource_name.as_str().to_string(),
+            });
+        };
+
+        Self::new(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn track_name(&self) -> &TrackName {
+        &self.0
+    }
+
+    pub fn into_track_name(self) -> TrackName {
+        self.0
     }
 }
 
@@ -156,6 +192,12 @@ impl fmt::Display for ResourceName {
 }
 
 impl fmt::Display for TrackName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl fmt::Display for ConcreteTrackName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }

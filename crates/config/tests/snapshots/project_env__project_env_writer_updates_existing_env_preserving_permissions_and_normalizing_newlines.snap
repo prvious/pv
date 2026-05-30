@@ -1,0 +1,18 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(first_transform, read_file(&env_path)?, mode_string(&env_path)?,\nsecond_transform,)"
+---
+(
+    ManagedEnvBlockTransform {
+        content: "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\nTAIL=1\n",
+        warnings: [],
+        changed: true,
+    },
+    "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\nTAIL=1\n",
+    "640",
+    ManagedEnvBlockTransform {
+        content: "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\nTAIL=1\n",
+        warnings: [],
+        changed: false,
+    },
+)

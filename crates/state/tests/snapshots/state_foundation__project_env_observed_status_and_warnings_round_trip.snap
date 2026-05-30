@@ -1,0 +1,49 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(pending, warnings, warning_state)"
+---
+(
+    ProjectEnvObservedStateRecord {
+        project_id: "<project_id>",
+        status: Pending,
+        message: None,
+        observed_at: "<timestamp>",
+        warnings: [],
+    },
+    [
+        ProjectEnvObservedWarningRecord {
+            project_id: "<project_id>",
+            kind: "duplicate_key",
+            message: "APP_URL already exists outside the PV block",
+            observed_at: "<timestamp>",
+        },
+        ProjectEnvObservedWarningRecord {
+            project_id: "<project_id>",
+            kind: "duplicate_key",
+            message: "DATABASE_URL already exists outside the PV block",
+            observed_at: "<timestamp>",
+        },
+    ],
+    ProjectEnvObservedStateRecord {
+        project_id: "<project_id>",
+        status: Warning,
+        message: Some(
+            "rendered with warnings",
+        ),
+        observed_at: "<timestamp>",
+        warnings: [
+            ProjectEnvObservedWarningRecord {
+                project_id: "<project_id>",
+                kind: "duplicate_key",
+                message: "APP_URL already exists outside the PV block",
+                observed_at: "<timestamp>",
+            },
+            ProjectEnvObservedWarningRecord {
+                project_id: "<project_id>",
+                kind: "duplicate_key",
+                message: "DATABASE_URL already exists outside the PV block",
+                observed_at: "<timestamp>",
+            },
+        ],
+    },
+)

@@ -15,6 +15,7 @@ pub(crate) fn execute(
     cli: Cli,
     environment: &impl Environment,
     stdout: &mut impl Write,
+    stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     match cli.command {
         Command::Env(args) => env::run(args, cli.no_color, environment, stdout),
@@ -26,6 +27,7 @@ pub(crate) fn execute(
         Command::Link(args) => project::link(args, environment, stdout),
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),
+        Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),
         Command::List => project::list(environment, stdout),
         Command::PhpInstall(args) => php::install(args),
     }

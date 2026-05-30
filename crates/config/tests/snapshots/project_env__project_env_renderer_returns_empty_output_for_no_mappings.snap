@@ -1,0 +1,15 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(&rendered, format_project_env(&RenderedProjectEnv::default()), transformed)"
+---
+(
+    RenderedProjectEnv {
+        values: {},
+    },
+    "",
+    ManagedEnvBlockTransform {
+        content: "USER_VALUE=1\n# >>> PV MANAGED\nOLD_VALUE=stays\n# <<< PV MANAGED\n",
+        warnings: [],
+        changed: false,
+    },
+)

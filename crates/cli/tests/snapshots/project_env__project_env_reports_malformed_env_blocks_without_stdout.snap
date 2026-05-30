@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/project_env.rs
+expression: "(output, env_after)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: malformed PV-managed .env block: start marker without end marker\n",
+    },
+    "# >>> PV MANAGED\nAPP_URL=old\n",
+)

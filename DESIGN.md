@@ -848,7 +848,7 @@ PV v1 does not automatically garbage-collect orphaned Resource allocations.
 
 PV uses readable hostname-based generated names for user-visible Resource allocation objects. SQL database names use `<hostname_slug>_<allocation_name>`, RustFS bucket names use `<hostname-slug>-<allocation_name>`, and Redis prefixes use `<hostname-slug>-<allocation>-`. These names are generated at first allocation creation and stored in `pv.db` so later Project hostname changes do not silently switch backing data.
 
-PV applies resource-specific maximum name length rules to generated Resource allocation object names. If truncation is required, PV appends a short hash so names remain stable and collision-resistant.
+PV applies a hard 63-character maximum to generated Resource allocation object names in v1. If the generated SQL database name, Redis prefix, or RustFS bucket name would exceed 63 characters, PV fails Project config/reconciliation with a clear error. PV does not truncate, hash, or silently rewrite generated Resource allocation names in v1.
 
 If a Resource allocation is removed from Project config and later re-added with the same name for the same Project and Managed Resource, PV reuses the same stored generated Resource allocation object name and reconnects to the existing underlying object when it still exists.
 
@@ -866,7 +866,9 @@ Project config supports three environment mapping scopes:
 - Managed Resource-level `env:` for shared service values such as host, port, or dashboard URL.
 - Allocation-level `env:` for Resource allocation values such as database credentials or bucket names.
 
-Env mapping precedence is root-level `env:`, then allocation-level `env:`, then Managed Resource-level `env:`. Root-level mappings are the most explicit Project-level override.
+Env mapping precedence is deepest wins: root-level `env:` is the base, Managed Resource-level `env:` overrides root-level keys for that resource, and allocation-level `env:` overrides both root-level and Managed Resource-level keys for that allocation.
+
+If two same-depth sibling env mappings render the same final env key and neither mapping overrides the other by precedence, Project env rendering fails with a duplicate rendered env key error. For example, two allocation siblings under the same Managed Resource cannot both render `DATABASE_URL`; the Project config must use distinct keys such as `APP_DATABASE_URL` and `ANALYTICS_DATABASE_URL`.
 
 Project config env values support PV's simple placeholder syntax: `${name}`. PV replaces placeholders with values from the current Project, Managed Resource, or Resource allocation context.
 
@@ -936,13 +938,13 @@ rustfs:
 
 Any `env:` mapping in Project config is explicit opt-in to PV-managed `.env` rendering, including root-level `env:` without Managed Resource mappings.
 
-When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates only a PV-owned delimited block inside the Project's `.env` file. PV never rewrites user-owned `.env` lines outside that block. If the Project's `.env` file does not exist, PV may create it with the PV-owned block.
+When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates only a PV-owned delimited block inside the Project's `.env` file. PV never rewrites user-owned `.env` lines outside that block. If the Project's `.env` file does not exist, PV creates it automatically with the PV-owned block.
 
 PV renders `.env` only after required Managed Resource ports and Resource allocations are known. Env rendering is all-or-nothing for the full Project config. If a required allocation or resource reconciliation fails, PV keeps the last valid managed block and records the failure instead of rendering incomplete values.
 
 PV v1 only renders to `.env`. It does not support `.env.local` or configurable env file targets.
 
-When creating a missing `.env`, PV creates a file containing only the PV-owned block. It does not copy `.env.example`.
+When creating a missing `.env`, PV creates a user-owned file containing only the PV-owned block with `0600` permissions. It does not copy `.env.example`. When updating an existing `.env`, PV preserves the existing file permissions.
 
 PV uses these exact `.env` delimiters:
 
@@ -952,7 +954,11 @@ APP_URL=https://acme.test
 # <<< PV MANAGED
 ```
 
-If the PV-managed block already exists, PV replaces only the content between the delimiters. The block is fully regenerated on each reconciliation; user edits inside the PV-managed block are overwritten.
+If one complete PV-managed block already exists, PV replaces only the content between the delimiters. The block is fully regenerated on each reconciliation; user edits inside the PV-managed block are overwritten.
+
+If multiple complete PV-managed blocks exist, PV removes all complete PV-managed blocks, preserves user-owned content around and between them, and writes one fresh PV-managed block.
+
+Malformed PV-managed block markers fail safely. A start marker without an end marker, an end marker without a start marker, or nested markers cause env rendering to fail and leave the existing `.env` file unchanged.
 
 PV appends the managed block at the end of `.env` and preserves surrounding formatting, including final newline, where practical.
 

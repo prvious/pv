@@ -1,0 +1,21 @@
+---
+source: it/cli.rs
+expression: "(link, project_env, env_after)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "APP_URL=https://acme-store.test\n",
+        stderr: "warning: generated Project env key `APP_URL` already exists outside the PV-managed block\n",
+    },
+    "APP_URL=https://user.test\n",
+)

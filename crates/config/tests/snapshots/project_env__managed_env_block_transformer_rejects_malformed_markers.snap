@@ -1,0 +1,30 @@
+---
+source: crates/config/tests/project_env.rs
+expression: malformed
+---
+[
+    (
+        "start-without-end",
+        Err(
+            MalformedManagedEnvBlock {
+                reason: "start marker without end marker",
+            },
+        ),
+    ),
+    (
+        "end-without-start",
+        Err(
+            MalformedManagedEnvBlock {
+                reason: "end marker without start marker",
+            },
+        ),
+    ),
+    (
+        "nested-start",
+        Err(
+            MalformedManagedEnvBlock {
+                reason: "nested start marker",
+            },
+        ),
+    ),
+]

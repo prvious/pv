@@ -1,0 +1,24 @@
+---
+source: crates/resources/tests/resource_allocations.rs
+expression: errors
+---
+[
+    GeneratedAllocationNameTooLong {
+        resource: "mysql",
+        allocation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        generated: "a_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        max: 63,
+    },
+    GeneratedAllocationNameTooLong {
+        resource: "redis",
+        allocation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        generated: "a-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-",
+        max: 63,
+    },
+    GeneratedAllocationNameTooLong {
+        resource: "rustfs",
+        allocation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        generated: "a-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        max: 63,
+    },
+]

@@ -1,0 +1,99 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(after_initial, after_switch_and_unlink)"
+---
+(
+    (
+        [
+            ProjectManagedResourceRecord {
+                project_id: "<project_id>",
+                resource_name: "mysql",
+                track: "8.0",
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+            ProjectManagedResourceRecord {
+                project_id: "<project_id>",
+                resource_name: "redis",
+                track: "7.2",
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        [
+            ManagedResourceTrackRecord {
+                resource_name: "mysql",
+                track: "8.0",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {},
+                usage_count: 2,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+            ManagedResourceTrackRecord {
+                resource_name: "redis",
+                track: "7.2",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {},
+                usage_count: 1,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+        ],
+    ),
+    (
+        [
+            ProjectManagedResourceRecord {
+                project_id: "<project_id>",
+                resource_name: "mysql",
+                track: "8.4",
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        [
+            ManagedResourceTrackRecord {
+                resource_name: "mysql",
+                track: "8.0",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {},
+                usage_count: 0,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+            ManagedResourceTrackRecord {
+                resource_name: "mysql",
+                track: "8.4",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {},
+                usage_count: 1,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+            ManagedResourceTrackRecord {
+                resource_name: "redis",
+                track: "7.2",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {},
+                usage_count: 0,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+        ],
+    ),
+)

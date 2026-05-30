@@ -2,6 +2,7 @@ mod client;
 mod error;
 mod ipc;
 mod jobs;
+mod project_env;
 mod protocol;
 mod reconciliation;
 mod server;

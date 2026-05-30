@@ -1,0 +1,116 @@
+---
+source: crates/resources/tests/resource_allocations.rs
+expression: contracts
+---
+[
+    PlaceholderContractSnapshot {
+        resource: "php",
+        allocation_kind: None,
+        resource_placeholders: [],
+        allocation_placeholders: [],
+    },
+    PlaceholderContractSnapshot {
+        resource: "frankenphp",
+        allocation_kind: None,
+        resource_placeholders: [],
+        allocation_placeholders: [],
+    },
+    PlaceholderContractSnapshot {
+        resource: "composer",
+        allocation_kind: None,
+        resource_placeholders: [],
+        allocation_placeholders: [],
+    },
+    PlaceholderContractSnapshot {
+        resource: "mysql",
+        allocation_kind: Some(
+            "SqlDatabase",
+        ),
+        resource_placeholders: [
+            "host",
+            "password",
+            "port",
+            "url",
+            "username",
+        ],
+        allocation_placeholders: [
+            "database",
+            "host",
+            "password",
+            "port",
+            "url",
+            "username",
+        ],
+    },
+    PlaceholderContractSnapshot {
+        resource: "postgres",
+        allocation_kind: Some(
+            "SqlDatabase",
+        ),
+        resource_placeholders: [
+            "host",
+            "password",
+            "port",
+            "url",
+            "username",
+        ],
+        allocation_placeholders: [
+            "database",
+            "host",
+            "password",
+            "port",
+            "url",
+            "username",
+        ],
+    },
+    PlaceholderContractSnapshot {
+        resource: "redis",
+        allocation_kind: Some(
+            "RedisPrefix",
+        ),
+        resource_placeholders: [
+            "host",
+            "port",
+            "url",
+        ],
+        allocation_placeholders: [
+            "host",
+            "port",
+            "prefix",
+            "url",
+        ],
+    },
+    PlaceholderContractSnapshot {
+        resource: "mailpit",
+        allocation_kind: None,
+        resource_placeholders: [
+            "dashboard_url",
+            "smtp_host",
+            "smtp_port",
+        ],
+        allocation_placeholders: [],
+    },
+    PlaceholderContractSnapshot {
+        resource: "rustfs",
+        allocation_kind: Some(
+            "RustfsBucket",
+        ),
+        resource_placeholders: [
+            "access_key",
+            "endpoint",
+            "host",
+            "port",
+            "secret_key",
+            "url",
+        ],
+        allocation_placeholders: [
+            "access_key",
+            "bucket",
+            "endpoint",
+            "host",
+            "port",
+            "secret_key",
+            "url",
+        ],
+    },
+]

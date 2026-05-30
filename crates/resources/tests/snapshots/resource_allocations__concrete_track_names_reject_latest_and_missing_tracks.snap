@@ -1,0 +1,12 @@
+---
+source: crates/resources/tests/resource_allocations.rs
+expression: errors
+---
+[
+    ReservedTrackName {
+        name: "latest",
+    },
+    MissingConcreteTrack {
+        resource: "mysql",
+    },
+]

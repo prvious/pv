@@ -1,3 +1,4 @@
+pub mod allocation;
 pub mod cache;
 pub mod command;
 pub mod download;
@@ -10,6 +11,10 @@ pub mod manifest;
 pub mod platform;
 pub mod registry;
 
+pub use allocation::{
+    EnvPlaceholderContract, ResourceAllocationKind, ResourceAllocationName,
+    allocation_env_placeholders, generated_allocation_name, resource_env_placeholders,
+};
 pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource};
 pub use command::{
     ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
@@ -20,7 +25,8 @@ pub use download::{ArtifactDownload, ArtifactDownloader};
 pub use error::{ResourcesError, Result};
 pub use http::{ResourceHttpClient, UreqResourceHttpClient};
 pub use identity::{
-    ArtifactVersion, PublishedAt, PvVersion, ResourceName, Sha256Digest, TrackName, TrackSelector,
+    ArtifactVersion, ConcreteTrackName, PublishedAt, PvVersion, ResourceName, Sha256Digest,
+    TrackName, TrackSelector,
 };
 pub use install::{ArtifactInstall, ArtifactInstaller, ResourceAdapter};
 pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};

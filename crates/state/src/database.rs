@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::iter::Peekable;
+use std::str::Chars;
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
@@ -15,6 +17,10 @@ const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 const MAX_DNS_LABEL_LENGTH: usize = 63;
 const MAX_HOSTNAME_LENGTH: usize = 253;
 const RESERVED_HOSTNAME: &str = "pv.test";
+const RESERVED_TRACK_NAME: &str = "latest";
+const PROJECT_ENV_OBSERVED_SUBJECT_KIND: &str = "project_env";
+
+pub type EnvContextValues = BTreeMap<String, String>;
 
 #[derive(Debug)]
 pub struct Database {
@@ -116,6 +122,7 @@ pub struct ManagedResourceTrackRecord {
     pub desired_state: ManagedResourceDesiredState,
     pub installed_version: Option<String>,
     pub current_artifact_path: Option<Utf8PathBuf>,
+    pub env: EnvContextValues,
     pub usage_count: i64,
     pub removal_prune: bool,
     pub removal_force: bool,
@@ -158,6 +165,100 @@ pub struct ProjectRecord {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectManagedResourceInput {
+    pub resource_name: String,
+    pub track: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectManagedResourceRecord {
+    pub project_id: String,
+    pub resource_name: String,
+    pub track: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceAllocationInput {
+    pub allocation_name: String,
+    pub generated_name: String,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ResourceAllocationStatus {
+    Desired,
+    Ready,
+    Inactive,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceAllocationRecord {
+    pub id: String,
+    pub project_id: String,
+    pub resource_name: String,
+    pub track: String,
+    pub allocation_name: String,
+    pub generated_name: String,
+    pub env: EnvContextValues,
+    pub status: ResourceAllocationStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvStateContext {
+    pub project_id: String,
+    pub primary_hostname: String,
+    pub resources: BTreeMap<String, ProjectEnvResourceContext>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvResourceContext {
+    pub track: String,
+    pub values: EnvContextValues,
+    pub allocations: BTreeMap<String, ProjectEnvAllocationContext>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvAllocationContext {
+    pub generated_name: String,
+    pub values: EnvContextValues,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProjectEnvObservedStatus {
+    Pending,
+    Rendered,
+    Warning,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvObservedWarningInput {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvObservedWarningRecord {
+    pub project_id: String,
+    pub kind: String,
+    pub message: String,
+    pub observed_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectEnvObservedStateRecord {
+    pub project_id: String,
+    pub status: ProjectEnvObservedStatus,
+    pub message: Option<String>,
+    pub observed_at: String,
+    pub warnings: Vec<ProjectEnvObservedWarningRecord>,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -183,10 +284,46 @@ struct ManagedResourceTrackRow {
     desired_state: String,
     installed_version: Option<String>,
     current_artifact_path: Option<String>,
+    env_json: String,
     usage_count: i64,
     removal_prune: bool,
     removal_force: bool,
     updated_at: String,
+}
+
+struct ProjectManagedResourceRow {
+    project_id: String,
+    resource_name: String,
+    track: String,
+    created_at: String,
+    updated_at: String,
+}
+
+struct ResourceAllocationRow {
+    id: String,
+    project_id: String,
+    resource_name: String,
+    track: String,
+    allocation_name: String,
+    generated_name: String,
+    env_json: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+struct ProjectEnvObservedStateRow {
+    project_id: String,
+    status: String,
+    message: Option<String>,
+    observed_at: String,
+}
+
+struct ProjectEnvObservedWarningRow {
+    project_id: String,
+    kind: String,
+    message: String,
+    observed_at: String,
 }
 
 struct ProjectRow {
@@ -204,6 +341,15 @@ struct PortIdentity {
     owner_kind: &'static str,
     owner_id: String,
     owner_track: String,
+}
+
+struct EnvJsonParser<'a> {
+    chars: Peekable<Chars<'a>>,
+}
+
+enum EnvJsonParseError {
+    Json(String),
+    Context(String),
 }
 
 impl Database {
@@ -396,6 +542,7 @@ impl Database {
                 target: project_id.to_string(),
             });
         }
+        recalculate_managed_resource_usage_counts_in_transaction(&transaction)?;
         transaction.commit()?;
 
         Ok(project)
@@ -485,6 +632,77 @@ impl Database {
         Ok(projects)
     }
 
+    pub fn replace_project_managed_resources(
+        &mut self,
+        project_id: &str,
+        requirements: &[ProjectManagedResourceInput],
+    ) -> Result<Vec<ProjectManagedResourceRecord>, StateError> {
+        validate_project_managed_resource_inputs(requirements)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_exists_in_transaction(&transaction, project_id)?;
+        let updated_at = timestamp()?;
+
+        for requirement in requirements {
+            upsert_managed_resource_track_desired_in_transaction(
+                &transaction,
+                &requirement.resource_name,
+                &requirement.track,
+                &updated_at,
+            )?;
+            transaction.execute(
+                "INSERT INTO project_managed_resources (
+                    project_id,
+                    resource_name,
+                    track,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?4)
+                ON CONFLICT(project_id, resource_name) DO UPDATE SET
+                    track = excluded.track,
+                    updated_at = excluded.updated_at",
+                params![
+                    project_id,
+                    requirement.resource_name.as_str(),
+                    requirement.track.as_str(),
+                    updated_at.as_str(),
+                ],
+            )?;
+        }
+
+        let desired_resources = requirements
+            .iter()
+            .map(|requirement| requirement.resource_name.as_str())
+            .collect::<BTreeSet<_>>();
+        let existing_resources =
+            project_managed_resource_names_in_transaction(&transaction, project_id)?;
+        for resource_name in existing_resources {
+            if !desired_resources.contains(resource_name.as_str()) {
+                transaction.execute(
+                    "DELETE FROM project_managed_resources
+                    WHERE project_id = ?1
+                    AND resource_name = ?2",
+                    params![project_id, resource_name.as_str()],
+                )?;
+            }
+        }
+
+        recalculate_managed_resource_usage_counts_in_transaction(&transaction)?;
+        let records = project_managed_resources_in_transaction(&transaction, project_id)?;
+        transaction.commit()?;
+
+        Ok(records)
+    }
+
+    pub fn project_managed_resources(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectManagedResourceRecord>, StateError> {
+        project_managed_resources_in_connection(&self.connection, project_id)
+    }
+
     pub fn record_managed_resource_track_desired(
         &mut self,
         resource_name: &str,
@@ -492,7 +710,7 @@ impl Database {
         desired_state: ManagedResourceDesiredState,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
         validate_managed_resource_identity("name", resource_name)?;
-        validate_managed_resource_identity("track", track)?;
+        validate_concrete_track(track)?;
 
         let updated_at = timestamp()?;
         self.connection.execute(
@@ -524,7 +742,7 @@ impl Database {
         force: bool,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
         validate_managed_resource_identity("name", resource_name)?;
-        validate_managed_resource_identity("track", track)?;
+        validate_concrete_track(track)?;
 
         let updated_at = timestamp()?;
         self.connection.execute(
@@ -563,7 +781,7 @@ impl Database {
         current_artifact_path: &Utf8Path,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
         validate_managed_resource_identity("name", resource_name)?;
-        validate_managed_resource_identity("track", track)?;
+        validate_concrete_track(track)?;
         validate_managed_resource_identity("artifact version", installed_version)?;
 
         let updated_at = timestamp()?;
@@ -594,9 +812,47 @@ impl Database {
         self.managed_resource_track(resource_name, track)
     }
 
+    pub fn record_managed_resource_track_env_context(
+        &mut self,
+        resource_name: &str,
+        track: &str,
+        env: &EnvContextValues,
+    ) -> Result<ManagedResourceTrackRecord, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_concrete_track(track)?;
+        let context = format!("managed resource {resource_name:?} track {track:?}");
+        let env_json = serialize_env_context(&context, env)?;
+        let updated_at = timestamp()?;
+
+        self.connection.execute(
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                env_json,
+                removal_prune,
+                removal_force,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)
+            ON CONFLICT(resource_name, track) DO UPDATE SET
+                env_json = excluded.env_json,
+                updated_at = excluded.updated_at",
+            params![
+                resource_name,
+                track,
+                ManagedResourceDesiredState::Installed.as_str(),
+                env_json,
+                updated_at,
+            ],
+        )?;
+
+        self.managed_resource_track(resource_name, track)
+    }
+
     pub fn managed_resource_tracks(&self) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, removal_prune, removal_force, updated_at
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
             FROM managed_resource_tracks
             ORDER BY resource_name, track",
         )?;
@@ -608,6 +864,316 @@ impl Database {
         }
 
         Ok(tracks)
+    }
+
+    pub fn replace_project_resource_allocations(
+        &mut self,
+        project_id: &str,
+        resource_name: &str,
+        track: &str,
+        allocations: &[ResourceAllocationInput],
+    ) -> Result<Vec<ResourceAllocationRecord>, StateError> {
+        validate_resource_allocation_group(resource_name, track, allocations)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_exists_in_transaction(&transaction, project_id)?;
+        let updated_at = timestamp()?;
+        let existing_allocations = resource_allocations_for_project_resource_in_transaction(
+            &transaction,
+            project_id,
+            resource_name,
+        )?;
+        let existing_by_name = existing_allocations
+            .into_iter()
+            .map(|allocation| (allocation.allocation_name.clone(), allocation))
+            .collect::<BTreeMap<_, _>>();
+        let desired_allocation_names = allocations
+            .iter()
+            .map(|allocation| allocation.allocation_name.as_str())
+            .collect::<BTreeSet<_>>();
+
+        for allocation in allocations {
+            if let Some(existing) = existing_by_name.get(&allocation.allocation_name) {
+                let status = if existing.track == track
+                    && existing.status == ResourceAllocationStatus::Ready
+                {
+                    ResourceAllocationStatus::Ready
+                } else {
+                    ResourceAllocationStatus::Desired
+                };
+                transaction.execute(
+                    "UPDATE resource_allocations
+                    SET track = ?1,
+                        status = ?2,
+                        updated_at = ?3
+                    WHERE id = ?4",
+                    params![
+                        track,
+                        status.as_str(),
+                        updated_at.as_str(),
+                        existing.id.as_str()
+                    ],
+                )?;
+            } else {
+                let id = next_resource_allocation_id(&transaction)?;
+                transaction.execute(
+                    "INSERT INTO resource_allocations (
+                        id,
+                        project_id,
+                        resource_name,
+                        track,
+                        allocation_name,
+                        generated_name,
+                        env_json,
+                        status,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, ?8, ?8)",
+                    params![
+                        id,
+                        project_id,
+                        resource_name,
+                        track,
+                        allocation.allocation_name.as_str(),
+                        allocation.generated_name.as_str(),
+                        ResourceAllocationStatus::Desired.as_str(),
+                        updated_at.as_str(),
+                    ],
+                )?;
+            }
+        }
+
+        for existing in existing_by_name.values() {
+            if !desired_allocation_names.contains(existing.allocation_name.as_str())
+                && existing.status != ResourceAllocationStatus::Inactive
+            {
+                transaction.execute(
+                    "UPDATE resource_allocations
+                    SET status = ?1,
+                        updated_at = ?2
+                    WHERE id = ?3",
+                    params![
+                        ResourceAllocationStatus::Inactive.as_str(),
+                        updated_at.as_str(),
+                        existing.id.as_str(),
+                    ],
+                )?;
+            }
+        }
+
+        let records = resource_allocations_for_project_resource_in_transaction(
+            &transaction,
+            project_id,
+            resource_name,
+        )?
+        .into_iter()
+        .filter(|allocation| desired_allocation_names.contains(allocation.allocation_name.as_str()))
+        .collect::<Vec<_>>();
+        transaction.commit()?;
+
+        Ok(records)
+    }
+
+    pub fn mark_resource_allocation_ready(
+        &mut self,
+        project_id: &str,
+        resource_name: &str,
+        allocation_name: &str,
+        env: &EnvContextValues,
+    ) -> Result<ResourceAllocationRecord, StateError> {
+        validate_resource_allocation_identity("resource", resource_name)?;
+        validate_resource_allocation_identity("allocation", allocation_name)?;
+        let context =
+            format!("resource allocation {project_id:?}/{resource_name:?}/{allocation_name:?}");
+        let env_json = serialize_env_context(&context, env)?;
+        let updated_at = timestamp()?;
+        let updated = self.connection.execute(
+            "UPDATE resource_allocations
+            SET status = ?1,
+                env_json = ?2,
+                updated_at = ?3
+            WHERE project_id = ?4
+            AND resource_name = ?5
+            AND allocation_name = ?6",
+            params![
+                ResourceAllocationStatus::Ready.as_str(),
+                env_json,
+                updated_at,
+                project_id,
+                resource_name,
+                allocation_name,
+            ],
+        )?;
+        if updated == 0 {
+            return Err(StateError::ResourceAllocationNotFound {
+                project_id: project_id.to_string(),
+                resource: resource_name.to_string(),
+                allocation: allocation_name.to_string(),
+            });
+        }
+
+        resource_allocation_by_key(&self.connection, project_id, resource_name, allocation_name)
+    }
+
+    pub fn resource_allocations(
+        &self,
+        project_id: &str,
+        resource_name: &str,
+    ) -> Result<Vec<ResourceAllocationRecord>, StateError> {
+        resource_allocations_for_project_resource_in_connection(
+            &self.connection,
+            project_id,
+            resource_name,
+        )
+    }
+
+    pub fn project_env_context(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectEnvStateContext, StateError> {
+        let project =
+            self.project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_string(),
+                })?;
+        let requirements = self.project_managed_resources(project_id)?;
+        let mut resources = BTreeMap::new();
+
+        for requirement in requirements {
+            let track =
+                self.managed_resource_track(&requirement.resource_name, &requirement.track)?;
+            let allocations = ready_allocation_env_contexts(
+                &self.connection,
+                project_id,
+                &requirement.resource_name,
+            )?;
+
+            resources.insert(
+                requirement.resource_name,
+                ProjectEnvResourceContext {
+                    track: requirement.track,
+                    values: track.env,
+                    allocations,
+                },
+            );
+        }
+
+        Ok(ProjectEnvStateContext {
+            project_id: project.id,
+            primary_hostname: project.primary_hostname,
+            resources,
+        })
+    }
+
+    pub fn record_project_env_observed_state(
+        &mut self,
+        project_id: &str,
+        status: ProjectEnvObservedStatus,
+        message: Option<&str>,
+    ) -> Result<ProjectEnvObservedStateRecord, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_exists_in_transaction(&transaction, project_id)?;
+        let observed_at = timestamp()?;
+        transaction.execute(
+            "INSERT INTO observed_states (
+                subject_kind,
+                subject_id,
+                status,
+                message,
+                observed_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(subject_kind, subject_id) DO UPDATE SET
+                status = excluded.status,
+                message = excluded.message,
+                observed_at = excluded.observed_at",
+            params![
+                PROJECT_ENV_OBSERVED_SUBJECT_KIND,
+                project_id,
+                status.as_str(),
+                message,
+                observed_at,
+            ],
+        )?;
+        transaction.commit()?;
+
+        self.project_env_observed_state(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            })
+    }
+
+    pub fn replace_project_env_observed_warnings(
+        &mut self,
+        project_id: &str,
+        warnings: &[ProjectEnvObservedWarningInput],
+    ) -> Result<Vec<ProjectEnvObservedWarningRecord>, StateError> {
+        validate_project_env_observed_warnings(warnings)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project_exists_in_transaction(&transaction, project_id)?;
+        let observed_at = timestamp()?;
+        transaction.execute(
+            "DELETE FROM project_env_observed_warnings WHERE project_id = ?1",
+            params![project_id],
+        )?;
+
+        for warning in warnings {
+            transaction.execute(
+                "INSERT INTO project_env_observed_warnings (
+                    project_id,
+                    warning_kind,
+                    message,
+                    observed_at
+                )
+                VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    project_id,
+                    warning.kind.as_str(),
+                    warning.message.as_str(),
+                    observed_at.as_str(),
+                ],
+            )?;
+        }
+
+        let records = project_env_observed_warnings_in_connection(&transaction, project_id)?;
+        transaction.commit()?;
+
+        Ok(records)
+    }
+
+    pub fn project_env_observed_state(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<ProjectEnvObservedStateRecord>, StateError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT subject_id, status, message, observed_at
+                FROM observed_states
+                WHERE subject_kind = ?1
+                AND subject_id = ?2",
+                params![PROJECT_ENV_OBSERVED_SUBJECT_KIND, project_id],
+                project_env_observed_state_from_row,
+            )
+            .optional()?;
+
+        match row {
+            Some(row) => row.into_record(&self.connection).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn project_env_observed_warnings(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectEnvObservedWarningRecord>, StateError> {
+        project_env_observed_warnings_in_connection(&self.connection, project_id)
     }
 
     pub fn assign_port(
@@ -769,7 +1335,7 @@ impl Database {
         track: &str,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, usage_count, removal_prune, removal_force, updated_at
+            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
             FROM managed_resource_tracks
             WHERE resource_name = ?1 AND track = ?2",
         )?;
@@ -1010,6 +1576,10 @@ impl ManagedResourceTrackRow {
         if let Some(installed_version) = &self.installed_version {
             validate_managed_resource_identity("artifact version", installed_version)?;
         }
+        let context = format!(
+            "managed resource {:?} track {:?}",
+            self.resource_name, self.track
+        );
 
         Ok(ManagedResourceTrackRecord {
             resource_name: self.resource_name,
@@ -1017,10 +1587,125 @@ impl ManagedResourceTrackRow {
             desired_state: ManagedResourceDesiredState::from_database(self.desired_state)?,
             installed_version: self.installed_version,
             current_artifact_path: self.current_artifact_path.map(Utf8PathBuf::from),
+            env: parse_env_context(&context, &self.env_json)?,
             usage_count: self.usage_count,
             removal_prune: self.removal_prune,
             removal_force: self.removal_force,
             updated_at: self.updated_at,
+        })
+    }
+}
+
+impl ProjectManagedResourceRow {
+    fn into_record(self) -> Result<ProjectManagedResourceRecord, StateError> {
+        validate_managed_resource_identity("name", &self.resource_name)?;
+        validate_managed_resource_identity("track", &self.track)?;
+
+        Ok(ProjectManagedResourceRecord {
+            project_id: self.project_id,
+            resource_name: self.resource_name,
+            track: self.track,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+impl ResourceAllocationStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Desired => "desired",
+            Self::Ready => "ready",
+            Self::Inactive => "inactive",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_database(status: String) -> Result<Self, StateError> {
+        match status.as_str() {
+            "desired" => Ok(Self::Desired),
+            "ready" => Ok(Self::Ready),
+            "inactive" => Ok(Self::Inactive),
+            "failed" => Ok(Self::Failed),
+            _ => Err(StateError::UnknownResourceAllocationStatus { status }),
+        }
+    }
+}
+
+impl ResourceAllocationRow {
+    fn into_record(self) -> Result<ResourceAllocationRecord, StateError> {
+        validate_resource_allocation_identity("resource", &self.resource_name)?;
+        validate_concrete_track(&self.track)?;
+        validate_resource_allocation_identity("allocation", &self.allocation_name)?;
+        validate_resource_allocation_identity("generated name", &self.generated_name)?;
+        let context = format!(
+            "resource allocation {:?}/{:?}/{:?}",
+            self.project_id, self.resource_name, self.allocation_name
+        );
+
+        Ok(ResourceAllocationRecord {
+            id: self.id,
+            project_id: self.project_id,
+            resource_name: self.resource_name,
+            track: self.track,
+            allocation_name: self.allocation_name,
+            generated_name: self.generated_name,
+            env: parse_env_context(&context, &self.env_json)?,
+            status: ResourceAllocationStatus::from_database(self.status)?,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+impl ProjectEnvObservedStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Rendered => "rendered",
+            Self::Warning => "warning",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_database(status: String) -> Result<Self, StateError> {
+        match status.as_str() {
+            "pending" => Ok(Self::Pending),
+            "rendered" => Ok(Self::Rendered),
+            "warning" => Ok(Self::Warning),
+            "failed" => Ok(Self::Failed),
+            _ => Err(StateError::UnknownProjectEnvObservedStatus { status }),
+        }
+    }
+}
+
+impl ProjectEnvObservedStateRow {
+    fn into_record(
+        self,
+        connection: &Connection,
+    ) -> Result<ProjectEnvObservedStateRecord, StateError> {
+        let warnings = project_env_observed_warnings_in_connection(connection, &self.project_id)?;
+
+        Ok(ProjectEnvObservedStateRecord {
+            project_id: self.project_id,
+            status: ProjectEnvObservedStatus::from_database(self.status)?,
+            message: self.message,
+            observed_at: self.observed_at,
+            warnings,
+        })
+    }
+}
+
+impl ProjectEnvObservedWarningRow {
+    fn into_record(self) -> Result<ProjectEnvObservedWarningRecord, StateError> {
+        validate_project_env_observed_warning_component("kind", &self.kind)?;
+        validate_project_env_observed_warning_component("message", &self.message)?;
+
+        Ok(ProjectEnvObservedWarningRecord {
+            project_id: self.project_id,
+            kind: self.kind,
+            message: self.message,
+            observed_at: self.observed_at,
         })
     }
 }
@@ -1096,6 +1781,294 @@ fn project_by_id_in_transaction(
         Some(row) => row.into_record(transaction).map(Some),
         None => Ok(None),
     }
+}
+
+fn ensure_project_exists_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<(), StateError> {
+    let count = transaction.query_row(
+        "SELECT COUNT(*) FROM projects WHERE id = ?1",
+        params![project_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if count == 0 {
+        return Err(StateError::ProjectNotFound {
+            target: project_id.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_project_managed_resource_inputs(
+    requirements: &[ProjectManagedResourceInput],
+) -> Result<(), StateError> {
+    let mut resource_names = BTreeSet::new();
+
+    for requirement in requirements {
+        validate_managed_resource_identity("name", &requirement.resource_name)?;
+        validate_concrete_track(&requirement.track)?;
+        if !resource_names.insert(requirement.resource_name.as_str()) {
+            return Err(StateError::InvalidManagedResourceIdentity {
+                kind: "name",
+                value: requirement.resource_name.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn upsert_managed_resource_track_desired_in_transaction(
+    transaction: &Transaction<'_>,
+    resource_name: &str,
+    track: &str,
+    updated_at: &str,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "INSERT INTO managed_resource_tracks (
+            resource_name,
+            track,
+            desired_state,
+            removal_prune,
+            removal_force,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, 0, 0, ?4)
+        ON CONFLICT(resource_name, track) DO UPDATE SET
+            desired_state = excluded.desired_state,
+            removal_prune = 0,
+            removal_force = 0,
+            updated_at = excluded.updated_at",
+        params![
+            resource_name,
+            track,
+            ManagedResourceDesiredState::Installed.as_str(),
+            updated_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn project_managed_resource_names_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<Vec<String>, StateError> {
+    let mut statement = transaction.prepare(
+        "SELECT resource_name
+        FROM project_managed_resources
+        WHERE project_id = ?1
+        ORDER BY resource_name",
+    )?;
+    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+    let mut resource_names = Vec::new();
+
+    for row in rows {
+        resource_names.push(row?);
+    }
+
+    Ok(resource_names)
+}
+
+fn project_managed_resources_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<Vec<ProjectManagedResourceRecord>, StateError> {
+    project_managed_resources_in_connection(transaction, project_id)
+}
+
+fn project_managed_resources_in_connection(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<ProjectManagedResourceRecord>, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT project_id, resource_name, track, created_at, updated_at
+        FROM project_managed_resources
+        WHERE project_id = ?1
+        ORDER BY resource_name",
+    )?;
+    let rows = statement.query_map(params![project_id], project_managed_resource_from_row)?;
+    let mut records = Vec::new();
+
+    for row in rows {
+        records.push(row?.into_record()?);
+    }
+
+    Ok(records)
+}
+
+fn recalculate_managed_resource_usage_counts_in_transaction(
+    transaction: &Transaction<'_>,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "UPDATE managed_resource_tracks
+        SET usage_count = (
+            SELECT COUNT(*)
+            FROM project_managed_resources
+            WHERE project_managed_resources.resource_name = managed_resource_tracks.resource_name
+            AND project_managed_resources.track = managed_resource_tracks.track
+        )",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn validate_resource_allocation_group(
+    resource_name: &str,
+    track: &str,
+    allocations: &[ResourceAllocationInput],
+) -> Result<(), StateError> {
+    validate_resource_allocation_identity("resource", resource_name)?;
+    validate_concrete_track(track)?;
+    let mut allocation_names = BTreeSet::new();
+    let mut generated_names = BTreeSet::new();
+
+    for allocation in allocations {
+        validate_resource_allocation_identity("allocation", &allocation.allocation_name)?;
+        validate_resource_allocation_identity("generated name", &allocation.generated_name)?;
+        if !allocation_names.insert(allocation.allocation_name.as_str()) {
+            return Err(StateError::InvalidResourceAllocationIdentity {
+                kind: "allocation",
+                value: allocation.allocation_name.clone(),
+            });
+        }
+        if !generated_names.insert(allocation.generated_name.as_str()) {
+            return Err(StateError::InvalidResourceAllocationIdentity {
+                kind: "generated name",
+                value: allocation.generated_name.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn resource_allocations_for_project_resource_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    resource_name: &str,
+) -> Result<Vec<ResourceAllocationRecord>, StateError> {
+    resource_allocations_for_project_resource_in_connection(transaction, project_id, resource_name)
+}
+
+fn resource_allocations_for_project_resource_in_connection(
+    connection: &Connection,
+    project_id: &str,
+    resource_name: &str,
+) -> Result<Vec<ResourceAllocationRecord>, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT id, project_id, resource_name, track, allocation_name, generated_name, env_json, status, created_at, updated_at
+        FROM resource_allocations
+        WHERE project_id = ?1
+        AND resource_name = ?2
+        ORDER BY allocation_name",
+    )?;
+    let rows = statement.query_map(
+        params![project_id, resource_name],
+        resource_allocation_from_row,
+    )?;
+    let mut allocations = Vec::new();
+
+    for row in rows {
+        allocations.push(row?.into_record()?);
+    }
+
+    Ok(allocations)
+}
+
+fn resource_allocation_by_key(
+    connection: &Connection,
+    project_id: &str,
+    resource_name: &str,
+    allocation_name: &str,
+) -> Result<ResourceAllocationRecord, StateError> {
+    let row = connection
+        .query_row(
+            "SELECT id, project_id, resource_name, track, allocation_name, generated_name, env_json, status, created_at, updated_at
+            FROM resource_allocations
+            WHERE project_id = ?1
+            AND resource_name = ?2
+            AND allocation_name = ?3",
+            params![project_id, resource_name, allocation_name],
+            resource_allocation_from_row,
+        )
+        .optional()?;
+
+    row.ok_or_else(|| StateError::ResourceAllocationNotFound {
+        project_id: project_id.to_string(),
+        resource: resource_name.to_string(),
+        allocation: allocation_name.to_string(),
+    })?
+    .into_record()
+}
+
+fn ready_allocation_env_contexts(
+    connection: &Connection,
+    project_id: &str,
+    resource_name: &str,
+) -> Result<BTreeMap<String, ProjectEnvAllocationContext>, StateError> {
+    let allocations = resource_allocations_for_project_resource_in_connection(
+        connection,
+        project_id,
+        resource_name,
+    )?;
+    let mut contexts = BTreeMap::new();
+
+    for allocation in allocations {
+        if allocation.status == ResourceAllocationStatus::Ready {
+            contexts.insert(
+                allocation.allocation_name,
+                ProjectEnvAllocationContext {
+                    generated_name: allocation.generated_name,
+                    values: allocation.env,
+                },
+            );
+        }
+    }
+
+    Ok(contexts)
+}
+
+fn project_env_observed_warnings_in_connection(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<ProjectEnvObservedWarningRecord>, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT project_id, warning_kind, message, observed_at
+        FROM project_env_observed_warnings
+        WHERE project_id = ?1
+        ORDER BY warning_kind, message",
+    )?;
+    let rows = statement.query_map(params![project_id], project_env_observed_warning_from_row)?;
+    let mut warnings = Vec::new();
+
+    for row in rows {
+        warnings.push(row?.into_record()?);
+    }
+
+    Ok(warnings)
+}
+
+fn validate_project_env_observed_warnings(
+    warnings: &[ProjectEnvObservedWarningInput],
+) -> Result<(), StateError> {
+    let mut identities = BTreeSet::new();
+
+    for warning in warnings {
+        validate_project_env_observed_warning_component("kind", &warning.kind)?;
+        validate_project_env_observed_warning_component("message", &warning.message)?;
+        if !identities.insert((warning.kind.as_str(), warning.message.as_str())) {
+            return Err(StateError::InvalidProjectEnvObservedWarning {
+                kind: "warning",
+                value: format!("{}:{}", warning.kind, warning.message),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateError> {
@@ -1530,10 +2503,62 @@ fn managed_resource_track_from_row(
         desired_state: row.get(2)?,
         installed_version: row.get(3)?,
         current_artifact_path: row.get(4)?,
-        usage_count: row.get(5)?,
-        removal_prune: row.get(6)?,
-        removal_force: row.get(7)?,
-        updated_at: row.get(8)?,
+        env_json: row.get(5)?,
+        usage_count: row.get(6)?,
+        removal_prune: row.get(7)?,
+        removal_force: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn project_managed_resource_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ProjectManagedResourceRow> {
+    Ok(ProjectManagedResourceRow {
+        project_id: row.get(0)?,
+        resource_name: row.get(1)?,
+        track: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+    })
+}
+
+fn resource_allocation_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ResourceAllocationRow> {
+    Ok(ResourceAllocationRow {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        resource_name: row.get(2)?,
+        track: row.get(3)?,
+        allocation_name: row.get(4)?,
+        generated_name: row.get(5)?,
+        env_json: row.get(6)?,
+        status: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn project_env_observed_state_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ProjectEnvObservedStateRow> {
+    Ok(ProjectEnvObservedStateRow {
+        project_id: row.get(0)?,
+        status: row.get(1)?,
+        message: row.get(2)?,
+        observed_at: row.get(3)?,
+    })
+}
+
+fn project_env_observed_warning_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ProjectEnvObservedWarningRow> {
+    Ok(ProjectEnvObservedWarningRow {
+        project_id: row.get(0)?,
+        kind: row.get(1)?,
+        message: row.get(2)?,
+        observed_at: row.get(3)?,
     })
 }
 
@@ -1568,6 +2593,302 @@ fn validate_managed_resource_identity(kind: &'static str, value: &str) -> Result
     }
 }
 
+fn validate_concrete_track(track: &str) -> Result<(), StateError> {
+    validate_managed_resource_identity("track", track)?;
+    if track == RESERVED_TRACK_NAME {
+        return Err(StateError::ReservedConcreteTrack {
+            track: track.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_resource_allocation_identity(
+    kind: &'static str,
+    value: &str,
+) -> Result<(), StateError> {
+    let is_valid = !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(StateError::InvalidResourceAllocationIdentity {
+            kind,
+            value: value.to_string(),
+        })
+    }
+}
+
+fn validate_project_env_observed_warning_component(
+    kind: &'static str,
+    value: &str,
+) -> Result<(), StateError> {
+    if value.trim().is_empty() {
+        return Err(StateError::InvalidProjectEnvObservedWarning {
+            kind,
+            value: value.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn serialize_env_context(context: &str, env: &EnvContextValues) -> Result<String, StateError> {
+    validate_env_context(context, env)?;
+    let mut json = String::from("{");
+
+    for (index, (key, value)) in env.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        push_json_string(&mut json, key);
+        json.push(':');
+        push_json_string(&mut json, value);
+    }
+
+    json.push('}');
+
+    Ok(json)
+}
+
+fn parse_env_context(context: &str, env_json: &str) -> Result<EnvContextValues, StateError> {
+    EnvJsonParser::new(env_json)
+        .parse_object()
+        .map_err(|error| match error {
+            EnvJsonParseError::Json(reason) => StateError::InvalidEnvJson {
+                context: context.to_string(),
+                reason,
+            },
+            EnvJsonParseError::Context(reason) => StateError::InvalidEnvContext {
+                context: context.to_string(),
+                reason,
+            },
+        })
+}
+
+impl<'a> EnvJsonParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            chars: input.chars().peekable(),
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<EnvContextValues, EnvJsonParseError> {
+        self.skip_whitespace();
+        self.expect_char('{', "env JSON must be an object")?;
+        self.skip_whitespace();
+        let mut env = EnvContextValues::new();
+
+        if self.consume_char('}') {
+            self.expect_end()?;
+            return Ok(env);
+        }
+
+        loop {
+            let key = self.parse_string()?;
+            if key.is_empty() {
+                return Err(EnvJsonParseError::Context(
+                    "env keys must not be empty".to_string(),
+                ));
+            }
+            self.skip_whitespace();
+            self.expect_char(':', "expected `:` after env key")?;
+            self.skip_whitespace();
+
+            if !self.next_is('"') {
+                return Err(EnvJsonParseError::Json(format!(
+                    "env value for `{key}` must be a string"
+                )));
+            }
+            let value = self.parse_string()?;
+            env.insert(key, value);
+            self.skip_whitespace();
+
+            if self.consume_char(',') {
+                self.skip_whitespace();
+                continue;
+            }
+            if self.consume_char('}') {
+                self.expect_end()?;
+                return Ok(env);
+            }
+
+            return Err(EnvJsonParseError::Json(
+                "expected `,` or `}` after env value".to_string(),
+            ));
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, EnvJsonParseError> {
+        self.expect_char('"', "expected JSON string")?;
+        let mut value = String::new();
+
+        while let Some(character) = self.chars.next() {
+            match character {
+                '"' => return Ok(value),
+                '\\' => value.push(self.parse_escape()?),
+                character if character <= '\u{1f}' => {
+                    return Err(EnvJsonParseError::Json(
+                        "JSON strings must not contain unescaped control characters".to_string(),
+                    ));
+                }
+                character => value.push(character),
+            }
+        }
+
+        Err(EnvJsonParseError::Json(
+            "unterminated JSON string".to_string(),
+        ))
+    }
+
+    fn parse_escape(&mut self) -> Result<char, EnvJsonParseError> {
+        match self.chars.next() {
+            Some('"') => Ok('"'),
+            Some('\\') => Ok('\\'),
+            Some('/') => Ok('/'),
+            Some('b') => Ok('\u{0008}'),
+            Some('f') => Ok('\u{000c}'),
+            Some('n') => Ok('\n'),
+            Some('r') => Ok('\r'),
+            Some('t') => Ok('\t'),
+            Some('u') => self.parse_unicode_escape(),
+            Some(character) => Err(EnvJsonParseError::Json(format!(
+                "unsupported JSON escape `\\{character}`"
+            ))),
+            None => Err(EnvJsonParseError::Json(
+                "unterminated JSON escape".to_string(),
+            )),
+        }
+    }
+
+    fn parse_unicode_escape(&mut self) -> Result<char, EnvJsonParseError> {
+        let code_point = self.parse_hex_code_point()?;
+        if (0xd800..=0xdbff).contains(&code_point) {
+            self.expect_char('\\', "high surrogate must be followed by a low surrogate")?;
+            self.expect_char('u', "high surrogate must be followed by a low surrogate")?;
+            let low_surrogate = self.parse_hex_code_point()?;
+            if !(0xdc00..=0xdfff).contains(&low_surrogate) {
+                return Err(EnvJsonParseError::Json(
+                    "high surrogate must be followed by a low surrogate".to_string(),
+                ));
+            }
+
+            let combined = 0x10000 + ((code_point - 0xd800) << 10) + (low_surrogate - 0xdc00);
+            return char::from_u32(combined)
+                .ok_or_else(|| EnvJsonParseError::Json("invalid unicode escape".to_string()));
+        }
+        if (0xdc00..=0xdfff).contains(&code_point) {
+            return Err(EnvJsonParseError::Json(
+                "low surrogate must follow a high surrogate".to_string(),
+            ));
+        }
+
+        char::from_u32(code_point)
+            .ok_or_else(|| EnvJsonParseError::Json("invalid unicode escape".to_string()))
+    }
+
+    fn parse_hex_code_point(&mut self) -> Result<u32, EnvJsonParseError> {
+        let mut code_point = 0;
+
+        for _index in 0..4 {
+            let character = self
+                .chars
+                .next()
+                .ok_or_else(|| EnvJsonParseError::Json("incomplete unicode escape".to_string()))?;
+            let digit = character.to_digit(16).ok_or_else(|| {
+                EnvJsonParseError::Json("unicode escapes must use hex digits".to_string())
+            })?;
+            code_point = (code_point << 4) + digit;
+        }
+
+        Ok(code_point)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .chars
+            .peek()
+            .is_some_and(|character| character.is_whitespace())
+        {
+            self.chars.next();
+        }
+    }
+
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.next_is(expected) {
+            self.chars.next();
+            return true;
+        }
+
+        false
+    }
+
+    fn expect_char(&mut self, expected: char, reason: &str) -> Result<(), EnvJsonParseError> {
+        match self.chars.next() {
+            Some(character) if character == expected => Ok(()),
+            _ => Err(EnvJsonParseError::Json(reason.to_string())),
+        }
+    }
+
+    fn expect_end(&mut self) -> Result<(), EnvJsonParseError> {
+        self.skip_whitespace();
+        if self.chars.peek().is_some() {
+            return Err(EnvJsonParseError::Json(
+                "unexpected trailing content after env JSON object".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn next_is(&mut self, expected: char) -> bool {
+        self.chars
+            .peek()
+            .is_some_and(|character| *character == expected)
+    }
+}
+
+fn push_json_string(json: &mut String, value: &str) {
+    json.push('"');
+
+    for character in value.chars() {
+        match character {
+            '"' => json.push_str("\\\""),
+            '\\' => json.push_str("\\\\"),
+            '\u{0008}' => json.push_str("\\b"),
+            '\u{000c}' => json.push_str("\\f"),
+            '\n' => json.push_str("\\n"),
+            '\r' => json.push_str("\\r"),
+            '\t' => json.push_str("\\t"),
+            character if character <= '\u{1f}' => {
+                json.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => json.push(character),
+        }
+    }
+
+    json.push('"');
+}
+
+fn validate_env_context(context: &str, env: &EnvContextValues) -> Result<(), StateError> {
+    for key in env.keys() {
+        if key.is_empty() {
+            return Err(StateError::InvalidEnvContext {
+                context: context.to_string(),
+                reason: "env keys must not be empty".to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn describe_port_identity(owner_kind: &str, owner_id: &str, owner_track: &str) -> String {
     if owner_track.is_empty() {
         return format!("{owner_kind} {owner_id:?}");
@@ -1592,6 +2913,16 @@ fn next_job_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
     )?;
 
     Ok(format!("job_{next_number:06}"))
+}
+
+fn next_resource_allocation_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
+    let next_number = transaction.query_row(
+        "SELECT COALESCE(MAX(CAST(SUBSTR(id, 12) AS INTEGER)), 0) + 1 FROM resource_allocations WHERE id GLOB 'allocation_[0-9]*'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    Ok(format!("allocation_{next_number:06}"))
 }
 
 fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {

@@ -1,0 +1,13 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(transform, read_file(&env_path)?, mode_string(&env_path)?)"
+---
+(
+    ManagedEnvBlockTransform {
+        content: "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"secret value\"\n# <<< PV MANAGED\n",
+        warnings: [],
+        changed: true,
+    },
+    "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"secret value\"\n# <<< PV MANAGED\n",
+    "600",
+)
