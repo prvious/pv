@@ -323,6 +323,31 @@ fn project_list_reports_invalid_linked_config() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php: 8.4\nhostnames:\n  - acme-store.test\n",
+    )?;
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "CLI integration tests create fixture directories"

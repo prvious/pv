@@ -964,6 +964,55 @@ fn linked_project_hostname_collisions_are_rejected() -> Result<()> {
 }
 
 #[test]
+fn linked_project_hostname_validation_checks_pending_config_hostnames() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let first = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    let second = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("other"),
+        original_path: tempdir.path().join("other"),
+        primary_hostname: "other.test".to_string(),
+        config_path: tempdir.path().join("other/pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+
+    let duplicate_primary = database.validate_project_hostnames(
+        &first.project.id,
+        &first.project.primary_hostname,
+        std::slice::from_ref(&first.project.primary_hostname),
+    );
+    assert!(matches!(
+        duplicate_primary,
+        Err(StateError::DuplicateProjectHostname { hostname }) if hostname == "acme.test"
+    ));
+
+    let collision = database.validate_project_hostnames(
+        &second.project.id,
+        &second.project.primary_hostname,
+        std::slice::from_ref(&first.project.primary_hostname),
+    );
+    assert!(matches!(
+        collision,
+        Err(StateError::ProjectHostnameCollision {
+            hostname,
+            project_id,
+        }) if hostname == "acme.test" && project_id == first.project.id
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn nearest_project_resolution_prefers_nested_projects() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

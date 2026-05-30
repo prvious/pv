@@ -120,7 +120,7 @@ pub(crate) fn list(
 
     output.line("Hostname  PHP  Status  Resources  Env  Path")?;
     for project in projects {
-        let status = project_list_status(&project);
+        let status = project_list_status(&database, &project);
         output.line(&format!(
             "{}  {}  {}  unknown  {}  {}",
             project.primary_hostname,
@@ -325,7 +325,7 @@ impl ProjectEnvStatus {
     }
 }
 
-fn project_list_status(project: &ProjectRecord) -> ProjectListStatus {
+fn project_list_status(database: &Database, project: &ProjectRecord) -> ProjectListStatus {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
@@ -336,6 +336,17 @@ fn project_list_status(project: &ProjectRecord) -> ProjectListStatus {
             };
         }
     };
+    if let Err(error) = database.validate_project_hostnames(
+        &project.id,
+        &project.primary_hostname,
+        &config_file.config.hostnames,
+    ) {
+        return ProjectListStatus {
+            project: ProjectStatus::ConfigInvalid,
+            env: ProjectEnvStatus::Invalid,
+            config_error: Some(error.to_string()),
+        };
+    }
 
     let env = if !config_file.config.env.is_empty()
         || config_file.config.resources.values().any(|resource| {

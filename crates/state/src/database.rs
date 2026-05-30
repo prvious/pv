@@ -401,6 +401,20 @@ impl Database {
         Ok(project)
     }
 
+    pub fn validate_project_hostnames(
+        &self,
+        project_id: &str,
+        primary_hostname: &str,
+        additional_hostnames: &[String],
+    ) -> Result<(), StateError> {
+        validate_project_hostname_set(
+            &self.connection,
+            project_id,
+            primary_hostname,
+            additional_hostnames,
+        )
+    }
+
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
@@ -1319,19 +1333,36 @@ fn validate_project_hostnames_in_transaction(
     project_id: &str,
     input: &LinkProjectInput,
 ) -> Result<(), StateError> {
+    validate_project_hostname_set(
+        transaction,
+        project_id,
+        &input.primary_hostname,
+        &input.additional_hostnames,
+    )
+}
+
+fn validate_project_hostname_set(
+    connection: &Connection,
+    project_id: &str,
+    primary_hostname: &str,
+    additional_hostnames: &[String],
+) -> Result<(), StateError> {
     let mut hostnames = BTreeMap::new();
-    for hostname in std::iter::once(&input.primary_hostname).chain(&input.additional_hostnames) {
+    for hostname in
+        std::iter::once(primary_hostname).chain(additional_hostnames.iter().map(String::as_str))
+    {
+        validate_project_hostname(hostname)?;
         if hostnames.insert(hostname, ()).is_some() {
             return Err(StateError::DuplicateProjectHostname {
-                hostname: hostname.clone(),
+                hostname: hostname.to_string(),
             });
         }
 
-        if let Some(owner) = project_owner_for_hostname(transaction, hostname)?
+        if let Some(owner) = project_owner_for_hostname(connection, hostname)?
             && owner != project_id
         {
             return Err(StateError::ProjectHostnameCollision {
-                hostname: hostname.clone(),
+                hostname: hostname.to_string(),
                 project_id: owner,
             });
         }
@@ -1341,10 +1372,10 @@ fn validate_project_hostnames_in_transaction(
 }
 
 fn project_owner_for_hostname(
-    transaction: &Transaction<'_>,
+    connection: &Connection,
     hostname: &str,
 ) -> Result<Option<String>, StateError> {
-    Ok(transaction
+    Ok(connection
         .query_row(
             "SELECT project_id FROM project_hostnames WHERE hostname = ?1",
             params![hostname],

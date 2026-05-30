@@ -128,6 +128,70 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
 }
 
 #[test]
+fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
+    assert!(matches!(
+        ProjectConfig::parse("env:\n  DB_DATABASE: \"${database}\"\n"),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "env.DB_DATABASE" && placeholder == "database"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("mysql:\n  env:\n    DB_DATABASE: \"${database}\"\n"),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "mysql.env.DB_DATABASE" && placeholder == "database"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n"),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "mysql.env.APP_URL" && placeholder == "project_url"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse(
+            r#"
+mysql:
+  allocations:
+    app:
+      env:
+        APP_URL: "${project_url}"
+"#
+        ),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "mysql.allocations.app.env.APP_URL" && placeholder == "project_url"
+    ));
+
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
+    assert!(
+        ProjectConfig::parse(
+            r#"
+rustfs:
+  env:
+    AWS_ENDPOINT: "${endpoint}"
+    AWS_URL: "${url}"
+"#
+        )
+        .is_ok()
+    );
+    assert!(
+        ProjectConfig::parse(
+            r#"
+mysql:
+  allocations:
+    app:
+      env:
+        DB_HOST: "${host}"
+        DB_DATABASE: "${database}"
+        DB_USERNAME: "${username}"
+        DB_PASSWORD: "${password}"
+        DB_PORT: "${port}"
+"#
+        )
+        .is_ok()
+    );
+
+    Ok(())
+}
+
+#[test]
 fn project_config_rejects_unsupported_and_colliding_allocations() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("mailpit:\n  allocations:\n    inbox: {}\n"),
