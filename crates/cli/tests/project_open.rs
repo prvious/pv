@@ -312,7 +312,6 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
 )]
 fn canonical_path(path: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
     let path = std::fs::canonicalize(path)?;
-
-    Ok(Utf8PathBuf::from_path_buf(path)
-        .map_err(|path| anyhow::anyhow!("non-UTF-8 fixture path `{}`", path.display()))?)
+    Utf8PathBuf::from_path_buf(path)
+        .map_err(|path| anyhow::anyhow!("non-UTF-8 fixture path `{}`", path.display()))
 }
