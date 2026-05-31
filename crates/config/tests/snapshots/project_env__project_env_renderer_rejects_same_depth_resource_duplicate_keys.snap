@@ -1,0 +1,20 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(&validation, &duplicate)"
+---
+(
+    Err(
+        DuplicateRenderedEnvKey {
+            key: "DB_HOST",
+            first: "mysql.env.DB_HOST",
+            second: "redis.env.DB_HOST",
+        },
+    ),
+    Err(
+        DuplicateRenderedEnvKey {
+            key: "DB_HOST",
+            first: "mysql.env.DB_HOST",
+            second: "redis.env.DB_HOST",
+        },
+    ),
+)

@@ -1,0 +1,144 @@
+---
+source: crates/config/tests/project_config.rs
+expression: cases
+---
+[
+    (
+        "project-url-project-env",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {
+                    "APP_URL": "${project_url}",
+                },
+                resources: {},
+            },
+        ),
+    ),
+    (
+        "legacy-url-project-env",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "env.APP_URL",
+                placeholder: "url",
+            },
+        ),
+    ),
+    (
+        "unknown-project-env",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "env.APP_URL",
+                placeholder: "missing_url",
+            },
+        ),
+    ),
+    (
+        "resource-project-url",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {
+                            "APP_URL": "${project_url}",
+                        },
+                        allocations: {},
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "resource-scoped-url",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {
+                            "DATABASE_URL": "${url}",
+                        },
+                        allocations: {},
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "resource-url-not-exposed",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "mailpit.env.MAIL_URL",
+                placeholder: "url",
+            },
+        ),
+    ),
+    (
+        "allocation-project-url",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {},
+                        allocations: {
+                            "app": AllocationConfig {
+                                env: {
+                                    "APP_URL": "${project_url}",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "allocation-scoped-url",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {},
+                        allocations: {
+                            "app": AllocationConfig {
+                                env: {
+                                    "DATABASE_URL": "${url}",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "allocation-unknown-url-like-placeholder",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "mysql.allocations.app.env.DATABASE_URL",
+                placeholder: "database_url",
+            },
+        ),
+    ),
+]

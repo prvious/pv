@@ -261,8 +261,8 @@ fn resource_context_values(
     project_values: &BTreeMap<String, String>,
     resource_context: &ResourceEnvContext,
 ) -> BTreeMap<String, String> {
-    let mut values = project_values.clone();
-    values.extend(resource_context.values.clone());
+    let mut values = resource_context.values.clone();
+    values.extend(project_values.clone());
     values
 }
 
@@ -271,7 +271,7 @@ fn allocation_context_values(
     resource_context: &ResourceEnvContext,
     allocation_context: &AllocationEnvContext,
 ) -> BTreeMap<String, String> {
-    let mut values = resource_context_values(project_values, resource_context);
+    let mut values = resource_context.values.clone();
     if !allocation_context.generated_name.is_empty() {
         values.insert(
             "generated_name".to_string(),
@@ -279,6 +279,7 @@ fn allocation_context_values(
         );
     }
     values.extend(allocation_context.values.clone());
+    values.extend(project_values.clone());
     values
 }
 

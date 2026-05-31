@@ -1,0 +1,256 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(before, after)"
+---
+(
+    (
+        DatabaseInspection {
+            busy_timeout_ms: 250,
+            foreign_keys_enabled: true,
+            journal_mode: "wal",
+            migrations: [
+                "001:core_state_schema",
+                "002:managed_resource_removal_intent",
+                "003:project_primary_hostname_updates",
+                "004:project_original_path",
+                "005:project_resource_requirements",
+            ],
+            tables: [
+                "jobs",
+                "managed_resource_tracks",
+                "observed_states",
+                "ports",
+                "project_env_observed_warnings",
+                "project_hostnames",
+                "project_managed_resources",
+                "projects",
+                "pv_migrations",
+                "resource_allocations",
+            ],
+        },
+        [
+            ProjectRecord {
+                id: "<project_id>",
+                path: "<tempdir>/acme",
+                original_path: "<tempdir>/acme",
+                primary_hostname: "acme.test",
+                config_path: "<tempdir>/acme/pv.yml",
+                desired_php_track: Some(
+                    "8.4",
+                ),
+                additional_hostnames: [
+                    "api.acme.test",
+                ],
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        [
+            ManagedResourceTrackRecord {
+                resource_name: "mysql",
+                track: "8.0",
+                desired_state: Installed,
+                installed_version: Some(
+                    "8.0.36-pv1",
+                ),
+                current_artifact_path: Some(
+                    "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+                ),
+                env: {},
+                usage_count: 0,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+        ],
+    ),
+    (
+        [
+            ProjectRecord {
+                id: "<project_id>",
+                path: "<tempdir>/acme",
+                original_path: "<tempdir>/acme",
+                primary_hostname: "acme.test",
+                config_path: "<tempdir>/acme/pv.yml",
+                desired_php_track: Some(
+                    "8.4",
+                ),
+                additional_hostnames: [
+                    "api.acme.test",
+                ],
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        Some(
+            ProjectRecord {
+                id: "<project_id>",
+                path: "<tempdir>/acme",
+                original_path: "<tempdir>/acme",
+                primary_hostname: "acme.test",
+                config_path: "<tempdir>/acme/pv.yml",
+                desired_php_track: Some(
+                    "8.4",
+                ),
+                additional_hostnames: [
+                    "api.acme.test",
+                ],
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ),
+        [
+            ProjectManagedResourceRecord {
+                project_id: "<project_id>",
+                resource_name: "mysql",
+                track: "8.0",
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+            ProjectManagedResourceRecord {
+                project_id: "<project_id>",
+                resource_name: "redis",
+                track: "7.2",
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        [
+            ManagedResourceTrackRecord {
+                resource_name: "mysql",
+                track: "8.0",
+                desired_state: Installed,
+                installed_version: Some(
+                    "8.0.36-pv1",
+                ),
+                current_artifact_path: Some(
+                    "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+                ),
+                env: {
+                    "host": "127.0.0.1",
+                    "password": "secret",
+                    "port": "3306",
+                    "username": "root",
+                },
+                usage_count: 1,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+            ManagedResourceTrackRecord {
+                resource_name: "redis",
+                track: "7.2",
+                desired_state: Installed,
+                installed_version: None,
+                current_artifact_path: None,
+                env: {
+                    "host": "127.0.0.1",
+                    "port": "6379",
+                },
+                usage_count: 1,
+                removal_prune: false,
+                removal_force: false,
+                updated_at: "<timestamp>",
+            },
+        ],
+        [
+            ResourceAllocationRecord {
+                id: "allocation_000001",
+                project_id: "<project_id>",
+                resource_name: "mysql",
+                track: "8.0",
+                allocation_name: "app-db",
+                generated_name: "acme_test_app_db",
+                env: {},
+                status: Desired,
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+        [
+            ResourceAllocationRecord {
+                id: "allocation_000001",
+                project_id: "<project_id>",
+                resource_name: "mysql",
+                track: "8.0",
+                allocation_name: "app-db",
+                generated_name: "acme_test_app_db",
+                env: {
+                    "database": "acme_test_app_db",
+                },
+                status: Ready,
+                created_at: "<timestamp>",
+                updated_at: "<timestamp>",
+            },
+        ],
+        ProjectEnvStateContext {
+            project_id: "<project_id>",
+            primary_hostname: "acme.test",
+            resources: {
+                "mysql": ProjectEnvResourceContext {
+                    track: "8.0",
+                    values: {
+                        "host": "127.0.0.1",
+                        "password": "secret",
+                        "port": "3306",
+                        "username": "root",
+                    },
+                    allocations: {
+                        "app-db": ProjectEnvAllocationContext {
+                            generated_name: "acme_test_app_db",
+                            values: {
+                                "database": "acme_test_app_db",
+                            },
+                        },
+                    },
+                },
+                "redis": ProjectEnvResourceContext {
+                    track: "7.2",
+                    values: {
+                        "host": "127.0.0.1",
+                        "port": "6379",
+                    },
+                    allocations: {},
+                },
+            },
+        },
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Warning,
+            message: Some(
+                "rendered with warnings after migration",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [
+                ProjectEnvObservedWarningRecord {
+                    project_id: "<project_id>",
+                    kind: "duplicate_key",
+                    message: "APP_URL already exists outside the PV block",
+                    observed_at: "<timestamp>",
+                },
+            ],
+        },
+        [
+            ProjectEnvObservedWarningRecord {
+                project_id: "<project_id>",
+                kind: "duplicate_key",
+                message: "APP_URL already exists outside the PV block",
+                observed_at: "<timestamp>",
+            },
+        ],
+    ),
+)

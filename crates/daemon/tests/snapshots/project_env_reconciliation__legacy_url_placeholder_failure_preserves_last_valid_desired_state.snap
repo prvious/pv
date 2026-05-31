@@ -1,0 +1,118 @@
+---
+source: crates/daemon/tests/project_env_reconciliation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("job accepted"),
+            "protocol_version": Number(1),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "kind": String("reconcile"),
+            "scope": String("project:<project_id>"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env reconciliation started"),
+            "type": String("log"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env rendered"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "summary": String("Project env rendered"),
+            "type": String("job_completed"),
+        },
+    ],
+    [
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("job accepted"),
+            "protocol_version": Number(1),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "kind": String("reconcile"),
+            "scope": String("project:<project_id>"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("Project env reconciliation started"),
+            "type": String("log"),
+        },
+        Object {
+            "error": String("Project config error: unknown Project config env placeholder `url` in `env.BAD_URL`"),
+            "job_id": String("job_000002"),
+            "type": String("job_failed"),
+        },
+    ],
+    Some(
+        [
+            "api.acme.test",
+        ],
+    ),
+    [
+        ProjectManagedResourceRecord {
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [],
+    "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_DATABASE=acme_test_app_db\n# <<< PV MANAGED\n",
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Failed,
+            message: Some(
+                "Project config error: unknown Project config env placeholder `url` in `env.BAD_URL`",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
+    JobRecord {
+        id: "job_000002",
+        kind: "reconcile",
+        scope: "project:<project_id>",
+        status: Failed,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: None,
+        error: Some(
+            "Project config error: unknown Project config env placeholder `url` in `env.BAD_URL`",
+        ),
+    },
+)

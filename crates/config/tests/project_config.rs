@@ -128,6 +128,107 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
 }
 
 #[test]
+fn project_config_validates_url_placeholder_scopes() {
+    let cases = vec![
+        (
+            "project-url-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "legacy-url-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "unknown-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${missing_url}"
+"#,
+            ),
+        ),
+        (
+            "resource-project-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  env:
+    APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "resource-scoped-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  env:
+    DATABASE_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "resource-url-not-exposed",
+            ProjectConfig::parse(
+                r#"
+mailpit:
+  env:
+    MAIL_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-project-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-scoped-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-unknown-url-like-placeholder",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        DATABASE_URL: "${database_url}"
+"#,
+            ),
+        ),
+    ];
+
+    assert_debug_snapshot!(cases);
+}
+
+#[test]
 fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("env:\n  DB_DATABASE: \"${database}\"\n"),

@@ -1034,7 +1034,7 @@ impl Database {
     ) -> Result<ResourceAllocationRecord, StateError> {
         validate_resource_allocation_identity("resource", resource_name)?;
         validate_concrete_track(track)?;
-        validate_resource_allocation_identity("allocation", allocation_name)?;
+        validate_resource_allocation_name(allocation_name)?;
         let context = format!(
             "resource allocation {project_id:?}/{resource_name:?}/{track:?}/{allocation_name:?}"
         );
@@ -1683,7 +1683,7 @@ impl ResourceAllocationRow {
     fn into_record(self) -> Result<ResourceAllocationRecord, StateError> {
         validate_resource_allocation_identity("resource", &self.resource_name)?;
         validate_concrete_track(&self.track)?;
-        validate_resource_allocation_identity("allocation", &self.allocation_name)?;
+        validate_resource_allocation_name(&self.allocation_name)?;
         validate_resource_allocation_identity("generated name", &self.generated_name)?;
         let context = format!(
             "resource allocation {:?}/{:?}/{:?}",
@@ -1974,7 +1974,7 @@ fn validate_resource_allocation_group(
     let mut generated_names = BTreeSet::new();
 
     for allocation in allocations {
-        validate_resource_allocation_identity("allocation", &allocation.allocation_name)?;
+        validate_resource_allocation_name(&allocation.allocation_name)?;
         validate_resource_allocation_identity("generated name", &allocation.generated_name)?;
         if !allocation_names.insert(allocation.allocation_name.as_str()) {
             return Err(StateError::InvalidResourceAllocationIdentity {
@@ -2649,6 +2649,29 @@ fn validate_concrete_track(track: &str) -> Result<(), StateError> {
     }
 
     Ok(())
+}
+
+fn validate_resource_allocation_name(value: &str) -> Result<(), StateError> {
+    let mut bytes = value.bytes();
+    let Some(first_byte) = bytes.next() else {
+        return Err(StateError::InvalidResourceAllocationIdentity {
+            kind: "allocation",
+            value: value.to_string(),
+        });
+    };
+    let is_valid = first_byte.is_ascii_lowercase()
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        });
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(StateError::InvalidResourceAllocationIdentity {
+            kind: "allocation",
+            value: value.to_string(),
+        })
+    }
 }
 
 fn validate_resource_allocation_identity(

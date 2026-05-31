@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io;
 
 use config::{
     AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
@@ -9,9 +10,9 @@ use resources::{
     generated_allocation_name,
 };
 use state::{
-    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectEnvStateContext,
+    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
     ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
-    ResourceAllocationRecord, StateError,
+    ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
 
 use crate::DaemonError;
@@ -74,14 +75,19 @@ fn reconcile_loaded_project(
         &project.primary_hostname,
         &config_file.config.hostnames,
     )?;
-    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
     config::validate_project_env_shape(&config_file.config)?;
 
     let plan = project_resource_plan(paths, database, project, &config_file.config)?;
-    apply_project_resource_plan(database, &project.id, plan)?;
-
-    let context = project_env_context(database.project_env_context(&project.id)?);
+    let context = project_env_context_for_plan(database, project, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
+
+    if has_env_mappings(&config_file.config) {
+        let existing_content = read_optional_dotenv(project)?;
+        config::transform_managed_env_block(existing_content.as_deref(), &rendered)?;
+    }
+
+    apply_project_resource_plan(database, &project.id, plan)?;
+    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
     if !has_env_mappings(&config_file.config) {
         database.record_project_env_observed_snapshot(
@@ -253,35 +259,89 @@ fn apply_project_resource_plan(
     Ok(())
 }
 
-fn project_env_context(context: ProjectEnvStateContext) -> ProjectEnvContext {
-    ProjectEnvContext {
-        primary_hostname: context.primary_hostname,
-        resources: context
-            .resources
-            .into_iter()
-            .map(|(resource_name, resource)| {
-                (
-                    resource_name,
-                    ResourceEnvContext {
-                        track: resource.track,
-                        values: resource.values,
-                        allocations: resource
-                            .allocations
-                            .into_iter()
-                            .map(|(allocation_name, allocation)| {
-                                (
-                                    allocation_name,
-                                    AllocationEnvContext {
-                                        generated_name: allocation.generated_name,
-                                        values: allocation.values,
-                                    },
-                                )
-                            })
-                            .collect(),
-                    },
-                )
-            })
-            .collect(),
+fn project_env_context_for_plan(
+    database: &Database,
+    project: &ProjectRecord,
+    plan: &ProjectResourcePlan,
+) -> Result<ProjectEnvContext, DaemonError> {
+    let track_env = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .map(|track| ((track.resource_name, track.track), track.env))
+        .collect::<BTreeMap<_, _>>();
+    let mut resources = BTreeMap::new();
+
+    for resource in &plan.resources {
+        let values = track_env
+            .get(&(resource.resource_name.clone(), resource.track.clone()))
+            .cloned()
+            .unwrap_or_default();
+        let allocations = planned_allocation_contexts(
+            database,
+            &project.id,
+            &resource.resource_name,
+            &resource.track,
+            plan.allocations.get(&resource.resource_name),
+        )?;
+
+        resources.insert(
+            resource.resource_name.clone(),
+            ResourceEnvContext {
+                track: resource.track.clone(),
+                values,
+                allocations,
+            },
+        );
+    }
+
+    Ok(ProjectEnvContext {
+        primary_hostname: project.primary_hostname.clone(),
+        resources,
+    })
+}
+
+fn planned_allocation_contexts(
+    database: &Database,
+    project_id: &str,
+    resource_name: &str,
+    track: &str,
+    allocation_plan: Option<&ProjectResourceAllocationPlan>,
+) -> Result<BTreeMap<String, AllocationEnvContext>, DaemonError> {
+    let Some(allocation_plan) = allocation_plan else {
+        return Ok(BTreeMap::new());
+    };
+    let existing_allocations = database
+        .resource_allocations(project_id, resource_name)?
+        .into_iter()
+        .map(|allocation| (allocation.allocation_name.clone(), allocation))
+        .collect::<BTreeMap<_, _>>();
+    let mut allocations = BTreeMap::new();
+
+    for allocation in &allocation_plan.allocations {
+        if let Some(existing) = existing_allocations.get(&allocation.allocation_name)
+            && existing.track == track
+            && existing.status == ResourceAllocationStatus::Ready
+        {
+            allocations.insert(
+                allocation.allocation_name.clone(),
+                AllocationEnvContext {
+                    generated_name: existing.generated_name.clone(),
+                    values: existing.env.clone(),
+                },
+            );
+        }
+    }
+
+    Ok(allocations)
+}
+
+fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>, DaemonError> {
+    match state::fs::read_to_string(&project.path.join(".env")) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
     }
 }
 

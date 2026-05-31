@@ -1,0 +1,76 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(tracks, allocations, context)"
+---
+(
+    [
+        ManagedResourceTrackRecord {
+            resource_name: "mysql",
+            track: "8.0",
+            desired_state: Installed,
+            installed_version: None,
+            current_artifact_path: None,
+            env: {
+                "backslash": "C:\\pv\\mysql",
+                "literal_newline": "line\\nvalue",
+                "multiline": "line one\nline two",
+                "quote": "root \"local\"",
+                "unicode": "café-λ",
+            },
+            usage_count: 1,
+            removal_prune: false,
+            removal_force: false,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+                "dsn": "mysql://root:pa\\ss@127.0.0.1/acme_test_app_db",
+                "literal_newline": "row\\nnext",
+                "multiline": "row one\nrow two",
+                "password": "pa\"ss\\word",
+                "unicode": "schema-δ",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    ProjectEnvStateContext {
+        project_id: "<project_id>",
+        primary_hostname: "acme.test",
+        resources: {
+            "mysql": ProjectEnvResourceContext {
+                track: "8.0",
+                values: {
+                    "backslash": "C:\\pv\\mysql",
+                    "literal_newline": "line\\nvalue",
+                    "multiline": "line one\nline two",
+                    "quote": "root \"local\"",
+                    "unicode": "café-λ",
+                },
+                allocations: {
+                    "app-db": ProjectEnvAllocationContext {
+                        generated_name: "acme_test_app_db",
+                        values: {
+                            "database": "acme_test_app_db",
+                            "dsn": "mysql://root:pa\\ss@127.0.0.1/acme_test_app_db",
+                            "literal_newline": "row\\nnext",
+                            "multiline": "row one\nrow two",
+                            "password": "pa\"ss\\word",
+                            "unicode": "schema-δ",
+                        },
+                    },
+                },
+            },
+        },
+    },
+)

@@ -7,7 +7,7 @@ use camino_tempfile::tempdir;
 use config::{
     AllocationEnvContext, ConfigError, ProjectConfig, ProjectEnvContext, RenderedProjectEnv,
     ResourceEnvContext, format_project_env, render_project_env, transform_managed_env_block,
-    write_project_env_file,
+    validate_project_env_shape, write_project_env_file,
 };
 use insta::assert_debug_snapshot;
 
@@ -128,6 +128,77 @@ rustfs:
 }
 
 #[test]
+fn project_env_renderer_resolves_project_url_from_primary_hostname_across_scopes() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+env:
+  ROOT_PROJECT_URL: "${project_url}"
+mysql:
+  env:
+    RESOURCE_PROJECT_URL: "${project_url}"
+    RESOURCE_SERVICE_URL: "${url}"
+  allocations:
+    app:
+      env:
+        ALLOCATION_PROJECT_URL: "${project_url}"
+        ALLOCATION_SERVICE_URL: "${url}"
+"#,
+    )?;
+    let context = project_context_with_primary(
+        "primary.acme.test",
+        &[(
+            "mysql",
+            ResourceEnvContext {
+                track: "8.4".to_string(),
+                values: values(&[
+                    ("host", "127.0.0.1"),
+                    ("password", "secret"),
+                    ("port", "3306"),
+                    ("project_url", "https://resource-context.test"),
+                    ("url", "mysql://root:secret@127.0.0.1:3306"),
+                    ("username", "root"),
+                ]),
+                allocations: allocations(&[(
+                    "app",
+                    AllocationEnvContext {
+                        generated_name: "acme_test_app".to_string(),
+                        values: values(&[
+                            ("database", "acme_test_app"),
+                            ("project_url", "https://allocation-context.test"),
+                            ("url", "mysql://root:secret@127.0.0.1:3306/acme_test_app"),
+                        ]),
+                    },
+                )]),
+            },
+        )],
+    );
+
+    let rendered = render_project_env(&config, &context)?;
+
+    assert_eq!(
+        rendered.values.get("ROOT_PROJECT_URL").map(String::as_str),
+        Some("https://primary.acme.test")
+    );
+    assert_eq!(
+        rendered
+            .values
+            .get("RESOURCE_PROJECT_URL")
+            .map(String::as_str),
+        Some("https://primary.acme.test")
+    );
+    assert_eq!(
+        rendered
+            .values
+            .get("ALLOCATION_PROJECT_URL")
+            .map(String::as_str),
+        Some("https://primary.acme.test")
+    );
+    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
+
+    Ok(())
+}
+
+#[test]
 fn project_env_renderer_reports_missing_contexts() -> Result<()> {
     let resource_config = ProjectConfig::parse(
         r#"
@@ -237,6 +308,53 @@ mysql:
     assert!(matches!(
         duplicate,
         Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DATABASE_URL"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn project_env_renderer_rejects_same_depth_resource_duplicate_keys() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+mysql:
+  env:
+    DB_HOST: "${host}"
+redis:
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    let context = project_context(&[
+        (
+            "mysql",
+            ResourceEnvContext {
+                track: "8.4".to_string(),
+                values: values(&[("host", "127.0.0.1")]),
+                allocations: BTreeMap::new(),
+            },
+        ),
+        (
+            "redis",
+            ResourceEnvContext {
+                track: "7.2".to_string(),
+                values: values(&[("host", "127.0.0.1")]),
+                allocations: BTreeMap::new(),
+            },
+        ),
+    ]);
+
+    let validation = validate_project_env_shape(&config);
+    let duplicate = render_project_env(&config, &context);
+
+    assert_debug_snapshot!((&validation, &duplicate));
+    assert!(matches!(
+        validation,
+        Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DB_HOST"
+    ));
+    assert!(matches!(
+        duplicate,
+        Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DB_HOST"
     ));
 
     Ok(())
@@ -422,8 +540,15 @@ fn project_env_writer_leaves_existing_env_unchanged_on_malformed_block() -> Resu
 }
 
 fn project_context(resources: &[(&str, ResourceEnvContext)]) -> ProjectEnvContext {
+    project_context_with_primary("acme.test", resources)
+}
+
+fn project_context_with_primary(
+    primary_hostname: &str,
+    resources: &[(&str, ResourceEnvContext)],
+) -> ProjectEnvContext {
     ProjectEnvContext {
-        primary_hostname: "acme.test".to_string(),
+        primary_hostname: primary_hostname.to_string(),
         resources: resources
             .iter()
             .map(|(resource, context)| ((*resource).to_string(), context.clone()))
