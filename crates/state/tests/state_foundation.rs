@@ -809,6 +809,53 @@ fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()>
 }
 
 #[test]
+fn resource_allocations_reject_generated_name_collision_with_inactive_allocation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let removed =
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &[])?;
+    let after_removal = database.resource_allocations(&project.id, "mysql")?;
+    let collision = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app_db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    );
+    let collision_summary = match collision {
+        Err(StateError::ResourceAllocationGeneratedNameCollision {
+            resource,
+            track,
+            generated,
+        }) => (resource, track, generated),
+        result => return Err(anyhow!("expected generated-name collision, got {result:?}")),
+    };
+    let after_collision = database.resource_allocations(&project.id, "mysql")?;
+
+    assert_eq!(after_removal, after_collision);
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((removed, after_collision, collision_summary));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn generated_env_context_escapes_round_trip_through_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

@@ -23,18 +23,23 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project config error: missing Project env context for resource `mysql`"),
+            "error": String("Project config error: malformed PV-managed .env block: start marker without end marker"),
             "job_id": String("job_000001"),
             "type": String("job_failed"),
         },
     ],
-    "USER_VALUE=kept\n",
+    "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
+    Some(
+        [],
+    ),
+    [],
+    [],
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Project config error: missing Project env context for resource `mysql`",
+                "Project config error: malformed PV-managed .env block: start marker without end marker",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -51,7 +56,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Project config error: missing Project env context for resource `mysql`",
+            "Project config error: malformed PV-managed .env block: start marker without end marker",
         ),
     },
 )

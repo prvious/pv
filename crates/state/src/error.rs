@@ -100,6 +100,15 @@ pub enum StateError {
     #[error("invalid resource allocation {kind} `{value}`")]
     InvalidResourceAllocationIdentity { kind: &'static str, value: String },
 
+    #[error(
+        "Resource allocation generated name `{generated}` for resource `{resource}` track `{track}` is already in use"
+    )]
+    ResourceAllocationGeneratedNameCollision {
+        resource: String,
+        track: String,
+        generated: String,
+    },
+
     #[error("invalid env JSON for {context}: {reason}")]
     InvalidEnvJson { context: String, reason: String },
 

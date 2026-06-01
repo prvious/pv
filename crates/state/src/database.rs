@@ -953,6 +953,19 @@ impl Database {
                     ],
                 )?;
             } else {
+                if resource_allocation_generated_name_exists_in_transaction(
+                    &transaction,
+                    resource_name,
+                    track,
+                    &allocation.generated_name,
+                )? {
+                    return Err(StateError::ResourceAllocationGeneratedNameCollision {
+                        resource: resource_name.to_string(),
+                        track: track.to_string(),
+                        generated: allocation.generated_name.clone(),
+                    });
+                }
+
                 let id = next_resource_allocation_id(&transaction)?;
                 transaction.execute(
                     "INSERT INTO resource_allocations (
@@ -1366,7 +1379,7 @@ impl Database {
         Ok(tables)
     }
 
-    fn managed_resource_track(
+    pub fn managed_resource_track(
         &self,
         resource_name: &str,
         track: &str,
@@ -2047,6 +2060,27 @@ fn ready_resource_allocations_for_project_resource_track_in_connection(
     }
 
     Ok(allocations)
+}
+
+fn resource_allocation_generated_name_exists_in_transaction(
+    transaction: &Transaction<'_>,
+    resource_name: &str,
+    track: &str,
+    generated_name: &str,
+) -> Result<bool, StateError> {
+    let exists = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM resource_allocations
+            WHERE resource_name = ?1
+            AND track = ?2
+            AND generated_name = ?3
+        )",
+        params![resource_name, track, generated_name],
+        |row| row.get::<_, bool>(0),
+    )?;
+
+    Ok(exists)
 }
 
 fn resource_allocation_by_key(

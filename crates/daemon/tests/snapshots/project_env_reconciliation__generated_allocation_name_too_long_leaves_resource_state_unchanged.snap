@@ -23,18 +23,20 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project config error: missing Project env context for resource `mysql`"),
+            "error": String("Managed Resource error: generated Resource allocation name `a_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` for `mysql` allocation `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` exceeds 63 characters"),
             "job_id": String("job_000001"),
             "type": String("job_failed"),
         },
     ],
-    "USER_VALUE=kept\n",
+    None,
+    [],
+    [],
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Project config error: missing Project env context for resource `mysql`",
+                "Managed Resource error: generated Resource allocation name `a_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` for `mysql` allocation `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` exceeds 63 characters",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -51,7 +53,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Project config error: missing Project env context for resource `mysql`",
+            "Managed Resource error: generated Resource allocation name `a_test_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` for `mysql` allocation `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` exceeds 63 characters",
         ),
     },
 )

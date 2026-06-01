@@ -150,6 +150,35 @@ async fn missing_context_leaves_dotenv_unchanged_and_records_failure() -> Result
 }
 
 #[tokio::test]
+async fn root_env_with_resource_waits_for_resource_context_before_dotenv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\n",
+    )?;
+    state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "root_env_with_resource_waits_for_resource_context_before_dotenv",
+        (
+            lines,
+            read_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn first_allocation_reconciliation_records_desired_state_before_context_failure() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -217,6 +246,49 @@ async fn malformed_pv_block_leaves_dotenv_unchanged_and_records_failure() -> Res
 }
 
 #[tokio::test]
+async fn malformed_pv_block_preflight_preserves_resource_and_hostname_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"hostnames:
+  - api.acme.test
+mysql:
+  version: "8.0"
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    state::fs::write_sensitive_file(
+        &project.path.join(".env"),
+        "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let hostnames = database
+        .project_by_id(&project.id)?
+        .map(|project| project.additional_hostnames);
+
+    assert_with_normalized_timestamps(
+        "malformed_pv_block_preflight_preserves_resource_and_hostname_state",
+        (
+            lines,
+            read_dotenv(&project)?,
+            hostnames,
+            database.project_managed_resources(&project.id)?,
+            database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -269,6 +341,44 @@ async fn duplicate_rendered_env_key_leaves_resource_state_unchanged() -> Result<
 
     assert_with_normalized_timestamps(
         "duplicate_rendered_env_key_leaves_resource_state_unchanged",
+        (
+            lines,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn generated_allocation_name_too_long_leaves_resource_state_unchanged() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let allocation_name = "a".repeat(57);
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "a.test",
+        &format!(
+            r#"mysql:
+  version: "8.0"
+  allocations:
+    {allocation_name}:
+      env:
+        DB_DATABASE: "${{database}}"
+"#
+        ),
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "generated_allocation_name_too_long_leaves_resource_state_unchanged",
         (
             lines,
             read_optional_dotenv(&project)?,

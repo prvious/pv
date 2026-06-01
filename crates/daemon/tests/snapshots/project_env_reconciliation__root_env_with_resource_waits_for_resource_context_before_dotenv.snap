@@ -29,6 +29,15 @@ expression: snapshot
         },
     ],
     "USER_VALUE=kept\n",
+    [
+        ProjectManagedResourceRecord {
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",

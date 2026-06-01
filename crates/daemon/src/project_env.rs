@@ -78,19 +78,16 @@ fn reconcile_loaded_project(
     config::validate_project_env_shape(&config_file.config)?;
 
     let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+    let has_env_mappings = config_file.config.has_env_mappings();
+    if has_env_mappings {
+        let existing_content = read_optional_dotenv(project)?;
+        config::validate_managed_env_block(existing_content.as_deref())?;
+    }
 
     apply_project_resource_plan(database, &project.id, &plan)?;
     database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
-    let context = project_env_context_for_plan(database, project, &plan)?;
-    let rendered = config::render_project_env(&config_file.config, &context)?;
-
-    if config_file.config.has_env_mappings() {
-        let existing_content = read_optional_dotenv(project)?;
-        config::transform_managed_env_block(existing_content.as_deref(), &rendered)?;
-    }
-
-    if !config_file.config.has_env_mappings() {
+    if !has_env_mappings {
         database.record_project_env_observed_snapshot(
             &project.id,
             ProjectEnvObservedStatus::Rendered,
@@ -103,6 +100,8 @@ fn reconcile_loaded_project(
         });
     }
 
+    let context = project_env_context_for_plan(database, project, &plan)?;
+    let rendered = config::render_project_env(&config_file.config, &context)?;
     let transform = config::write_project_env_file(&project.path.join(".env"), &rendered)?;
     let warnings = observed_warnings(&transform.warnings);
     let status = if warnings.is_empty() {
@@ -275,18 +274,9 @@ fn project_env_context_for_plan(
     project: &ProjectRecord,
     plan: &ProjectResourcePlan,
 ) -> Result<ProjectEnvContext, DaemonError> {
-    let track_env = database
-        .managed_resource_tracks()?
-        .into_iter()
-        .map(|track| ((track.resource_name, track.track), track.env))
-        .collect::<BTreeMap<_, _>>();
     let mut resources = BTreeMap::new();
 
     for resource in &plan.resources {
-        let values = track_env
-            .get(&(resource.resource_name.clone(), resource.track.clone()))
-            .cloned()
-            .unwrap_or_default();
         let allocations = planned_allocation_contexts(
             database,
             &project.id,
@@ -294,12 +284,19 @@ fn project_env_context_for_plan(
             &resource.track,
             plan.allocations.get(&resource.resource_name),
         )?;
+        let track = database.managed_resource_track(&resource.resource_name, &resource.track)?;
+        if track.env.is_empty() {
+            return Err(config::ConfigError::MissingResourceEnvContext {
+                resource: resource.resource_name.clone(),
+            }
+            .into());
+        }
 
         resources.insert(
             resource.resource_name.clone(),
             ResourceEnvContext {
                 track: resource.track.clone(),
-                values,
+                values: track.env,
                 allocations,
             },
         );
@@ -329,18 +326,27 @@ fn planned_allocation_contexts(
     let mut allocations = BTreeMap::new();
 
     for allocation in &allocation_plan.allocations {
-        if let Some(existing) = existing_allocations.get(&allocation.allocation_name)
-            && existing.track == track
-            && existing.status == ResourceAllocationStatus::Ready
-        {
-            allocations.insert(
-                allocation.allocation_name.clone(),
-                AllocationEnvContext {
-                    generated_name: existing.generated_name.clone(),
-                    values: existing.env.clone(),
-                },
-            );
+        let Some(existing) = existing_allocations.get(&allocation.allocation_name) else {
+            return Err(config::ConfigError::MissingAllocationEnvContext {
+                resource: resource_name.to_string(),
+                allocation: allocation.allocation_name.clone(),
+            }
+            .into());
+        };
+        if existing.track != track || existing.status != ResourceAllocationStatus::Ready {
+            return Err(config::ConfigError::MissingAllocationEnvContext {
+                resource: resource_name.to_string(),
+                allocation: allocation.allocation_name.clone(),
+            }
+            .into());
         }
+        allocations.insert(
+            allocation.allocation_name.clone(),
+            AllocationEnvContext {
+                generated_name: existing.generated_name.clone(),
+                values: existing.env.clone(),
+            },
+        );
     }
 
     Ok(allocations)

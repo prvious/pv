@@ -218,6 +218,14 @@ pub fn transform_managed_env_block(
     })
 }
 
+pub fn validate_managed_env_block(existing_content: Option<&str>) -> Result<(), ConfigError> {
+    let existing_content = existing_content.unwrap_or_default();
+    let lines = split_env_lines(existing_content);
+    managed_blocks(&lines)?;
+
+    Ok(())
+}
+
 pub fn write_project_env_file(
     path: &Utf8Path,
     rendered: &RenderedProjectEnv,
