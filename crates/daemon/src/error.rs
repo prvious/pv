@@ -1,5 +1,7 @@
 use std::io;
 
+use config::ConfigError;
+use resources::ResourcesError;
 use serde_json::Error as JsonError;
 use state::StateError;
 use thiserror::Error;
@@ -34,6 +36,12 @@ pub enum DaemonError {
 
     #[error("state error: {0}")]
     State(#[from] StateError),
+
+    #[error("Project config error: {0}")]
+    Config(#[from] ConfigError),
+
+    #[error("Managed Resource error: {0}")]
+    Resources(#[from] ResourcesError),
 
     #[error("daemon task failed: {0}")]
     Task(#[from] JoinError),

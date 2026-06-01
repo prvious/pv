@@ -6,9 +6,13 @@ mod migrations;
 mod paths;
 
 pub use database::{
-    Database, DatabaseInspection, JobRecord, JobStatus, LinkProjectInput, LinkProjectResult,
-    LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortAssignment,
-    PortOwner, PortRequest, ProjectConfigWatch, ProjectRecord,
+    Database, DatabaseInspection, EnvContextValues, JobRecord, JobStatus, LinkProjectInput,
+    LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    PortAssignment, PortOwner, PortRequest, ProjectConfigWatch, ProjectEnvAllocationContext,
+    ProjectEnvObservedStateRecord, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
+    ProjectEnvObservedWarningRecord, ProjectEnvResourceContext, ProjectEnvStateContext,
+    ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectRecord,
+    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};

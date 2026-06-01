@@ -1,0 +1,13 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(result, after_content, after_mode)"
+---
+(
+    Err(
+        MalformedManagedEnvBlock {
+            reason: "start marker without end marker",
+        },
+    ),
+    "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=old\n",
+    "640",
+)

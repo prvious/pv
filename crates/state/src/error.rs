@@ -54,6 +54,12 @@ pub enum StateError {
     #[error("unknown managed resource desired state `{desired_state}`")]
     UnknownManagedResourceDesiredState { desired_state: String },
 
+    #[error("unknown resource allocation status `{status}`")]
+    UnknownResourceAllocationStatus { status: String },
+
+    #[error("unknown Project env observed status `{status}`")]
+    UnknownProjectEnvObservedStatus { status: String },
+
     #[error("Project `{target}` was not found")]
     ProjectNotFound { target: String },
 
@@ -87,6 +93,49 @@ pub enum StateError {
 
     #[error("invalid managed resource {kind} `{value}`")]
     InvalidManagedResourceIdentity { kind: &'static str, value: String },
+
+    #[error("reserved concrete track `{track}` must be resolved before state storage")]
+    ReservedConcreteTrack { track: String },
+
+    #[error("invalid resource allocation {kind} `{value}`")]
+    InvalidResourceAllocationIdentity { kind: &'static str, value: String },
+
+    #[error(
+        "Resource allocation generated name `{generated}` for resource `{resource}` track `{track}` is already in use"
+    )]
+    ResourceAllocationGeneratedNameCollision {
+        resource: String,
+        track: String,
+        generated: String,
+    },
+
+    #[error("invalid env JSON for {context}: {reason}")]
+    InvalidEnvJson { context: String, reason: String },
+
+    #[error("invalid env context for {context}: {reason}")]
+    InvalidEnvContext { context: String, reason: String },
+
+    #[error(
+        "Resource allocation `{allocation}` for Project `{project_id}` resource `{resource}` was not found"
+    )]
+    ResourceAllocationNotFound {
+        project_id: String,
+        resource: String,
+        allocation: String,
+    },
+
+    #[error(
+        "Resource allocation `{allocation}` for Project `{project_id}` resource `{resource}` track `{track}` is not in desired state"
+    )]
+    ResourceAllocationNotDesired {
+        project_id: String,
+        resource: String,
+        track: String,
+        allocation: String,
+    },
+
+    #[error("invalid Project env observed warning {kind} `{value}`")]
+    InvalidProjectEnvObservedWarning { kind: &'static str, value: String },
 
     #[error("daemon job `{id}` was not found")]
     JobNotFound { id: String },

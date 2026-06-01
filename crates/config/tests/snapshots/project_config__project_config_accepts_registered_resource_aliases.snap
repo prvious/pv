@@ -1,13 +1,12 @@
 ---
 source: crates/config/tests/project_config.rs
-assertion_line: 52
 expression: config.resources
 ---
 {
     "mailpit": ResourceConfig {
         track: None,
         env: {
-            "MAIL_HOST": "${host}",
+            "MAIL_HOST": "${smtp_host}",
         },
         allocations: {},
     },

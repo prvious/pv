@@ -1,0 +1,51 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(desired, ready, switched, removed)"
+---
+(
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {},
+            status: Desired,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    ResourceAllocationRecord {
+        id: "allocation_000001",
+        project_id: "<project_id>",
+        resource_name: "mysql",
+        track: "8.0",
+        allocation_name: "app-db",
+        generated_name: "acme_test_app_db",
+        env: {
+            "database": "acme_test_app_db",
+        },
+        status: Ready,
+        created_at: "<timestamp>",
+        updated_at: "<timestamp>",
+    },
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.4",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+            },
+            status: Desired,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [],
+)

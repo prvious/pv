@@ -9,9 +9,11 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+config = { path = "../config" }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+resources = { path = "../resources" }
 rustix = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }

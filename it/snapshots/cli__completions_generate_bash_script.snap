@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 229
 expression: output.stdout
 ---
 _pv() {
@@ -51,6 +50,9 @@ _pv() {
             pv,php:install)
                 cmd="pv__subcmd__php:install"
                 ;;
+            pv,project:env)
+                cmd="pv__subcmd__project:env"
+                ;;
             pv,unlink)
                 cmd="pv__subcmd__unlink"
                 ;;
@@ -61,7 +63,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run link unlink open list php:install"
+            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run link unlink open project:env list php:install"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -210,6 +212,20 @@ _pv() {
             ;;
         pv__subcmd__php:install)
             opts="-h --no-color --help [version]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__project:env)
+            opts="-h --json --no-color --help [hostname]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

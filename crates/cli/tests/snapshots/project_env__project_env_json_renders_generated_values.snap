@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/project_env.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "{\"DATABASE_URL\":\"mysql://app:app-secret@127.0.0.1:3306/acme_test_app\",\"DB_DATABASE\":\"acme_test_app\",\"DB_HOST\":\"127.0.0.1\"}\n",
+    stderr: "",
+}

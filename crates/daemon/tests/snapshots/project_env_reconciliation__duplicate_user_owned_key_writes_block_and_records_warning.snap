@@ -1,0 +1,69 @@
+---
+source: crates/daemon/tests/project_env_reconciliation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("job accepted"),
+            "protocol_version": Number(1),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "kind": String("reconcile"),
+            "scope": String("project:<project_id>"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env reconciliation started"),
+            "type": String("log"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env rendered with warnings"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "summary": String("Project env rendered with warnings"),
+            "type": String("job_completed"),
+        },
+    ],
+    "APP_URL=https://user.test\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Warning,
+            message: Some(
+                "rendered Project env with warnings",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [
+                ProjectEnvObservedWarningRecord {
+                    project_id: "<project_id>",
+                    kind: "duplicate_key",
+                    message: "generated Project env key `APP_URL` already exists outside the PV-managed block",
+                    observed_at: "<timestamp>",
+                },
+            ],
+        },
+    ),
+    JobRecord {
+        id: "job_000001",
+        kind: "reconcile",
+        scope: "project:<project_id>",
+        status: Succeeded,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: Some(
+            "Project env rendered with warnings",
+        ),
+        error: None,
+    },
+)

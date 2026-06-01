@@ -1,5 +1,6 @@
 use crate::DaemonError;
 use crate::ipc::LocalStream;
+use crate::project_env::reconcile_project_env;
 use crate::protocol::{
     DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
@@ -38,9 +39,8 @@ pub(crate) async fn run_background_reconciliation_job(
     };
     let running = queued.wait_for_turn().await;
     let job_id = running.job_id().to_string();
-    let result = complete_or_fail_background_reconciliation(&paths, &job_id, || {
-        complete_stub_reconciliation(&paths, &job_id).map(|_summary| ())
-    });
+    let scope = running.scope().clone();
+    let result = complete_reconciliation_job(&paths, &job_id, &scope).map(|_summary| ());
 
     running.finish();
 
@@ -53,7 +53,6 @@ async fn run_reconciliation_job(
     mut transport: DaemonTransport<LocalStream>,
     scope: ReconciliationScope,
 ) -> Result<(), DaemonError> {
-    let scope_text = scope.to_string();
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
 
     match result {
@@ -72,12 +71,13 @@ async fn run_reconciliation_job(
             .await;
             let stream_is_open = accepted_result.is_ok();
             let running = queued.wait_for_turn().await;
+            let scope = running.scope().clone();
             let result = stream_started_reconciliation_job(
                 paths,
                 transport,
                 stream_is_open,
                 running.job_id(),
-                &scope_text,
+                scope,
             )
             .await;
 
@@ -131,11 +131,12 @@ async fn stream_started_reconciliation_job<Stream>(
     mut transport: DaemonTransport<Stream>,
     stream_is_open: bool,
     job_id: &str,
-    scope: &str,
+    scope: ReconciliationScope,
 ) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
+    let scope_text = scope.to_string();
     let started_stream_result = if stream_is_open {
         async {
             write_line(
@@ -143,18 +144,17 @@ where
                 &DaemonEvent::JobStarted {
                     job_id,
                     kind: "reconcile",
-                    scope,
+                    scope: &scope_text,
                 },
             )
             .await?;
-            write_line(
-                &mut transport,
-                &DaemonEvent::Log {
-                    job_id,
-                    message: "stub job started",
-                },
-            )
-            .await?;
+            let message = match &scope {
+                ReconciliationScope::Project { .. } => "Project env reconciliation started",
+                ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
+                    "stub job started"
+                }
+            };
+            write_line(&mut transport, &DaemonEvent::Log { job_id, message }).await?;
 
             Ok::<(), DaemonError>(())
         }
@@ -163,31 +163,47 @@ where
         Ok(())
     };
 
-    let summary = complete_stub_reconciliation(&paths, job_id)?;
+    let reconciliation_result = complete_reconciliation_job(&paths, job_id, &scope);
     started_stream_result?;
 
     if !stream_is_open {
-        return Ok(());
+        return reconciliation_result.map(|_summary| ());
     }
 
-    async {
-        write_line(
-            &mut transport,
-            &DaemonEvent::Progress {
-                job_id,
-                message: "stub job completed without reconciliation work",
-            },
-        )
-        .await?;
-        write_line(
-            &mut transport,
-            &DaemonEvent::JobCompleted { job_id, summary },
-        )
-        .await?;
-
-        Ok::<(), DaemonError>(())
+    match reconciliation_result {
+        Ok(summary) => {
+            let progress = reconciliation_progress_message(&scope, &summary);
+            write_line(
+                &mut transport,
+                &DaemonEvent::Progress {
+                    job_id,
+                    message: &progress,
+                },
+            )
+            .await?;
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobCompleted {
+                    job_id,
+                    summary: &summary,
+                },
+            )
+            .await?;
+        }
+        Err(error) => {
+            let error_message = error.to_string();
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobFailed {
+                    job_id,
+                    error: &error_message,
+                },
+            )
+            .await?;
+        }
     }
-    .await
+
+    Ok(())
 }
 
 fn start_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String, DaemonError> {
@@ -216,6 +232,51 @@ fn complete_stub_reconciliation(
     Ok(summary)
 }
 
+fn complete_reconciliation_job(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &ReconciliationScope,
+) -> Result<String, DaemonError> {
+    let result = match scope {
+        ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
+            complete_stub_reconciliation(paths, job_id).map(str::to_string)
+        }
+        ReconciliationScope::Project { id } => complete_project_reconciliation(paths, job_id, id),
+    };
+
+    if let Err(error) = &result {
+        let error_message = error.to_string();
+        let mut database = Database::open(paths)?;
+        database.fail_job(job_id, &error_message)?;
+    }
+
+    result
+}
+
+fn complete_project_reconciliation(
+    paths: &PvPaths,
+    job_id: &str,
+    id: &crate::reconciliation::ReconciliationScopeComponent,
+) -> Result<String, DaemonError> {
+    let summary = reconcile_project_env(paths, id.as_str())?;
+    let summary = summary.as_str();
+    let mut database = Database::open(paths)?;
+
+    database.complete_job(job_id, summary)?;
+
+    Ok(summary.to_string())
+}
+
+fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
+    match scope {
+        ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
+            "stub job completed without reconciliation work".to_string()
+        }
+        ReconciliationScope::Project { .. } => summary.to_string(),
+    }
+}
+
+#[cfg(test)]
 fn complete_or_fail_background_reconciliation(
     paths: &PvPaths,
     job_id: &str,
@@ -433,7 +494,7 @@ mod tests {
             crate::protocol::transport(server),
             true,
             &job_id,
-            "system",
+            ReconciliationScope::System,
         )
         .await;
 

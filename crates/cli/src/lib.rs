@@ -61,7 +61,7 @@ where
     };
 
     finish_execution(
-        commands::execute(cli, environment, stdout),
+        commands::execute(cli, environment, stdout, stderr),
         output_mode,
         stderr,
     )
@@ -87,6 +87,12 @@ fn finish_execution(
             Ok(ExitCode::FAILURE)
         }
         Err(ExecuteError::Io(error)) => {
+            let mut output = Output::new(stderr, output_mode);
+            output.error(&error.to_string())?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        Err(ExecuteError::Json(error)) => {
             let mut output = Output::new(stderr, output_mode);
             output.error(&error.to_string())?;
 

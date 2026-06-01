@@ -1,0 +1,21 @@
+---
+source: crates/resources/tests/resource_allocations.rs
+expression: errors
+---
+[
+    UnsupportedResourceAllocation {
+        resource: "mailpit",
+    },
+    UnsupportedResourceAllocation {
+        resource: "mailpit",
+    },
+    UnsupportedResourceAllocation {
+        resource: "php",
+    },
+    UnsupportedResourceAllocation {
+        resource: "frankenphp",
+    },
+    UnsupportedResourceAllocation {
+        resource: "composer",
+    },
+]

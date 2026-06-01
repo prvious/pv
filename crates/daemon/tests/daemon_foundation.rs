@@ -73,16 +73,6 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
-    let project_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "project:project_1",
-        }),
-    )
-    .await?;
     let resource_lines = request_lines(
         &paths,
         json!({
@@ -100,7 +90,7 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
 
     assert_with_normalized_timestamps(
         "valid_reconciliation_scopes_stream_stub_completion",
-        (project_lines, resource_lines, database.recent_jobs()?),
+        (resource_lines, database.recent_jobs()?),
     )?;
 
     Ok(())
@@ -114,14 +104,14 @@ async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
     let client_paths = paths.clone();
 
     let submitted = tokio::task::spawn_blocking(move || {
-        daemon::submit_job_blocking(client_paths, "reconcile", "project:project_1")
+        daemon::submit_job_blocking(client_paths, "reconcile", "system")
     })
     .await??;
     let job = wait_for_succeeded_job_id(&paths, &submitted.id).await?;
     daemon.shutdown().await?;
 
     assert_eq!(job.kind, "reconcile");
-    assert_eq!(job.scope, "project:project_1");
+    assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);
 
     Ok(())
@@ -414,7 +404,11 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
     })?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
-    write_file_after_modified_time_tick(&config_path, "php: '8.4'\n").await?;
+    write_file_after_modified_time_tick(
+        &config_path,
+        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+    )
+    .await?;
 
     let job = wait_for_succeeded_job_scope(&paths, "project:project_1").await?;
 
@@ -423,7 +417,11 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
     assert_eq!(job.kind, "reconcile");
     assert_eq!(job.scope, "project:project_1");
     assert_eq!(job.status, JobStatus::Succeeded);
-    assert_eq!(job.summary.as_deref(), Some("stub job completed"));
+    assert_eq!(job.summary.as_deref(), Some("Project env rendered"));
+    assert_eq!(
+        state::fs::read_to_string(&project_path.join(".env"))?,
+        "# >>> PV MANAGED\nAPP_NAME=watched\nAPP_URL=https://project.test\n# <<< PV MANAGED\n"
+    );
 
     Ok(())
 }

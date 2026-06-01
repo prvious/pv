@@ -1,44 +1,22 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
-use resources::{ResourceCapability, ResourceKind, TrackSelector, registry};
+use resources::{
+    ResourceCapability, ResourceKind, TrackSelector, allocation_env_placeholders, registry,
+    resource_env_placeholders,
+};
 use yaml_serde::{Mapping, Number, Value};
 
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, ProjectConfig, ResourceConfig};
 
-// These lists are intentionally scope-level only. When resource adapters own
-// their env value contracts, move resource-specific placeholder validation
-// into adapter metadata so parsing and rendering cannot drift.
 const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url"];
-const RESOURCE_ENV_PLACEHOLDERS: &[&str] = &[
-    "dashboard_url",
-    "endpoint",
-    "host",
-    "port",
-    "smtp_host",
-    "smtp_port",
-    "url",
-];
-const ALLOCATION_ENV_PLACEHOLDERS: &[&str] = &[
-    "access_key",
-    "bucket",
-    "database",
-    "endpoint",
-    "host",
-    "password",
-    "port",
-    "prefix",
-    "secret_key",
-    "url",
-    "username",
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EnvPlaceholderScope {
+enum EnvPlaceholderScope<'a> {
     Project,
-    Resource,
-    Allocation,
+    Resource { resource: &'a str },
+    Allocation { resource: &'a str },
 }
 
 impl ProjectConfig {
@@ -133,7 +111,7 @@ fn parse_resource_config(
             "env" => {
                 config.env = parse_env_mapping(
                     &format!("{resource}.env"),
-                    EnvPlaceholderScope::Resource,
+                    EnvPlaceholderScope::Resource { resource },
                     value,
                 )?;
             }
@@ -221,7 +199,7 @@ fn parse_allocation_config(
             "env" => {
                 config.env = parse_env_mapping(
                     &format!("{resource}.allocations.{allocation}.env"),
-                    EnvPlaceholderScope::Allocation,
+                    EnvPlaceholderScope::Allocation { resource },
                     value,
                 )?;
             }
@@ -267,7 +245,7 @@ fn parse_hostnames(value: &Value) -> Result<Vec<String>, ConfigError> {
 
 fn parse_env_mapping(
     field: &str,
-    scope: EnvPlaceholderScope,
+    scope: EnvPlaceholderScope<'_>,
     value: &Value,
 ) -> Result<BTreeMap<String, String>, ConfigError> {
     let mapping = match value {
@@ -425,7 +403,7 @@ fn normalized_allocation_name(resource: &str, allocation: &str) -> String {
 
 fn validate_env_placeholders(
     field: &str,
-    scope: EnvPlaceholderScope,
+    scope: EnvPlaceholderScope<'_>,
     value: &str,
 ) -> Result<(), ConfigError> {
     let characters = value.chars().collect::<Vec<_>>();
@@ -463,7 +441,7 @@ fn validate_env_placeholders(
         };
         let placeholder = characters[index + 2..end_index].iter().collect::<String>();
         validate_placeholder_name(field, &placeholder)?;
-        if !scope.allowed_placeholders().contains(&placeholder.as_str()) {
+        if !scope.allows_placeholder(&placeholder)? {
             return Err(ConfigError::UnknownEnvPlaceholder {
                 field: field.to_string(),
                 placeholder,
@@ -476,14 +454,36 @@ fn validate_env_placeholders(
     Ok(())
 }
 
-impl EnvPlaceholderScope {
-    const fn allowed_placeholders(self) -> &'static [&'static str] {
+impl<'a> EnvPlaceholderScope<'a> {
+    fn allows_placeholder(self, placeholder: &str) -> Result<bool, ConfigError> {
+        if PROJECT_ENV_PLACEHOLDERS.contains(&placeholder) {
+            return Ok(true);
+        }
+
         match self {
-            Self::Project => PROJECT_ENV_PLACEHOLDERS,
-            Self::Resource => RESOURCE_ENV_PLACEHOLDERS,
-            Self::Allocation => ALLOCATION_ENV_PLACEHOLDERS,
+            Self::Project => Ok(false),
+            Self::Resource { resource } => {
+                Ok(resource_placeholders(resource)?.contains(&placeholder))
+            }
+            Self::Allocation { resource } => Ok(resource_placeholders(resource)?
+                .contains(&placeholder)
+                || allocation_placeholders(resource)?.contains(&placeholder)),
         }
     }
+}
+
+fn resource_placeholders(resource: &str) -> Result<&'static [&'static str], ConfigError> {
+    resource_env_placeholders(resource).map_err(|source| ConfigError::EnvPlaceholderContract {
+        resource: resource.to_string(),
+        reason: source.to_string(),
+    })
+}
+
+fn allocation_placeholders(resource: &str) -> Result<&'static [&'static str], ConfigError> {
+    allocation_env_placeholders(resource).map_err(|source| ConfigError::EnvPlaceholderContract {
+        resource: resource.to_string(),
+        reason: source.to_string(),
+    })
 }
 
 fn validate_placeholder_name(field: &str, placeholder: &str) -> Result<(), ConfigError> {

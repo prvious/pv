@@ -13,6 +13,7 @@ fastrand = { workspace = true }
 home = { workspace = true }
 rusqlite = { workspace = true }
 rustix = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 

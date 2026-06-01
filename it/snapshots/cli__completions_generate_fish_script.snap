@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 239
 expression: output.stdout
 ---
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
@@ -41,6 +40,7 @@ complete -c pv -n "__fish_pv_needs_command" -f -a "daemon:run" -d 'Run the inter
 complete -c pv -n "__fish_pv_needs_command" -f -a "link" -d 'Link a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "unlink" -d 'Unlink a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "open" -d 'Open a linked Project'
+complete -c pv -n "__fish_pv_needs_command" -f -a "project:env" -d 'Print generated Project environment values'
 complete -c pv -n "__fish_pv_needs_command" -f -a "list" -d 'List linked Projects'
 complete -c pv -n "__fish_pv_needs_command" -f -a "php:install" -d 'Install a PHP track'
 complete -c pv -n "__fish_pv_using_subcommand env" -l shell -d 'Shell syntax to generate' -r -f -a "bash\t''
@@ -65,6 +65,9 @@ complete -c pv -n "__fish_pv_using_subcommand unlink" -l no-color -d 'Disable co
 complete -c pv -n "__fish_pv_using_subcommand unlink" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand open" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand open" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand project:env" -l json -d 'Print generated Project environment values as JSON'
+complete -c pv -n "__fish_pv_using_subcommand project:env" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand project:env" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand list" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand list" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand php:install" -l no-color -d 'Disable colored output'

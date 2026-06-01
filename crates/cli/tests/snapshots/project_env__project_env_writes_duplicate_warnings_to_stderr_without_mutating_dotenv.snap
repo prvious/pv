@@ -1,0 +1,17 @@
+---
+source: crates/cli/tests/project_env.rs
+expression: "(output, env_after, jobs)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "APP_URL=https://acme.test\n",
+        stderr: "warning: generated Project env key `APP_URL` already exists outside the PV-managed block\n",
+    },
+    "APP_URL=https://user.test\nOTHER=value\n",
+    [],
+)

@@ -3,10 +3,16 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::ProjectConfigFile;
-use state::{Database, LinkProjectInput, LinkProjectStatus, ProjectRecord, PvPaths, StateError};
+use config::{
+    AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
+    ResourceEnvContext,
+};
+use state::{
+    Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
+    ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectRecord, PvPaths, StateError,
+};
 
-use crate::args::{LinkArgs, OpenArgs, UnlinkArgs};
+use crate::args::{LinkArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
@@ -104,6 +110,47 @@ pub(crate) fn open(
     Ok(ExitCode::SUCCESS)
 }
 
+pub(crate) fn env(
+    args: ProjectEnvArgs,
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
+    let database = Database::open(&paths)?;
+    let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
+    let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+    database.validate_project_hostnames(
+        &project.id,
+        &project.primary_hostname,
+        &config_file.config.hostnames,
+    )?;
+    config::validate_project_env_shape(&config_file.config)?;
+
+    let context = project_env_context(database.project_env_context(&project.id)?);
+    let rendered = config::render_project_env(&config_file.config, &context)?;
+    let existing_env = read_project_env_file(&project.path)?;
+    let transform = config::transform_managed_env_block(existing_env.as_deref(), &rendered)?;
+
+    if args.json {
+        serde_json::to_writer(&mut *stdout, &rendered.values)?;
+        writeln!(stdout)?;
+        write_project_env_warnings(&transform.warnings, stderr)?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let content = config::format_project_env(&rendered);
+    if content.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    write!(stdout, "{content}")?;
+    write_project_env_warnings(&transform.warnings, stderr)?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) fn list(
     environment: &impl Environment,
     stdout: &mut impl Write,
@@ -120,7 +167,7 @@ pub(crate) fn list(
 
     output.line("Hostname  PHP  Status  Resources  Env  Path")?;
     for project in projects {
-        let status = project_list_status(&database, &project);
+        let status = project_list_status(&database, &project)?;
         output.line(&format!(
             "{}  {}  {}  unknown  {}  {}",
             project.primary_hostname,
@@ -131,6 +178,9 @@ pub(crate) fn list(
         ))?;
         if let Some(error) = status.config_error {
             output.line(&format!("  config: {error}"))?;
+        }
+        if let Some(detail) = status.env_detail {
+            output.line(&format!("  env: {detail}"))?;
         }
     }
 
@@ -233,6 +283,74 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
     )
 }
 
+fn project_env_context(context: ProjectEnvStateContext) -> ProjectEnvContext {
+    ProjectEnvContext {
+        primary_hostname: context.primary_hostname,
+        resources: context
+            .resources
+            .into_iter()
+            .map(|(resource_name, resource)| {
+                (
+                    resource_name,
+                    ResourceEnvContext {
+                        track: resource.track,
+                        values: resource.values,
+                        allocations: resource
+                            .allocations
+                            .into_iter()
+                            .map(|(allocation_name, allocation)| {
+                                (
+                                    allocation_name,
+                                    AllocationEnvContext {
+                                        generated_name: allocation.generated_name,
+                                        values: allocation.values,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn read_project_env_file(project_path: &Utf8Path) -> Result<Option<String>, ExecuteError> {
+    let env_path = project_path.join(".env");
+    match state::fs::read_to_string(&env_path) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) => {
+            if let StateError::Filesystem { source, .. } = &error
+                && source.kind() == io::ErrorKind::NotFound
+            {
+                return Ok(None);
+            }
+
+            Err(error.into())
+        }
+    }
+}
+
+fn write_project_env_warnings(
+    warnings: &[ProjectEnvWarning],
+    stderr: &mut impl Write,
+) -> Result<(), ExecuteError> {
+    let mut output = Output::new(stderr, OutputMode::plain());
+    for warning in warnings {
+        output.line(&format!("warning: {}", project_env_warning(warning)))?;
+    }
+
+    Ok(())
+}
+
+fn project_env_warning(warning: &ProjectEnvWarning) -> String {
+    match warning {
+        ProjectEnvWarning::DuplicateExistingKey { key } => {
+            format!("generated Project env key `{key}` already exists outside the PV-managed block")
+        }
+    }
+}
+
 fn resolve_project(
     database: &Database,
     hostname: Option<&str>,
@@ -293,6 +411,7 @@ struct ProjectListStatus {
     project: ProjectStatus,
     env: ProjectEnvStatus,
     config_error: Option<String>,
+    env_detail: Option<String>,
 }
 
 enum ProjectStatus {
@@ -310,30 +429,40 @@ impl ProjectStatus {
 }
 
 enum ProjectEnvStatus {
-    Configured,
+    Failed,
     Invalid,
     None,
+    Pending,
+    Rendered,
+    Warning,
 }
 
 impl ProjectEnvStatus {
     const fn as_str(&self) -> &'static str {
         match self {
-            Self::Configured => "configured",
+            Self::Failed => "failed",
             Self::Invalid => "invalid",
             Self::None => "none",
+            Self::Pending => "pending",
+            Self::Rendered => "rendered",
+            Self::Warning => "warning",
         }
     }
 }
 
-fn project_list_status(database: &Database, project: &ProjectRecord) -> ProjectListStatus {
+fn project_list_status(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectListStatus, ExecuteError> {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
-            return ProjectListStatus {
+            return Ok(ProjectListStatus {
                 project: ProjectStatus::ConfigInvalid,
                 env: ProjectEnvStatus::Invalid,
                 config_error: Some(error.to_string()),
-            };
+                env_detail: None,
+            });
         }
     };
     if let Err(error) = database.validate_project_hostnames(
@@ -341,29 +470,69 @@ fn project_list_status(database: &Database, project: &ProjectRecord) -> ProjectL
         &project.primary_hostname,
         &config_file.config.hostnames,
     ) {
-        return ProjectListStatus {
+        return Ok(ProjectListStatus {
             project: ProjectStatus::ConfigInvalid,
             env: ProjectEnvStatus::Invalid,
             config_error: Some(error.to_string()),
-        };
+            env_detail: None,
+        });
+    }
+    if let Err(error) = config::validate_project_env_shape(&config_file.config) {
+        return Ok(ProjectListStatus {
+            project: ProjectStatus::ConfigInvalid,
+            env: ProjectEnvStatus::Invalid,
+            config_error: Some(error.to_string()),
+            env_detail: None,
+        });
     }
 
-    let env = if !config_file.config.env.is_empty()
-        || config_file.config.resources.values().any(|resource| {
-            !resource.env.is_empty()
-                || resource
-                    .allocations
-                    .values()
-                    .any(|allocation| !allocation.env.is_empty())
-        }) {
-        ProjectEnvStatus::Configured
-    } else {
-        ProjectEnvStatus::None
-    };
+    let (env, env_detail) = project_list_env_status(
+        config_file.config.has_env_mappings(),
+        database.project_env_observed_state(&project.id)?,
+    );
 
-    ProjectListStatus {
+    Ok(ProjectListStatus {
         project: ProjectStatus::Unknown,
         env,
         config_error: None,
+        env_detail,
+    })
+}
+
+fn project_list_env_status(
+    has_env_mappings: bool,
+    observed: Option<ProjectEnvObservedStateRecord>,
+) -> (ProjectEnvStatus, Option<String>) {
+    if !has_env_mappings {
+        return (ProjectEnvStatus::None, None);
+    }
+
+    let Some(observed) = observed else {
+        return (ProjectEnvStatus::Pending, None);
+    };
+
+    match observed.status {
+        ProjectEnvObservedStatus::Failed => (
+            ProjectEnvStatus::Failed,
+            observed.message.map(|message| format!("failed: {message}")),
+        ),
+        ProjectEnvObservedStatus::Pending => (ProjectEnvStatus::Pending, None),
+        ProjectEnvObservedStatus::Rendered => (ProjectEnvStatus::Rendered, None),
+        ProjectEnvObservedStatus::Warning => (
+            ProjectEnvStatus::Warning,
+            Some(project_env_observed_warning_summary(&observed)),
+        ),
+    }
+}
+
+fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord) -> String {
+    match observed.warnings.as_slice() {
+        [warning] => format!("warning: {}", warning.message),
+        [] => observed
+            .message
+            .as_ref()
+            .map(|message| format!("warning: {message}"))
+            .unwrap_or_else(|| "warning".to_string()),
+        warnings => format!("warning: {} warnings", warnings.len()),
     }
 }

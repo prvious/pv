@@ -1,0 +1,22 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: database.managed_resource_tracks()?
+---
+[
+    ManagedResourceTrackRecord {
+        resource_name: "mysql",
+        track: "8.0",
+        desired_state: Installed,
+        installed_version: Some(
+            "8.0.36-pv1",
+        ),
+        current_artifact_path: Some(
+            "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+        ),
+        env: {},
+        usage_count: 2,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "2026-05-23T00:00:00Z",
+    },
+]

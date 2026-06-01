@@ -1,0 +1,50 @@
+---
+source: crates/config/tests/project_env.rs
+expression: cases
+---
+[
+    (
+        "missing-file",
+        ManagedEnvBlockTransform {
+            content: "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"pa\\$\\$ word\"\n# <<< PV MANAGED\n",
+            warnings: [],
+            changed: true,
+        },
+    ),
+    (
+        "empty-file",
+        ManagedEnvBlockTransform {
+            content: "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"pa\\$\\$ word\"\n# <<< PV MANAGED\n",
+            warnings: [],
+            changed: true,
+        },
+    ),
+    (
+        "append-with-duplicate-warning",
+        ManagedEnvBlockTransform {
+            content: "APP_URL=https://user.test\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"pa\\$\\$ word\"\n# <<< PV MANAGED\n",
+            warnings: [
+                DuplicateExistingKey {
+                    key: "APP_URL",
+                },
+            ],
+            changed: true,
+        },
+    ),
+    (
+        "replace-one-block",
+        ManagedEnvBlockTransform {
+            content: "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"pa\\$\\$ word\"\n# <<< PV MANAGED\nTAIL=1\n",
+            warnings: [],
+            changed: true,
+        },
+    ),
+    (
+        "fold-multiple-blocks",
+        ManagedEnvBlockTransform {
+            content: "BEFORE=1\nBETWEEN=1\nAFTER=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_PASSWORD=\"pa\\$\\$ word\"\n# <<< PV MANAGED\n",
+            warnings: [],
+            changed: true,
+        },
+    ),
+]

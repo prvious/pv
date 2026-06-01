@@ -44,6 +44,22 @@ pub enum ResourcesError {
     #[error("artifact manifest track name `{name}` is reserved")]
     ReservedTrackName { name: String },
 
+    #[error("Managed Resource `{resource}` does not support Resource allocations")]
+    UnsupportedResourceAllocation { resource: String },
+
+    #[error(
+        "generated Resource allocation name `{generated}` for `{resource}` allocation `{allocation}` exceeds {max} characters"
+    )]
+    GeneratedAllocationNameTooLong {
+        resource: String,
+        allocation: String,
+        generated: String,
+        max: usize,
+    },
+
+    #[error("Managed Resource `{resource}` is missing a concrete track")]
+    MissingConcreteTrack { resource: String },
+
     #[error("invalid artifact revocation state: {reason}")]
     InvalidRevocationState { reason: &'static str },
 

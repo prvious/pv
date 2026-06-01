@@ -1,0 +1,26 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(removed, after_collision, collision_summary)"
+---
+(
+    [],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {},
+            status: Inactive,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    (
+        "mysql",
+        "8.0",
+        "acme_test_app_db",
+    ),
+)

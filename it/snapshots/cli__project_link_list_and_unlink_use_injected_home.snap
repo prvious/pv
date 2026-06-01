@@ -1,6 +1,5 @@
 ---
 source: it/cli.rs
-assertion_line: 274
 expression: "(link, list_after_link, unlink, list_after_unlink)"
 ---
 (
@@ -15,7 +14,7 @@ expression: "(link, list_after_link, unlink, list_after_unlink)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  8.4  unknown  unknown  configured  <tempdir>/Acme Store\n",
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  8.4  unknown  unknown  pending  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {

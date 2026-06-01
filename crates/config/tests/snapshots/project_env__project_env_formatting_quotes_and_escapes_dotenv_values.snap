@@ -1,0 +1,5 @@
+---
+source: crates/config/tests/project_env.rs
+expression: format_project_env(&rendered)
+---
+"BACKSLASH=\"C:\\\\tmp\\\\pv\"\nDOLLAR=\"pa\\$\\$word\"\nEMPTY=\"\"\nHASH=\"value#fragment\"\nMULTILINE=\"first\\nsecond\"\nQUOTE=\"say \\\"hi\\\"\"\nSAFE=https://acme.test/path\nSPACE=\"hello world\"\n"

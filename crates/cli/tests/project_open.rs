@@ -5,7 +5,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
@@ -79,6 +79,98 @@ impl Environment for TestEnvironment {
 }
 
 #[test]
+fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open", "acme"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, vec!["https://acme.test"]);
+    assert!(link.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn open_additional_hostname_argument_opens_exact_hostname() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open", "api.acme.test"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, vec!["https://api.acme.test"]);
+    assert!(link.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let nested = project.join("nested");
+    create_dir(&nested)?;
+    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    let canonical_nested = canonical_path(&nested)?;
+    environment.set_current_dir(&canonical_nested);
+    let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, vec!["https://acme.test"]);
+    assert!(link.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -103,6 +195,42 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let acme = tempdir.path().join("acme");
+    let zeta = tempdir.path().join("zeta");
+    let outside = tempdir.path().join("outside");
+    create_dir(&acme)?;
+    create_dir(&zeta)?;
+    create_dir(&outside)?;
+    let environment = TestEnvironment::new(&home, &zeta).interactive(["2\n"]);
+
+    let link_zeta = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&acme);
+    let link_acme = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link_zeta.exit_code, ExitCode::SUCCESS);
+    assert_eq!(link_acme.exit_code, ExitCode::SUCCESS);
+    assert_eq!(open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, vec!["https://zeta.test"]);
+    assert!(link_zeta.stderr.is_empty());
+    assert!(link_acme.stderr.is_empty());
+    assert!(open.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link_zeta, link_acme, open, opened_urls));
     });
 
     Ok(())
@@ -166,4 +294,24 @@ fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI project open tests write fixture config files"
+)]
+fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
+    std::fs::write(path, contents)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI project open tests mirror std::env::current_dir canonical paths"
+)]
+fn canonical_path(path: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    let path = std::fs::canonicalize(path)?;
+    Utf8PathBuf::from_path_buf(path)
+        .map_err(|path| anyhow::anyhow!("non-UTF-8 fixture path `{}`", path.display()))
 }

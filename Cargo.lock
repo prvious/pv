@@ -226,6 +226,7 @@ dependencies = [
  "daemon",
  "home",
  "insta",
+ "serde_json",
  "state",
  "thiserror",
 ]
@@ -295,8 +296,10 @@ dependencies = [
  "anyhow",
  "camino",
  "camino-tempfile",
+ "config",
  "futures-util",
  "insta",
+ "resources",
  "rusqlite",
  "rustix",
  "serde",
@@ -917,6 +920,7 @@ dependencies = [
  "camino-tempfile",
  "cli",
  "insta",
+ "state",
 ]
 
 [[package]]
@@ -1222,6 +1226,7 @@ dependencies = [
  "insta",
  "rusqlite",
  "rustix",
+ "serde_json",
  "thiserror",
  "time",
 ]

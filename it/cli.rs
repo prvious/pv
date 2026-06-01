@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use state::{Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths};
 
 #[derive(Debug)]
 struct CommandOutput {
@@ -348,6 +349,183 @@ fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn project_list_reports_env_observed_status() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let list_pending = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    let paths = PvPaths::for_home(home.clone());
+    let mut database = Database::open(&paths)?;
+    let linked_project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Rendered,
+        Some("rendered Project env"),
+        &[],
+    )?;
+    let list_rendered = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    let list_warning = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("Project config error: duplicate rendered Project env key `DATABASE_URL`"),
+        &[],
+    )?;
+    let list_failed = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list_pending, list_rendered, list_warning, list_failed));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_clears_stale_env_status_without_mappings() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let paths = PvPaths::for_home(home.clone());
+    let mut database = Database::open(&paths)?;
+    let linked_project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    let list_initial = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Pending,
+        Some("Project env reconciliation pending"),
+        &[],
+    )?;
+    let list_stale_pending = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    let list_stale_warning = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("Project config error: missing Project env context"),
+        &[],
+    )?;
+    let list_stale_failed = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((
+            link,
+            list_initial,
+            list_stale_pending,
+            list_stale_warning,
+            list_stale_failed
+        ));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_reports_env_shape_validation_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"mysql:
+  env:
+    DB_HOST: "${host}"
+redis:
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_env_renders_values_from_binary_without_mutating_dotenv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    let env_path = project.join(".env");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    write_file(&env_path, "APP_URL=https://user.test\n")?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let project_env = run_pv_in_dir_with_home(&["project:env"], &project, &home)?;
+    let env_after = read_file(&env_path)?;
+
+    assert_eq!(env_after, "APP_URL=https://user.test\n");
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, project_env, env_after));
+    });
+
+    Ok(())
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "CLI integration tests create fixture directories"
@@ -366,4 +544,12 @@ fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests read fixture files"
+)]
+fn read_file(path: &Utf8Path) -> Result<String> {
+    Ok(std::fs::read_to_string(path)?)
 }

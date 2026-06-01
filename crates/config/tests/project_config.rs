@@ -42,7 +42,7 @@ pg:
   version: latest
 mail:
   env:
-    MAIL_HOST: "${host}"
+    MAIL_HOST: "${smtp_host}"
 s3:
   allocations:
     app:
@@ -128,6 +128,107 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
 }
 
 #[test]
+fn project_config_validates_url_placeholder_scopes() {
+    let cases = vec![
+        (
+            "project-url-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "legacy-url-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "unknown-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  APP_URL: "${missing_url}"
+"#,
+            ),
+        ),
+        (
+            "resource-project-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  env:
+    APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "resource-scoped-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  env:
+    DATABASE_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "resource-url-not-exposed",
+            ProjectConfig::parse(
+                r#"
+mailpit:
+  env:
+    MAIL_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-project-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-scoped-url",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-unknown-url-like-placeholder",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        DATABASE_URL: "${database_url}"
+"#,
+            ),
+        ),
+    ];
+
+    assert_debug_snapshot!(cases);
+}
+
+#[test]
 fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("env:\n  DB_DATABASE: \"${database}\"\n"),
@@ -140,11 +241,28 @@ fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
             if field == "mysql.env.DB_DATABASE" && placeholder == "database"
     ));
     assert!(matches!(
-        ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n"),
+        ProjectConfig::parse("mysql:\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n"),
         Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.env.APP_URL" && placeholder == "project_url"
+            if field == "mysql.env.MAIL_HOST" && placeholder == "smtp_host"
     ));
     assert!(matches!(
+        ProjectConfig::parse(
+            r#"
+redis:
+  allocations:
+    app:
+      env:
+        S3_BUCKET: "${bucket}"
+"#
+        ),
+        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
+            if field == "redis.allocations.app.env.S3_BUCKET" && placeholder == "bucket"
+    ));
+
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
+    assert!(
         ProjectConfig::parse(
             r#"
 mysql:
@@ -153,13 +271,9 @@ mysql:
       env:
         APP_URL: "${project_url}"
 "#
-        ),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.allocations.app.env.APP_URL" && placeholder == "project_url"
-    ));
-
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
+        )
+        .is_ok()
+    );
     assert!(
         ProjectConfig::parse(
             r#"

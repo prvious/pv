@@ -117,4 +117,33 @@ pub enum ConfigError {
 
     #[error("unknown Project config env placeholder `{placeholder}` in `{field}`")]
     UnknownEnvPlaceholder { field: String, placeholder: String },
+
+    #[error(
+        "failed to load env placeholder contract for Project config resource `{resource}`: {reason}"
+    )]
+    EnvPlaceholderContract { resource: String, reason: String },
+
+    #[error("missing Project env context for resource `{resource}`")]
+    MissingResourceEnvContext { resource: String },
+
+    #[error("missing Project env context for allocation `{resource}.{allocation}`")]
+    MissingAllocationEnvContext {
+        resource: String,
+        allocation: String,
+    },
+
+    #[error("missing Project env context value `{placeholder}` for `{field}`")]
+    MissingEnvContext { field: String, placeholder: String },
+
+    #[error(
+        "duplicate rendered Project env key `{key}` from same-depth mappings `{first}` and `{second}`"
+    )]
+    DuplicateRenderedEnvKey {
+        key: String,
+        first: String,
+        second: String,
+    },
+
+    #[error("malformed PV-managed .env block: {reason}")]
+    MalformedManagedEnvBlock { reason: &'static str },
 }

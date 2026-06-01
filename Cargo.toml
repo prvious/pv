@@ -67,6 +67,7 @@ assert_cmd = { workspace = true }
 camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+state = { path = "crates/state" }
 
 [[test]]
 name = "cli"

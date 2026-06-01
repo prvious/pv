@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
@@ -5,7 +7,9 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
-    Database, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest, PvPaths, StateError,
+    Database, EnvContextValues, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
 };
 
 #[test]
@@ -216,6 +220,11 @@ fn with_normalized_backup_names(assertion: impl FnOnce() -> Result<()>) -> Resul
 fn with_normalized_timestamps(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
     let mut settings = Settings::clone_current();
     settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
 
     settings.bind(assertion)
 }
@@ -447,6 +456,856 @@ fn managed_resource_tracks_record_removal_intent_options() -> Result<()> {
 }
 
 #[test]
+fn project_resource_requirements_migration_backfills_env_context() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let old_migrations = [
+        Migration::new(
+            1,
+            "core_state_schema",
+            include_str!("../src/sql/001_core_state_schema.sql"),
+        ),
+        Migration::new(
+            2,
+            "managed_resource_removal_intent",
+            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+        Migration::new(
+            3,
+            "project_primary_hostname_updates",
+            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
+        ),
+        Migration::new(
+            4,
+            "project_original_path",
+            include_str!("../src/sql/004_project_original_path.sql"),
+        ),
+    ];
+    let mut old_database = state::testing::open_with_migrations(&paths, &old_migrations)?;
+    state::testing::transaction(&mut old_database, |transaction| {
+        transaction.execute(
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                installed_version,
+                current_artifact_path,
+                usage_count,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "mysql",
+                "8.0",
+                "installed",
+                "8.0.36-pv1",
+                "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+                2,
+                "2026-05-23T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    drop(old_database);
+
+    let upgraded_migrations = [
+        old_migrations[0],
+        old_migrations[1],
+        old_migrations[2],
+        old_migrations[3],
+        Migration::new(
+            5,
+            "project_resource_requirements",
+            include_str!("../src/sql/005_project_resource_requirements.sql"),
+        ),
+    ];
+    let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
+
+    assert_debug_snapshot!(database.managed_resource_tracks()?);
+
+    Ok(())
+}
+
+#[test]
+fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let old_migrations = [
+        Migration::new(
+            1,
+            "core_state_schema",
+            include_str!("../src/sql/001_core_state_schema.sql"),
+        ),
+        Migration::new(
+            2,
+            "managed_resource_removal_intent",
+            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+        Migration::new(
+            3,
+            "project_primary_hostname_updates",
+            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
+        ),
+        Migration::new(
+            4,
+            "project_original_path",
+            include_str!("../src/sql/004_project_original_path.sql"),
+        ),
+    ];
+    let mut old_database = state::testing::open_with_migrations(&paths, &old_migrations)?;
+    let linked = old_database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: vec!["api.acme.test".to_string()],
+    })?;
+    state::testing::transaction(&mut old_database, |transaction| {
+        transaction.execute(
+            "INSERT INTO managed_resource_tracks (
+                resource_name,
+                track,
+                desired_state,
+                installed_version,
+                current_artifact_path,
+                usage_count,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "mysql",
+                "8.0",
+                "installed",
+                "8.0.36-pv1",
+                "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+                0,
+                "2026-05-23T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    drop(old_database);
+
+    let upgraded_migrations = [
+        old_migrations[0],
+        old_migrations[1],
+        old_migrations[2],
+        old_migrations[3],
+        Migration::new(
+            5,
+            "project_resource_requirements",
+            include_str!("../src/sql/005_project_resource_requirements.sql"),
+        ),
+    ];
+    let mut database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
+    let project_id = linked.project.id;
+    let before = (
+        database.inspect()?,
+        database.projects()?,
+        database.managed_resource_tracks()?,
+    );
+
+    database.replace_project_managed_resources(
+        &project_id,
+        &[
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_string(),
+                track: "8.0".to_string(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "redis".to_string(),
+                track: "7.2".to_string(),
+            },
+        ],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[
+            ("host", "127.0.0.1"),
+            ("password", "secret"),
+            ("port", "3306"),
+            ("username", "root"),
+        ]),
+    )?;
+    database.record_managed_resource_track_env_context(
+        "redis",
+        "7.2",
+        &env_context(&[("host", "127.0.0.1"), ("port", "6379")]),
+    )?;
+    let desired_allocations = database.replace_project_resource_allocations(
+        &project_id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let ready_allocation = database.mark_resource_allocation_ready(
+        &project_id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let env_state = database.project_env_context(&project_id)?;
+    let observed_state = database.record_project_env_observed_snapshot(
+        &project_id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings after migration"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    let after = (
+        database.projects()?,
+        database.project_by_hostname("api.acme.test")?,
+        database.project_managed_resources(&project_id)?,
+        database.managed_resource_tracks()?,
+        desired_allocations,
+        ready_allocation,
+        database.resource_allocations(&project_id, "mysql")?,
+        env_state,
+        observed_state,
+        database.project_env_observed_warnings(&project_id)?,
+    );
+
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((before, after));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn project_managed_resources_recalculate_usage_counts() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let acme = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+
+    database.replace_project_managed_resources(
+        &acme.id,
+        &[
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_string(),
+                track: "8.0".to_string(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "redis".to_string(),
+                track: "7.2".to_string(),
+            },
+        ],
+    )?;
+    database.replace_project_managed_resources(
+        &other.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.0".to_string(),
+        }],
+    )?;
+    let after_initial = (
+        database.project_managed_resources(&acme.id)?,
+        database.managed_resource_tracks()?,
+    );
+
+    database.replace_project_managed_resources(
+        &acme.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.4".to_string(),
+        }],
+    )?;
+    database.unlink_project(&other.id)?;
+    let after_switch_and_unlink = (
+        database.project_managed_resources(&acme.id)?,
+        database.managed_resource_tracks()?,
+    );
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((after_initial, after_switch_and_unlink));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.0".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[
+            ("host", "127.0.0.1"),
+            ("password", "secret"),
+            ("port", "3306"),
+            ("username", "root"),
+        ]),
+    )?;
+    let created = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let ready = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let context = database.project_env_context(&project.id)?;
+
+    let removed =
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &[])?;
+    let after_removal = database.resource_allocations(&project.id, "mysql")?;
+    let readded = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "renamed_test_app_db".to_string(),
+        }],
+    )?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((created, ready, context, removed, after_removal, readded));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_allocations_reject_generated_name_collision_with_inactive_allocation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let removed =
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &[])?;
+    let after_removal = database.resource_allocations(&project.id, "mysql")?;
+    let collision = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app_db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    );
+    let collision_summary = match collision {
+        Err(StateError::ResourceAllocationGeneratedNameCollision {
+            resource,
+            track,
+            generated,
+        }) => (resource, track, generated),
+        result => return Err(anyhow!("expected generated-name collision, got {result:?}")),
+    };
+    let after_collision = database.resource_allocations(&project.id, "mysql")?;
+
+    assert_eq!(after_removal, after_collision);
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((removed, after_collision, collision_summary));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn generated_env_context_escapes_round_trip_through_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.0".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[
+            ("backslash", r"C:\pv\mysql"),
+            ("literal_newline", r"line\nvalue"),
+            ("multiline", "line one\nline two"),
+            ("quote", r#"root "local""#),
+            ("unicode", "caf\u{00e9}-\u{03bb}"),
+        ]),
+    )?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[
+            ("database", "acme_test_app_db"),
+            ("dsn", "mysql://root:pa\\ss@127.0.0.1/acme_test_app_db"),
+            ("literal_newline", r"row\nnext"),
+            ("multiline", "row one\nrow two"),
+            ("password", r#"pa"ss\word"#),
+            ("unicode", "schema-\u{03b4}"),
+        ]),
+    )?;
+
+    let tracks = database.managed_resource_tracks()?;
+    let allocations = database.resource_allocations(&project.id, "mysql")?;
+    let context = database.project_env_context(&project.id)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((tracks, allocations, context));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_allocation_ready_requires_desired_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    let desired = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let wrong_track = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.4",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let ready = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let already_ready = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let switched = database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.4",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    let stale_track = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+    let removed =
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.4", &[])?;
+    let inactive = database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.4",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    );
+
+    assert!(matches!(
+        wrong_track,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.4"
+    ));
+    assert!(matches!(
+        already_ready,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.0"
+    ));
+    assert!(matches!(
+        stale_track,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.0"
+    ));
+    assert!(matches!(
+        inactive,
+        Err(StateError::ResourceAllocationNotDesired { track, .. }) if track == "8.4"
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((desired, ready, switched, removed));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn project_env_context_uses_ready_allocations_from_required_track_only() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.0".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[("host", "127.0.0.1"), ("port", "3306")]),
+    )?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let old_track_context = database.project_env_context(&project.id)?;
+    set_resource_allocation_env_json(&mut database, &project.id, "mysql", "app-db", "{")?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.4".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.4",
+        &env_context(&[("host", "127.0.0.1"), ("port", "3406")]),
+    )?;
+    let switched_track_context = database.project_env_context(&project.id)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((old_track_context, switched_track_context));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_allocations_reject_invalid_allocation_names_at_state_boundary() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    let invalid_allocations = [
+        ("App", "acme_test_uppercase"),
+        ("app.db", "acme_test_dotted"),
+        ("1app", "acme_test_digit_start"),
+        ("", "acme_test_empty"),
+    ];
+
+    for (allocation_name, generated_name) in invalid_allocations {
+        let result = database.replace_project_resource_allocations(
+            &project.id,
+            "mysql",
+            "8.0",
+            &[ResourceAllocationInput {
+                allocation_name: allocation_name.to_string(),
+                generated_name: generated_name.to_string(),
+            }],
+        );
+
+        assert!(matches!(
+            result,
+            Err(StateError::InvalidResourceAllocationIdentity { kind: "allocation", value })
+                if value == allocation_name
+        ));
+    }
+
+    assert_eq!(
+        state::testing::query_i64(&database, "SELECT COUNT(*) FROM resource_allocations")?,
+        0
+    );
+
+    Ok(())
+}
+
+#[test]
+fn resource_env_context_validation_reports_typed_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_track_desired(
+        "redis",
+        "7.2",
+        ManagedResourceDesiredState::Installed,
+    )?;
+    set_managed_resource_env_json(&mut database, "{")?;
+    assert!(matches!(
+        database.managed_resource_tracks(),
+        Err(StateError::InvalidEnvJson { .. })
+    ));
+
+    set_managed_resource_env_json(&mut database, "[]")?;
+    assert!(matches!(
+        database.managed_resource_tracks(),
+        Err(StateError::InvalidEnvJson { .. })
+    ));
+
+    set_managed_resource_env_json(&mut database, r#"{"port":3306}"#)?;
+    assert!(matches!(
+        database.managed_resource_tracks(),
+        Err(StateError::InvalidEnvJson { .. })
+    ));
+
+    let invalid_context = BTreeMap::from([(String::new(), "value".to_string())]);
+    assert!(matches!(
+        database.record_managed_resource_track_env_context("redis", "7.2", &invalid_context),
+        Err(StateError::InvalidEnvContext { .. })
+    ));
+
+    set_managed_resource_env_json(&mut database, "{}")?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO resource_allocations (
+                id,
+                project_id,
+                resource_name,
+                track,
+                allocation_name,
+                generated_name,
+                env_json,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            params![
+                "allocation_000001",
+                project.id,
+                "redis",
+                "7.2",
+                "cache",
+                "acme-test-cache-",
+                "{}",
+                "mystery",
+                "2026-05-23T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+
+    assert!(matches!(
+        database.resource_allocations(&project.id, "redis"),
+        Err(StateError::UnknownResourceAllocationStatus { status }) if status == "mystery"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn resource_state_apis_reject_latest_tracks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    assert!(matches!(
+        database.record_managed_resource_track_desired(
+            "mysql",
+            "latest",
+            ManagedResourceDesiredState::Installed,
+        ),
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    assert!(matches!(
+        database.replace_project_managed_resources(
+            &project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mysql".to_string(),
+                track: "latest".to_string(),
+            }],
+        ),
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    assert!(matches!(
+        database.replace_project_resource_allocations(&project.id, "mysql", "latest", &[]),
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    assert!(matches!(
+        database.record_managed_resource_track_env_context("mysql", "latest", &BTreeMap::new()),
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn project_env_observed_status_and_warnings_round_trip() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    let pending = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Pending,
+        None,
+        &[],
+    )?;
+    let warning_state = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[
+            ProjectEnvObservedWarningInput {
+                kind: "duplicate_key".to_string(),
+                message: "APP_URL already exists outside the PV block".to_string(),
+            },
+            ProjectEnvObservedWarningInput {
+                kind: "duplicate_key".to_string(),
+                message: "DATABASE_URL already exists outside the PV block".to_string(),
+            },
+        ],
+    )?;
+    let failed = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("render failed"),
+        &[],
+    )?;
+    let invalid_warning = database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("invalid warning"),
+        &[ProjectEnvObservedWarningInput {
+            kind: String::new(),
+            message: "invalid warning should not change stored state".to_string(),
+        }],
+    );
+    let after_invalid_warning = database.project_env_observed_state(&project.id)?;
+
+    assert!(matches!(
+        invalid_warning,
+        Err(StateError::InvalidProjectEnvObservedWarning { kind: "kind", .. })
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((pending, warning_state, failed, after_invalid_warning));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn unlink_project_clears_project_env_observed_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+
+    let before_unlink = database.project_env_observed_state(&project.id)?;
+    let unlinked = database.unlink_project(&project.id)?;
+    let after_unlink = database.project_env_observed_state(&project.id)?;
+
+    assert_eq!(unlinked.id, project.id);
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((before_unlink, after_unlink));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_removal_intent_migration_backfills_existing_tracks() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -491,6 +1350,11 @@ fn managed_resource_removal_intent_migration_backfills_existing_tracks() -> Resu
             2,
             "managed_resource_removal_intent",
             include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+        Migration::new(
+            5,
+            "project_resource_requirements",
+            include_str!("../src/sql/005_project_resource_requirements.sql"),
         ),
     ];
     let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
@@ -1271,6 +2135,72 @@ fn transactions_roll_back_when_the_operation_fails() -> Result<()> {
         &database,
         "SELECT COUNT(*) FROM jobs"
     )?);
+
+    Ok(())
+}
+
+fn link_test_project(
+    database: &mut Database,
+    root: &Utf8Path,
+    directory_name: &str,
+    primary_hostname: &str,
+) -> Result<ProjectRecord> {
+    let path = root.join(directory_name);
+
+    Ok(database
+        .link_project(state::LinkProjectInput {
+            path: path.clone(),
+            original_path: path.clone(),
+            primary_hostname: primary_hostname.to_string(),
+            config_path: path.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?
+        .project)
+}
+
+fn env_context(values: &[(&str, &str)]) -> EnvContextValues {
+    values
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect()
+}
+
+fn set_managed_resource_env_json(database: &mut Database, env_json: &str) -> Result<()> {
+    state::testing::transaction(database, |transaction| {
+        transaction.execute(
+            "UPDATE managed_resource_tracks
+            SET env_json = ?1
+            WHERE resource_name = ?2
+            AND track = ?3",
+            params![env_json, "redis", "7.2"],
+        )?;
+
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn set_resource_allocation_env_json(
+    database: &mut Database,
+    project_id: &str,
+    resource_name: &str,
+    allocation_name: &str,
+    env_json: &str,
+) -> Result<()> {
+    state::testing::transaction(database, |transaction| {
+        transaction.execute(
+            "UPDATE resource_allocations
+            SET env_json = ?1
+            WHERE project_id = ?2
+            AND resource_name = ?3
+            AND allocation_name = ?4",
+            params![env_json, project_id, resource_name, allocation_name],
+        )?;
+
+        Ok(())
+    })?;
 
     Ok(())
 }

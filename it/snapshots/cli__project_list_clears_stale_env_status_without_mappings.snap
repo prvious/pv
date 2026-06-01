@@ -1,0 +1,41 @@
+---
+source: it/cli.rs
+expression: "(link, list_initial, list_stale_pending, list_stale_warning,\nlist_stale_failed)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+)
