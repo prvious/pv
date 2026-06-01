@@ -78,18 +78,19 @@ fn reconcile_loaded_project(
     config::validate_project_env_shape(&config_file.config)?;
 
     let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+
+    apply_project_resource_plan(database, &project.id, &plan)?;
+    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+
     let context = project_env_context_for_plan(database, project, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
 
-    if has_env_mappings(&config_file.config) {
+    if config_file.config.has_env_mappings() {
         let existing_content = read_optional_dotenv(project)?;
         config::transform_managed_env_block(existing_content.as_deref(), &rendered)?;
     }
 
-    apply_project_resource_plan(database, &project.id, plan)?;
-    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
-
-    if !has_env_mappings(&config_file.config) {
+    if !config_file.config.has_env_mappings() {
         database.record_project_env_observed_snapshot(
             &project.id,
             ProjectEnvObservedStatus::Rendered,
@@ -138,13 +139,20 @@ fn project_resource_plan(
 ) -> Result<ProjectResourcePlan, DaemonError> {
     let mut resources = Vec::new();
     let mut allocation_plans = BTreeMap::new();
+    let existing_resource_tracks = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| (resource.resource_name, resource.track))
+        .collect::<BTreeMap<_, _>>();
 
     for (resource, resource_config) in &config.resources {
         let resource_name = ResourceName::new(resource.clone())?;
+        let existing_track = existing_resource_tracks.get(resource);
         let track = resolved_project_resource_track(
             paths,
             &resource_name,
             resource_config.track.as_deref(),
+            existing_track.map(String::as_str),
         )?;
 
         resources.push(ProjectManagedResourceInput {
@@ -199,18 +207,21 @@ fn resolved_project_resource_track(
     paths: &PvPaths,
     resource_name: &ResourceName,
     selector: Option<&str>,
+    existing_track: Option<&str>,
 ) -> Result<String, DaemonError> {
-    let Some(selector) = selector else {
-        let concrete_track = ConcreteTrackName::required(resource_name, None)?;
-        return Ok(concrete_track.as_str().to_string());
-    };
-    let selector = TrackSelector::parse(selector.to_string())?;
+    let selector = selector
+        .map(|selector| TrackSelector::parse(selector.to_string()))
+        .transpose()?
+        .unwrap_or(TrackSelector::Latest);
     let track = match selector {
-        TrackSelector::Latest => ArtifactManifestCache::new(paths.downloads())
-            .load_cached()?
-            .resolve_track(resource_name, TrackSelector::Latest)?
-            .as_str()
-            .to_string(),
+        TrackSelector::Latest => match existing_track {
+            Some(track) => track.to_string(),
+            None => ArtifactManifestCache::new(paths.downloads())
+                .load_cached()?
+                .resolve_track(resource_name, TrackSelector::Latest)?
+                .as_str()
+                .to_string(),
+        },
         TrackSelector::Track(track) => track.as_str().to_string(),
     };
     let concrete_track = ConcreteTrackName::new(track)?;
@@ -221,7 +232,7 @@ fn resolved_project_resource_track(
 fn apply_project_resource_plan(
     database: &mut Database,
     project_id: &str,
-    plan: ProjectResourcePlan,
+    plan: &ProjectResourcePlan,
 ) -> Result<(), DaemonError> {
     let existing_resources = database.project_managed_resources(project_id)?;
 
@@ -343,17 +354,6 @@ fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>, Daemo
         }
         Err(error) => Err(error.into()),
     }
-}
-
-fn has_env_mappings(config: &ProjectConfig) -> bool {
-    !config.env.is_empty()
-        || config.resources.values().any(|resource| {
-            !resource.env.is_empty()
-                || resource
-                    .allocations
-                    .values()
-                    .any(|allocation| !allocation.env.is_empty())
-        })
 }
 
 fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWarningInput> {

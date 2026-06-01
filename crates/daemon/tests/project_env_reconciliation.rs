@@ -150,6 +150,42 @@ async fn missing_context_leaves_dotenv_unchanged_and_records_failure() -> Result
 }
 
 #[tokio::test]
+async fn first_allocation_reconciliation_records_desired_state_before_context_failure() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DB_DATABASE: "${database}"
+"#,
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "first_allocation_reconciliation_records_desired_state_before_context_failure",
+        (
+            lines,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn malformed_pv_block_leaves_dotenv_unchanged_and_records_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -281,7 +317,7 @@ mysql:
 redis:
   version: "7.2"
   env:
-    REDIS_HOST: "${host}"
+    REDIS_HOST: "${missing_value}"
 "#,
     )?;
 
@@ -594,7 +630,7 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
         "acme.test",
         "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
-    seed_manifest(&paths)?;
+    seed_manifest(&paths, "8.0")?;
     seed_mysql_resource_context(&paths)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
@@ -607,6 +643,70 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.resource_allocations(&project.id, "mysql")?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn latest_resource_track_reuses_stored_track_when_manifest_default_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
+    )?;
+    seed_manifest(&paths, "8.0")?;
+    seed_mysql_resource_context(&paths)?;
+    let initial_lines = run_project_reconciliation(&paths, &project).await?;
+
+    seed_manifest(&paths, "8.4")?;
+    seed_mysql_resource_context_for_track(&paths, "8.4", "3406")?;
+    let rerun_lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "latest_resource_track_reuses_stored_track_when_manifest_default_changes",
+        (
+            initial_lines,
+            rerun_lines,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn omitted_resource_track_resolves_manifest_default_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "mysql:\n  env:\n    DB_HOST: \"${host}\"\n",
+    )?;
+    seed_manifest(&paths, "8.0")?;
+    seed_mysql_resource_context(&paths)?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "omitted_resource_track_resolves_manifest_default_track",
+        (
+            lines,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -738,18 +838,30 @@ fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
 }
 
 fn seed_mysql_resource_context(paths: &PvPaths) -> Result<()> {
+    seed_mysql_resource_context_for_track(paths, "8.0", "3306")
+}
+
+fn seed_mysql_resource_context_for_track(paths: &PvPaths, track: &str, port: &str) -> Result<()> {
     let mut database = Database::open(paths)?;
-    seed_mysql_resource_context_in_database(&mut database)
+    seed_mysql_resource_context_for_track_in_database(&mut database, track, port)
 }
 
 fn seed_mysql_resource_context_in_database(database: &mut Database) -> Result<()> {
+    seed_mysql_resource_context_for_track_in_database(database, "8.0", "3306")
+}
+
+fn seed_mysql_resource_context_for_track_in_database(
+    database: &mut Database,
+    track: &str,
+    port: &str,
+) -> Result<()> {
     database.record_managed_resource_track_env_context(
         "mysql",
-        "8.0",
+        track,
         &env_context(&[
             ("host", "127.0.0.1"),
             ("password", "secret"),
-            ("port", "3306"),
+            ("port", port),
             ("username", "root"),
         ]),
     )?;
@@ -757,10 +869,59 @@ fn seed_mysql_resource_context_in_database(database: &mut Database) -> Result<()
     Ok(())
 }
 
-fn seed_manifest(paths: &PvPaths) -> Result<()> {
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), TEST_MANIFEST)?;
+fn seed_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
+    state::fs::write_sensitive_file(
+        &paths.downloads().join("manifest.json"),
+        &test_manifest(default_track),
+    )?;
 
     Ok(())
+}
+
+fn test_manifest(default_track: &str) -> String {
+    json!({
+        "schema_version": 1,
+        "minimum_pv_version": "0.1.0",
+        "resources": [
+            {
+                "name": "mysql",
+                "default_track": default_track,
+                "tracks": [
+                    {
+                        "name": "8.0",
+                        "artifacts": [
+                            {
+                                "artifact_version": "8.0.42-pv1",
+                                "upstream_version": "8.0.42",
+                                "pv_build_revision": "pv1",
+                                "platform": "darwin-arm64",
+                                "url": "https://artifacts.example.test/mysql-8.0.42-pv1-darwin-arm64.tar.gz",
+                                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "size": 12345,
+                                "published_at": "2026-05-26T14:30:00Z"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "8.4",
+                        "artifacts": [
+                            {
+                                "artifact_version": "8.4.5-pv1",
+                                "upstream_version": "8.4.5",
+                                "pv_build_revision": "pv1",
+                                "platform": "darwin-arm64",
+                                "url": "https://artifacts.example.test/mysql-8.4.5-pv1-darwin-arm64.tar.gz",
+                                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                "size": 12345,
+                                "published_at": "2026-05-27T14:30:00Z"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    })
+    .to_string()
 }
 
 fn env_context(entries: &[(&str, &str)]) -> EnvContextValues {
@@ -829,33 +990,3 @@ fn assert_with_normalized_timestamps(
         Ok::<(), anyhow::Error>(())
     })
 }
-
-const TEST_MANIFEST: &str = r#"
-{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {
-      "name": "mysql",
-      "default_track": "8.0",
-      "tracks": [
-        {
-          "name": "8.0",
-          "artifacts": [
-            {
-              "artifact_version": "8.0.42-pv1",
-              "upstream_version": "8.0.42",
-              "pv_build_revision": "pv1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/mysql-8.0.42-pv1-darwin-arm64.tar.gz",
-              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "size": 12345,
-              "published_at": "2026-05-26T14:30:00Z"
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-"#;

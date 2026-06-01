@@ -371,6 +371,13 @@ fn project_list_reports_env_observed_status() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
     database.record_project_env_observed_snapshot(
         &linked_project.id,
+        ProjectEnvObservedStatus::Rendered,
+        Some("rendered Project env"),
+        &[],
+    )?;
+    let list_rendered = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
         ProjectEnvObservedStatus::Warning,
         Some("rendered with warnings"),
         &[ProjectEnvObservedWarningInput {
@@ -391,7 +398,41 @@ fn project_list_reports_env_observed_status() -> Result<()> {
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
-        assert_debug_snapshot!((link, list_pending, list_warning, list_failed));
+        assert_debug_snapshot!((link, list_pending, list_rendered, list_warning, list_failed));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_list_reports_env_shape_validation_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"mysql:
+  env:
+    DB_HOST: "${host}"
+redis:
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
     });
 
     Ok(())

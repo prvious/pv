@@ -125,6 +125,7 @@ pub(crate) fn env(
         &project.primary_hostname,
         &config_file.config.hostnames,
     )?;
+    config::validate_project_env_shape(&config_file.config)?;
 
     let context = project_env_context(database.project_env_context(&project.id)?);
     let rendered = config::render_project_env(&config_file.config, &context)?;
@@ -476,17 +477,17 @@ fn project_list_status(
             env_detail: None,
         });
     }
-
-    let has_env_mappings = !config_file.config.env.is_empty()
-        || config_file.config.resources.values().any(|resource| {
-            !resource.env.is_empty()
-                || resource
-                    .allocations
-                    .values()
-                    .any(|allocation| !allocation.env.is_empty())
+    if let Err(error) = config::validate_project_env_shape(&config_file.config) {
+        return Ok(ProjectListStatus {
+            project: ProjectStatus::ConfigInvalid,
+            env: ProjectEnvStatus::Invalid,
+            config_error: Some(error.to_string()),
+            env_detail: None,
         });
+    }
+
     let (env, env_detail) = project_list_env_status(
-        has_env_mappings,
+        config_file.config.has_env_mappings(),
         database.project_env_observed_state(&project.id)?,
     );
 

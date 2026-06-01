@@ -23,46 +23,12 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "error": String("Project config error: missing Project env context for allocation `mysql.app-db`"),
             "job_id": String("job_000001"),
-            "message": String("Project env rendered"),
-            "type": String("progress"),
-        },
-        Object {
-            "job_id": String("job_000001"),
-            "summary": String("Project env rendered"),
-            "type": String("job_completed"),
-        },
-    ],
-    [
-        Object {
-            "job_id": String("job_000002"),
-            "message": String("job accepted"),
-            "protocol_version": Number(1),
-            "status": String("accepted"),
-            "type": String("response"),
-        },
-        Object {
-            "job_id": String("job_000002"),
-            "kind": String("reconcile"),
-            "scope": String("project:<project_id>"),
-            "type": String("job_started"),
-        },
-        Object {
-            "job_id": String("job_000002"),
-            "message": String("Project env reconciliation started"),
-            "type": String("log"),
-        },
-        Object {
-            "error": String("Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`"),
-            "job_id": String("job_000002"),
             "type": String("job_failed"),
         },
     ],
-    Some(
-        [
-            "api.acme.test",
-        ],
-    ),
+    None,
     [
         ProjectManagedResourceRecord {
             project_id: "<project_id>",
@@ -80,29 +46,25 @@ expression: snapshot
             track: "8.0",
             allocation_name: "app-db",
             generated_name: "acme_test_app_db",
-            env: {
-                "database": "acme_test_app_db",
-            },
-            status: Ready,
+            env: {},
+            status: Desired,
             created_at: "<timestamp>",
             updated_at: "<timestamp>",
         },
     ],
-    [],
-    "# >>> PV MANAGED\nDB_DATABASE=acme_test_app_db\n# <<< PV MANAGED\n",
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`",
+                "Project config error: missing Project env context for allocation `mysql.app-db`",
             ),
             observed_at: "<timestamp>",
             warnings: [],
         },
     ),
     JobRecord {
-        id: "job_000002",
+        id: "job_000001",
         kind: "reconcile",
         scope: "project:<project_id>",
         status: Failed,
@@ -112,7 +74,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`",
+            "Project config error: missing Project env context for allocation `mysql.app-db`",
         ),
     },
 )

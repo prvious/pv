@@ -1,0 +1,41 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(old_track_context, switched_track_context)"
+---
+(
+    ProjectEnvStateContext {
+        project_id: "<project_id>",
+        primary_hostname: "acme.test",
+        resources: {
+            "mysql": ProjectEnvResourceContext {
+                track: "8.0",
+                values: {
+                    "host": "127.0.0.1",
+                    "port": "3306",
+                },
+                allocations: {
+                    "app-db": ProjectEnvAllocationContext {
+                        generated_name: "acme_test_app_db",
+                        values: {
+                            "database": "acme_test_app_db",
+                        },
+                    },
+                },
+            },
+        },
+    },
+    ProjectEnvStateContext {
+        project_id: "<project_id>",
+        primary_hostname: "acme.test",
+        resources: {
+            "mysql": ProjectEnvResourceContext {
+                track: "8.4",
+                values: {
+                    "host": "127.0.0.1",
+                    "port": "3406",
+                },
+                allocations: {},
+            },
+        },
+    },
+)

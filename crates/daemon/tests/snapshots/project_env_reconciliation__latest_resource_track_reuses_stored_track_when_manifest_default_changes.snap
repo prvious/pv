@@ -53,15 +53,18 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`"),
             "job_id": String("job_000002"),
-            "type": String("job_failed"),
+            "message": String("Project env rendered"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "summary": String("Project env rendered"),
+            "type": String("job_completed"),
         },
     ],
     Some(
-        [
-            "api.acme.test",
-        ],
+        "# >>> PV MANAGED\nDB_HOST=127.0.0.1\nDB_PORT=3306\n# <<< PV MANAGED\n",
     ),
     [
         ProjectManagedResourceRecord {
@@ -72,30 +75,12 @@ expression: snapshot
             updated_at: "<timestamp>",
         },
     ],
-    [
-        ResourceAllocationRecord {
-            id: "allocation_000001",
-            project_id: "<project_id>",
-            resource_name: "mysql",
-            track: "8.0",
-            allocation_name: "app-db",
-            generated_name: "acme_test_app_db",
-            env: {
-                "database": "acme_test_app_db",
-            },
-            status: Ready,
-            created_at: "<timestamp>",
-            updated_at: "<timestamp>",
-        },
-    ],
-    [],
-    "# >>> PV MANAGED\nDB_DATABASE=acme_test_app_db\n# <<< PV MANAGED\n",
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
-            status: Failed,
+            status: Rendered,
             message: Some(
-                "Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`",
+                "rendered Project env",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -105,14 +90,14 @@ expression: snapshot
         id: "job_000002",
         kind: "reconcile",
         scope: "project:<project_id>",
-        status: Failed,
+        status: Succeeded,
         started_at: "<timestamp>",
         finished_at: Some(
             "<timestamp>",
         ),
-        summary: None,
-        error: Some(
-            "Project config error: unknown Project config env placeholder `missing_value` in `redis.env.REDIS_HOST`",
+        summary: Some(
+            "Project env rendered",
         ),
+        error: None,
     },
 )

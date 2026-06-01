@@ -1,6 +1,6 @@
 ---
 source: it/cli.rs
-expression: "(link, list_pending, list_warning, list_failed)"
+expression: "(link, list_pending, list_rendered, list_warning, list_failed)"
 ---
 (
     CommandOutput {
@@ -15,6 +15,13 @@ expression: "(link, list_pending, list_warning, list_failed)"
             0,
         ),
         stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  pending  <tempdir>/Acme Store\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  rendered  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {

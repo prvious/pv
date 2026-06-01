@@ -29,3 +29,16 @@ pub struct ResourceConfig {
 pub struct AllocationConfig {
     pub env: BTreeMap<String, String>,
 }
+
+impl ProjectConfig {
+    pub fn has_env_mappings(&self) -> bool {
+        !self.env.is_empty()
+            || self.resources.values().any(|resource| {
+                !resource.env.is_empty()
+                    || resource
+                        .allocations
+                        .values()
+                        .any(|allocation| !allocation.env.is_empty())
+            })
+    }
+}

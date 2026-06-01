@@ -958,6 +958,65 @@ fn resource_allocation_ready_requires_desired_track() -> Result<()> {
 }
 
 #[test]
+fn project_env_context_uses_ready_allocations_from_required_track_only() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.0".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.0",
+        &env_context(&[("host", "127.0.0.1"), ("port", "3306")]),
+    )?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_string(),
+            generated_name: "acme_test_app_db".to_string(),
+        }],
+    )?;
+    database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &env_context(&[("database", "acme_test_app_db")]),
+    )?;
+    let old_track_context = database.project_env_context(&project.id)?;
+
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_string(),
+            track: "8.4".to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "mysql",
+        "8.4",
+        &env_context(&[("host", "127.0.0.1"), ("port", "3406")]),
+    )?;
+    let switched_track_context = database.project_env_context(&project.id)?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((old_track_context, switched_track_context));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn resource_allocations_reject_invalid_allocation_names_at_state_boundary() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

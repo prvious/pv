@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::iter::Peekable;
-use std::str::Chars;
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
@@ -341,15 +339,6 @@ struct PortIdentity {
     owner_kind: &'static str,
     owner_id: String,
     owner_track: String,
-}
-
-struct EnvJsonParser<'a> {
-    chars: Peekable<Chars<'a>>,
-}
-
-enum EnvJsonParseError {
-    Json(String),
-    Context(String),
 }
 
 impl Database {
@@ -1110,6 +1099,7 @@ impl Database {
                 &self.connection,
                 project_id,
                 &requirement.resource_name,
+                &requirement.track,
             )?;
 
             resources.insert(
@@ -2056,6 +2046,7 @@ fn ready_allocation_env_contexts(
     connection: &Connection,
     project_id: &str,
     resource_name: &str,
+    track: &str,
 ) -> Result<BTreeMap<String, ProjectEnvAllocationContext>, StateError> {
     let allocations = resource_allocations_for_project_resource_in_connection(
         connection,
@@ -2065,7 +2056,7 @@ fn ready_allocation_env_contexts(
     let mut contexts = BTreeMap::new();
 
     for allocation in allocations {
-        if allocation.status == ResourceAllocationStatus::Ready {
+        if allocation.track == track && allocation.status == ResourceAllocationStatus::Ready {
             contexts.insert(
                 allocation.allocation_name,
                 ProjectEnvAllocationContext {
@@ -2711,239 +2702,22 @@ fn validate_project_env_observed_warning_component(
 
 fn serialize_env_context(context: &str, env: &EnvContextValues) -> Result<String, StateError> {
     validate_env_context(context, env)?;
-    let mut json = String::from("{");
-
-    for (index, (key, value)) in env.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        push_json_string(&mut json, key);
-        json.push(':');
-        push_json_string(&mut json, value);
-    }
-
-    json.push('}');
-
-    Ok(json)
+    serde_json::to_string(env).map_err(|source| StateError::InvalidEnvJson {
+        context: context.to_string(),
+        reason: source.to_string(),
+    })
 }
 
 fn parse_env_context(context: &str, env_json: &str) -> Result<EnvContextValues, StateError> {
-    EnvJsonParser::new(env_json)
-        .parse_object()
-        .map_err(|error| match error {
-            EnvJsonParseError::Json(reason) => StateError::InvalidEnvJson {
-                context: context.to_string(),
-                reason,
-            },
-            EnvJsonParseError::Context(reason) => StateError::InvalidEnvContext {
-                context: context.to_string(),
-                reason,
-            },
-        })
-}
-
-impl<'a> EnvJsonParser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self {
-            chars: input.chars().peekable(),
+    let env = serde_json::from_str::<EnvContextValues>(env_json).map_err(|source| {
+        StateError::InvalidEnvJson {
+            context: context.to_string(),
+            reason: source.to_string(),
         }
-    }
+    })?;
+    validate_env_context(context, &env)?;
 
-    fn parse_object(&mut self) -> Result<EnvContextValues, EnvJsonParseError> {
-        self.skip_whitespace();
-        self.expect_char('{', "env JSON must be an object")?;
-        self.skip_whitespace();
-        let mut env = EnvContextValues::new();
-
-        if self.consume_char('}') {
-            self.expect_end()?;
-            return Ok(env);
-        }
-
-        loop {
-            let key = self.parse_string()?;
-            if key.is_empty() {
-                return Err(EnvJsonParseError::Context(
-                    "env keys must not be empty".to_string(),
-                ));
-            }
-            self.skip_whitespace();
-            self.expect_char(':', "expected `:` after env key")?;
-            self.skip_whitespace();
-
-            if !self.next_is('"') {
-                return Err(EnvJsonParseError::Json(format!(
-                    "env value for `{key}` must be a string"
-                )));
-            }
-            let value = self.parse_string()?;
-            env.insert(key, value);
-            self.skip_whitespace();
-
-            if self.consume_char(',') {
-                self.skip_whitespace();
-                continue;
-            }
-            if self.consume_char('}') {
-                self.expect_end()?;
-                return Ok(env);
-            }
-
-            return Err(EnvJsonParseError::Json(
-                "expected `,` or `}` after env value".to_string(),
-            ));
-        }
-    }
-
-    fn parse_string(&mut self) -> Result<String, EnvJsonParseError> {
-        self.expect_char('"', "expected JSON string")?;
-        let mut value = String::new();
-
-        while let Some(character) = self.chars.next() {
-            match character {
-                '"' => return Ok(value),
-                '\\' => value.push(self.parse_escape()?),
-                character if character <= '\u{1f}' => {
-                    return Err(EnvJsonParseError::Json(
-                        "JSON strings must not contain unescaped control characters".to_string(),
-                    ));
-                }
-                character => value.push(character),
-            }
-        }
-
-        Err(EnvJsonParseError::Json(
-            "unterminated JSON string".to_string(),
-        ))
-    }
-
-    fn parse_escape(&mut self) -> Result<char, EnvJsonParseError> {
-        match self.chars.next() {
-            Some('"') => Ok('"'),
-            Some('\\') => Ok('\\'),
-            Some('/') => Ok('/'),
-            Some('b') => Ok('\u{0008}'),
-            Some('f') => Ok('\u{000c}'),
-            Some('n') => Ok('\n'),
-            Some('r') => Ok('\r'),
-            Some('t') => Ok('\t'),
-            Some('u') => self.parse_unicode_escape(),
-            Some(character) => Err(EnvJsonParseError::Json(format!(
-                "unsupported JSON escape `\\{character}`"
-            ))),
-            None => Err(EnvJsonParseError::Json(
-                "unterminated JSON escape".to_string(),
-            )),
-        }
-    }
-
-    fn parse_unicode_escape(&mut self) -> Result<char, EnvJsonParseError> {
-        let code_point = self.parse_hex_code_point()?;
-        if (0xd800..=0xdbff).contains(&code_point) {
-            self.expect_char('\\', "high surrogate must be followed by a low surrogate")?;
-            self.expect_char('u', "high surrogate must be followed by a low surrogate")?;
-            let low_surrogate = self.parse_hex_code_point()?;
-            if !(0xdc00..=0xdfff).contains(&low_surrogate) {
-                return Err(EnvJsonParseError::Json(
-                    "high surrogate must be followed by a low surrogate".to_string(),
-                ));
-            }
-
-            let combined = 0x10000 + ((code_point - 0xd800) << 10) + (low_surrogate - 0xdc00);
-            return char::from_u32(combined)
-                .ok_or_else(|| EnvJsonParseError::Json("invalid unicode escape".to_string()));
-        }
-        if (0xdc00..=0xdfff).contains(&code_point) {
-            return Err(EnvJsonParseError::Json(
-                "low surrogate must follow a high surrogate".to_string(),
-            ));
-        }
-
-        char::from_u32(code_point)
-            .ok_or_else(|| EnvJsonParseError::Json("invalid unicode escape".to_string()))
-    }
-
-    fn parse_hex_code_point(&mut self) -> Result<u32, EnvJsonParseError> {
-        let mut code_point = 0;
-
-        for _index in 0..4 {
-            let character = self
-                .chars
-                .next()
-                .ok_or_else(|| EnvJsonParseError::Json("incomplete unicode escape".to_string()))?;
-            let digit = character.to_digit(16).ok_or_else(|| {
-                EnvJsonParseError::Json("unicode escapes must use hex digits".to_string())
-            })?;
-            code_point = (code_point << 4) + digit;
-        }
-
-        Ok(code_point)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self
-            .chars
-            .peek()
-            .is_some_and(|character| character.is_whitespace())
-        {
-            self.chars.next();
-        }
-    }
-
-    fn consume_char(&mut self, expected: char) -> bool {
-        if self.next_is(expected) {
-            self.chars.next();
-            return true;
-        }
-
-        false
-    }
-
-    fn expect_char(&mut self, expected: char, reason: &str) -> Result<(), EnvJsonParseError> {
-        match self.chars.next() {
-            Some(character) if character == expected => Ok(()),
-            _ => Err(EnvJsonParseError::Json(reason.to_string())),
-        }
-    }
-
-    fn expect_end(&mut self) -> Result<(), EnvJsonParseError> {
-        self.skip_whitespace();
-        if self.chars.peek().is_some() {
-            return Err(EnvJsonParseError::Json(
-                "unexpected trailing content after env JSON object".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn next_is(&mut self, expected: char) -> bool {
-        self.chars
-            .peek()
-            .is_some_and(|character| *character == expected)
-    }
-}
-
-fn push_json_string(json: &mut String, value: &str) {
-    json.push('"');
-
-    for character in value.chars() {
-        match character {
-            '"' => json.push_str("\\\""),
-            '\\' => json.push_str("\\\\"),
-            '\u{0008}' => json.push_str("\\b"),
-            '\u{000c}' => json.push_str("\\f"),
-            '\n' => json.push_str("\\n"),
-            '\r' => json.push_str("\\r"),
-            '\t' => json.push_str("\\t"),
-            character if character <= '\u{1f}' => {
-                json.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => json.push(character),
-        }
-    }
-
-    json.push('"');
+    Ok(env)
 }
 
 fn validate_env_context(context: &str, env: &EnvContextValues) -> Result<(), StateError> {

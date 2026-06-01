@@ -1226,6 +1226,7 @@ dependencies = [
  "insta",
  "rusqlite",
  "rustix",
+ "serde_json",
  "thiserror",
  "time",
 ]
