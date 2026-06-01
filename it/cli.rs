@@ -405,6 +405,66 @@ fn project_list_reports_env_observed_status() -> Result<()> {
 }
 
 #[test]
+fn project_list_clears_stale_env_status_without_mappings() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let paths = PvPaths::for_home(home.clone());
+    let mut database = Database::open(&paths)?;
+    let linked_project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    let list_initial = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Pending,
+        Some("Project env reconciliation pending"),
+        &[],
+    )?;
+    let list_stale_pending = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    let list_stale_warning = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("Project config error: missing Project env context"),
+        &[],
+    )?;
+    let list_stale_failed = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((
+            link,
+            list_initial,
+            list_stale_pending,
+            list_stale_warning,
+            list_stale_failed
+        ));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn project_list_reports_env_shape_validation_errors() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

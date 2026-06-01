@@ -503,12 +503,12 @@ fn project_list_env_status(
     has_env_mappings: bool,
     observed: Option<ProjectEnvObservedStateRecord>,
 ) -> (ProjectEnvStatus, Option<String>) {
+    if !has_env_mappings {
+        return (ProjectEnvStatus::None, None);
+    }
+
     let Some(observed) = observed else {
-        return if has_env_mappings {
-            (ProjectEnvStatus::Pending, None)
-        } else {
-            (ProjectEnvStatus::None, None)
-        };
+        return (ProjectEnvStatus::Pending, None);
     };
 
     match observed.status {
@@ -517,10 +517,7 @@ fn project_list_env_status(
             observed.message.map(|message| format!("failed: {message}")),
         ),
         ProjectEnvObservedStatus::Pending => (ProjectEnvStatus::Pending, None),
-        ProjectEnvObservedStatus::Rendered if has_env_mappings => {
-            (ProjectEnvStatus::Rendered, None)
-        }
-        ProjectEnvObservedStatus::Rendered => (ProjectEnvStatus::None, None),
+        ProjectEnvObservedStatus::Rendered => (ProjectEnvStatus::Rendered, None),
         ProjectEnvObservedStatus::Warning => (
             ProjectEnvStatus::Warning,
             Some(project_env_observed_warning_summary(&observed)),

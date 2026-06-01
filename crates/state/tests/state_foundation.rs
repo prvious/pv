@@ -993,6 +993,7 @@ fn project_env_context_uses_ready_allocations_from_required_track_only() -> Resu
         &env_context(&[("database", "acme_test_app_db")]),
     )?;
     let old_track_context = database.project_env_context(&project.id)?;
+    set_resource_allocation_env_json(&mut database, &project.id, "mysql", "app-db", "{")?;
 
     database.replace_project_managed_resources(
         &project.id,
@@ -2126,6 +2127,29 @@ fn set_managed_resource_env_json(database: &mut Database, env_json: &str) -> Res
             WHERE resource_name = ?2
             AND track = ?3",
             params![env_json, "redis", "7.2"],
+        )?;
+
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn set_resource_allocation_env_json(
+    database: &mut Database,
+    project_id: &str,
+    resource_name: &str,
+    allocation_name: &str,
+    env_json: &str,
+) -> Result<()> {
+    state::testing::transaction(database, |transaction| {
+        transaction.execute(
+            "UPDATE resource_allocations
+            SET env_json = ?1
+            WHERE project_id = ?2
+            AND resource_name = ?3
+            AND allocation_name = ?4",
+            params![env_json, project_id, resource_name, allocation_name],
         )?;
 
         Ok(())

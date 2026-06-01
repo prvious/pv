@@ -2016,6 +2016,39 @@ fn resource_allocations_for_project_resource_in_connection(
     Ok(allocations)
 }
 
+fn ready_resource_allocations_for_project_resource_track_in_connection(
+    connection: &Connection,
+    project_id: &str,
+    resource_name: &str,
+    track: &str,
+) -> Result<Vec<ResourceAllocationRecord>, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT id, project_id, resource_name, track, allocation_name, generated_name, env_json, status, created_at, updated_at
+        FROM resource_allocations
+        WHERE project_id = ?1
+        AND resource_name = ?2
+        AND track = ?3
+        AND status = ?4
+        ORDER BY allocation_name",
+    )?;
+    let rows = statement.query_map(
+        params![
+            project_id,
+            resource_name,
+            track,
+            ResourceAllocationStatus::Ready.as_str()
+        ],
+        resource_allocation_from_row,
+    )?;
+    let mut allocations = Vec::new();
+
+    for row in rows {
+        allocations.push(row?.into_record()?);
+    }
+
+    Ok(allocations)
+}
+
 fn resource_allocation_by_key(
     connection: &Connection,
     project_id: &str,
@@ -2048,23 +2081,22 @@ fn ready_allocation_env_contexts(
     resource_name: &str,
     track: &str,
 ) -> Result<BTreeMap<String, ProjectEnvAllocationContext>, StateError> {
-    let allocations = resource_allocations_for_project_resource_in_connection(
+    let allocations = ready_resource_allocations_for_project_resource_track_in_connection(
         connection,
         project_id,
         resource_name,
+        track,
     )?;
     let mut contexts = BTreeMap::new();
 
     for allocation in allocations {
-        if allocation.track == track && allocation.status == ResourceAllocationStatus::Ready {
-            contexts.insert(
-                allocation.allocation_name,
-                ProjectEnvAllocationContext {
-                    generated_name: allocation.generated_name,
-                    values: allocation.env,
-                },
-            );
-        }
+        contexts.insert(
+            allocation.allocation_name,
+            ProjectEnvAllocationContext {
+                generated_name: allocation.generated_name,
+                values: allocation.env,
+            },
+        );
     }
 
     Ok(contexts)
