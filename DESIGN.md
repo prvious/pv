@@ -648,6 +648,8 @@ Install commands and Project config versions resolve to the latest artifact in t
 
 `latest` is accepted as a version alias that resolves to the manifest's default track for that Managed Resource. PV stores the resolved track, not `latest`, so existing Projects do not float when manifest defaults change later.
 
+If a Project config Managed Resource block omits `version`, PV treats it as the `latest` selector and resolves it to the manifest default concrete track before writing desired state. Existing Projects keep their internally stored concrete track when manifest defaults change later.
+
 PV does not rewrite Project config to replace `latest` with the resolved track. The resolved track is stored internally in `pv.db` and shown in status/list output.
 
 PV v1 supports track-based versions only. It does not support exact artifact pinning in Project config.
