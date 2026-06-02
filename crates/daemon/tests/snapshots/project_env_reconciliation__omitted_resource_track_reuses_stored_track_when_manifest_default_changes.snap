@@ -63,6 +63,7 @@ expression: snapshot
             "type": String("job_completed"),
         },
     ],
+    "mysql:\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
     Some(
         "# >>> PV MANAGED\nDB_HOST=127.0.0.1\nDB_PORT=3306\n# <<< PV MANAGED\n",
     ),

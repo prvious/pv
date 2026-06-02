@@ -750,6 +750,7 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
         "latest_resource_track_resolves_default_track_before_state_and_dotenv_writes",
         (
             lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.resource_allocations(&project.id, "mysql")?,
@@ -785,6 +786,7 @@ async fn latest_resource_track_reuses_stored_track_when_manifest_default_changes
         (
             initial_lines,
             rerun_lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
@@ -815,6 +817,7 @@ async fn omitted_resource_track_resolves_manifest_default_track() -> Result<()> 
         "omitted_resource_track_resolves_manifest_default_track",
         (
             lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
@@ -849,6 +852,7 @@ async fn omitted_resource_track_reuses_stored_track_when_manifest_default_change
         (
             initial_lines,
             rerun_lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
@@ -1103,6 +1107,10 @@ fn env_context(entries: &[(&str, &str)]) -> EnvContextValues {
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect::<BTreeMap<_, _>>()
+}
+
+fn read_project_config(project: &ProjectRecord) -> Result<String> {
+    state::fs::read_to_string(&project.config_path).map_err(Into::into)
 }
 
 fn read_dotenv(project: &ProjectRecord) -> Result<String> {
