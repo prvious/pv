@@ -750,6 +750,7 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
         "latest_resource_track_resolves_default_track_before_state_and_dotenv_writes",
         (
             lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.resource_allocations(&project.id, "mysql")?,
@@ -785,6 +786,7 @@ async fn latest_resource_track_reuses_stored_track_when_manifest_default_changes
         (
             initial_lines,
             rerun_lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
@@ -815,6 +817,42 @@ async fn omitted_resource_track_resolves_manifest_default_track() -> Result<()> 
         "omitted_resource_track_resolves_manifest_default_track",
         (
             lines,
+            read_project_config(&project)?,
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn omitted_resource_track_reuses_stored_track_when_manifest_default_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "mysql:\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
+    )?;
+    seed_manifest(&paths, "8.0")?;
+    seed_mysql_resource_context(&paths)?;
+    let initial_lines = run_project_reconciliation(&paths, &project).await?;
+
+    seed_manifest(&paths, "8.4")?;
+    seed_mysql_resource_context_for_track(&paths, "8.4", "3406")?;
+    let rerun_lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "omitted_resource_track_reuses_stored_track_when_manifest_default_changes",
+        (
+            initial_lines,
+            rerun_lines,
+            read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
             database.project_env_observed_state(&project.id)?,
@@ -1039,6 +1077,10 @@ fn env_context(entries: &[(&str, &str)]) -> EnvContextValues {
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect::<BTreeMap<_, _>>()
+}
+
+fn read_project_config(project: &ProjectRecord) -> Result<String> {
+    state::fs::read_to_string(&project.config_path).map_err(Into::into)
 }
 
 fn read_dotenv(project: &ProjectRecord) -> Result<String> {
