@@ -77,6 +77,27 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(dns:status)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(dns:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(dns:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (link)
 _arguments "${_arguments_options[@]}" : \
 '--hostname=[Primary .test hostname]:hostname:_default' \
@@ -140,6 +161,9 @@ _pv_commands() {
 'daemon:disable:Disable the PV login daemon' \
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
+'dns:status:Show PV .test resolver status' \
+'dns:install:Prepare PV .test resolver config' \
+'dns:uninstall:Remove PV .test resolver config' \
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
@@ -173,6 +197,21 @@ _pv__subcmd__daemon:restart_commands() {
 _pv__subcmd__daemon:run_commands() {
     local commands; commands=()
     _describe -t commands 'pv daemon:run commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__dns:install_commands] )) ||
+_pv__subcmd__dns:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv dns:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__dns:status_commands] )) ||
+_pv__subcmd__dns:status_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv dns:status commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__dns:uninstall_commands] )) ||
+_pv__subcmd__dns:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv dns:uninstall commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__env_commands] )) ||
 _pv__subcmd__env_commands() {
