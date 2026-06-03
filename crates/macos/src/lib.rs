@@ -489,3 +489,27 @@ fn loopback_port_from_netstat_local_address(local_address: &str) -> Option<u16> 
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_debug_snapshot;
+
+    use super::parse_netstat_tcp_listener_ports;
+
+    #[test]
+    fn netstat_tcp_listener_port_parser_covers_loopback_and_wildcard_addresses() {
+        let output = r#"
+Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
+tcp4       0      0  *.45000                *.*                    LISTEN
+tcp4       0      0  127.0.0.1.45001        *.*                    LISTEN
+tcp6       0      0  ::1.45002              *.*                    LISTEN
+tcp6       0      0  ::.45003               *.*                    LISTEN
+tcp4       0      0  192.168.1.5.45004      *.*                    LISTEN
+tcp4       0      0  127.0.0.1.45005        127.0.0.1.12345        ESTABLISHED
+udp4       0      0  127.0.0.1.45006        *.*
+tcp4       0      0  127.0.0.1.notaport     *.*                    LISTEN
+"#;
+
+        assert_debug_snapshot!(parse_netstat_tcp_listener_ports(output));
+    }
+}
