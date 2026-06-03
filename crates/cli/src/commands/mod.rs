@@ -7,6 +7,7 @@ use crate::error::ExecuteError;
 
 mod completions;
 mod daemon;
+mod dns;
 mod env;
 mod php;
 mod project;
@@ -24,6 +25,9 @@ pub(crate) fn execute(
         Command::DaemonDisable => daemon::disable(),
         Command::DaemonRestart => daemon::restart(),
         Command::DaemonRun => daemon::run(),
+        Command::DnsStatus => dns::status(environment, stdout),
+        Command::DnsInstall => dns::install(environment, stdout),
+        Command::DnsUninstall => dns::uninstall(environment, stdout),
         Command::Link(args) => project::link(args, environment, stdout),
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),

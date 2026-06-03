@@ -1,0 +1,17 @@
+---
+source: crates/cli/tests/dns.rs
+expression: "(output, prepared_path, prepared_after_uninstall)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\nSystem resolver config could not be inspected: <tempdir>/etc/resolver/test\n  filesystem error at <tempdir>/etc/resolver/test: Is a directory (os error 21)\nLeaving it in place.\n",
+        stderr: "",
+    },
+    "<tempdir>/home/.pv/config/resolver/test",
+    None,
+)

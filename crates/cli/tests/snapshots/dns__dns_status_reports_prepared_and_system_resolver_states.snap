@@ -1,0 +1,53 @@
+---
+source: crates/cli/tests/dns.rs
+expression: "(missing, prepared_after_missing, system_after_missing, prepared_only,\ncurrent, stale, conflict,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nPrepared resolver config: missing\n  path: <tempdir>/home/.pv/config/resolver/test\nSystem resolver config: missing\n  path: <tempdir>/etc/resolver/test\n",
+        stderr: "",
+    },
+    None,
+    None,
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: 35353\nSystem resolver config: missing\n  path: <tempdir>/etc/resolver/test\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: 35353\nSystem resolver config: current\n  path: <tempdir>/etc/resolver/test\n  port: 35353\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: 35353\nSystem resolver config: stale\n  path: <tempdir>/etc/resolver/test\n  expected port: 35353\n  actual port: 45000\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: 35353\nSystem resolver config: not PV-owned\n  path: <tempdir>/etc/resolver/test\n",
+        stderr: "",
+    },
+)

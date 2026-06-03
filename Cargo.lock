@@ -237,6 +237,7 @@ dependencies = [
  "daemon",
  "home",
  "insta",
+ "macos",
  "serde_json",
  "state",
  "thiserror",

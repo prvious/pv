@@ -15,6 +15,10 @@ pub trait Environment {
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
+
+    fn resolver_test_path(&self) -> PathBuf {
+        PathBuf::from(macos::SYSTEM_RESOLVER_TEST_PATH)
+    }
 }
 
 #[derive(Debug, Default)]

@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/dns.rs
+expression: "(output, prepared_path, prepared_config, system_resolver_path,\nsystem_after_install,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPrivileged repair deferred to later setup/system-integration work.\nSystem resolver config conflict: <tempdir>/etc/resolver/test\nThe file is not PV-owned. Privileged conflict repair is deferred to later setup/system-integration work.\n",
+        stderr: "",
+    },
+    "<tempdir>/home/.pv/config/resolver/test",
+    "# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport <dns-port>\n",
+    "<tempdir>/etc/resolver/test",
+    "nameserver 127.0.0.1\nport <dns-port>\n",
+)
