@@ -5,7 +5,7 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use macos::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
-    LocalCaMetadata, ResolverConfig, SystemTrustInspector, generate_local_ca,
+    LocalCaMetadata, ResolverConfig, SystemTrustInspector, TrustDomainState, generate_local_ca,
     inspect_local_ca_files, inspect_resolver_file, inspect_system_ca_trust,
 };
 use state::fs;
@@ -127,16 +127,29 @@ fn local_ca_file_state_exposes_typed_repair_reasons() -> Result<()> {
     let tempdir = tempdir()?;
     let certificate_path = tempdir.path().join("ca.pem");
     let key_path = tempdir.path().join("ca-key.pem");
+    let malformed_key_certificate_path = tempdir.path().join("malformed-key-ca.pem");
+    let malformed_key_path = tempdir.path().join("malformed-ca-key.pem");
     let generated = generate_local_ca()?;
 
     fs::write_sensitive_file(&certificate_path, &generated.certificate_pem)?;
+    fs::write_sensitive_file(&malformed_key_certificate_path, &generated.certificate_pem)?;
+    fs::write_sensitive_file(&malformed_key_path, "not a private key\n")?;
 
-    let state = inspect_local_ca_files(&certificate_path, &key_path);
+    let missing_key_state = inspect_local_ca_files(&certificate_path, &key_path);
+    let malformed_key_state =
+        inspect_local_ca_files(&malformed_key_certificate_path, &malformed_key_path);
 
     assert!(matches!(
-        state,
+        missing_key_state,
         CaFileState::RepairRequired {
             reason: CaRepairReason::OneFileMissing,
+            ..
+        }
+    ));
+    assert!(matches!(
+        malformed_key_state,
+        CaFileState::RepairRequired {
+            reason: CaRepairReason::MalformedPrivateKey,
             ..
         }
     ));
@@ -145,7 +158,8 @@ fn local_ca_file_state_exposes_typed_repair_reasons() -> Result<()> {
 }
 
 #[test]
-fn system_ca_trust_classification_reports_current_missing_stale_denied_and_unknown() -> Result<()> {
+fn system_ca_trust_classification_reports_current_missing_stale_denied_unspecified_and_unknown()
+-> Result<()> {
     let local = generate_local_ca()?;
     let stale = generate_local_ca()?;
     let local_metadata =
@@ -175,11 +189,84 @@ fn system_ca_trust_classification_reports_current_missing_stale_denied_and_unkno
             trust: KeychainTrustResult::Deny,
         }]),
     );
+    let unspecified = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: local_metadata.clone(),
+            trust: KeychainTrustResult::Unspecified,
+        }]),
+    );
     let unknown = inspect_system_ca_trust(None, &FakeTrustInspector::new(vec![]));
 
     with_normalized_fingerprint_snapshots(|| {
-        assert_debug_snapshot!((current, missing, stale, denied, unknown));
+        assert_debug_snapshot!((current, missing, stale, denied, unspecified, unknown));
     });
+
+    Ok(())
+}
+
+#[test]
+fn system_ca_trust_classification_keeps_scanning_after_exact_unspecified() -> Result<()> {
+    let local = generate_local_ca()?;
+    let stale = generate_local_ca()?;
+    let local_metadata =
+        LocalCaMetadata::from_pem_pair(&local.certificate_pem, &local.private_key_pem)?;
+    let stale_metadata =
+        LocalCaMetadata::from_pem_pair(&stale.certificate_pem, &stale.private_key_pem)?;
+
+    let state = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![
+            KeychainCertificate {
+                metadata: local_metadata.clone(),
+                trust: KeychainTrustResult::Unspecified,
+            },
+            KeychainCertificate {
+                metadata: stale_metadata,
+                trust: KeychainTrustResult::TrustRoot,
+            },
+        ]),
+    );
+
+    assert!(matches!(state, TrustDomainState::Stale { .. }));
+
+    Ok(())
+}
+
+#[test]
+fn system_ca_trust_classification_requires_stale_pv_ca_capability() -> Result<()> {
+    let local = generate_local_ca()?;
+    let stale = generate_local_ca()?;
+    let local_metadata =
+        LocalCaMetadata::from_pem_pair(&local.certificate_pem, &local.private_key_pem)?;
+    let stale_metadata =
+        LocalCaMetadata::from_pem_pair(&stale.certificate_pem, &stale.private_key_pem)?;
+    let mut same_subject_non_ca = stale_metadata.clone();
+    same_subject_non_ca.is_ca = false;
+    same_subject_non_ca.can_sign_certificates = false;
+    let mut same_subject_non_signing_ca = stale_metadata;
+    same_subject_non_signing_ca.can_sign_certificates = false;
+
+    let non_ca_state = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: same_subject_non_ca,
+            trust: KeychainTrustResult::TrustRoot,
+        }]),
+    );
+    let non_signing_ca_state = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: same_subject_non_signing_ca,
+            trust: KeychainTrustResult::TrustRoot,
+        }]),
+    );
+
+    assert!(matches!(non_ca_state, TrustDomainState::NotTrusted { .. }));
+    assert!(matches!(
+        non_signing_ca_state,
+        TrustDomainState::NotTrusted { .. }
+    ));
 
     Ok(())
 }

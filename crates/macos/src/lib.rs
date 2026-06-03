@@ -60,8 +60,20 @@ pub enum MacosError {
     #[error("local CA certificate is not a usable PV root CA")]
     InvalidCaShape,
 
+    #[error("could not parse local CA private key")]
+    MalformedPrivateKey,
+
     #[error("local CA certificate and private key do not match")]
     KeyMismatch,
+
+    #[error("generated PV local CA files are missing after writing")]
+    LocalCaPostWriteMissing,
+
+    #[error("generated PV local CA requires repair after writing: {reason:?}")]
+    LocalCaPostWriteRepairRequired { reason: CaRepairReason },
+
+    #[error("generated PV local CA is unreadable after writing at {path}: {message}")]
+    LocalCaPostWriteUnreadable { path: Utf8PathBuf, message: String },
 
     #[error("macOS keychain inspection failed: {0}")]
     Keychain(String),
@@ -282,7 +294,7 @@ impl LocalCaMetadata {
         let certificate_der =
             certificate_der_from_pem(certificate_pem).map_err(|_| MacosError::X509)?;
         let key_pair =
-            KeyPair::from_pem(private_key_pem).map_err(|_| MacosError::InvalidCaShape)?;
+            KeyPair::from_pem(private_key_pem).map_err(|_| MacosError::MalformedPrivateKey)?;
         let (_remaining, certificate) =
             X509Certificate::from_der(&certificate_der).map_err(|_| MacosError::X509)?;
         let common_name = certificate
@@ -445,29 +457,18 @@ pub fn inspect_system_ca_trust(
         }
     };
     let mut stale_fingerprint = None;
+    let mut exact_trust = None;
 
     for certificate in certificates {
         let same_fingerprint = certificate.metadata.fingerprint == local.fingerprint;
-        let pv_looking = certificate.metadata.common_name == PV_CA_COMMON_NAME
-            && certificate.metadata.organization.as_deref() == Some(PV_CA_ORGANIZATION);
+        let pv_looking_ca = is_pv_ca_metadata(&certificate.metadata);
 
         if same_fingerprint {
-            return match certificate.trust {
-                KeychainTrustResult::TrustRoot | KeychainTrustResult::TrustAsRoot => {
-                    TrustDomainState::Current {
-                        fingerprint: local.fingerprint.clone(),
-                    }
-                }
-                KeychainTrustResult::Deny => TrustDomainState::Denied {
-                    fingerprint: local.fingerprint.clone(),
-                },
-                KeychainTrustResult::Unspecified => TrustDomainState::NotTrusted {
-                    fingerprint: local.fingerprint.clone(),
-                },
-            };
+            exact_trust = Some(certificate.trust);
+            continue;
         }
 
-        if pv_looking
+        if pv_looking_ca
             && matches!(
                 certificate.trust,
                 KeychainTrustResult::TrustRoot | KeychainTrustResult::TrustAsRoot
@@ -477,15 +478,32 @@ pub fn inspect_system_ca_trust(
         }
     }
 
-    match stale_fingerprint {
-        Some(actual_fingerprint) => TrustDomainState::Stale {
-            expected_fingerprint: local.fingerprint.clone(),
-            actual_fingerprint,
-        },
-        None => TrustDomainState::NotTrusted {
+    match exact_trust {
+        Some(KeychainTrustResult::TrustRoot | KeychainTrustResult::TrustAsRoot) => {
+            TrustDomainState::Current {
+                fingerprint: local.fingerprint.clone(),
+            }
+        }
+        Some(KeychainTrustResult::Deny) => TrustDomainState::Denied {
             fingerprint: local.fingerprint.clone(),
         },
+        Some(KeychainTrustResult::Unspecified) | None => match stale_fingerprint {
+            Some(actual_fingerprint) => TrustDomainState::Stale {
+                expected_fingerprint: local.fingerprint.clone(),
+                actual_fingerprint,
+            },
+            None => TrustDomainState::NotTrusted {
+                fingerprint: local.fingerprint.clone(),
+            },
+        },
     }
+}
+
+fn is_pv_ca_metadata(metadata: &LocalCaMetadata) -> bool {
+    metadata.common_name == PV_CA_COMMON_NAME
+        && metadata.organization.as_deref() == Some(PV_CA_ORGANIZATION)
+        && metadata.is_ca
+        && metadata.can_sign_certificates
 }
 
 impl SystemTrustInspector for MacosSystemTrustInspector {
@@ -570,10 +588,14 @@ fn pem_from_der(label: &str, der: &[u8]) -> String {
 fn repair_reason_from_ca_error(error: MacosError) -> CaRepairReason {
     match error {
         MacosError::X509 => CaRepairReason::MalformedCertificate,
+        MacosError::MalformedPrivateKey => CaRepairReason::MalformedPrivateKey,
         MacosError::InvalidCaShape => CaRepairReason::InvalidCaShape,
         MacosError::KeyMismatch => CaRepairReason::KeyMismatch,
-        MacosError::CaGeneration(_) | MacosError::Pem(_) | MacosError::Keychain(_) => {
-            CaRepairReason::MalformedPrivateKey
-        }
+        MacosError::CaGeneration(_)
+        | MacosError::Pem(_)
+        | MacosError::LocalCaPostWriteMissing
+        | MacosError::LocalCaPostWriteRepairRequired { .. }
+        | MacosError::LocalCaPostWriteUnreadable { .. }
+        | MacosError::Keychain(_) => CaRepairReason::InvalidCaShape,
     }
 }

@@ -268,6 +268,8 @@ When a Project's PHP track changes, PV reconfigures only affected Project-servin
 
 PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trust is installed into the macOS System keychain so browsers trust Project certificates.
 
+PR 12 only prepares local CA files and read-only System trust inspection for these lower-level commands. The actual System keychain mutation required by this design remains PR 13 foreground setup/system-integration work.
+
 `pv dns:*` commands remain available as lower-level resolver inspection and repair commands even though `pv setup` handles first-time resolver configuration.
 
 `pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.

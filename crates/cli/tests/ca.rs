@@ -210,6 +210,34 @@ fn ca_untrust_leaves_local_ca_files_and_defers_system_keychain_removal() -> anyh
     Ok(())
 }
 
+#[test]
+fn ca_untrust_succeeds_when_system_trust_is_absent_and_preserves_local_ca_files()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let environment = TestEnvironment::new(&home, &current_dir);
+
+    let output = run_pv(&["ca:untrust"], &environment)?;
+    let certificate_after = read_required_file(&paths.ca_certificate())?;
+    let private_key_after = read_required_file(&paths.ca_private_key())?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_no_privileged_guidance(&output.stdout);
+    assert_eq!(certificate_after, generated.certificate_pem);
+    assert_eq!(private_key_after, generated.private_key_pem);
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!(output);
+    });
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,

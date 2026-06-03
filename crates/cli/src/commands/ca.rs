@@ -95,17 +95,38 @@ fn ensure_local_ca(
     paths: &PvPaths,
     initial_state: CaFileState,
 ) -> Result<(CaFileState, Option<GeneratedLocalCa>), ExecuteError> {
+    ensure_local_ca_with_generator(paths, initial_state, macos::generate_local_ca)
+}
+
+fn ensure_local_ca_with_generator(
+    paths: &PvPaths,
+    initial_state: CaFileState,
+    generate: impl FnOnce() -> Result<GeneratedLocalCa, macos::MacosError>,
+) -> Result<(CaFileState, Option<GeneratedLocalCa>), ExecuteError> {
     if matches!(initial_state, CaFileState::Current { .. }) {
         return Ok((initial_state, None));
     }
 
-    let generated = macos::generate_local_ca()?;
+    let generated = generate()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &generated.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &generated.private_key_pem)?;
     let repaired_state =
         macos::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
 
-    Ok((repaired_state, Some(generated)))
+    match &repaired_state {
+        CaFileState::Current { .. } => Ok((repaired_state, Some(generated))),
+        CaFileState::Missing { .. } => Err(macos::MacosError::LocalCaPostWriteMissing.into()),
+        CaFileState::RepairRequired { reason, .. } => {
+            Err(macos::MacosError::LocalCaPostWriteRepairRequired { reason: *reason }.into())
+        }
+        CaFileState::Unreadable { path, message } => {
+            Err(macos::MacosError::LocalCaPostWriteUnreadable {
+                path: path.clone(),
+                message: message.clone(),
+            }
+            .into())
+        }
+    }
 }
 
 fn metadata_from_local_state(state: &CaFileState) -> Option<LocalCaMetadata> {
@@ -220,4 +241,39 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
+}
+
+#[cfg(test)]
+mod tests {
+    use camino_tempfile::tempdir;
+    use macos::{CaRepairReason, MacosError};
+
+    use super::*;
+
+    #[test]
+    fn ensure_local_ca_rejects_failed_post_write_validation() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let generated = macos::generate_local_ca()?;
+        let mut invalid_generated = generated.clone();
+        invalid_generated.private_key_pem = "not a private key\n".to_string();
+        let initial_state = CaFileState::Missing {
+            certificate_path: paths.ca_certificate(),
+            private_key_path: paths.ca_private_key(),
+        };
+
+        let result =
+            ensure_local_ca_with_generator(&paths, initial_state, || Ok(invalid_generated));
+
+        assert!(matches!(
+            result,
+            Err(ExecuteError::Macos(
+                MacosError::LocalCaPostWriteRepairRequired {
+                    reason: CaRepairReason::MalformedPrivateKey
+                }
+            ))
+        ));
+
+        Ok(())
+    }
 }
