@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+data-encoding = { workspace = true }
 rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 security-framework = { workspace = true }

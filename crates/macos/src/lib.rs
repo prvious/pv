@@ -114,6 +114,50 @@ pub enum CaRepairReason {
     KeyMismatch,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeychainCertificate {
+    pub metadata: LocalCaMetadata,
+    pub trust: KeychainTrustResult,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum KeychainTrustResult {
+    TrustRoot,
+    TrustAsRoot,
+    Deny,
+    Unspecified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrustDomainState {
+    Current {
+        fingerprint: String,
+    },
+    NotTrusted {
+        fingerprint: String,
+    },
+    Stale {
+        expected_fingerprint: String,
+        actual_fingerprint: String,
+    },
+    Denied {
+        fingerprint: String,
+    },
+    Unknown {
+        reason: String,
+    },
+    Unreadable {
+        message: String,
+    },
+}
+
+pub trait SystemTrustInspector {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, MacosError>;
+}
+
+#[derive(Debug, Default)]
+pub struct MacosSystemTrustInspector;
+
 impl ResolverConfig {
     pub const fn new(port: u16) -> Self {
         Self { port }
@@ -383,6 +427,114 @@ pub fn inspect_local_ca_files(
     }
 }
 
+pub fn inspect_system_ca_trust(
+    local: Option<&LocalCaMetadata>,
+    inspector: &impl SystemTrustInspector,
+) -> TrustDomainState {
+    let Some(local) = local else {
+        return TrustDomainState::Unknown {
+            reason: "local CA is unavailable".to_string(),
+        };
+    };
+    let certificates = match inspector.trusted_certificates() {
+        Ok(certificates) => certificates,
+        Err(error) => {
+            return TrustDomainState::Unreadable {
+                message: error.to_string(),
+            };
+        }
+    };
+    let mut stale_fingerprint = None;
+
+    for certificate in certificates {
+        let same_fingerprint = certificate.metadata.fingerprint == local.fingerprint;
+        let pv_looking = certificate.metadata.common_name == PV_CA_COMMON_NAME
+            && certificate.metadata.organization.as_deref() == Some(PV_CA_ORGANIZATION);
+
+        if same_fingerprint {
+            return match certificate.trust {
+                KeychainTrustResult::TrustRoot | KeychainTrustResult::TrustAsRoot => {
+                    TrustDomainState::Current {
+                        fingerprint: local.fingerprint.clone(),
+                    }
+                }
+                KeychainTrustResult::Deny => TrustDomainState::Denied {
+                    fingerprint: local.fingerprint.clone(),
+                },
+                KeychainTrustResult::Unspecified => TrustDomainState::NotTrusted {
+                    fingerprint: local.fingerprint.clone(),
+                },
+            };
+        }
+
+        if pv_looking
+            && matches!(
+                certificate.trust,
+                KeychainTrustResult::TrustRoot | KeychainTrustResult::TrustAsRoot
+            )
+        {
+            stale_fingerprint = Some(certificate.metadata.fingerprint);
+        }
+    }
+
+    match stale_fingerprint {
+        Some(actual_fingerprint) => TrustDomainState::Stale {
+            expected_fingerprint: local.fingerprint.clone(),
+            actual_fingerprint,
+        },
+        None => TrustDomainState::NotTrusted {
+            fingerprint: local.fingerprint.clone(),
+        },
+    }
+}
+
+impl SystemTrustInspector for MacosSystemTrustInspector {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, MacosError> {
+        #[cfg(target_os = "macos")]
+        {
+            use security_framework::trust_settings::{
+                Domain, TrustSettings, TrustSettingsForCertificate,
+            };
+
+            let trust_settings = TrustSettings::new(Domain::Admin);
+            let mut certificates = Vec::new();
+
+            for certificate in trust_settings
+                .iter()
+                .map_err(|error| MacosError::Keychain(error.to_string()))?
+            {
+                let trust = match trust_settings.tls_trust_settings_for_certificate(&certificate) {
+                    Ok(Some(TrustSettingsForCertificate::TrustRoot)) => {
+                        KeychainTrustResult::TrustRoot
+                    }
+                    Ok(Some(TrustSettingsForCertificate::TrustAsRoot)) => {
+                        KeychainTrustResult::TrustAsRoot
+                    }
+                    Ok(Some(TrustSettingsForCertificate::Deny)) => KeychainTrustResult::Deny,
+                    Ok(Some(TrustSettingsForCertificate::Unspecified)) | Ok(None) => {
+                        KeychainTrustResult::Unspecified
+                    }
+                    Ok(Some(TrustSettingsForCertificate::Invalid)) => {
+                        KeychainTrustResult::Unspecified
+                    }
+                    Err(error) => return Err(MacosError::Keychain(error.to_string())),
+                };
+                let certificate_pem = pem_from_der("CERTIFICATE", &certificate.to_der());
+                if let Ok(metadata) = LocalCaMetadata::from_certificate_pem(&certificate_pem) {
+                    certificates.push(KeychainCertificate { metadata, trust });
+                }
+            }
+
+            Ok(certificates)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(Vec::new())
+        }
+    }
+}
+
 fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
     let mut reader = Cursor::new(certificate_pem.as_bytes());
     let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
@@ -402,6 +554,17 @@ fn certificate_fingerprint(certificate_der: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn pem_from_der(label: &str, der: &[u8]) -> String {
+    let base64 = data_encoding::BASE64.encode(der);
+    let mut pem = format!("-----BEGIN {label}-----\n");
+    for chunk in base64.as_bytes().chunks(64) {
+        pem.push_str(&String::from_utf8_lossy(chunk));
+        pem.push('\n');
+    }
+    pem.push_str(&format!("-----END {label}-----\n"));
+    pem
 }
 
 fn repair_reason_from_ca_error(error: MacosError) -> CaRepairReason {

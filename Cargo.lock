@@ -995,6 +995,7 @@ dependencies = [
  "anyhow",
  "camino",
  "camino-tempfile",
+ "data-encoding",
  "insta",
  "rcgen",
  "rustls-pemfile",

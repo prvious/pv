@@ -2,10 +2,11 @@ use std::fmt::Debug;
 
 use anyhow::Result;
 use camino_tempfile::tempdir;
-use insta::assert_debug_snapshot;
+use insta::{Settings, assert_debug_snapshot};
 use macos::{
-    CaFileState, CaRepairReason, GeneratedLocalCa, LocalCaMetadata, ResolverConfig,
-    generate_local_ca, inspect_local_ca_files, inspect_resolver_file,
+    CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
+    LocalCaMetadata, ResolverConfig, SystemTrustInspector, generate_local_ca,
+    inspect_local_ca_files, inspect_resolver_file, inspect_system_ca_trust,
 };
 use state::fs;
 
@@ -143,6 +144,86 @@ fn local_ca_file_state_exposes_typed_repair_reasons() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn system_ca_trust_classification_reports_current_missing_stale_denied_and_unknown() -> Result<()> {
+    let local = generate_local_ca()?;
+    let stale = generate_local_ca()?;
+    let local_metadata =
+        LocalCaMetadata::from_pem_pair(&local.certificate_pem, &local.private_key_pem)?;
+    let stale_metadata =
+        LocalCaMetadata::from_pem_pair(&stale.certificate_pem, &stale.private_key_pem)?;
+
+    let current = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: local_metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        }]),
+    );
+    let missing = inspect_system_ca_trust(Some(&local_metadata), &FakeTrustInspector::new(vec![]));
+    let stale = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: stale_metadata,
+            trust: KeychainTrustResult::TrustRoot,
+        }]),
+    );
+    let denied = inspect_system_ca_trust(
+        Some(&local_metadata),
+        &FakeTrustInspector::new(vec![KeychainCertificate {
+            metadata: local_metadata.clone(),
+            trust: KeychainTrustResult::Deny,
+        }]),
+    );
+    let unknown = inspect_system_ca_trust(None, &FakeTrustInspector::new(vec![]));
+
+    with_normalized_fingerprint_snapshots(|| {
+        assert_debug_snapshot!((current, missing, stale, denied, unknown));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn system_ca_trust_classification_reports_unreadable_inspector_errors() -> Result<()> {
+    let local = generate_local_ca()?;
+    let local_metadata =
+        LocalCaMetadata::from_pem_pair(&local.certificate_pem, &local.private_key_pem)?;
+    let state = inspect_system_ca_trust(Some(&local_metadata), &FailingTrustInspector);
+
+    with_normalized_fingerprint_snapshots(|| {
+        assert_debug_snapshot!(state);
+    });
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FakeTrustInspector {
+    certificates: Vec<KeychainCertificate>,
+}
+
+impl FakeTrustInspector {
+    fn new(certificates: Vec<KeychainCertificate>) -> Self {
+        Self { certificates }
+    }
+}
+
+impl SystemTrustInspector for FakeTrustInspector {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
+        Ok(self.certificates.clone())
+    }
+}
+
+#[derive(Debug)]
+struct FailingTrustInspector;
+
+impl SystemTrustInspector for FailingTrustInspector {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
+        Err(macos::MacosError::Keychain("fixture failure".to_string()))
+    }
+}
+
 fn normalize_state_debug(state: &impl Debug, tempdir_path: &str) -> String {
     let state_debug =
         normalize_fingerprints(format!("{state:?}").replace(tempdir_path, "[tempdir]"));
@@ -171,4 +252,10 @@ fn normalize_fingerprints(mut state_debug: String) -> String {
     }
 
     state_debug
+}
+
+fn with_normalized_fingerprint_snapshots(assertion: impl FnOnce()) {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"[a-f0-9]{64}", "<fingerprint>");
+    settings.bind(assertion);
 }
