@@ -39,7 +39,7 @@ complete -c pv -n "__fish_pv_needs_command" -f -a "daemon:restart" -d 'Restart t
 complete -c pv -n "__fish_pv_needs_command" -f -a "daemon:run" -d 'Run the internal PV daemon'
 complete -c pv -n "__fish_pv_needs_command" -f -a "dns:status" -d 'Show PV .test resolver status'
 complete -c pv -n "__fish_pv_needs_command" -f -a "dns:install" -d 'Prepare PV .test resolver config'
-complete -c pv -n "__fish_pv_needs_command" -f -a "dns:uninstall" -d 'Remove PV .test resolver config'
+complete -c pv -n "__fish_pv_needs_command" -f -a "dns:uninstall" -d 'Remove prepared PV .test resolver config'
 complete -c pv -n "__fish_pv_needs_command" -f -a "link" -d 'Link a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "unlink" -d 'Unlink a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "open" -d 'Open a linked Project'

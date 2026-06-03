@@ -94,6 +94,10 @@ impl RunningDnsResolver {
 async fn bind_assigned_dns_sockets(
     paths: &PvPaths,
 ) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {
+    if let Some(port) = assigned_dns_port(paths)? {
+        return bind_dns_sockets(port).await;
+    }
+
     let mut last_bind_error = None;
 
     for _attempt in 0..DNS_BIND_ATTEMPTS {
@@ -122,6 +126,16 @@ async fn bind_assigned_dns_sockets(
         database.assign_port(PortRequest::pv_dns(), dns_port_available)?
     };
     bind_dns_sockets(assignment.port).await
+}
+
+fn assigned_dns_port(paths: &PvPaths) -> Result<Option<u16>, DaemonError> {
+    let database = Database::open(paths)?;
+    let assignment = database
+        .assigned_ports()?
+        .into_iter()
+        .find(|assignment| assignment.owner == PortOwner::Dns);
+
+    Ok(assignment.map(|assignment| assignment.port))
 }
 
 async fn bind_dns_sockets(port: u16) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {

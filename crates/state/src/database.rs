@@ -8,7 +8,6 @@ use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
-const PORT_CANDIDATE_LIMIT: usize = 10;
 pub const DNS_PREFERRED_PORT: u16 = 35353;
 pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
 pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
@@ -1498,10 +1497,6 @@ impl PortRequest {
         let mut candidates = vec![self.preferred_port];
 
         for port in self.fallback_start..=self.fallback_end {
-            if candidates.len() >= PORT_CANDIDATE_LIMIT {
-                break;
-            }
-
             if port != self.preferred_port {
                 candidates.push(port);
             }

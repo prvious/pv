@@ -163,7 +163,7 @@ _pv_commands() {
 'daemon:run:Run the internal PV daemon' \
 'dns:status:Show PV .test resolver status' \
 'dns:install:Prepare PV .test resolver config' \
-'dns:uninstall:Remove PV .test resolver config' \
+'dns:uninstall:Remove prepared PV .test resolver config' \
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \

@@ -8,11 +8,11 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::params;
 use serde_json::{Value, json};
 use state::{
-    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, PortOwner, PvPaths,
+    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, PortOwner, PortRequest, PvPaths,
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
 };
 use std::io::ErrorKind;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -529,6 +529,42 @@ async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let (bound_dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
+    let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::dns(bound_dns_port, bound_dns_port, bound_dns_port),
+        |candidate| candidate == bound_dns_port,
+    )?;
+    drop(database);
+
+    let result = daemon::RunningDaemon::start(paths.clone()).await;
+    if let Ok(daemon) = result {
+        daemon.shutdown().await?;
+        return Err(anyhow!(
+            "daemon started after persisted DNS port bind conflict"
+        ));
+    }
+    let error = result
+        .err()
+        .ok_or_else(|| anyhow!("missing daemon error"))?;
+    let persisted_port = dns_port(&paths)?;
+
+    assert!(matches!(
+        error,
+        daemon::DaemonError::DnsBind {
+            port,
+            ..
+        } if port == bound_dns_port
+    ));
+    assert_eq!(persisted_port, bound_dns_port);
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
@@ -686,6 +722,20 @@ fn bind_preferred_dns_port() -> Result<Option<StdUdpSocket>> {
         Err(error) if error.kind() == ErrorKind::AddrInUse => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+fn bind_loopback_tcp_udp_pair() -> Result<(u16, StdTcpListener, StdUdpSocket)> {
+    for _attempt in 0..100 {
+        let tcp_listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = tcp_listener.local_addr()?.port();
+        let Ok(udp_socket) = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
+            continue;
+        };
+
+        return Ok((port, tcp_listener, udp_socket));
+    }
+
+    Err(anyhow!("could not bind a loopback TCP/UDP port pair"))
 }
 
 fn assert_common_dns_response(

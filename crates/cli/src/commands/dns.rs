@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use macos::{ResolverConfig, ResolverFileState};
-use state::{Database, PortRequest, PvPaths, StateError};
+use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
@@ -17,8 +17,8 @@ pub(crate) fn status(
     let paths = pv_paths(environment)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
-    let expected_config = prepared_resolver_config(&prepared_path);
     let prepared_state = macos::inspect_resolver_file(&prepared_path, None);
+    let expected_config = resolver_config_from_state(&prepared_state);
     let system_state = macos::inspect_resolver_file(&system_path, expected_config.as_ref());
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -36,8 +36,8 @@ pub(crate) fn install(
     let paths = pv_paths(environment)?;
     let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
-    let assignment = database.assign_port(PortRequest::pv_dns(), daemon::dns_port_available)?;
-    let config = ResolverConfig::new(assignment.port);
+    let dns_port = prepared_dns_port(&mut database)?;
+    let config = ResolverConfig::new(dns_port);
     let prepared_path = paths.resolver_config();
 
     state::fs::write_sensitive_file(&prepared_path, &config.render())?;
@@ -46,7 +46,7 @@ pub(crate) fn install(
     let mut output = Output::new(stdout, OutputMode::plain());
     output.line("Prepared PV DNS resolver config")?;
     output.line(&format!("  path: {prepared_path}"))?;
-    output.line(&format!("  DNS resolver port: {}", assignment.port))?;
+    output.line(&format!("  DNS resolver port: {dns_port}"))?;
     write_install_guidance(&mut output, &system_state)?;
 
     Ok(ExitCode::FAILURE)
@@ -137,7 +137,10 @@ fn write_install_guidance(
         } => {
             output.line("Privileged repair deferred to later setup/system-integration work.")?;
             output.line(&format!("PV-owned system resolver config is stale: {path}"))?;
-            output.line(&format!("  expected port: {expected_port}"))?;
+            match expected_port {
+                Some(expected_port) => output.line(&format!("  expected port: {expected_port}"))?,
+                None => output.line("  expected port: unknown")?,
+            }
             match actual_port {
                 Some(actual_port) => output.line(&format!("  actual port: {actual_port}")),
                 None => output.line("  actual port: unparseable"),
@@ -168,10 +171,9 @@ fn write_resolver_state(
         } => {
             output.line(&format!("{label}: stale"))?;
             output.line(&format!("  path: {path}"))?;
-            if *expected_port == 0 {
-                output.line("  expected port: unknown")?;
-            } else {
-                output.line(&format!("  expected port: {expected_port}"))?;
+            match expected_port {
+                Some(expected_port) => output.line(&format!("  expected port: {expected_port}"))?,
+                None => output.line("  expected port: unknown")?,
             }
             match actual_port {
                 Some(actual_port) => output.line(&format!("  actual port: {actual_port}")),
@@ -190,10 +192,34 @@ fn write_resolver_state(
     }
 }
 
-fn prepared_resolver_config(path: &Utf8Path) -> Option<ResolverConfig> {
-    let content = state::fs::read_to_string(path).ok()?;
+fn prepared_dns_port(database: &mut Database) -> Result<u16, StateError> {
+    if let Some(assignment) = database
+        .assigned_ports()?
+        .into_iter()
+        .find(|assignment| assignment.owner == PortOwner::Dns)
+    {
+        return Ok(assignment.port);
+    }
 
-    ResolverConfig::parse(&content)
+    let assignment = database.assign_port(PortRequest::pv_dns(), daemon::dns_port_available)?;
+
+    Ok(assignment.port)
+}
+
+fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
+    match state {
+        ResolverFileState::Current { port, .. }
+        | ResolverFileState::Stale {
+            actual_port: Some(port),
+            ..
+        } => Some(ResolverConfig::new(*port)),
+        ResolverFileState::Missing { .. }
+        | ResolverFileState::Stale {
+            actual_port: None, ..
+        }
+        | ResolverFileState::Conflict { .. }
+        | ResolverFileState::Unreadable { .. } => None,
+    }
 }
 
 fn delete_optional_file(path: &Utf8Path) -> Result<bool, ExecuteError> {

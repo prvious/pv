@@ -8,8 +8,8 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use serde_json::{Value, json};
 use state::{
-    Database, EnvContextValues, JobRecord, LinkProjectInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
+    Database, EnvContextValues, JobRecord, LinkProjectInput, PortOwner,
+    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -909,7 +909,10 @@ async fn run_project_reconciliation(
     )
     .await?;
 
-    daemon.shutdown().await?;
+    let shutdown_result = daemon.shutdown().await;
+    let mut database = Database::open(paths)?;
+    database.release_port(PortOwner::Dns)?;
+    shutdown_result?;
 
     Ok(lines)
 }

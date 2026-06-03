@@ -24,7 +24,7 @@ pub enum ResolverFileState {
     },
     Stale {
         path: Utf8PathBuf,
-        expected_port: u16,
+        expected_port: Option<u16>,
         actual_port: Option<u16>,
     },
     Conflict {
@@ -117,7 +117,7 @@ pub fn inspect_resolver_file(
         },
         (Some(expected), actual) => ResolverFileState::Stale {
             path: path.to_path_buf(),
-            expected_port: expected.port,
+            expected_port: Some(expected.port),
             actual_port: actual.map(|config| config.port),
         },
         (None, Some(actual)) => ResolverFileState::Current {
@@ -126,7 +126,7 @@ pub fn inspect_resolver_file(
         },
         (None, None) => ResolverFileState::Stale {
             path: path.to_path_buf(),
-            expected_port: 0,
+            expected_port: None,
             actual_port: None,
         },
     }

@@ -44,7 +44,10 @@ pub(crate) enum Command {
     #[command(name = "dns:install", about = "Prepare PV .test resolver config")]
     DnsInstall,
 
-    #[command(name = "dns:uninstall", about = "Remove PV .test resolver config")]
+    #[command(
+        name = "dns:uninstall",
+        about = "Remove prepared PV .test resolver config"
+    )]
     DnsUninstall,
 
     #[command(name = "link", about = "Link a Project")]

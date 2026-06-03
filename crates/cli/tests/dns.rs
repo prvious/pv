@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,7 +10,7 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use macos::ResolverConfig;
-use state::{PvPaths, StateError};
+use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -96,6 +97,40 @@ fn dns_install_prepares_resolver_config_without_touching_system_path() -> anyhow
             ));
         });
     });
+
+    Ok(())
+}
+
+#[test]
+fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_resolver_path = tempdir.path().join("etc/resolver/test");
+    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
+    let paths = pv_paths(&home);
+    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
+    let mut database = Database::open(&paths)?;
+    let seeded_assignment = database.assign_port(
+        PortRequest::dns(dns_port, dns_port, dns_port),
+        |candidate| candidate == dns_port,
+    )?;
+    drop(database);
+
+    let output = run_pv(&["dns:install"], &environment)?;
+    let prepared_config = read_required_file(&paths.resolver_config())?;
+    let parsed_config = ResolverConfig::parse(&prepared_config)
+        .ok_or_else(|| anyhow::anyhow!("prepared resolver config did not parse"))?;
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+    let dns_assignment = assignments
+        .into_iter()
+        .find(|assignment| assignment.owner == PortOwner::Dns)
+        .ok_or_else(|| anyhow::anyhow!("missing DNS port assignment"))?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(seeded_assignment.port, dns_port);
+    assert_eq!(parsed_config.port, dns_port);
+    assert_eq!(dns_assignment.port, dns_port);
 
     Ok(())
 }
@@ -299,6 +334,22 @@ fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     state::fs::write_sensitive_file(path, content)?;
 
     Ok(())
+}
+
+fn bind_loopback_tcp_udp_pair() -> anyhow::Result<(u16, TcpListener, UdpSocket)> {
+    for _attempt in 0..100 {
+        let tcp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = tcp_listener.local_addr()?.port();
+        let Ok(udp_socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
+            continue;
+        };
+
+        return Ok((port, tcp_listener, udp_socket));
+    }
+
+    Err(anyhow::anyhow!(
+        "could not bind a loopback TCP/UDP port pair"
+    ))
 }
 
 fn assert_no_manual_guidance(output: &str) {

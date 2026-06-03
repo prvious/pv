@@ -5,9 +5,9 @@ expression: normalized_states
 [
     "Missing { path: \"[tempdir]/missing\" }",
     "Current { path: \"[tempdir]/current\", port: 35353 }",
-    "Stale { path: \"[tempdir]/stale\", expected_port: 35353, actual_port: Some(45000) }",
-    "Stale { path: \"[tempdir]/wrong-nameserver\", expected_port: 35353, actual_port: None }",
-    "Stale { path: \"[tempdir]/mixed-nameservers\", expected_port: 35353, actual_port: None }",
+    "Stale { path: \"[tempdir]/stale\", expected_port: Some(35353), actual_port: Some(45000) }",
+    "Stale { path: \"[tempdir]/wrong-nameserver\", expected_port: Some(35353), actual_port: None }",
+    "Stale { path: \"[tempdir]/mixed-nameservers\", expected_port: Some(35353), actual_port: None }",
     "Conflict { path: \"[tempdir]/conflict\" }",
     "Unreadable { path: \"[tempdir]/directory\", message: \"<read error>\" }",
 ]

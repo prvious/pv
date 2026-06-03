@@ -9,7 +9,7 @@ use state::testing::Migration;
 use state::{
     Database, EnvContextValues, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
+    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, ResourceAllocationInput, StateError,
 };
 
 #[test]
@@ -2035,28 +2035,16 @@ fn port_allocator_keeps_owner_components_structured() -> Result<()> {
 }
 
 #[test]
-fn port_allocator_reports_the_documented_candidate_cap() -> Result<()> {
+fn port_allocator_scans_the_full_documented_dns_fallback_range() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
-    let single_candidate = database.assign_port(
-        PortRequest::resource("mysql", "8.4", 45000, 45000, 45000),
-        |_port| false,
-    );
-    let capped_candidates = database.assign_port(
-        PortRequest::resource("redis", "8.6", 45000, 45000, 45099),
-        |_port| false,
-    );
+    let assigned_dns = database.assign_port(PortRequest::pv_dns(), |port| {
+        port == RUNTIME_PORT_FALLBACK_END
+    })?;
 
-    assert!(matches!(
-        single_candidate,
-        Err(StateError::NoAvailablePort { attempts: 1, .. })
-    ));
-    assert!(matches!(
-        capped_candidates,
-        Err(StateError::NoAvailablePort { attempts: 10, .. })
-    ));
+    assert_eq!(assigned_dns.port, RUNTIME_PORT_FALLBACK_END);
 
     Ok(())
 }
