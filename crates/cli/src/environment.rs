@@ -19,6 +19,12 @@ pub trait Environment {
     fn resolver_test_path(&self) -> PathBuf {
         PathBuf::from(macos::SYSTEM_RESOLVER_TEST_PATH)
     }
+
+    fn trusted_ca_certificates(
+        &self,
+    ) -> Result<Vec<macos::KeychainCertificate>, macos::MacosError> {
+        macos::SystemTrustInspector::trusted_certificates(&macos::MacosSystemTrustInspector)
+    }
 }
 
 #[derive(Debug, Default)]

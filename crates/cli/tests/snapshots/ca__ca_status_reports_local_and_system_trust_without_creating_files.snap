@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/ca.rs
+expression: "(missing, current, unreadable)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "CA trust status\nLocal CA files: missing\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\nSystem keychain trust: unknown\n  local CA is unavailable\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "CA trust status\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem keychain trust: current\n  fingerprint: <fingerprint>\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "CA trust status\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem keychain trust: unreadable\n  macOS keychain inspection failed: fixture keychain failure\n",
+        stderr: "",
+    },
+)

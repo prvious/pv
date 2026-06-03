@@ -5,6 +5,7 @@ use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
 
+mod ca;
 mod completions;
 mod daemon;
 mod dns;
@@ -28,6 +29,9 @@ pub(crate) fn execute(
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),
         Command::DnsUninstall => dns::uninstall(environment, stdout),
+        Command::CaStatus => ca::status(environment, stdout),
+        Command::CaTrust => ca::trust(environment, stdout),
+        Command::CaUntrust => ca::untrust(environment, stdout),
         Command::Link(args) => project::link(args, environment, stdout),
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),
