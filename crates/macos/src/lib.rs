@@ -13,8 +13,16 @@ const PREPARED_MARKER: &str = "# Source: PV prepared resolver config for /etc/re
 const PF_ANCHOR_SOURCE_MARKER: &str =
     "# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv";
 const PF_CONF_SOURCE_MARKER: &str = "# Source: PV prepared pf.conf reference for /etc/pf.conf";
-const PF_ANCHOR_NAME: &str = "com.prvious.pv";
+const PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
+const PF_LOAD_ANCHOR_DIRECTIVE: &str =
+    "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
 const LOOPBACK_NAMESERVER: &str = "nameserver 127.0.0.1";
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "macOS socket inspection owns read-only netstat invocation"
+)]
+type StdCommand = std::process::Command;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolverConfig {
@@ -80,6 +88,12 @@ pub enum PfFileState<T> {
 pub enum MacosError {
     #[error("could not inspect socket table: {0}")]
     SocketTable(#[from] netstat::Error),
+    #[error("could not run netstat for socket inspection: {0}")]
+    SocketTableCommand(#[source] io::Error),
+    #[error("netstat socket inspection exited with {status}")]
+    SocketTableCommandStatus { status: String },
+    #[error("could not decode netstat socket table: {0}")]
+    SocketTableCommandUtf8(#[from] std::string::FromUtf8Error),
 }
 
 impl ResolverConfig {
@@ -141,30 +155,44 @@ impl PfRedirectConfig {
     pub fn parse_anchor(content: &str) -> Option<Self> {
         let mut http_port = None;
         let mut https_port = None;
+        let mut active_line_count = 0;
 
-        for line in content.lines().map(str::trim) {
+        for line in content.lines().filter_map(active_pf_line) {
+            active_line_count += 1;
+
             if let Some(port) = line.strip_prefix(
                 "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port ",
             ) {
-                http_port = port.parse::<u16>().ok();
+                if http_port.replace(port.parse::<u16>().ok()?).is_some() {
+                    return None;
+                }
                 continue;
             }
 
             if let Some(port) = line.strip_prefix(
                 "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port ",
             ) {
-                https_port = port.parse::<u16>().ok();
+                if https_port.replace(port.parse::<u16>().ok()?).is_some() {
+                    return None;
+                }
+                continue;
             }
+
+            return None;
         }
 
-        Some(Self::new(http_port?, https_port?))
+        if active_line_count == 2 {
+            Some(Self::new(http_port?, https_port?))
+        } else {
+            None
+        }
     }
 }
 
 impl PfConfReference {
     pub fn render(self) -> String {
         format!(
-            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\nanchor \"{PF_ANCHOR_NAME}\"\nload anchor \"{PF_ANCHOR_NAME}\" from \"{SYSTEM_PF_ANCHOR_PATH}\"\n"
+            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_ANCHOR_DIRECTIVE}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n"
         )
     }
 
@@ -172,10 +200,11 @@ impl PfConfReference {
         let has_anchor = content
             .lines()
             .map(str::trim)
-            .any(|line| line == format!("anchor \"{PF_ANCHOR_NAME}\""));
-        let has_load = content.lines().map(str::trim).any(|line| {
-            line == format!("load anchor \"{PF_ANCHOR_NAME}\" from \"{SYSTEM_PF_ANCHOR_PATH}\"")
-        });
+            .any(|line| line == PF_ANCHOR_DIRECTIVE);
+        let has_load = content
+            .lines()
+            .map(str::trim)
+            .any(|line| line == PF_LOAD_ANCHOR_DIRECTIVE);
 
         if has_anchor && has_load {
             Some(Self)
@@ -265,12 +294,13 @@ pub fn inspect_pf_conf_reference(
     };
 
     let has_pv_marker = content.lines().any(|line| line.trim() == PV_MARKER);
-    let has_anchor_name = content.lines().map(str::trim).any(|line| {
-        line.contains("com.prvious.pv") || line.contains("/etc/pf.anchors/com.prvious.pv")
-    });
+    let has_anchor_directive = content
+        .lines()
+        .filter_map(active_pf_line)
+        .any(is_pv_pf_conf_reference_directive);
 
     if !has_pv_marker {
-        return if has_anchor_name {
+        return if has_anchor_directive {
             PfFileState::Conflict {
                 path: path.to_path_buf(),
             }
@@ -286,8 +316,21 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, MacosError> {
+    let mut ports = loopback_tcp_listener_ports_from_socket_table()?;
+    ports.extend(parse_netstat_tcp_listener_ports(
+        &netstat_tcp_socket_table()?
+    ));
+
+    Ok(ports)
+}
+
+pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, MacosError> {
+    Ok(loopback_tcp_listener_ports()?.contains(&port))
+}
+
+fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, MacosError> {
     let sockets = netstat::get_sockets_info(
-        netstat::AddressFamilyFlags::IPV4,
+        netstat::AddressFamilyFlags::IPV4 | netstat::AddressFamilyFlags::IPV6,
         netstat::ProtocolFlags::TCP,
     )?;
     let mut ports = BTreeSet::new();
@@ -298,17 +341,13 @@ pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, MacosError> {
         };
 
         if tcp.state == netstat::TcpState::Listen
-            && matches!(tcp.local_addr, IpAddr::V4(address) if address.is_loopback())
+            && tcp_listener_address_occupies_loopback(tcp.local_addr)
         {
             ports.insert(tcp.local_port);
         }
     }
 
     Ok(ports)
-}
-
-pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, MacosError> {
-    Ok(loopback_tcp_listener_ports()?.contains(&port))
 }
 
 fn inspect_pv_file<T: Clone + Eq>(
@@ -368,5 +407,85 @@ fn classify_pv_file_state<T: Clone + Eq>(
             expected: None,
             actual: None,
         },
+    }
+}
+
+fn active_pf_line(line: &str) -> Option<&str> {
+    let line = line.trim();
+
+    if line.is_empty() || line.starts_with('#') {
+        None
+    } else {
+        Some(line)
+    }
+}
+
+fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
+    line == PF_ANCHOR_DIRECTIVE || line == PF_LOAD_ANCHOR_DIRECTIVE
+}
+
+fn tcp_listener_address_occupies_loopback(address: IpAddr) -> bool {
+    address.is_loopback() || address.is_unspecified()
+}
+
+fn netstat_tcp_socket_table() -> Result<String, MacosError> {
+    let output = StdCommand::new("/usr/sbin/netstat")
+        .args(["-anv", "-p", "tcp"])
+        .output()
+        .map_err(MacosError::SocketTableCommand)?;
+
+    if !output.status.success() {
+        return Err(MacosError::SocketTableCommandStatus {
+            status: output.status.to_string(),
+        });
+    }
+
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn parse_netstat_tcp_listener_ports(output: &str) -> BTreeSet<u16> {
+    let mut ports = BTreeSet::new();
+
+    for line in output.lines() {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        let [
+            protocol,
+            _recv_queue,
+            _send_queue,
+            local_address,
+            _foreign_address,
+            state,
+            ..,
+        ] = columns.as_slice()
+        else {
+            continue;
+        };
+
+        if !protocol.starts_with("tcp") || *state != "LISTEN" {
+            continue;
+        }
+
+        if let Some(port) = loopback_port_from_netstat_local_address(local_address) {
+            ports.insert(port);
+        }
+    }
+
+    ports
+}
+
+fn loopback_port_from_netstat_local_address(local_address: &str) -> Option<u16> {
+    let (address, port) = local_address.rsplit_once('.')?;
+    let port = port.parse::<u16>().ok()?;
+
+    if address == "*" {
+        return Some(port);
+    }
+
+    let address = address.parse::<IpAddr>().ok()?;
+
+    if tcp_listener_address_occupies_loopback(address) {
+        Some(port)
+    } else {
+        None
     }
 }

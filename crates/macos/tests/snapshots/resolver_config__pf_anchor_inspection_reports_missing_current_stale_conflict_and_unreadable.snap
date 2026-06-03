@@ -6,6 +6,7 @@ expression: normalized_states
     "Missing { path: \"[tempdir]/missing-anchor\" }",
     "Current { path: \"[tempdir]/current-anchor\", value: PfRedirectConfig { http_port: 48080, https_port: 48443 } }",
     "Stale { path: \"[tempdir]/stale-anchor\", expected: Some(PfRedirectConfig { http_port: 48080, https_port: 48443 }), actual: Some(PfRedirectConfig { http_port: 45000, https_port: 45001 }) }",
+    "Stale { path: \"[tempdir]/extra-active-rule-anchor\", expected: Some(PfRedirectConfig { http_port: 48080, https_port: 48443 }), actual: None }",
     "Stale { path: \"[tempdir]/malformed-anchor\", expected: Some(PfRedirectConfig { http_port: 48080, https_port: 48443 }), actual: None }",
     "Conflict { path: \"[tempdir]/conflict-anchor\" }",
     "Unreadable { path: \"[tempdir]/anchor-directory\", message: \"<read error>\" }",

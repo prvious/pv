@@ -294,6 +294,48 @@ fn ports_install_reuses_persisted_gateway_ports_even_when_they_have_listeners() 
     Ok(())
 }
 
+#[test]
+fn ports_install_uses_fallback_gateway_ports_when_preferred_ports_are_busy() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_listener(48080)
+    .with_listener(48443);
+    let paths = pv_paths(&home);
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let prepared_anchor = read_required_file(&paths.pf_anchor_config())?;
+    let parsed_anchor = PfRedirectConfig::parse_anchor(&prepared_anchor)
+        .ok_or_else(|| anyhow::anyhow!("prepared pf anchor did not parse"))?;
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(parsed_anchor.http_port, 45000);
+    assert_eq!(parsed_anchor.https_port, 45001);
+    assert!(assignments.iter().any(|assignment| {
+        assignment.owner == PortOwner::Gateway(state::GatewayPort::Http)
+            && assignment.port == parsed_anchor.http_port
+    }));
+    assert!(assignments.iter().any(|assignment| {
+        assignment.owner == PortOwner::Gateway(state::GatewayPort::Https)
+            && assignment.port == parsed_anchor.https_port
+    }));
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, prepared_anchor));
+    });
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,

@@ -1,11 +1,12 @@
 use std::fmt::Debug;
+use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
 use macos::{
     PfConfReference, PfRedirectConfig, ResolverConfig, inspect_pf_anchor_file,
-    inspect_pf_conf_reference, inspect_resolver_file,
+    inspect_pf_conf_reference, inspect_resolver_file, loopback_tcp_listener_ports,
 };
 use state::fs;
 
@@ -81,6 +82,7 @@ fn pf_anchor_inspection_reports_missing_current_stale_conflict_and_unreadable() 
     let tempdir = tempdir()?;
     let current_path = tempdir.path().join("current-anchor");
     let stale_path = tempdir.path().join("stale-anchor");
+    let extra_active_rule_path = tempdir.path().join("extra-active-rule-anchor");
     let malformed_path = tempdir.path().join("malformed-anchor");
     let conflict_path = tempdir.path().join("conflict-anchor");
     let unreadable_path = tempdir.path().join("anchor-directory");
@@ -90,6 +92,10 @@ fn pf_anchor_inspection_reports_missing_current_stale_conflict_and_unreadable() 
     fs::write_sensitive_file(
         &stale_path,
         &PfRedirectConfig::new(45000, 45001).render_anchor(),
+    )?;
+    fs::write_sensitive_file(
+        &extra_active_rule_path,
+        &format!("{}pass in all\n", expected.render_anchor()),
     )?;
     fs::write_sensitive_file(&malformed_path, "# Managed by PV\npass in all\n")?;
     fs::write_sensitive_file(
@@ -102,6 +108,7 @@ fn pf_anchor_inspection_reports_missing_current_stale_conflict_and_unreadable() 
         inspect_pf_anchor_file(&tempdir.path().join("missing-anchor"), Some(&expected)),
         inspect_pf_anchor_file(&current_path, Some(&expected)),
         inspect_pf_anchor_file(&stale_path, Some(&expected)),
+        inspect_pf_anchor_file(&extra_active_rule_path, Some(&expected)),
         inspect_pf_anchor_file(&malformed_path, Some(&expected)),
         inspect_pf_anchor_file(&conflict_path, Some(&expected)),
         inspect_pf_anchor_file(&unreadable_path, Some(&expected)),
@@ -124,6 +131,10 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
     let current_path = tempdir.path().join("current-pf-conf");
     let stale_path = tempdir.path().join("stale-pf-conf");
     let conflict_path = tempdir.path().join("conflict-pf-conf");
+    let active_anchor_conflict_path = tempdir.path().join("active-anchor-conflict-pf-conf");
+    let active_load_conflict_path = tempdir.path().join("active-load-conflict-pf-conf");
+    let commented_reference_path = tempdir.path().join("commented-reference-pf-conf");
+    let prose_reference_path = tempdir.path().join("prose-reference-pf-conf");
     let unrelated_path = tempdir.path().join("unrelated-pf-conf");
     let unreadable_path = tempdir.path().join("pf-conf-directory");
     let expected = PfConfReference;
@@ -143,6 +154,19 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
         &conflict_path,
         "anchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
     )?;
+    fs::write_sensitive_file(&active_anchor_conflict_path, "anchor \"com.prvious.pv\"\n")?;
+    fs::write_sensitive_file(
+        &active_load_conflict_path,
+        "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+    )?;
+    fs::write_sensitive_file(
+        &commented_reference_path,
+        "# anchor \"com.prvious.pv\"\n# load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+    )?;
+    fs::write_sensitive_file(
+        &prose_reference_path,
+        "This note mentions com.prvious.pv and /etc/pf.anchors/com.prvious.pv.\n",
+    )?;
     fs::write_sensitive_file(&unrelated_path, "set block-policy drop\npass out all\n")?;
     fs::write_sensitive_file(&unreadable_path.join("child"), "child\n")?;
 
@@ -151,6 +175,10 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
         inspect_pf_conf_reference(&current_path, Some(&expected)),
         inspect_pf_conf_reference(&stale_path, Some(&expected)),
         inspect_pf_conf_reference(&conflict_path, Some(&expected)),
+        inspect_pf_conf_reference(&active_anchor_conflict_path, Some(&expected)),
+        inspect_pf_conf_reference(&active_load_conflict_path, Some(&expected)),
+        inspect_pf_conf_reference(&commented_reference_path, Some(&expected)),
+        inspect_pf_conf_reference(&prose_reference_path, Some(&expected)),
         inspect_pf_conf_reference(&unrelated_path, Some(&expected)),
         inspect_pf_conf_reference(&unreadable_path, Some(&expected)),
     ];
@@ -161,6 +189,40 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
         .collect::<Vec<_>>();
 
     assert_debug_snapshot!(normalized_states);
+
+    Ok(())
+}
+
+#[test]
+fn pf_loopback_tcp_listener_ports_include_ipv4_wildcard_listener() -> Result<()> {
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    let port = listener.local_addr()?.port();
+    let ports = loopback_tcp_listener_ports()?;
+
+    assert!(
+        ports.contains(&port),
+        "expected IPv4 wildcard listener on port {port} in {ports:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pf_loopback_tcp_listener_ports_include_ipv6_loopback_and_wildcard_listeners() -> Result<()> {
+    let loopback_listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))?;
+    let wildcard_listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0))?;
+    let loopback_port = loopback_listener.local_addr()?.port();
+    let wildcard_port = wildcard_listener.local_addr()?.port();
+    let ports = loopback_tcp_listener_ports()?;
+
+    assert!(
+        ports.contains(&loopback_port),
+        "expected IPv6 loopback listener on port {loopback_port} in {ports:?}"
+    );
+    assert!(
+        ports.contains(&wildcard_port),
+        "expected IPv6 wildcard listener on port {wildcard_port} in {ports:?}"
+    );
 
     Ok(())
 }
