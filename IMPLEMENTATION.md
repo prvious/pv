@@ -342,7 +342,7 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 7 | Common Managed Resource commands and fake adapter tests | PV-046, PV-048 | PR 6C | No | Yes (#244) |
 | PR 8 | Project state, `link`, `unlink`, config parser, `open`, base `list` | PV-060, PV-061, PV-062, PV-063, PV-068, PV-069 | PR 2, PR 4 | Yes, can overlap PR 5-7 with coordination | Yes (#245) |
 | PR 9 | Resource allocation contract, allocation names, env rendering | PV-047, PV-064, PV-065, PV-066, PV-067 | PR 7, PR 8 | No | Yes (#246) |
-| PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes | No |
+| PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes | Yes (#250) |
 | PR 11 | `pf` config generation and port commands | PV-052, PV-053 | PR 4, PR 5 | Yes | No |
 | PR 12 | CA file generation and trust commands | PV-054 | PR 2, PR 4 | Yes | No |
 | PR 13 | LaunchAgent, `pv setup`, safe `pv uninstall` | PV-055, PV-056, PV-057 | PR 7, PR 10, PR 11, PR 12 | No | No |
