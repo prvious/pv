@@ -22,6 +22,20 @@ fn paths_are_derived_from_an_injected_home() -> Result<()> {
 }
 
 #[test]
+fn ca_paths_are_derived_from_an_injected_home() {
+    let paths = PvPaths::for_home(Utf8Path::new("/tmp/pv-test-home"));
+
+    assert_eq!(
+        paths.ca_certificate().as_str(),
+        "/tmp/pv-test-home/.pv/certificates/ca.pem"
+    );
+    assert_eq!(
+        paths.ca_private_key().as_str(),
+        "/tmp/pv-test-home/.pv/certificates/ca-key.pem"
+    );
+}
+
+#[test]
 fn layout_creates_expected_directories_with_user_only_modes() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
