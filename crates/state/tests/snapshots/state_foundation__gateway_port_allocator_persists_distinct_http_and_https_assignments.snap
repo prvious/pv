@@ -1,0 +1,54 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(assigned, reused, database.assigned_ports()?)"
+---
+(
+    GatewayPortAssignments {
+        http: PortAssignment {
+            owner: Gateway(
+                Http,
+            ),
+            port: 48080,
+            updated_at: "<timestamp>",
+        },
+        https: PortAssignment {
+            owner: Gateway(
+                Https,
+            ),
+            port: 48443,
+            updated_at: "<timestamp>",
+        },
+    },
+    GatewayPortAssignments {
+        http: PortAssignment {
+            owner: Gateway(
+                Http,
+            ),
+            port: 48080,
+            updated_at: "<timestamp>",
+        },
+        https: PortAssignment {
+            owner: Gateway(
+                Https,
+            ),
+            port: 48443,
+            updated_at: "<timestamp>",
+        },
+    },
+    [
+        PortAssignment {
+            owner: Gateway(
+                Http,
+            ),
+            port: 48080,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Gateway(
+                Https,
+            ),
+            port: 48443,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

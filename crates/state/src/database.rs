@@ -9,6 +9,8 @@ use crate::{PvPaths, StateError, fs, migrations};
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
 pub const DNS_PREFERRED_PORT: u16 = 35353;
+pub const GATEWAY_HTTP_PREFERRED_PORT: u16 = 48080;
+pub const GATEWAY_HTTPS_PREFERRED_PORT: u16 = 48443;
 pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
 pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
 const PROJECT_ID_LENGTH: usize = 10;
@@ -82,10 +84,16 @@ pub struct PortRequest {
     fallback_end: u16,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GatewayPort {
+    Http,
+    Https,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PortOwner {
     Dns,
-    Gateway,
+    Gateway(GatewayPort),
     ProjectWorker {
         project_id: String,
         php_track: String,
@@ -101,6 +109,12 @@ pub struct PortAssignment {
     pub owner: PortOwner,
     pub port: u16,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GatewayPortAssignments {
+    pub http: PortAssignment,
+    pub https: PortAssignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1275,6 +1289,32 @@ impl Database {
         })
     }
 
+    pub fn assign_gateway_ports(
+        &mut self,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<GatewayPortAssignments, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
+        let http = assign_port_in_transaction(
+            &transaction,
+            PortRequest::pv_gateway_http(),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+        let https = assign_port_in_transaction(
+            &transaction,
+            PortRequest::pv_gateway_https(),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+
+        transaction.commit()?;
+
+        Ok(GatewayPortAssignments { http, https })
+    }
+
     pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {
         let identity = owner.identity()?;
         let deleted = self.connection.execute(
@@ -1430,12 +1470,35 @@ impl PortRequest {
         )
     }
 
-    pub fn gateway(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
+    pub fn gateway(
+        gateway_port: GatewayPort,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
         Self::new(
-            PortOwner::Gateway,
+            PortOwner::Gateway(gateway_port),
             preferred_port,
             fallback_start,
             fallback_end,
+        )
+    }
+
+    pub fn pv_gateway_http() -> Self {
+        Self::gateway(
+            GatewayPort::Http,
+            GATEWAY_HTTP_PREFERRED_PORT,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
+        )
+    }
+
+    pub fn pv_gateway_https() -> Self {
+        Self::gateway(
+            GatewayPort::Https,
+            GATEWAY_HTTPS_PREFERRED_PORT,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
         )
     }
 
@@ -1514,9 +1577,9 @@ impl PortOwner {
                 owner_id: "dns".to_string(),
                 owner_track: String::new(),
             }),
-            Self::Gateway => Ok(PortIdentity {
+            Self::Gateway(gateway_port) => Ok(PortIdentity {
                 owner_kind: "gateway",
-                owner_id: "gateway".to_string(),
+                owner_id: gateway_port.as_str().to_string(),
                 owner_track: String::new(),
             }),
             Self::ProjectWorker {
@@ -1556,10 +1619,12 @@ impl PortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
                 reason: "dns ports must use owner id `dns` and an empty owner track",
             }),
-            "gateway" if owner_id == "gateway" && owner_track.is_empty() => Ok(Self::Gateway),
+            "gateway" if owner_track.is_empty() => {
+                GatewayPort::from_database(&owner_id).map(Self::Gateway)
+            }
             "gateway" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
-                reason: "gateway ports must use owner id `gateway` and an empty owner track",
+                reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
             }),
             "project_worker" if !owner_id.is_empty() && !owner_track.is_empty() => {
                 Ok(Self::ProjectWorker {
@@ -1603,12 +1668,32 @@ impl PortOwner {
     fn display_name(&self) -> String {
         match self {
             Self::Dns => "dns".to_string(),
-            Self::Gateway => "gateway".to_string(),
+            Self::Gateway(gateway_port) => format!("gateway {}", gateway_port.as_str()),
             Self::ProjectWorker {
                 project_id,
                 php_track,
             } => format!("project worker {project_id:?} php {php_track:?}"),
             Self::Resource { name, track } => format!("resource {name:?} track {track:?}"),
+        }
+    }
+}
+
+impl GatewayPort {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    fn from_database(owner_id: &str) -> Result<Self, StateError> {
+        match owner_id {
+            "http" => Ok(Self::Http),
+            "https" => Ok(Self::Https),
+            _ => Err(StateError::InvalidPortOwner {
+                owner: format!("gateway:{owner_id}:"),
+                reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
+            }),
         }
     }
 }
@@ -2541,6 +2626,60 @@ fn port_assignment_in_transaction(
         Some(row) => Ok(Some(row?.into_assignment()?)),
         None => Ok(None),
     }
+}
+
+fn assign_port_in_transaction(
+    transaction: &Transaction<'_>,
+    request: PortRequest,
+    assigned_ports: &mut BTreeSet<u16>,
+    is_available: &mut impl FnMut(u16) -> bool,
+) -> Result<PortAssignment, StateError> {
+    let identity = request.owner.identity()?;
+    let request_name = request.name();
+    let candidates = request.candidates();
+
+    if let Some(existing) = port_assignment_in_transaction(transaction, &identity)? {
+        assigned_ports.insert(existing.port);
+        return Ok(existing);
+    }
+
+    for candidate in candidates.iter().copied() {
+        if assigned_ports.contains(&candidate) || !is_available(candidate) {
+            continue;
+        }
+
+        let updated_at = timestamp()?;
+        upsert_port_in_transaction(transaction, &identity, candidate, &updated_at)?;
+        assigned_ports.insert(candidate);
+
+        return Ok(PortAssignment {
+            owner: request.owner,
+            port: candidate,
+            updated_at,
+        });
+    }
+
+    Err(StateError::NoAvailablePort {
+        name: request_name,
+        preferred_port: request.preferred_port,
+        fallback_start: request.fallback_start,
+        fallback_end: request.fallback_end,
+        attempts: candidates.len(),
+    })
+}
+
+fn assigned_port_numbers_in_transaction(
+    transaction: &Transaction<'_>,
+) -> Result<BTreeSet<u16>, StateError> {
+    let mut statement = transaction.prepare("SELECT port FROM ports")?;
+    let rows = statement.query_map([], |row| row.get::<_, u16>(0))?;
+    let mut assigned_ports = BTreeSet::new();
+
+    for row in rows {
+        assigned_ports.insert(row?);
+    }
+
+    Ok(assigned_ports)
 }
 
 fn assigned_port_numbers_except_in_transaction(

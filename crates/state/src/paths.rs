@@ -98,6 +98,14 @@ impl PvPaths {
         self.config().join("resolver/test")
     }
 
+    pub fn pf_anchor_config(&self) -> Utf8PathBuf {
+        self.config().join("pf/com.prvious.pv")
+    }
+
+    pub fn pf_conf_reference_config(&self) -> Utf8PathBuf {
+        self.config().join("pf/pf.conf")
+    }
+
     pub fn certificates(&self) -> &Utf8Path {
         &self.certificates
     }
