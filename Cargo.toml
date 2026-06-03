@@ -32,14 +32,19 @@ futures-util = { version = "0", features = ["sink"] }
 hickory-proto = "0.26.1"
 home = "0"
 insta = { version = "1", features = ["filters"] }
+rcgen = { version = "0.14.8", features = ["x509-parser"] }
 rusqlite = { version = "0", features = ["bundled"] }
+rustls-pemfile = "2.2.0"
 rustix = { version = "1", features = ["process"] }
+security-framework = "3.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 time = { version = "0", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "0", features = ["codec"] }
+x509-parser = "0.18.1"
 yaml_serde = "0.10.4"
 
 [workspace.lints.clippy]

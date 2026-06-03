@@ -9,8 +9,13 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+rcgen = { workspace = true }
+rustls-pemfile = { workspace = true }
+security-framework = { workspace = true }
+sha2 = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
