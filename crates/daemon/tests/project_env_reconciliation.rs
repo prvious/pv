@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io;
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, anyhow};
@@ -8,8 +9,8 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use serde_json::{Value, json};
 use state::{
-    Database, EnvContextValues, JobRecord, LinkProjectInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
+    Database, EnvContextValues, JobRecord, LinkProjectInput, PortOwner, PortRequest,
+    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput, StateError,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -897,6 +898,8 @@ async fn run_project_reconciliation(
     paths: &PvPaths,
     project: &ProjectRecord,
 ) -> Result<Vec<Value>> {
+    ensure_reconciliation_dns_port(paths)?;
+
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let lines = request_lines(
         paths,
@@ -912,6 +915,39 @@ async fn run_project_reconciliation(
     daemon.shutdown().await?;
 
     Ok(lines)
+}
+
+fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
+    let mut database = Database::open(paths)?;
+    if database
+        .assigned_ports()?
+        .into_iter()
+        .any(|assignment| assignment.owner == PortOwner::Dns)
+    {
+        return Ok(());
+    }
+
+    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
+    database.assign_port(
+        PortRequest::dns(dns_port, dns_port, dns_port),
+        |candidate| candidate == dns_port,
+    )?;
+
+    Ok(())
+}
+
+fn bind_loopback_tcp_udp_pair() -> Result<(u16, TcpListener, UdpSocket)> {
+    for _attempt in 0..100 {
+        let tcp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = tcp_listener.local_addr()?.port();
+        let Ok(udp_socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
+            continue;
+        };
+
+        return Ok((port, tcp_listener, udp_socket));
+    }
+
+    Err(anyhow!("could not bind a loopback TCP/UDP port pair"))
 }
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {

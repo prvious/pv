@@ -1,0 +1,5 @@
+---
+source: crates/macos/tests/resolver_config.rs
+expression: "&rendered"
+---
+"# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport 35353\n"

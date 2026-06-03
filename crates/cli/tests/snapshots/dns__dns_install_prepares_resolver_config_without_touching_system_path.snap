@@ -1,0 +1,21 @@
+---
+source: crates/cli/tests/dns.rs
+expression: "(output, prepared_path, prepared_config, parsed_config,\nsystem_resolver_config,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPrivileged install deferred to later setup/system-integration work.\nSystem resolver config is not installed: <tempdir>/etc/resolver/test\n",
+        stderr: "",
+    },
+    "<tempdir>/home/.pv/config/resolver/test",
+    "# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport <dns-port>\n",
+    ResolverConfig {
+        port: <dns-port>,
+    },
+    None,
+)

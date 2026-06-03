@@ -15,6 +15,7 @@ clap_complete = { workspace = true }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
+macos = { path = "../macos" }
 serde_json = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }

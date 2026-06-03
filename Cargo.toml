@@ -29,6 +29,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 fastrand = "2"
 futures-util = { version = "0", features = ["sink"] }
+hickory-proto = "0.26.1"
 home = "0"
 insta = { version = "1", features = ["filters"] }
 rusqlite = { version = "0", features = ["bundled"] }

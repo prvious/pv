@@ -35,6 +35,15 @@ _pv() {
             pv,daemon:run)
                 cmd="pv__subcmd__daemon:run"
                 ;;
+            pv,dns:install)
+                cmd="pv__subcmd__dns:install"
+                ;;
+            pv,dns:status)
+                cmd="pv__subcmd__dns:status"
+                ;;
+            pv,dns:uninstall)
+                cmd="pv__subcmd__dns:uninstall"
+                ;;
             pv,env)
                 cmd="pv__subcmd__env"
                 ;;
@@ -63,7 +72,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run link unlink open project:env list php:install"
+            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run dns:status dns:install dns:uninstall link unlink open project:env list php:install"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -133,6 +142,48 @@ _pv() {
             return 0
             ;;
         pv__subcmd__daemon:run)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__dns:install)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__dns:status)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__dns:uninstall)
             opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

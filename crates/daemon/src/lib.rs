@@ -1,4 +1,5 @@
 mod client;
+mod dns;
 mod error;
 mod ipc;
 mod jobs;
@@ -18,6 +19,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use client::{SubmittedJob, submit_job_blocking};
+pub use dns::{dns_port_available, response_bytes};
 pub use error::DaemonError;
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{
@@ -34,13 +36,21 @@ pub struct RunningDaemon {
     paths: PvPaths,
     shutdown: oneshot::Sender<()>,
     task: JoinHandle<Result<(), DaemonError>>,
+    dns: dns::RunningDnsResolver,
 }
 
 impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
-        let listener = ipc::bind(&paths)?;
+        let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
+        let listener = match ipc::bind(&paths) {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _dns_result = dns.shutdown().await;
+                return Err(error);
+            }
+        };
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
         let task = tokio::spawn(server::serve(server_paths, listener, shutdown_receiver));
@@ -49,15 +59,18 @@ impl RunningDaemon {
             paths,
             shutdown,
             task,
+            dns,
         })
     }
 
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let _ = self.shutdown.send(());
         let join_result = self.task.await;
+        let dns_result = self.dns.shutdown().await;
         let socket_result = ipc::remove_endpoint(&self.paths);
 
         socket_result?;
+        dns_result?;
         let task_result = join_result?;
         task_result?;
 
@@ -89,6 +102,7 @@ async fn wait_for_shutdown(
         paths,
         shutdown,
         mut task,
+        mut dns,
     } = daemon;
     tokio::pin!(shutdown_signal);
 
@@ -97,18 +111,32 @@ async fn wait_for_shutdown(
             signal_result?;
             let _ = shutdown.send(());
             let join_result = task.await;
+            let dns_result = dns.shutdown().await;
             let socket_result = ipc::remove_endpoint(&paths);
 
             socket_result?;
+            dns_result?;
             let task_result = join_result?;
             task_result?;
 
             Ok(())
         }
         task_result = &mut task => {
+            let dns_result = dns.shutdown().await;
             let socket_result = ipc::remove_endpoint(&paths);
             socket_result?;
+            dns_result?;
             task_result?
+        }
+        dns_result = dns.wait_for_completion() => {
+            let _ = shutdown.send(());
+            let join_result = task.await;
+            let socket_result = ipc::remove_endpoint(&paths);
+
+            socket_result?;
+            let task_result = join_result?;
+            task_result?;
+            dns_result
         }
     }
 }
@@ -133,11 +161,12 @@ async fn termination_signal() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{future, io};
+    use std::{future, io, time::Duration};
 
     use camino_tempfile::tempdir;
     use state::PvPaths;
     use tokio::sync::oneshot;
+    use tokio::time::timeout;
 
     use super::{DaemonError, RunningDaemon, build_runtime, wait_for_shutdown};
 
@@ -162,6 +191,7 @@ mod tests {
             paths,
             shutdown,
             task,
+            dns: super::dns::RunningDnsResolver::pending_for_test(),
         };
 
         let result = wait_for_shutdown(daemon, future::pending::<io::Result<()>>()).await;
@@ -170,6 +200,42 @@ mod tests {
             result,
             Err(DaemonError::Io(error)) if error.to_string() == "server stopped early"
         ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_wait_returns_when_dns_task_fails_before_signal() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
+        drop(stale_listener);
+        let (shutdown, shutdown_receiver) = oneshot::channel();
+        let task = tokio::spawn(async {
+            let _ = shutdown_receiver.await;
+            Ok(())
+        });
+        let daemon = RunningDaemon {
+            paths: paths.clone(),
+            shutdown,
+            task,
+            dns: super::dns::RunningDnsResolver::failed_for_test(io::Error::other(
+                "dns stopped early",
+            )),
+        };
+
+        let result = timeout(
+            Duration::from_millis(100),
+            wait_for_shutdown(daemon, future::pending::<io::Result<()>>()),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Ok(Err(DaemonError::Io(error))) if error.to_string() == "dns stopped early"
+        ));
+        assert!(!paths.daemon_socket().exists());
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -186,6 +252,7 @@ mod tests {
             paths: paths.clone(),
             shutdown,
             task,
+            dns: super::dns::RunningDnsResolver::aborted_for_test(),
         };
 
         let result = daemon.shutdown().await;

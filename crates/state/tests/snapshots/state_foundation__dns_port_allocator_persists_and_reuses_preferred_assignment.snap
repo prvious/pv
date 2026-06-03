@@ -1,0 +1,28 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(assigned_dns, reused_dns, fallback_dns, database.assigned_ports()?,)"
+---
+(
+    PortAssignment {
+        owner: Dns,
+        port: 35353,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Dns,
+        port: 35353,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Dns,
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Dns,
+            port: 45000,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

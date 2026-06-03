@@ -1,13 +1,25 @@
 use anyhow::{Result, anyhow};
 use camino_tempfile::tempdir;
+use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use hickory_proto::rr::rdata::{A, AAAA};
+use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
 use rusqlite::params;
 use serde_json::{Value, json};
-use state::{Database, JobRecord, JobStatus, PvPaths};
+use state::{
+    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, PortOwner, PortRequest, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+};
+use std::io::ErrorKind;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
+use std::str::FromStr;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
 use tokio::time::timeout;
+
+const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
@@ -426,6 +438,133 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
     Ok(())
 }
 
+#[tokio::test]
+async fn dns_resolver_answers_udp_a_and_aaaa_for_test_hostnames() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let port = dns_port(&paths)?;
+
+    let a_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
+    assert_common_dns_response(&a_response, "acme.test.", RecordType::A)?;
+    assert_loopback_answer(
+        &a_response,
+        "acme.test.",
+        RecordType::A,
+        RData::A(A::new(127, 0, 0, 1)),
+    )?;
+
+    let aaaa_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
+    assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
+    assert_loopback_answer(
+        &aaaa_response,
+        "acme.test.",
+        RecordType::AAAA,
+        RData::AAAA(AAAA::new(0, 0, 0, 0, 0, 0, 0, 1)),
+    )?;
+
+    daemon.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let port = dns_port(&paths)?;
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    socket
+        .send_to(b"not-a-dns-query", dns_address(port))
+        .await?;
+
+    let mx_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::MX)?).await?;
+    assert_common_dns_response(&mx_response, "acme.test.", RecordType::MX)?;
+    assert!(mx_response.answers.is_empty());
+
+    let external_response = udp_dns_query(port, &dns_query("example.com.", RecordType::A)?).await?;
+    assert_common_dns_response(&external_response, "example.com.", RecordType::A)?;
+    assert!(external_response.answers.is_empty());
+
+    daemon.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dns_resolver_answers_tcp_queries() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let port = dns_port(&paths)?;
+
+    let response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
+    assert_common_dns_response(&response, "acme.test.", RecordType::A)?;
+    assert_loopback_answer(
+        &response,
+        "acme.test.",
+        RecordType::A,
+        RData::A(A::new(127, 0, 0, 1)),
+    )?;
+
+    daemon.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let _preferred_port_blocker = bind_preferred_dns_port()?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let port = dns_port(&paths)?;
+
+    assert_ne!(port, DNS_PREFERRED_PORT);
+    assert!((RUNTIME_PORT_FALLBACK_START..=RUNTIME_PORT_FALLBACK_END).contains(&port));
+
+    daemon.shutdown().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let (bound_dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
+    let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::dns(bound_dns_port, bound_dns_port, bound_dns_port),
+        |candidate| candidate == bound_dns_port,
+    )?;
+    drop(database);
+
+    let result = daemon::RunningDaemon::start(paths.clone()).await;
+    if let Ok(daemon) = result {
+        daemon.shutdown().await?;
+        return Err(anyhow!(
+            "daemon started after persisted DNS port bind conflict"
+        ));
+    }
+    let error = result
+        .err()
+        .ok_or_else(|| anyhow!("missing daemon error"))?;
+    let persisted_port = dns_port(&paths)?;
+
+    assert!(matches!(
+        error,
+        daemon::DaemonError::DnsBind {
+            port,
+            ..
+        } if port == bound_dns_port
+    ));
+    assert_eq!(persisted_port, bound_dns_port);
+
+    Ok(())
+}
+
 fn assert_with_normalized_timestamps(
     name: &'static str,
     snapshot: impl std::fmt::Debug,
@@ -519,4 +658,125 @@ async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &
     }
 
     Err(anyhow!("modified time did not advance for {path}"))
+}
+
+fn dns_query(name: &str, record_type: RecordType) -> Result<Vec<u8>> {
+    let query = Query::query(Name::from_str(name)?, record_type);
+    let mut message = Message::new(42, MessageType::Query, OpCode::Query);
+    message.metadata.recursion_desired = true;
+    message.add_query(query);
+
+    Ok(message.to_bytes()?)
+}
+
+fn dns_port(paths: &PvPaths) -> Result<u16> {
+    let database = Database::open(paths)?;
+    let port = database
+        .assigned_ports()?
+        .into_iter()
+        .find_map(|assignment| match assignment.owner {
+            PortOwner::Dns => Some(assignment.port),
+            _ => None,
+        });
+
+    port.ok_or_else(|| anyhow!("DNS port was not assigned"))
+}
+
+async fn udp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    socket.send_to(query, dns_address(port)).await?;
+    let mut response = vec![0; 512];
+    let (length, _address) =
+        timeout(Duration::from_secs(2), socket.recv_from(&mut response)).await??;
+    response.truncate(length);
+
+    Ok(Message::from_vec(&response)?)
+}
+
+async fn tcp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
+    let query_length = u16::try_from(query.len())?;
+    let mut stream = TcpStream::connect(dns_address(port)).await?;
+    stream.write_all(&query_length.to_be_bytes()).await?;
+    stream.write_all(query).await?;
+
+    let mut length_prefix = [0; 2];
+    timeout(
+        Duration::from_secs(2),
+        stream.read_exact(&mut length_prefix),
+    )
+    .await??;
+    let response_length = usize::from(u16::from_be_bytes(length_prefix));
+    let mut response = vec![0; response_length];
+    timeout(Duration::from_secs(2), stream.read_exact(&mut response)).await??;
+
+    Ok(Message::from_vec(&response)?)
+}
+
+fn dns_address(port: u16) -> SocketAddr {
+    SocketAddr::from((Ipv4Addr::LOCALHOST, port))
+}
+
+fn bind_preferred_dns_port() -> Result<Option<StdUdpSocket>> {
+    match StdUdpSocket::bind((Ipv4Addr::LOCALHOST, DNS_PREFERRED_PORT)) {
+        Ok(socket) => Ok(Some(socket)),
+        Err(error) if error.kind() == ErrorKind::AddrInUse => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn bind_loopback_tcp_udp_pair() -> Result<(u16, StdTcpListener, StdUdpSocket)> {
+    for _attempt in 0..100 {
+        let tcp_listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let port = tcp_listener.local_addr()?.port();
+        let Ok(udp_socket) = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
+            continue;
+        };
+
+        return Ok((port, tcp_listener, udp_socket));
+    }
+
+    Err(anyhow!("could not bind a loopback TCP/UDP port pair"))
+}
+
+fn assert_common_dns_response(
+    response: &Message,
+    name: &str,
+    record_type: RecordType,
+) -> Result<()> {
+    assert_eq!(response.metadata.message_type, MessageType::Response);
+    assert_eq!(response.metadata.op_code, OpCode::Query);
+    assert!(response.metadata.recursion_desired);
+    assert!(response.metadata.authoritative);
+    assert!(!response.metadata.recursion_available);
+    assert_eq!(response.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(response.queries.len(), 1);
+
+    let Some(query) = response.queries.first() else {
+        return Err(anyhow!("response did not preserve the query section"));
+    };
+    assert_eq!(query.name(), &Name::from_str(name)?);
+    assert_eq!(query.query_type(), record_type);
+    assert_eq!(query.query_class(), DNSClass::IN);
+
+    Ok(())
+}
+
+fn assert_loopback_answer(
+    response: &Message,
+    name: &str,
+    record_type: RecordType,
+    expected_data: RData,
+) -> Result<()> {
+    assert_eq!(response.answers.len(), 1);
+
+    let Some(answer) = response.answers.first() else {
+        return Err(anyhow!("response did not include an answer"));
+    };
+    assert_eq!(&answer.name, &Name::from_str(name)?);
+    assert_eq!(answer.record_type(), record_type);
+    assert_eq!(answer.dns_class, DNSClass::IN);
+    assert_eq!(answer.ttl, EXPECTED_DNS_TTL_SECONDS);
+    assert_eq!(&answer.data, &expected_data);
+
+    Ok(())
 }

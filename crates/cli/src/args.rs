@@ -38,6 +38,18 @@ pub(crate) enum Command {
     #[command(name = "daemon:run", about = "Run the internal PV daemon", hide = true)]
     DaemonRun,
 
+    #[command(name = "dns:status", about = "Show PV .test resolver status")]
+    DnsStatus,
+
+    #[command(name = "dns:install", about = "Prepare PV .test resolver config")]
+    DnsInstall,
+
+    #[command(
+        name = "dns:uninstall",
+        about = "Remove prepared PV .test resolver config"
+    )]
+    DnsUninstall,
+
     #[command(name = "link", about = "Link a Project")]
     Link(LinkArgs),
 
