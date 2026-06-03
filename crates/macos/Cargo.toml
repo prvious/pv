@@ -8,4 +8,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+camino = { workspace = true }
+state = { path = "../state" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+camino-tempfile = { workspace = true }
+insta = { workspace = true }
