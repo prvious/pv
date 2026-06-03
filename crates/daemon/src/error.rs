@@ -42,6 +42,14 @@ pub enum DaemonError {
     #[error("DNS response encode error: {0}")]
     DnsEncode(#[from] ProtoError),
 
+    #[error("DNS resolver failed to bind {protocol} on 127.0.0.1:{port}: {source}")]
+    DnsBind {
+        protocol: &'static str,
+        port: u16,
+        #[source]
+        source: io::Error,
+    },
+
     #[error("state error: {0}")]
     State(#[from] StateError),
 
