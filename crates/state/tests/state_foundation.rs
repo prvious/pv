@@ -2058,9 +2058,14 @@ fn gateway_port_allocator_rolls_back_when_https_cannot_be_assigned() -> Result<(
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
-    let error = database
-        .assign_gateway_ports(|port| port == GATEWAY_HTTP_PREFERRED_PORT)
-        .expect_err("HTTPS assignment should fail");
+    let error = match database.assign_gateway_ports(|port| port == GATEWAY_HTTP_PREFERRED_PORT) {
+        Ok(assignments) => {
+            return Err(anyhow!(
+                "HTTPS assignment should fail, but assigned {assignments:?}"
+            ));
+        }
+        Err(error) => error,
+    };
 
     assert!(matches!(
         error,

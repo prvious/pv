@@ -111,7 +111,7 @@ fn ports_install_prepares_pf_artifacts_without_touching_system_paths() -> anyhow
     assert_no_privileged_guidance(&output.stdout);
     assert_eq!(parsed_anchor.http_port, 48080);
     assert_eq!(parsed_anchor.https_port, 48443);
-    assert_eq!(parsed_reference, PfConfReference::default());
+    assert_eq!(parsed_reference, PfConfReference);
     assert!(system_anchor_after_install.is_none());
     assert!(system_pf_conf_after_install.is_none());
 
@@ -179,7 +179,7 @@ fn ports_status_reports_prepared_and_system_pf_states_without_mutating_state() -
     let paths = pv_paths(&home);
     let current_anchor = PfRedirectConfig::new(48080, 48443).render_anchor();
     let stale_anchor = PfRedirectConfig::new(45000, 45001).render_anchor();
-    let current_reference = PfConfReference::default().render();
+    let current_reference = PfConfReference.render();
 
     let missing = run_pv(&["ports:status"], &environment)?;
     let database_after_missing = read_optional_file(paths.db())?;
@@ -228,7 +228,7 @@ fn ports_uninstall_removes_prepared_artifacts_and_defers_system_removal() -> any
     );
     let paths = pv_paths(&home);
     let anchor = PfRedirectConfig::new(48080, 48443).render_anchor();
-    let reference = PfConfReference::default().render();
+    let reference = PfConfReference.render();
 
     write_file(&paths.pf_anchor_config(), &anchor)?;
     write_file(&paths.pf_conf_reference_config(), &reference)?;

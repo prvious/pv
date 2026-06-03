@@ -66,12 +66,12 @@ fn resolver_file_inspection_reports_missing_current_stale_conflict_and_unreadabl
 fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
     let config = PfRedirectConfig::new(48080, 48443);
     let anchor = config.render_anchor();
-    let reference = PfConfReference::default().render();
+    let reference = PfConfReference.render();
 
     assert_eq!(PfRedirectConfig::parse_anchor(&anchor), Some(config));
     assert_eq!(
         PfConfReference::parse_block(&reference),
-        Some(PfConfReference::default())
+        Some(PfConfReference)
     );
     assert_debug_snapshot!((anchor, reference));
 }
@@ -126,7 +126,7 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
     let conflict_path = tempdir.path().join("conflict-pf-conf");
     let unrelated_path = tempdir.path().join("unrelated-pf-conf");
     let unreadable_path = tempdir.path().join("pf-conf-directory");
-    let expected = PfConfReference::default();
+    let expected = PfConfReference;
 
     fs::write_sensitive_file(
         &current_path,
