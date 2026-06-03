@@ -6,13 +6,14 @@ mod migrations;
 mod paths;
 
 pub use database::{
-    Database, DatabaseInspection, EnvContextValues, JobRecord, JobStatus, LinkProjectInput,
-    LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    PortAssignment, PortOwner, PortRequest, ProjectConfigWatch, ProjectEnvAllocationContext,
-    ProjectEnvObservedStateRecord, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
-    ProjectEnvObservedWarningRecord, ProjectEnvResourceContext, ProjectEnvStateContext,
-    ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectRecord,
-    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
+    DNS_PREFERRED_PORT, Database, DatabaseInspection, EnvContextValues, JobRecord, JobStatus,
+    LinkProjectInput, LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState,
+    ManagedResourceTrackRecord, PortAssignment, PortOwner, PortRequest, ProjectConfigWatch,
+    ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
+    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord,
+    ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    ResourceAllocationRecord, ResourceAllocationStatus,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};

@@ -94,6 +94,10 @@ impl PvPaths {
         &self.config
     }
 
+    pub fn resolver_config(&self) -> Utf8PathBuf {
+        self.config().join("resolver/test")
+    }
+
     pub fn certificates(&self) -> &Utf8Path {
         &self.certificates
     }

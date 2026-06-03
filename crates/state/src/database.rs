@@ -9,6 +9,9 @@ use crate::{PvPaths, StateError, fs, migrations};
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
 const PORT_CANDIDATE_LIMIT: usize = 10;
+pub const DNS_PREFERRED_PORT: u16 = 35353;
+pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
+pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
 const PROJECT_ID_LENGTH: usize = 10;
 const PROJECT_ID_ATTEMPTS: usize = 16;
 const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -1418,6 +1421,14 @@ impl ManagedResourceDesiredState {
 impl PortRequest {
     pub fn dns(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {
         Self::new(PortOwner::Dns, preferred_port, fallback_start, fallback_end)
+    }
+
+    pub fn pv_dns() -> Self {
+        Self::dns(
+            DNS_PREFERRED_PORT,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
+        )
     }
 
     pub fn gateway(preferred_port: u16, fallback_start: u16, fallback_end: u16) -> Self {

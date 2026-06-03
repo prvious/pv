@@ -1968,6 +1968,33 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
 }
 
 #[test]
+fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let assigned_dns = database.assign_port(PortRequest::pv_dns(), |port| port == 35353)?;
+    let reused_dns =
+        database.assign_port(PortRequest::pv_dns(), |port| port == assigned_dns.port)?;
+    let fallback_dns = {
+        database.release_port(PortOwner::Dns)?;
+        database.assign_port(PortRequest::pv_dns(), |port| port != 35353)?
+    };
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            assigned_dns,
+            reused_dns,
+            fallback_dns,
+            database.assigned_ports()?,
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn port_allocator_keeps_owner_components_structured() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
