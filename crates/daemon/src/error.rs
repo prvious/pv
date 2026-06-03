@@ -1,6 +1,8 @@
 use std::io;
 
 use config::ConfigError;
+use hickory_proto::ProtoError;
+use hickory_proto::serialize::binary::DecodeError;
 use resources::ResourcesError;
 use serde_json::Error as JsonError;
 use state::StateError;
@@ -33,6 +35,12 @@ pub enum DaemonError {
 
     #[error("daemon protocol error: {message}")]
     DaemonRejected { message: String },
+
+    #[error("DNS request decode error: {0}")]
+    DnsDecode(#[from] DecodeError),
+
+    #[error("DNS response encode error: {0}")]
+    DnsEncode(#[from] ProtoError),
 
     #[error("state error: {0}")]
     State(#[from] StateError),
