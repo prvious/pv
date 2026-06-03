@@ -1,0 +1,42 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(missing, prepared_only, current, stale_and_conflict,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Port redirect status\nPrepared pf anchor: missing\n  path: <tempdir>/home/.pv/config/pf/com.prvious.pv\nPrepared pf.conf reference: missing\n  path: <tempdir>/home/.pv/config/pf/pf.conf\nSystem pf anchor: missing\n  path: <tempdir>/etc/pf.anchors/com.prvious.pv\nSystem pf.conf reference: missing\n  path: <tempdir>/etc/pf.conf\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Port redirect status\nPrepared pf anchor: current\n  path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nPrepared pf.conf reference: current\n  path: <tempdir>/home/.pv/config/pf/pf.conf\n  anchor: com.prvious.pv\nSystem pf anchor: missing\n  path: <tempdir>/etc/pf.anchors/com.prvious.pv\nSystem pf.conf reference: missing\n  path: <tempdir>/etc/pf.conf\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Port redirect status\nPrepared pf anchor: current\n  path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nPrepared pf.conf reference: current\n  path: <tempdir>/home/.pv/config/pf/pf.conf\n  anchor: com.prvious.pv\nSystem pf anchor: current\n  path: <tempdir>/etc/pf.anchors/com.prvious.pv\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nSystem pf.conf reference: current\n  path: <tempdir>/etc/pf.conf\n  anchor: com.prvious.pv\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Port redirect status\nPrepared pf anchor: current\n  path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nPrepared pf.conf reference: current\n  path: <tempdir>/home/.pv/config/pf/pf.conf\n  anchor: com.prvious.pv\nSystem pf anchor: stale\n  path: <tempdir>/etc/pf.anchors/com.prvious.pv\n  expected HTTP port: 48080\n  expected HTTPS port: 48443\n  actual HTTP port: 45000\n  actual HTTPS port: 45001\nSystem pf.conf reference: not PV-owned\n  path: <tempdir>/etc/pf.conf\n",
+        stderr: "",
+    },
+)

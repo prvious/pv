@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/ports.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Deleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv\nDeleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf\nPV-owned system pf anchor remains: <tempdir>/etc/pf.anchors/com.prvious.pv\nPrivileged removal deferred to PR 13 setup/system-integration work.\nPV-owned system pf.conf reference remains: <tempdir>/etc/pf.conf\nPrivileged removal deferred to PR 13 setup/system-integration work.\n",
+    stderr: "",
+}
