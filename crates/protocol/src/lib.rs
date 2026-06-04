@@ -1,45 +1,54 @@
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::codec::{Framed, LinesCodec};
-
-use crate::DaemonError;
+use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
 pub const PROTOCOL_VERSION: u16 = 1;
+
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
-pub(crate) type DaemonTransport<Stream> = Framed<Stream, LinesCodec>;
+pub type DaemonTransport<Stream> = Framed<Stream, LinesCodec>;
+
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    #[error("daemon protocol JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("daemon protocol frame error: {0}")]
+    Frame(#[from] LinesCodecError),
+}
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct DaemonRequest {
-    pub(crate) protocol_version: u16,
+pub struct DaemonRequest {
+    pub protocol_version: u16,
 
     #[serde(flatten)]
-    pub(crate) command: DaemonCommand,
+    pub command: DaemonCommand,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
-pub(crate) enum DaemonCommand {
+pub enum DaemonCommand {
     Health,
     RunJob { kind: String, scope: String },
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct DaemonResponse<'message> {
+pub struct DaemonResponse<'message> {
     #[serde(rename = "type")]
-    pub(crate) line_type: &'static str,
-    pub(crate) protocol_version: u16,
-    pub(crate) status: ResponseStatus,
-    pub(crate) message: &'message str,
+    pub line_type: &'static str,
+    pub protocol_version: u16,
+    pub status: ResponseStatus,
+    pub message: &'message str,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) job_id: Option<&'message str>,
+    pub job_id: Option<&'message str>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ResponseStatus {
+pub enum ResponseStatus {
     Ok,
     Accepted,
     Error,
@@ -47,7 +56,7 @@ pub(crate) enum ResponseStatus {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum DaemonEvent<'message> {
+pub enum DaemonEvent<'message> {
     JobStarted {
         job_id: &'message str,
         kind: &'message str,
@@ -71,7 +80,7 @@ pub(crate) enum DaemonEvent<'message> {
     },
 }
 
-pub(crate) fn transport<Stream>(stream: Stream) -> DaemonTransport<Stream>
+pub fn transport<Stream>(stream: Stream) -> DaemonTransport<Stream>
 where
     Stream: AsyncRead + AsyncWrite,
 {
@@ -81,10 +90,10 @@ where
     )
 }
 
-pub(crate) async fn write_line<Stream>(
+pub async fn write_line<Stream>(
     transport: &mut DaemonTransport<Stream>,
     line: &impl Serialize,
-) -> Result<(), DaemonError>
+) -> Result<(), ProtocolError>
 where
     Stream: AsyncWrite + Unpin,
 {
@@ -97,17 +106,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Error, ErrorKind};
-
     use futures_util::StreamExt;
     use serde_json::json;
     use tokio::io::duplex;
 
     use super::{DaemonResponse, PROTOCOL_VERSION, ResponseStatus, transport, write_line};
-    use crate::DaemonError;
 
     #[tokio::test]
-    async fn transport_frames_generic_async_streams() -> Result<(), DaemonError> {
+    async fn transport_frames_generic_async_streams() -> anyhow::Result<()> {
         let (client, server) = duplex(1024);
         let mut writer = transport(client);
         let mut reader = transport(server);
@@ -125,7 +131,7 @@ mod tests {
         .await?;
 
         let Some(line) = reader.next().await else {
-            return Err(DaemonError::Io(Error::from(ErrorKind::UnexpectedEof)));
+            anyhow::bail!("reader closed before receiving a protocol line");
         };
 
         assert_eq!(

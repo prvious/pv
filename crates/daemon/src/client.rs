@@ -5,7 +5,7 @@ use tokio::net::UnixStream;
 use tokio::time::{Duration, timeout};
 
 use crate::DaemonError;
-use crate::protocol::{DaemonCommand, DaemonRequest, PROTOCOL_VERSION, ResponseStatus, write_line};
+use protocol::{DaemonCommand, DaemonRequest, PROTOCOL_VERSION, ResponseStatus, write_line};
 
 const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -48,7 +48,7 @@ async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<Submitted
     .map_err(|_| DaemonError::ProtocolTimedOut {
         phase: "connection",
     })??;
-    let mut transport = crate::protocol::transport(stream);
+    let mut transport = protocol::transport(stream);
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,
         command: DaemonCommand::RunJob {

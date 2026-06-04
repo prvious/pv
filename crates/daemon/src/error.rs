@@ -3,6 +3,7 @@ use std::io;
 use config::ConfigError;
 use hickory_proto::ProtoError;
 use hickory_proto::serialize::binary::DecodeError;
+use protocol::ProtocolError;
 use resources::ResourcesError;
 use serde_json::Error as JsonError;
 use state::StateError;
@@ -23,6 +24,9 @@ pub enum DaemonError {
 
     #[error("daemon protocol frame error: {0}")]
     Frame(#[from] LinesCodecError),
+
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
 
     #[error("daemon protocol error: daemon {phase} timed out")]
     ProtocolTimedOut { phase: &'static str },

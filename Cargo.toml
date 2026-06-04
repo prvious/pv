@@ -11,6 +11,7 @@ members = [
     "crates/config",
     "crates/daemon",
     "crates/macos",
+    "crates/protocol",
     "crates/resources",
     "crates/state",
 ]

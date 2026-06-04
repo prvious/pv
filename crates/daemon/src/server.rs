@@ -12,12 +12,12 @@ use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
 };
-use crate::protocol::{
+use crate::reconciliation::ReconciliationQueue;
+use crate::watcher::ProjectConfigWatcher;
+use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
     ResponseStatus, write_line,
 };
-use crate::reconciliation::ReconciliationQueue;
-use crate::watcher::ProjectConfigWatcher;
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -103,14 +103,14 @@ async fn handle_connection(
     queue: ReconciliationQueue,
     stream: LocalStream,
 ) -> Result<(), DaemonError> {
-    let mut transport = crate::protocol::transport(stream);
+    let mut transport = protocol::transport(stream);
     let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
         return Ok(());
     };
     let request = serde_json::from_str::<DaemonRequest>(&line)?;
 
     if request.protocol_version != PROTOCOL_VERSION {
-        return write_line(
+        write_line(
             &mut transport,
             &DaemonResponse {
                 line_type: "response",
@@ -120,7 +120,9 @@ async fn handle_connection(
                 job_id: None,
             },
         )
-        .await;
+        .await?;
+
+        return Ok(());
     }
 
     match request.command {
@@ -135,7 +137,9 @@ async fn handle_connection(
                     job_id: None,
                 },
             )
-            .await
+            .await?;
+
+            Ok(())
         }
         DaemonCommand::RunJob { kind, scope } => {
             run_job(paths, queue, transport, &kind, &scope).await
@@ -163,7 +167,7 @@ mod tests {
     use tokio::io::duplex;
 
     use super::read_request_line;
-    use crate::protocol::transport;
+    use protocol::transport;
 
     #[tokio::test]
     async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {
