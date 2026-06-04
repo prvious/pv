@@ -2,6 +2,9 @@ use crate::LocalCaMetadata;
 use crate::ca::{is_pv_ca_metadata, pem_from_der};
 use crate::error::PlatformError;
 
+#[cfg(target_os = "macos")]
+use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeychainCertificate {
     pub metadata: LocalCaMetadata,
@@ -110,10 +113,6 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
     fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, PlatformError> {
         #[cfg(target_os = "macos")]
         {
-            use security_framework::trust_settings::{
-                Domain, TrustSettings, TrustSettingsForCertificate,
-            };
-
             let trust_settings = TrustSettings::new(Domain::Admin);
             let mut certificates = Vec::new();
 

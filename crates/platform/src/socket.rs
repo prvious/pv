@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+use netstat::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState, get_sockets_info};
+
 use crate::error::PlatformError;
 
 #[expect(
@@ -23,20 +25,18 @@ pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, PlatformError> 
 }
 
 fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, PlatformError> {
-    let sockets = netstat::get_sockets_info(
-        netstat::AddressFamilyFlags::IPV4 | netstat::AddressFamilyFlags::IPV6,
-        netstat::ProtocolFlags::TCP,
+    let sockets = get_sockets_info(
+        AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
+        ProtocolFlags::TCP,
     )?;
     let mut ports = BTreeSet::new();
 
     for socket in sockets {
-        let netstat::ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info else {
+        let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info else {
             continue;
         };
 
-        if tcp.state == netstat::TcpState::Listen
-            && tcp_listener_address_occupies_loopback(tcp.local_addr)
-        {
+        if tcp.state == TcpState::Listen && tcp_listener_address_occupies_loopback(tcp.local_addr) {
             ports.insert(tcp.local_port);
         }
     }

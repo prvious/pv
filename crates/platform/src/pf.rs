@@ -104,14 +104,30 @@ impl PfConfReference {
     }
 
     pub fn parse_block(content: &str) -> Option<Self> {
-        let has_anchor = content
-            .lines()
-            .map(str::trim)
-            .any(|line| line == PF_ANCHOR_DIRECTIVE);
-        let has_load = content
-            .lines()
-            .map(str::trim)
-            .any(|line| line == PF_LOAD_ANCHOR_DIRECTIVE);
+        let mut has_anchor = false;
+        let mut has_load = false;
+
+        for line in content.lines().filter_map(active_pf_line) {
+            if line == PF_ANCHOR_DIRECTIVE {
+                if has_anchor {
+                    return None;
+                }
+                has_anchor = true;
+                continue;
+            }
+
+            if line == PF_LOAD_ANCHOR_DIRECTIVE {
+                if has_load {
+                    return None;
+                }
+                has_load = true;
+                continue;
+            }
+
+            if is_pv_pf_conf_reference_directive(line) {
+                return None;
+            }
+        }
 
         if has_anchor && has_load {
             Some(Self)
@@ -242,5 +258,6 @@ fn active_pf_line(line: &str) -> Option<&str> {
 }
 
 fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
-    line == PF_ANCHOR_DIRECTIVE || line == PF_LOAD_ANCHOR_DIRECTIVE
+    line.starts_with("anchor \"com.prvious.pv\"")
+        || line.starts_with("load anchor \"com.prvious.pv\"")
 }

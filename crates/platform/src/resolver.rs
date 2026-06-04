@@ -49,26 +49,32 @@ impl ResolverConfig {
 
     pub fn parse(content: &str) -> Option<Self> {
         let mut port = None;
-        let mut nameserver_count = 0;
-        let mut has_loopback_nameserver = false;
+        let mut has_nameserver = false;
+        let mut active_line_count = 0;
 
         for line in content.lines().map(str::trim) {
-            if line.starts_with("nameserver ") {
-                nameserver_count += 1;
-                if line == LOOPBACK_NAMESERVER {
-                    has_loopback_nameserver = true;
-                }
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
 
-            let Some(value) = line.strip_prefix("port ") else {
-                continue;
-            };
+            active_line_count += 1;
 
-            port = value.parse::<u16>().ok();
+            if line.starts_with("nameserver ") {
+                if line != LOOPBACK_NAMESERVER || has_nameserver {
+                    return None;
+                }
+                has_nameserver = true;
+                continue;
+            }
+
+            let value = line.strip_prefix("port ")?;
+
+            if port.replace(value.parse::<u16>().ok()?).is_some() {
+                return None;
+            }
         }
 
-        if nameserver_count == 1 && has_loopback_nameserver {
+        if active_line_count == 2 && has_nameserver {
             port.map(Self::new)
         } else {
             None
