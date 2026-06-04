@@ -106,8 +106,11 @@ impl PfConfReference {
     pub fn parse_block(content: &str) -> Option<Self> {
         let mut has_anchor = false;
         let mut has_load = false;
+        let mut active_line_count = 0;
 
         for line in content.lines().filter_map(active_pf_line) {
+            active_line_count += 1;
+
             if line == PF_ANCHOR_DIRECTIVE {
                 if has_anchor {
                     return None;
@@ -127,9 +130,11 @@ impl PfConfReference {
             if is_pv_pf_conf_reference_directive(line) {
                 return None;
             }
+
+            return None;
         }
 
-        if has_anchor && has_load {
+        if active_line_count == 2 && has_anchor && has_load {
             Some(Self)
         } else {
             None
@@ -183,7 +188,7 @@ pub fn inspect_pf_conf_reference(
         };
     }
 
-    let actual = PfConfReference::parse_block(&content);
+    let actual = parse_embedded_pf_conf_reference(&content);
     classify_pv_file_state(path, expected, actual)
 }
 
@@ -260,4 +265,37 @@ fn active_pf_line(line: &str) -> Option<&str> {
 fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
     line.starts_with("anchor \"com.prvious.pv\"")
         || line.starts_with("load anchor \"com.prvious.pv\"")
+}
+
+fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
+    let mut has_anchor = false;
+    let mut has_load = false;
+
+    for line in content.lines().filter_map(active_pf_line) {
+        if line == PF_ANCHOR_DIRECTIVE {
+            if has_anchor {
+                return None;
+            }
+            has_anchor = true;
+            continue;
+        }
+
+        if line == PF_LOAD_ANCHOR_DIRECTIVE {
+            if has_load {
+                return None;
+            }
+            has_load = true;
+            continue;
+        }
+
+        if is_pv_pf_conf_reference_directive(line) {
+            return None;
+        }
+    }
+
+    if has_anchor && has_load {
+        Some(PfConfReference)
+    } else {
+        None
+    }
 }

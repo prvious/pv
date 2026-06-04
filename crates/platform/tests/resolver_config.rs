@@ -75,7 +75,7 @@ fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
     let config = PfRedirectConfig::new(48080, 48443);
     let anchor = config.render_anchor();
     let reference = PfConfReference.render();
-    let wrapped_reference = format!("set block-policy drop\n{reference}pass out all\n");
+    let extra_active_line_reference = format!("{reference}set block-policy drop\n");
     let duplicate_anchor_reference = format!("{reference}anchor \"com.prvious.pv\"\n");
     let duplicate_load_reference = format!(
         "{reference}load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n"
@@ -87,8 +87,8 @@ fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
         Some(PfConfReference)
     );
     assert_eq!(
-        PfConfReference::parse_block(&wrapped_reference),
-        Some(PfConfReference)
+        PfConfReference::parse_block(&extra_active_line_reference),
+        None
     );
     assert_eq!(
         PfConfReference::parse_block(&duplicate_anchor_reference),
