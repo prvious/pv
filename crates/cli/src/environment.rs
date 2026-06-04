@@ -20,6 +20,20 @@ pub trait Environment {
         PathBuf::from(macos::SYSTEM_RESOLVER_TEST_PATH)
     }
 
+    fn pf_anchor_path(&self) -> PathBuf {
+        PathBuf::from(macos::SYSTEM_PF_ANCHOR_PATH)
+    }
+
+    fn pf_conf_path(&self) -> PathBuf {
+        PathBuf::from(macos::SYSTEM_PF_CONF_PATH)
+    }
+
+    fn loopback_tcp_listener_ports(
+        &self,
+    ) -> Result<std::collections::BTreeSet<u16>, macos::MacosError> {
+        macos::loopback_tcp_listener_ports()
+    }
+
     fn trusted_ca_certificates(
         &self,
     ) -> Result<Vec<macos::KeychainCertificate>, macos::MacosError> {

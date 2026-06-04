@@ -7,9 +7,11 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
-    Database, EnvContextValues, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
+    Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT,
+    GatewayPort, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, ResourceAllocationInput, StateError,
+    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    ResourceAllocationInput, StateError,
 };
 
 #[test]
@@ -32,6 +34,20 @@ fn ca_paths_are_derived_from_an_injected_home() {
     assert_eq!(
         paths.ca_private_key().as_str(),
         "/tmp/pv-test-home/.pv/certificates/ca-key.pem"
+    );
+}
+
+#[test]
+fn pv_paths_include_prepared_pf_artifacts() {
+    let paths = PvPaths::for_home("/Users/alice");
+
+    assert_eq!(
+        paths.pf_anchor_config().as_str(),
+        "/Users/alice/.pv/config/pf/com.prvious.pv"
+    );
+    assert_eq!(
+        paths.pf_conf_reference_config().as_str(),
+        "/Users/alice/.pv/config/pf/pf.conf"
     );
 }
 
@@ -2004,6 +2020,78 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
         ));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn gateway_port_allocator_persists_distinct_http_and_https_assignments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let assigned = database.assign_gateway_ports(|port| {
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
+    })?;
+    let reused = database.assign_gateway_ports(|_port| false)?;
+
+    assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
+    assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
+    assert_eq!(assigned.http.owner, PortOwner::Gateway(GatewayPort::Http));
+    assert_eq!(assigned.https.owner, PortOwner::Gateway(GatewayPort::Https));
+    assert_eq!(reused.http.port, assigned.http.port);
+    assert_eq!(reused.https.port, assigned.https.port);
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((assigned, reused, database.assigned_ports()?));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn gateway_port_allocator_uses_fallbacks_when_preferred_ports_are_unavailable() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let assigned = database.assign_gateway_ports(|port| {
+        port != GATEWAY_HTTP_PREFERRED_PORT && port != GATEWAY_HTTPS_PREFERRED_PORT
+    })?;
+
+    assert_eq!(assigned.http.port, RUNTIME_PORT_FALLBACK_START);
+    assert_eq!(assigned.https.port, RUNTIME_PORT_FALLBACK_START + 1);
+
+    Ok(())
+}
+
+#[test]
+fn gateway_port_allocator_rolls_back_when_https_cannot_be_assigned() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let error = match database.assign_gateway_ports(|port| port == GATEWAY_HTTP_PREFERRED_PORT) {
+        Ok(assignments) => {
+            return Err(anyhow!(
+                "HTTPS assignment should fail, but assigned {assignments:?}"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        StateError::NoAvailablePort {
+            name,
+            preferred_port: GATEWAY_HTTPS_PREFERRED_PORT,
+            fallback_start: RUNTIME_PORT_FALLBACK_START,
+            fallback_end: RUNTIME_PORT_FALLBACK_END,
+            ..
+        } if name == "gateway https"
+    ));
+    assert_eq!(database.assigned_ports()?, Vec::new());
 
     Ok(())
 }

@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/ports.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Port redirect preparation failed\nLoopback TCP port 80 already has a listener.\nStop the conflicting service, then run `pv ports:install` again.\n",
+    stderr: "",
+}

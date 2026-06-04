@@ -1,0 +1,10 @@
+---
+source: crates/macos/src/lib.rs
+expression: parse_netstat_tcp_listener_ports(output)
+---
+{
+    45000,
+    45001,
+    45002,
+    45003,
+}

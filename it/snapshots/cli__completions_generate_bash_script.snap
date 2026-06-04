@@ -68,6 +68,15 @@ _pv() {
             pv,php:install)
                 cmd="pv__subcmd__php:install"
                 ;;
+            pv,ports:install)
+                cmd="pv__subcmd__ports:install"
+                ;;
+            pv,ports:status)
+                cmd="pv__subcmd__ports:status"
+                ;;
+            pv,ports:uninstall)
+                cmd="pv__subcmd__ports:uninstall"
+                ;;
             pv,project:env)
                 cmd="pv__subcmd__project:env"
                 ;;
@@ -81,7 +90,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run dns:status dns:install dns:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:install"
+            opts="-h -V --no-color --help --version env completions daemon:enable daemon:disable daemon:restart daemon:run dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:install"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -314,6 +323,48 @@ _pv() {
             ;;
         pv__subcmd__php:install)
             opts="-h --no-color --help [version]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__ports:install)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__ports:status)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__ports:uninstall)
+            opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

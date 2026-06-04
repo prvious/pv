@@ -98,6 +98,27 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(ports:status)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ports:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ports:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (ca:status)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -185,6 +206,9 @@ _pv_commands() {
 'dns:status:Show PV .test resolver status' \
 'dns:install:Prepare PV .test resolver config' \
 'dns:uninstall:Remove prepared PV .test resolver config' \
+'ports:status:Show PV pf redirect status' \
+'ports:install:Prepare PV pf redirect config' \
+'ports:uninstall:Remove prepared PV pf redirect config' \
 'ca:status:Show PV local CA trust status' \
 'ca:trust:Prepare PV local CA trust' \
 'ca:untrust:Prepare removal of PV local CA trust' \
@@ -276,6 +300,21 @@ _pv__subcmd__open_commands() {
 _pv__subcmd__php:install_commands() {
     local commands; commands=()
     _describe -t commands 'pv php:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ports:install_commands] )) ||
+_pv__subcmd__ports:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ports:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ports:status_commands] )) ||
+_pv__subcmd__ports:status_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ports:status commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ports:uninstall_commands] )) ||
+_pv__subcmd__ports:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ports:uninstall commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__project:env_commands] )) ||
 _pv__subcmd__project:env_commands() {

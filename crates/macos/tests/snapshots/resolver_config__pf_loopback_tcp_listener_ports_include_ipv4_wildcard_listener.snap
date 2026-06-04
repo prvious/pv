@@ -1,0 +1,10 @@
+---
+source: crates/macos/tests/resolver_config.rs
+expression: detection
+---
+[
+    (
+        "ipv4 wildcard listener detected",
+        true,
+    ),
+]
