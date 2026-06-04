@@ -9,7 +9,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use macos::ResolverConfig;
+use platform::ResolverConfig;
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 #[derive(Debug)]

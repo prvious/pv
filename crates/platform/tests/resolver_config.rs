@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use macos::{
+use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
     TrustDomainState, generate_local_ca, inspect_local_ca_files, inspect_pf_anchor_file,
@@ -465,7 +465,7 @@ impl FakeTrustInspector {
 }
 
 impl SystemTrustInspector for FakeTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
         Ok(self.certificates.clone())
     }
 }
@@ -474,8 +474,10 @@ impl SystemTrustInspector for FakeTrustInspector {
 struct FailingTrustInspector;
 
 impl SystemTrustInspector for FailingTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
-        Err(macos::MacosError::Keychain("fixture failure".to_string()))
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
+        Err(platform::PlatformError::Keychain(
+            "fixture failure".to_string(),
+        ))
     }
 }
 

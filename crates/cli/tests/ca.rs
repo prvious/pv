@@ -8,7 +8,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use macos::{KeychainCertificate, KeychainTrustResult, MacosError, generate_local_ca};
+use platform::{KeychainCertificate, KeychainTrustResult, PlatformError, generate_local_ca};
 use state::{PvPaths, StateError};
 
 #[derive(Debug)]
@@ -65,9 +65,9 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, MacosError> {
+    fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, PlatformError> {
         if let Some(message) = &self.keychain_error {
-            return Err(MacosError::Keychain(message.clone()));
+            return Err(PlatformError::Keychain(message.clone()));
         }
 
         Ok(self.certificates.clone())

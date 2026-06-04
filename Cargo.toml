@@ -10,7 +10,7 @@ members = [
     "crates/cli",
     "crates/config",
     "crates/daemon",
-    "crates/macos",
+    "crates/platform",
     "crates/protocol",
     "crates/resources",
     "crates/state",

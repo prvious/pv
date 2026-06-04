@@ -98,7 +98,7 @@ fn finish_execution(
 
             Ok(ExitCode::FAILURE)
         }
-        Err(ExecuteError::Macos(error)) => {
+        Err(ExecuteError::Platform(error)) => {
             let mut output = Output::new(stderr, output_mode);
             output.error(&error.to_string())?;
 

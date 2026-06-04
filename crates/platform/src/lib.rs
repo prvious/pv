@@ -95,7 +95,7 @@ pub enum PfFileState<T> {
 }
 
 #[derive(Debug, Error)]
-pub enum MacosError {
+pub enum PlatformError {
     #[error("could not generate PV local CA: {0}")]
     CaGeneration(#[from] rcgen::Error),
 
@@ -224,11 +224,11 @@ pub enum TrustDomainState {
 }
 
 pub trait SystemTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, MacosError>;
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, PlatformError>;
 }
 
 #[derive(Debug, Default)]
-pub struct MacosSystemTrustInspector;
+pub struct NativeSystemTrustInspector;
 
 impl ResolverConfig {
     pub const fn new(port: u16) -> Self {
@@ -449,7 +449,7 @@ pub fn inspect_pf_conf_reference(
     classify_pv_file_state(path, expected, actual)
 }
 
-pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, MacosError> {
+pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, PlatformError> {
     let mut ports = loopback_tcp_listener_ports_from_socket_table()?;
     ports.extend(parse_netstat_tcp_listener_ports(
         &netstat_tcp_socket_table()?
@@ -458,11 +458,11 @@ pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, MacosError> {
     Ok(ports)
 }
 
-pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, MacosError> {
+pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, PlatformError> {
     Ok(loopback_tcp_listener_ports()?.contains(&port))
 }
 
-pub fn generate_local_ca() -> Result<GeneratedLocalCa, MacosError> {
+pub fn generate_local_ca() -> Result<GeneratedLocalCa, PlatformError> {
     let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CommonName, PV_CA_COMMON_NAME);
@@ -490,19 +490,22 @@ pub fn generate_local_ca() -> Result<GeneratedLocalCa, MacosError> {
 }
 
 impl LocalCaMetadata {
-    pub fn from_pem_pair(certificate_pem: &str, private_key_pem: &str) -> Result<Self, MacosError> {
+    pub fn from_pem_pair(
+        certificate_pem: &str,
+        private_key_pem: &str,
+    ) -> Result<Self, PlatformError> {
         let certificate_der =
-            certificate_der_from_pem(certificate_pem).map_err(|_| MacosError::X509)?;
+            certificate_der_from_pem(certificate_pem).map_err(|_| PlatformError::X509)?;
         let key_pair =
-            KeyPair::from_pem(private_key_pem).map_err(|_| MacosError::MalformedPrivateKey)?;
+            KeyPair::from_pem(private_key_pem).map_err(|_| PlatformError::MalformedPrivateKey)?;
         let (_remaining, certificate) =
-            X509Certificate::from_der(&certificate_der).map_err(|_| MacosError::X509)?;
+            X509Certificate::from_der(&certificate_der).map_err(|_| PlatformError::X509)?;
         let common_name = certificate
             .subject()
             .iter_common_name()
             .next()
             .and_then(|name| name.as_str().ok())
-            .ok_or(MacosError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?
             .to_string();
         let organization = certificate
             .subject()
@@ -512,12 +515,12 @@ impl LocalCaMetadata {
             .map(ToString::to_string);
         let basic_constraints = certificate
             .basic_constraints()
-            .map_err(|_| MacosError::InvalidCaShape)?
-            .ok_or(MacosError::InvalidCaShape)?;
+            .map_err(|_| PlatformError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?;
         let key_usage = certificate
             .key_usage()
-            .map_err(|_| MacosError::InvalidCaShape)?
-            .ok_or(MacosError::InvalidCaShape)?;
+            .map_err(|_| PlatformError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?;
         let is_ca = basic_constraints.value.ca;
         let can_sign_certificates = key_usage.value.key_cert_sign();
 
@@ -526,11 +529,11 @@ impl LocalCaMetadata {
             || !is_ca
             || !can_sign_certificates
         {
-            return Err(MacosError::InvalidCaShape);
+            return Err(PlatformError::InvalidCaShape);
         }
 
         if certificate.public_key().raw != key_pair.subject_public_key_info().as_slice() {
-            return Err(MacosError::KeyMismatch);
+            return Err(PlatformError::KeyMismatch);
         }
 
         Ok(Self {
@@ -542,17 +545,17 @@ impl LocalCaMetadata {
         })
     }
 
-    pub fn from_certificate_pem(certificate_pem: &str) -> Result<Self, MacosError> {
+    pub fn from_certificate_pem(certificate_pem: &str) -> Result<Self, PlatformError> {
         let certificate_der =
-            certificate_der_from_pem(certificate_pem).map_err(|_| MacosError::X509)?;
+            certificate_der_from_pem(certificate_pem).map_err(|_| PlatformError::X509)?;
         let (_remaining, certificate) =
-            X509Certificate::from_der(&certificate_der).map_err(|_| MacosError::X509)?;
+            X509Certificate::from_der(&certificate_der).map_err(|_| PlatformError::X509)?;
         let common_name = certificate
             .subject()
             .iter_common_name()
             .next()
             .and_then(|name| name.as_str().ok())
-            .ok_or(MacosError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?
             .to_string();
         let organization = certificate
             .subject()
@@ -562,12 +565,12 @@ impl LocalCaMetadata {
             .map(ToString::to_string);
         let basic_constraints = certificate
             .basic_constraints()
-            .map_err(|_| MacosError::InvalidCaShape)?
-            .ok_or(MacosError::InvalidCaShape)?;
+            .map_err(|_| PlatformError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?;
         let key_usage = certificate
             .key_usage()
-            .map_err(|_| MacosError::InvalidCaShape)?
-            .ok_or(MacosError::InvalidCaShape)?;
+            .map_err(|_| PlatformError::InvalidCaShape)?
+            .ok_or(PlatformError::InvalidCaShape)?;
 
         Ok(Self {
             common_name,
@@ -699,7 +702,7 @@ pub fn inspect_system_ca_trust(
     }
 }
 
-fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, MacosError> {
+fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, PlatformError> {
     let sockets = netstat::get_sockets_info(
         netstat::AddressFamilyFlags::IPV4 | netstat::AddressFamilyFlags::IPV6,
         netstat::ProtocolFlags::TCP,
@@ -799,14 +802,14 @@ fn tcp_listener_address_occupies_loopback(address: IpAddr) -> bool {
     address.is_loopback() || address.is_unspecified()
 }
 
-fn netstat_tcp_socket_table() -> Result<String, MacosError> {
+fn netstat_tcp_socket_table() -> Result<String, PlatformError> {
     let output = StdCommand::new("/usr/sbin/netstat")
         .args(["-anv", "-p", "tcp"])
         .output()
-        .map_err(MacosError::SocketTableCommand)?;
+        .map_err(PlatformError::SocketTableCommand)?;
 
     if !output.status.success() {
-        return Err(MacosError::SocketTableCommandStatus {
+        return Err(PlatformError::SocketTableCommandStatus {
             status: output.status.to_string(),
         });
     }
@@ -868,8 +871,8 @@ fn is_pv_ca_metadata(metadata: &LocalCaMetadata) -> bool {
         && metadata.can_sign_certificates
 }
 
-impl SystemTrustInspector for MacosSystemTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, MacosError> {
+impl SystemTrustInspector for NativeSystemTrustInspector {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, PlatformError> {
         #[cfg(target_os = "macos")]
         {
             use security_framework::trust_settings::{
@@ -881,7 +884,7 @@ impl SystemTrustInspector for MacosSystemTrustInspector {
 
             for certificate in trust_settings
                 .iter()
-                .map_err(|error| MacosError::Keychain(error.to_string()))?
+                .map_err(|error| PlatformError::Keychain(error.to_string()))?
             {
                 let trust = match trust_settings.tls_trust_settings_for_certificate(&certificate) {
                     Ok(Some(TrustSettingsForCertificate::TrustRoot)) => {
@@ -897,7 +900,7 @@ impl SystemTrustInspector for MacosSystemTrustInspector {
                     Ok(Some(TrustSettingsForCertificate::Invalid)) => {
                         KeychainTrustResult::Unspecified
                     }
-                    Err(error) => return Err(MacosError::Keychain(error.to_string())),
+                    Err(error) => return Err(PlatformError::Keychain(error.to_string())),
                 };
                 let certificate_pem = pem_from_der("CERTIFICATE", &certificate.to_der());
                 if let Ok(metadata) = LocalCaMetadata::from_certificate_pem(&certificate_pem) {
@@ -947,22 +950,22 @@ fn pem_from_der(label: &str, der: &[u8]) -> String {
     pem
 }
 
-fn repair_reason_from_ca_error(error: MacosError) -> CaRepairReason {
+fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
     match error {
-        MacosError::X509 => CaRepairReason::MalformedCertificate,
-        MacosError::MalformedPrivateKey => CaRepairReason::MalformedPrivateKey,
-        MacosError::InvalidCaShape => CaRepairReason::InvalidCaShape,
-        MacosError::KeyMismatch => CaRepairReason::KeyMismatch,
-        MacosError::CaGeneration(_)
-        | MacosError::Pem(_)
-        | MacosError::LocalCaPostWriteMissing
-        | MacosError::LocalCaPostWriteRepairRequired { .. }
-        | MacosError::LocalCaPostWriteUnreadable { .. }
-        | MacosError::Keychain(_)
-        | MacosError::SocketTable(_)
-        | MacosError::SocketTableCommand(_)
-        | MacosError::SocketTableCommandStatus { .. }
-        | MacosError::SocketTableCommandUtf8(_) => CaRepairReason::InvalidCaShape,
+        PlatformError::X509 => CaRepairReason::MalformedCertificate,
+        PlatformError::MalformedPrivateKey => CaRepairReason::MalformedPrivateKey,
+        PlatformError::InvalidCaShape => CaRepairReason::InvalidCaShape,
+        PlatformError::KeyMismatch => CaRepairReason::KeyMismatch,
+        PlatformError::CaGeneration(_)
+        | PlatformError::Pem(_)
+        | PlatformError::LocalCaPostWriteMissing
+        | PlatformError::LocalCaPostWriteRepairRequired { .. }
+        | PlatformError::LocalCaPostWriteUnreadable { .. }
+        | PlatformError::Keychain(_)
+        | PlatformError::SocketTable(_)
+        | PlatformError::SocketTableCommand(_)
+        | PlatformError::SocketTableCommandStatus { .. }
+        | PlatformError::SocketTableCommandUtf8(_) => CaRepairReason::InvalidCaShape,
     }
 }
 
