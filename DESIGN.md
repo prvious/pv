@@ -29,6 +29,8 @@ PV v1 targets macOS 13 and newer.
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only, but app-facing code should call the `platform` crate for host integration concerns.
+
 ## Implementation Language
 
 PV's CLI and daemon are implemented in Rust. Rust owns the local control plane, desired/observed state access, daemon socket protocol, internal DNS resolver, reconciliation, process supervision, config generation, and command UX.
