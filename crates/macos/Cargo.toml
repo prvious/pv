@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 camino = { workspace = true }
+netstat = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
 

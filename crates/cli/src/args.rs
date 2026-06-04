@@ -50,6 +50,18 @@ pub(crate) enum Command {
     )]
     DnsUninstall,
 
+    #[command(name = "ports:status", about = "Show PV pf redirect status")]
+    PortsStatus,
+
+    #[command(name = "ports:install", about = "Prepare PV pf redirect config")]
+    PortsInstall,
+
+    #[command(
+        name = "ports:uninstall",
+        about = "Remove prepared PV pf redirect config"
+    )]
+    PortsUninstall,
+
     #[command(name = "link", about = "Link a Project")]
     Link(LinkArgs),
 

@@ -1,0 +1,14 @@
+---
+source: crates/macos/tests/resolver_config.rs
+expression: detections
+---
+[
+    (
+        "ipv6 loopback listener detected",
+        true,
+    ),
+    (
+        "ipv6 wildcard listener detected",
+        true,
+    ),
+]

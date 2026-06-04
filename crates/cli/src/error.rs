@@ -47,4 +47,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     State(#[from] state::StateError),
+
+    #[error(transparent)]
+    Macos(#[from] macos::MacosError),
 }
