@@ -119,6 +119,27 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(ca:status)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ca:trust)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(ca:untrust)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (link)
 _arguments "${_arguments_options[@]}" : \
 '--hostname=[Primary .test hostname]:hostname:_default' \
@@ -188,6 +209,9 @@ _pv_commands() {
 'ports:status:Show PV pf redirect status' \
 'ports:install:Prepare PV pf redirect config' \
 'ports:uninstall:Remove prepared PV pf redirect config' \
+'ca:status:Show PV local CA trust status' \
+'ca:trust:Prepare PV local CA trust' \
+'ca:untrust:Prepare removal of PV local CA trust' \
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
@@ -196,6 +220,21 @@ _pv_commands() {
 'php:install:Install a PHP track' \
     )
     _describe -t commands 'pv commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ca:status_commands] )) ||
+_pv__subcmd__ca:status_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ca:status commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ca:trust_commands] )) ||
+_pv__subcmd__ca:trust_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ca:trust commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__ca:untrust_commands] )) ||
+_pv__subcmd__ca:untrust_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv ca:untrust commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__completions_commands] )) ||
 _pv__subcmd__completions_commands() {

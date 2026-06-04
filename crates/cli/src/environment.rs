@@ -33,6 +33,12 @@ pub trait Environment {
     ) -> Result<std::collections::BTreeSet<u16>, macos::MacosError> {
         macos::loopback_tcp_listener_ports()
     }
+
+    fn trusted_ca_certificates(
+        &self,
+    ) -> Result<Vec<macos::KeychainCertificate>, macos::MacosError> {
+        macos::SystemTrustInspector::trusted_certificates(&macos::MacosSystemTrustInspector)
+    }
 }
 
 #[derive(Debug, Default)]

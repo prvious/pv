@@ -1,0 +1,25 @@
+---
+source: crates/macos/tests/resolver_config.rs
+expression: "(current, missing, stale, denied, unspecified, unknown)"
+---
+(
+    Current {
+        fingerprint: "<fingerprint>",
+    },
+    NotTrusted {
+        fingerprint: "<fingerprint>",
+    },
+    Stale {
+        expected_fingerprint: "<fingerprint>",
+        actual_fingerprint: "<fingerprint>",
+    },
+    Denied {
+        fingerprint: "<fingerprint>",
+    },
+    NotTrusted {
+        fingerprint: "<fingerprint>",
+    },
+    Unknown {
+        reason: "local CA is unavailable",
+    },
+)

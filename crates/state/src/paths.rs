@@ -110,6 +110,14 @@ impl PvPaths {
         &self.certificates
     }
 
+    pub fn ca_certificate(&self) -> Utf8PathBuf {
+        self.certificates().join("ca.pem")
+    }
+
+    pub fn ca_private_key(&self) -> Utf8PathBuf {
+        self.certificates().join("ca-key.pem")
+    }
+
     pub fn composer(&self) -> &Utf8Path {
         &self.composer
     }

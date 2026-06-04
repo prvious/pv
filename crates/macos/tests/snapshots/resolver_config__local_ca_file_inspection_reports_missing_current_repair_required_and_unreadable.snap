@@ -1,0 +1,11 @@
+---
+source: crates/macos/tests/resolver_config.rs
+expression: normalized_states
+---
+[
+    "Missing { certificate_path: \"[tempdir]/missing-ca.pem\", private_key_path: \"[tempdir]/missing-ca-key.pem\" }",
+    "Current { certificate_path: \"[tempdir]/current-ca.pem\", private_key_path: \"[tempdir]/current-ca-key.pem\", metadata: LocalCaMetadata { common_name: \"PV Local Development CA\", organization: Some(\"PV\"), fingerprint: \"<fingerprint>\", is_ca: true, can_sign_certificates: true } }",
+    "RepairRequired { certificate_path: \"[tempdir]/mismatched-ca.pem\", private_key_path: \"[tempdir]/mismatched-ca-key.pem\", reason: KeyMismatch }",
+    "RepairRequired { certificate_path: \"[tempdir]/malformed-ca.pem\", private_key_path: \"[tempdir]/malformed-ca-key.pem\", reason: MalformedCertificate }",
+    "Unreadable { path: \"[tempdir]/unreadable-ca.pem\", message: \"<read error>\" }",
+]

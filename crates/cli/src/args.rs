@@ -62,6 +62,15 @@ pub(crate) enum Command {
     )]
     PortsUninstall,
 
+    #[command(name = "ca:status", about = "Show PV local CA trust status")]
+    CaStatus,
+
+    #[command(name = "ca:trust", about = "Prepare PV local CA trust")]
+    CaTrust,
+
+    #[command(name = "ca:untrust", about = "Prepare removal of PV local CA trust")]
+    CaUntrust,
+
     #[command(name = "link", about = "Link a Project")]
     Link(LinkArgs),
 

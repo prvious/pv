@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/ca.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Prepared PV local CA trust removal\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem keychain trust: current\n  fingerprint: <fingerprint>\nPrivileged trust removal deferred to PR 13 setup/system-integration work.\n",
+    stderr: "",
+}
