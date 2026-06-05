@@ -414,6 +414,46 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
 }
 
 #[test]
+fn uninstall_removes_stale_ca_trust_when_local_ca_files_are_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture.paths)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _daemon_requests = daemon.finish()?;
+    let trusted_before = fixture.environment.certificates();
+    let fingerprint = trusted_before
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("setup did not trust a local CA"))?
+        .metadata
+        .fingerprint
+        .clone();
+
+    delete_optional_file(&fixture.paths.ca_certificate())?;
+    delete_optional_file(&fixture.paths.ca_private_key())?;
+
+    let uninstall = run_pv(&["uninstall"], fixture.environment.as_ref())?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    assert!(fixture.environment.certificates().is_empty());
+    assert!(
+        fixture
+            .environment
+            .operations()
+            .iter()
+            .any(|operation| operation == &format!("untrust {fingerprint}"))
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((uninstall, fixture.environment.operations()));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn uninstall_prune_requires_confirmation_without_force() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());

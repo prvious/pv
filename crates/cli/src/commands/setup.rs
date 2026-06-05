@@ -580,8 +580,21 @@ fn untrust_ca_for_uninstall(
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
 
     if matches!(local_state, CaFileState::Missing { .. }) {
+        let fingerprints = trusted_pv_ca_fingerprints(environment)?;
         let mut output = Output::new(stdout, OutputMode::plain());
-        output.line("PV local CA files are absent; skipping System keychain trust removal.")?;
+        if fingerprints.is_empty() {
+            output
+                .line("PV local CA files are absent; System keychain trust is already absent.")?;
+
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        for fingerprint in fingerprints {
+            environment.untrust_system_ca(&fingerprint)?;
+            output.line(&format!(
+                "Removed stale PV local CA trust from the System keychain: {fingerprint}"
+            ))?;
+        }
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -608,6 +621,24 @@ fn remove_default_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), 
     output.line("Preserved logs, pv.db, certificates, Composer home/cache, and resources data.")?;
 
     Ok(())
+}
+
+fn trusted_pv_ca_fingerprints(environment: &impl Environment) -> Result<Vec<String>, ExecuteError> {
+    struct EnvironmentTrustInspector<'environment, E> {
+        environment: &'environment E,
+    }
+
+    impl<E: Environment> platform::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
+        fn trusted_certificates(
+            &self,
+        ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
+            self.environment.trusted_ca_certificates()
+        }
+    }
+
+    Ok(platform::trusted_pv_ca_fingerprints(
+        &EnvironmentTrustInspector { environment },
+    )?)
 }
 
 fn prune_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {

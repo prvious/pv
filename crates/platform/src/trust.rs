@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use camino::Utf8Path;
 
 use crate::LocalCaMetadata;
@@ -123,6 +125,27 @@ pub fn inspect_system_ca_trust(
             },
         },
     }
+}
+
+pub fn trusted_pv_ca_fingerprints(
+    inspector: &impl SystemTrustInspector,
+) -> Result<Vec<String>, PlatformError> {
+    let certificates = inspector.trusted_certificates()?;
+    let fingerprints = certificates
+        .into_iter()
+        .filter(|certificate| {
+            is_pv_ca_metadata(&certificate.metadata)
+                && matches!(
+                    certificate.trust,
+                    KeychainTrustResult::TrustRoot
+                        | KeychainTrustResult::TrustAsRoot
+                        | KeychainTrustResult::Deny
+                )
+        })
+        .map(|certificate| certificate.metadata.fingerprint)
+        .collect::<BTreeSet<_>>();
+
+    Ok(fingerprints.into_iter().collect())
 }
 
 pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError> {

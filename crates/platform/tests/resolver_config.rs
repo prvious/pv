@@ -9,7 +9,7 @@ use platform::{
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
     TrustDomainState, generate_local_ca, inspect_local_ca_files, inspect_pf_anchor_file,
     inspect_pf_conf_reference, inspect_resolver_file, inspect_system_ca_trust,
-    loopback_tcp_listener_ports,
+    loopback_tcp_listener_ports, trusted_pv_ca_fingerprints,
 };
 use state::fs;
 
@@ -482,6 +482,43 @@ fn system_ca_trust_classification_requires_stale_pv_ca_capability() -> Result<()
         non_signing_ca_state,
         TrustDomainState::NotTrusted { .. }
     ));
+
+    Ok(())
+}
+
+#[test]
+fn trusted_pv_ca_fingerprints_reports_only_pv_owned_trust_entries() -> Result<()> {
+    let trusted = generate_local_ca()?;
+    let denied = generate_local_ca()?;
+    let unspecified = generate_local_ca()?;
+    let unrelated = generate_local_ca()?;
+    let mut unrelated_metadata =
+        LocalCaMetadata::from_pem_pair(&unrelated.certificate_pem, &unrelated.private_key_pem)?;
+    unrelated_metadata.common_name = "Unrelated Root".to_string();
+
+    let fingerprints = trusted_pv_ca_fingerprints(&FakeTrustInspector::new(vec![
+        KeychainCertificate {
+            metadata: trusted.metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        },
+        KeychainCertificate {
+            metadata: denied.metadata.clone(),
+            trust: KeychainTrustResult::Deny,
+        },
+        KeychainCertificate {
+            metadata: unspecified.metadata,
+            trust: KeychainTrustResult::Unspecified,
+        },
+        KeychainCertificate {
+            metadata: unrelated_metadata,
+            trust: KeychainTrustResult::TrustRoot,
+        },
+    ]))?;
+
+    let mut expected = vec![denied.metadata.fingerprint, trusted.metadata.fingerprint];
+    expected.sort();
+
+    assert_eq!(fingerprints, expected);
 
     Ok(())
 }
