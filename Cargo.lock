@@ -298,6 +298,7 @@ dependencies = [
  "home",
  "insta",
  "platform",
+ "resources",
  "serde_json",
  "state",
  "thiserror",

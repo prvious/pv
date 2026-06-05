@@ -17,7 +17,7 @@ use platform::{
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig,
 };
 use serde_json::json;
-use state::{PvPaths, StateError};
+use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -242,6 +242,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
 {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture.paths)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -281,9 +282,69 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
 }
 
 #[test]
+fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+
+    seed_setup_manifest(&fixture.paths)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let daemon_requests = daemon.finish()?;
+    let database = Database::open(&fixture.paths)?;
+    let tracks = database.managed_resource_tracks()?;
+    let observed = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.resource_name.as_str(),
+                track.track.as_str(),
+                track.desired_state,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(observed, expected_setup_tracks());
+    assert!(daemon_requests.iter().any(|request| {
+        request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn setup_requires_manifest_before_daemon_registration() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let operations = fixture.environment.operations();
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(
+        output
+            .stderr
+            .contains("setup cannot plan default Managed Resources")
+    );
+    assert!(
+        !operations
+            .iter()
+            .any(|operation| operation.contains("bootstrap"))
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, operations));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture.paths)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -343,6 +404,7 @@ fn uninstall_prune_requires_confirmation_without_force() -> anyhow::Result<()> {
 fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture.paths)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -374,6 +436,7 @@ fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
 fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
+    seed_setup_manifest(&fixture.paths)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
     let profile_path = fixture.paths.home().join(".zprofile");
 
@@ -617,6 +680,68 @@ fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {
     write_file(&paths.downloads().join("artifact.tar"), "download\n")?;
 
     Ok(())
+}
+
+fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
+    state::fs::ensure_layout(paths)?;
+    state::fs::write_sensitive_file(
+        &paths.downloads().join("manifest.json"),
+        &serde_json::to_string(&json!({
+            "schema_version": 1,
+            "minimum_pv_version": "0.1.0",
+            "resources": [
+                setup_manifest_resource("frankenphp", "1.5"),
+                setup_manifest_resource("php", "8.4"),
+                setup_manifest_resource("mysql", "8.4"),
+                setup_manifest_resource("postgres", "17"),
+                setup_manifest_resource("redis", "7.2"),
+                setup_manifest_resource("mailpit", "1"),
+                setup_manifest_resource("rustfs", "1"),
+                setup_manifest_resource("composer", "2"),
+            ],
+        }))?,
+    )?;
+
+    Ok(())
+}
+
+fn setup_manifest_resource(name: &str, track: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "default_track": track,
+        "tracks": [
+            {
+                "name": track,
+                "artifacts": [
+                    {
+                        "artifact_version": format!("{track}.0-pv1"),
+                        "upstream_version": format!("{track}.0"),
+                        "pv_build_revision": "pv1",
+                        "platform": "darwin-arm64",
+                        "url": format!(
+                            "https://artifacts.example.test/{name}-{track}.0-pv1-darwin-arm64.tar.gz"
+                        ),
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "size": 12345,
+                        "published_at": "2026-05-26T14:30:00Z"
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+fn expected_setup_tracks() -> Vec<(&'static str, &'static str, ManagedResourceDesiredState)> {
+    vec![
+        ("composer", "2", ManagedResourceDesiredState::Installed),
+        ("frankenphp", "1.5", ManagedResourceDesiredState::Installed),
+        ("mailpit", "1", ManagedResourceDesiredState::Installed),
+        ("mysql", "8.4", ManagedResourceDesiredState::Installed),
+        ("php", "8.4", ManagedResourceDesiredState::Installed),
+        ("postgres", "17", ManagedResourceDesiredState::Installed),
+        ("redis", "7.2", ManagedResourceDesiredState::Installed),
+        ("rustfs", "1", ManagedResourceDesiredState::Installed),
+    ]
 }
 
 fn accept_with_timeout(

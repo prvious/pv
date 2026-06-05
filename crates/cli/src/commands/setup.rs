@@ -5,17 +5,57 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::CaFileState;
-use state::{PvPaths, StateError};
+use resources::{ArtifactManifestCache, ResourceName, TrackName, TrackSelector};
+use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 use super::{ca, daemon as daemon_command, dns, ports};
 use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::Environment;
-use crate::error::ExecuteError;
+use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 use crate::shell::Shell;
 
 const PV_ENV_START: &str = "# >>> PV ENV";
 const PV_ENV_END: &str = "# <<< PV ENV";
+
+const DEFAULT_SETUP_RESOURCES: &[SetupResourceDefault] = &[
+    SetupResourceDefault::manifest_default("frankenphp"),
+    SetupResourceDefault::manifest_default("php"),
+    SetupResourceDefault::manifest_default("mysql"),
+    SetupResourceDefault::manifest_default("postgres"),
+    SetupResourceDefault::manifest_default("redis"),
+    SetupResourceDefault::manifest_default("mailpit"),
+    SetupResourceDefault::manifest_default("rustfs"),
+    SetupResourceDefault::concrete("composer", "2"),
+];
+
+#[derive(Clone, Copy, Debug)]
+struct SetupResourceDefault {
+    resource_name: &'static str,
+    track: SetupResourceTrackDefault,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SetupResourceTrackDefault {
+    ManifestDefault,
+    Concrete(&'static str),
+}
+
+impl SetupResourceDefault {
+    const fn manifest_default(resource_name: &'static str) -> Self {
+        Self {
+            resource_name,
+            track: SetupResourceTrackDefault::ManifestDefault,
+        }
+    }
+
+    const fn concrete(resource_name: &'static str, track: &'static str) -> Self {
+        Self {
+            resource_name,
+            track: SetupResourceTrackDefault::Concrete(track),
+        }
+    }
+}
 
 pub(crate) fn setup(
     args: SetupArgs,
@@ -49,6 +89,7 @@ pub(crate) fn setup(
     })? {
         return Ok(ExitCode::FAILURE);
     }
+    record_default_resource_desired_state(&paths)?;
     if !run_required_step("daemon registration", stdout, |stdout| {
         daemon_command::enable(environment, stdout)
     })? {
@@ -136,6 +177,40 @@ where
     output.line(&format!("PV stopped during {label}."))?;
 
     Ok(false)
+}
+
+fn record_default_resource_desired_state(paths: &PvPaths) -> Result<(), ExecuteError> {
+    let manifest_cache = ArtifactManifestCache::new(paths.downloads());
+    let manifest = match manifest_cache.load_cached() {
+        Ok(manifest) => manifest,
+        Err(resources::ResourcesError::Filesystem { .. }) => {
+            return Err(CliError::MissingSetupArtifactManifest {
+                path: manifest_cache.path().to_string(),
+            }
+            .into());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut database = Database::open(paths)?;
+
+    for resource_default in DEFAULT_SETUP_RESOURCES {
+        let resource_name = ResourceName::new(resource_default.resource_name)?;
+        let track_selector = match resource_default.track {
+            SetupResourceTrackDefault::ManifestDefault => TrackSelector::Latest,
+            SetupResourceTrackDefault::Concrete(track) => {
+                TrackSelector::Track(TrackName::new(track)?)
+            }
+        };
+        let track = manifest.resolve_track(&resource_name, track_selector)?;
+
+        database.record_managed_resource_track_desired(
+            resource_name.as_str(),
+            track.as_str(),
+            ManagedResourceDesiredState::Installed,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn configure_shell_integration(

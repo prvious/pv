@@ -23,6 +23,11 @@ pub enum CliError {
 
     #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
     InvalidProjectSelection { selection: String, count: usize },
+
+    #[error(
+        "artifact manifest cache is unavailable at `{path}`; setup cannot plan default Managed Resources"
+    )]
+    MissingSetupArtifactManifest { path: String },
 }
 
 #[derive(Debug, Error)]
@@ -47,4 +52,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Platform(#[from] platform::PlatformError),
+
+    #[error(transparent)]
+    Resources(#[from] resources::ResourcesError),
 }
