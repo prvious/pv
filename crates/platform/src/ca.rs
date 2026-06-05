@@ -299,6 +299,9 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LaunchAgent(_)
         | PlatformError::LaunchAgentCommand { .. }
         | PlatformError::LaunchAgentCommandStatus { .. }
+        | PlatformError::SystemIntegration(_)
+        | PlatformError::SystemIntegrationCommand { .. }
+        | PlatformError::SystemIntegrationCommandStatus { .. }
         | PlatformError::SocketTable(_)
         | PlatformError::SocketTableCommand(_)
         | PlatformError::SocketTableCommandStatus { .. }

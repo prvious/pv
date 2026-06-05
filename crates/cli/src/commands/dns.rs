@@ -44,12 +44,41 @@ pub(crate) fn install(
 
     let system_state = platform::inspect_resolver_file(&system_path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
+
     output.line("Prepared PV DNS resolver config")?;
     output.line(&format!("  path: {prepared_path}"))?;
     output.line(&format!("  DNS resolver port: {dns_port}"))?;
-    write_install_guidance(&mut output, &system_state)?;
 
-    Ok(ExitCode::FAILURE)
+    match system_state {
+        ResolverFileState::Current { path, port } => {
+            output.line(&format!(
+                "System resolver config already matches PV on port {port}: {path}"
+            ))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
+            environment.install_resolver_config(&prepared_path, &system_path)?;
+            output.line(&format!("Installed system resolver config: {path}"))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        ResolverFileState::Conflict { path } => {
+            output.line(&format!("System resolver config is not PV-owned: {path}"))?;
+            output.line("Leaving it in place.")?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        ResolverFileState::Unreadable { path, message } => {
+            output.line(&format!(
+                "System resolver config could not be inspected: {path}"
+            ))?;
+            output.line(&format!("  {message}"))?;
+            output.line("Leaving it in place.")?;
+
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 pub(crate) fn uninstall(
@@ -89,62 +118,16 @@ pub(crate) fn uninstall(
             Ok(ExitCode::FAILURE)
         }
         ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
-            output.line(&format!("PV-owned system resolver config remains: {path}"))?;
-            output.line("Privileged removal deferred to later setup/system-integration work.")?;
+            environment.remove_resolver_config(&system_path)?;
+            output.line(&format!("Removed PV-owned system resolver config: {path}"))?;
 
-            Ok(ExitCode::FAILURE)
+            Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
             output.line(&format!("System resolver config is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
 
             Ok(ExitCode::FAILURE)
-        }
-    }
-}
-
-fn write_install_guidance(
-    output: &mut Output<'_, impl Write>,
-    system_state: &ResolverFileState,
-) -> io::Result<()> {
-    match system_state {
-        ResolverFileState::Conflict { path } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!("System resolver config conflict: {path}"))?;
-            output.line("The file is not PV-owned. Privileged conflict repair is deferred to later setup/system-integration work.")
-        }
-        ResolverFileState::Unreadable { path, message } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!(
-                "System resolver config could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))
-        }
-        ResolverFileState::Missing { path } => {
-            output.line("Privileged install deferred to later setup/system-integration work.")?;
-            output.line(&format!("System resolver config is not installed: {path}"))
-        }
-        ResolverFileState::Current { path, port } => {
-            output.line("Privileged install deferred to later setup/system-integration work.")?;
-            output.line(&format!(
-                "System resolver config already matches PV on port {port}: {path}"
-            ))
-        }
-        ResolverFileState::Stale {
-            path,
-            expected_port,
-            actual_port,
-        } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!("PV-owned system resolver config is stale: {path}"))?;
-            match expected_port {
-                Some(expected_port) => output.line(&format!("  expected port: {expected_port}"))?,
-                None => output.line("  expected port: unknown")?,
-            }
-            match actual_port {
-                Some(actual_port) => output.line(&format!("  actual port: {actual_port}")),
-                None => output.line("  actual port: unparseable"),
-            }
         }
     }
 }

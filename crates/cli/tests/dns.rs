@@ -17,6 +17,7 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
     resolver_path: PathBuf,
+    operations: RefCell<Vec<String>>,
 }
 
 impl TestEnvironment {
@@ -25,6 +26,7 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             resolver_path: resolver_path.as_std_path().to_path_buf(),
+            operations: RefCell::new(Vec::new()),
         }
     }
 }
@@ -61,10 +63,39 @@ impl Environment for TestEnvironment {
     fn resolver_test_path(&self) -> PathBuf {
         self.resolver_path.clone()
     }
+
+    fn install_resolver_config(
+        &self,
+        prepared_path: &Utf8Path,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        let content = state::fs::read_to_string(prepared_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        write_file(system_path, &content)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        self.operations
+            .borrow_mut()
+            .push(format!("install resolver {prepared_path} -> {system_path}"));
+
+        Ok(())
+    }
+
+    fn remove_resolver_config(
+        &self,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        delete_optional_file(system_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        self.operations
+            .borrow_mut()
+            .push(format!("remove resolver {system_path}"));
+
+        Ok(())
+    }
 }
 
 #[test]
-fn dns_install_prepares_resolver_config_without_touching_system_path() -> anyhow::Result<()> {
+fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -76,13 +107,13 @@ fn dns_install_prepares_resolver_config_without_touching_system_path() -> anyhow
     let prepared_config = read_required_file(&prepared_path)?;
     let parsed_config = ResolverConfig::parse(&prepared_config)
         .ok_or_else(|| anyhow::anyhow!("prepared resolver config did not parse"))?;
-    let system_resolver_config = read_optional_file(&system_resolver_path)?;
+    let system_resolver_config = read_required_file(&system_resolver_path)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(!output.stdout.is_empty());
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
-    assert!(system_resolver_config.is_none());
+    assert_eq!(system_resolver_config, prepared_config);
     with_normalized_tempdir(tempdir.path(), || {
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(
@@ -98,6 +129,7 @@ fn dns_install_prepares_resolver_config_without_touching_system_path() -> anyhow
                 prepared_config,
                 parsed_config,
                 system_resolver_config,
+                environment.operations.borrow().clone(),
             ));
         });
     });
@@ -131,7 +163,7 @@ fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Resu
         .find(|assignment| assignment.owner == PortOwner::Dns)
         .ok_or_else(|| anyhow::anyhow!("missing DNS port assignment"))?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(seeded_assignment.port, dns_port);
     assert_eq!(parsed_config.port, dns_port);
     assert_eq!(dns_assignment.port, dns_port);
@@ -158,6 +190,7 @@ fn dns_install_reports_non_pv_owned_system_resolver_conflict() -> anyhow::Result
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert_eq!(system_after_install, conflict_config);
+    assert!(environment.operations.borrow().is_empty());
     with_normalized_tempdir(tempdir.path(), || {
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(
@@ -235,8 +268,7 @@ fn dns_status_reports_prepared_and_system_resolver_states() -> anyhow::Result<()
 }
 
 #[test]
-fn dns_uninstall_removes_prepared_config_and_defers_pv_owned_system_removal() -> anyhow::Result<()>
-{
+fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -249,13 +281,13 @@ fn dns_uninstall_removes_prepared_config_and_defers_pv_owned_system_removal() ->
 
     let output = run_pv(&["dns:uninstall"], &environment)?;
     let prepared_after_uninstall = read_optional_file(&prepared_path)?;
-    let system_after_uninstall = read_required_file(&system_resolver_path)?;
+    let system_after_uninstall = read_optional_file(&system_resolver_path)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert!(prepared_after_uninstall.is_none());
-    assert_eq!(system_after_uninstall, resolver_config);
+    assert!(system_after_uninstall.is_none());
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
@@ -263,6 +295,7 @@ fn dns_uninstall_removes_prepared_config_and_defers_pv_owned_system_removal() ->
             prepared_after_uninstall,
             system_resolver_path,
             system_after_uninstall,
+            environment.operations.borrow().clone(),
         ));
     });
 
@@ -288,6 +321,7 @@ fn dns_uninstall_fails_when_system_resolver_cannot_be_inspected() -> anyhow::Res
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert!(prepared_after_uninstall.is_none());
+    assert!(environment.operations.borrow().is_empty());
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, prepared_path, prepared_after_uninstall));
     });
@@ -340,6 +374,16 @@ fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
+    match state::fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn bind_loopback_tcp_udp_pair() -> anyhow::Result<(u16, TcpListener, UdpSocket)> {
     for _attempt in 0..100 {
         let tcp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -360,7 +404,7 @@ fn assert_no_manual_guidance(output: &str) {
     for pattern in [
         "sudo",
         "Move or remove",
-        "move",
+        "move ",
         "remove it manually",
         "sudo rm",
         "sudo install",

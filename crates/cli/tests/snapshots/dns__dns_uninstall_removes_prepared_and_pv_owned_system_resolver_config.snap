@@ -1,0 +1,22 @@
+---
+source: crates/cli/tests/dns.rs
+expression: "(output, prepared_path, prepared_after_uninstall, system_resolver_path,\nsystem_after_uninstall, environment.operations.borrow().clone(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\nRemoved PV-owned system resolver config: <tempdir>/etc/resolver/test\n",
+        stderr: "",
+    },
+    "<tempdir>/home/.pv/config/resolver/test",
+    None,
+    "<tempdir>/etc/resolver/test",
+    None,
+    [
+        "remove resolver <tempdir>/etc/resolver/test",
+    ],
+)

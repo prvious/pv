@@ -1,5 +1,6 @@
 mod browser;
 mod ca;
+mod command;
 mod error;
 mod launch_agent;
 mod pf;
@@ -24,6 +25,7 @@ pub use pf::{
 };
 pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
+    install_resolver_config, remove_resolver_config,
 };
 pub use socket::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use trust::{

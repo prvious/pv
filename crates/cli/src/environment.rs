@@ -44,6 +44,21 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
     }
 
+    fn install_resolver_config(
+        &self,
+        prepared_path: &Utf8Path,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::install_resolver_config(prepared_path, system_path)
+    }
+
+    fn remove_resolver_config(
+        &self,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::remove_resolver_config(system_path)
+    }
+
     fn pf_anchor_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_PF_ANCHOR_PATH)
     }
