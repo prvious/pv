@@ -13,6 +13,6 @@ expression: "(output, environment.operations.borrow().clone())"
         stderr: "",
     },
     [
-        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf via <tempdir>/home/.pv/config/pf",
     ],
 )

@@ -215,6 +215,7 @@ pub(crate) fn uninstall(
     let paths = pv_paths(environment)?;
     let prepared_anchor_path = paths.pf_anchor_config();
     let prepared_reference_path = paths.pf_conf_reference_config();
+    let candidate_dir = paths.config().join("pf");
     let system_anchor_path = pf_anchor_path(environment)?;
     let system_pf_conf_path = pf_conf_path(environment)?;
     let deleted_anchor = delete_optional_file(&prepared_anchor_path)?;
@@ -250,7 +251,7 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::SUCCESS);
     }
 
-    environment.remove_pf_redirects(&system_anchor_path, &system_pf_conf_path)?;
+    environment.remove_pf_redirects(&system_anchor_path, &system_pf_conf_path, &candidate_dir)?;
     output.line("Removed PV-owned system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)

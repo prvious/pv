@@ -1145,6 +1145,7 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "data-encoding",
+ "getrandom 0.4.2",
  "insta",
  "netstat-esr",
  "plist",

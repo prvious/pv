@@ -42,7 +42,7 @@ expression: "(setup, profile_after_setup, second_setup, profile_after_second_set
         "kickstart com.prvious.pv.daemon",
         "bootout com.prvious.pv.daemon",
         "remove resolver <tempdir>/etc/resolver/test",
-        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf via <tempdir>/home/.pv/config/pf",
         "untrust <fingerprint>",
     ],
 )

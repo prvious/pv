@@ -1,7 +1,7 @@
 use std::io;
-use std::path::PathBuf;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use data_encoding::HEXLOWER;
 
 use crate::PlatformError;
 use crate::command::{run_system_command, run_system_command_output};
@@ -363,6 +363,21 @@ fn rollback_pf_anchor_with_runner(
 pub fn remove_pf_redirects(
     system_anchor_path: &Utf8Path,
     system_pf_conf_path: &Utf8Path,
+    candidate_dir: &Utf8Path,
+) -> Result<(), PlatformError> {
+    remove_pf_redirects_with_runner(
+        system_anchor_path,
+        system_pf_conf_path,
+        candidate_dir,
+        &mut run_system_command,
+    )
+}
+
+fn remove_pf_redirects_with_runner(
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+    candidate_dir: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
     let system_reference_state = inspect_pf_conf_reference(system_pf_conf_path, None);
 
@@ -371,14 +386,14 @@ pub fn remove_pf_redirects(
         PfFileState::Current { .. } | PfFileState::Stale { .. } => {
             let current = read_platform_file(system_pf_conf_path)?;
             let candidate = remove_pf_reference_lines(&current);
-            let candidate_path = temporary_pf_conf_candidate_path()?;
+            let candidate_path = temporary_pf_conf_candidate_path(candidate_dir)?;
 
             write_temporary_file(&candidate_path, &candidate)?;
-            run_system_command(
+            run_system(
                 "/usr/bin/sudo",
                 &["/sbin/pfctl", "-nf", candidate_path.as_str()],
             )?;
-            run_system_command(
+            run_system(
                 "/usr/bin/sudo",
                 &[
                     "/usr/bin/install",
@@ -401,11 +416,11 @@ pub fn remove_pf_redirects(
         }
     }
 
-    run_system_command(
+    run_system(
         "/usr/bin/sudo",
         &["/bin/rm", "-f", system_anchor_path.as_str()],
     )?;
-    reload_pf(system_pf_conf_path)
+    reload_pf_with_runner(system_pf_conf_path, run_system)
 }
 
 fn inspect_pv_file<T: Clone + Eq>(
@@ -556,10 +571,6 @@ fn install_pf_anchor_with_runner(
     )
 }
 
-fn reload_pf(system_pf_conf_path: &Utf8Path) -> Result<(), PlatformError> {
-    reload_pf_with_runner(system_pf_conf_path, &mut run_system_command)
-}
-
 fn reload_pf_with_runner(
     system_pf_conf_path: &Utf8Path,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
@@ -619,39 +630,29 @@ fn read_optional_platform_file(path: &Utf8Path) -> Result<Option<String>, Platfo
     }
 }
 
-fn temporary_pf_conf_candidate_path() -> Result<Utf8PathBuf, PlatformError> {
-    let temp_dir = process_temp_dir();
-    let temp_dir = Utf8PathBuf::from_path_buf(temp_dir).map_err(|path| {
-        PlatformError::SystemIntegration(format!(
-            "temporary directory path is not valid UTF-8: {path:?}"
-        ))
-    })?;
+fn temporary_pf_conf_candidate_path(
+    candidate_dir: &Utf8Path,
+) -> Result<Utf8PathBuf, PlatformError> {
+    let mut suffix = [0_u8; 16];
+    getrandom::fill(&mut suffix)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
 
-    Ok(temp_dir.join(format!("pv-pf-conf-{}-uninstall", std::process::id())))
+    Ok(candidate_dir.join(format!("pv-pf-conf-{}-uninstall", HEXLOWER.encode(&suffix))))
 }
 
-fn process_temp_dir() -> PathBuf {
-    std::env::temp_dir()
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "platform pf helper owns temporary pf.conf candidate writes"
-)]
 fn write_temporary_file(path: &Utf8Path, content: &str) -> Result<(), PlatformError> {
-    std::fs::write(path, content).map_err(|source| {
-        PlatformError::SystemIntegration(format!(
-            "could not write pf.conf candidate {path}: {source}"
-        ))
-    })
+    state::fs::write_sensitive_file(path, content)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
+    use camino::Utf8Path;
     use camino_tempfile::tempdir;
 
     use super::{
         PfConfReference, PfRedirectConfig, install_pf_redirects_with_runner, read_platform_file,
+        remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
     };
 
     #[test]
@@ -754,6 +755,75 @@ mod tests {
         assert!(commands.iter().any(|command| {
             command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn temporary_pf_conf_candidate_path_uses_candidate_dir_and_random_suffix() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let candidate_dir = tempdir.path().join("config/pf");
+        let first = temporary_pf_conf_candidate_path(&candidate_dir)?;
+        let second = temporary_pf_conf_candidate_path(&candidate_dir)?;
+        let process_id = std::process::id().to_string();
+
+        assert_eq!(first.parent(), Some(candidate_dir.as_path()));
+        assert_eq!(second.parent(), Some(candidate_dir.as_path()));
+        assert_ne!(first, second);
+        assert!(first.file_name().is_some_and(|name| {
+            name.starts_with("pv-pf-conf-") && name.ends_with("-uninstall")
+        }));
+        assert!(
+            !first
+                .file_name()
+                .is_some_and(|name| name.contains(&process_id))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_pf_redirects_writes_candidate_in_pv_config_dir() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let candidate_dir = tempdir.path().join("home/.pv/config/pf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &system_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(
+            &system_pf_conf_path,
+            &format!("{}\n{}", "set skip on lo0", PfConfReference.render()),
+        )?;
+
+        remove_pf_redirects_with_runner(
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &candidate_dir,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+
+                Ok(())
+            },
+        )?;
+
+        let candidate_command = commands
+            .iter()
+            .find(|command| command.contains("/sbin/pfctl -nf"))
+            .ok_or_else(|| anyhow::anyhow!("candidate validation command was not recorded"))?;
+        let candidate_path = candidate_command
+            .split_whitespace()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("candidate validation command had no path"))?;
+        let candidate_path = Utf8Path::new(candidate_path);
+        let candidate = read_platform_file(candidate_path)?;
+
+        assert!(candidate_path.starts_with(&candidate_dir));
+        assert_eq!(candidate, "set skip on lo0\n");
 
         Ok(())
     }

@@ -205,6 +205,7 @@ impl Environment for TestEnvironment {
         &self,
         system_anchor_path: &Utf8Path,
         system_pf_conf_path: &Utf8Path,
+        candidate_dir: &Utf8Path,
     ) -> Result<(), platform::PlatformError> {
         delete_optional_file(system_anchor_path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
@@ -212,7 +213,7 @@ impl Environment for TestEnvironment {
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         *lock(&self.active_pf_config) = None;
         lock(&self.operations).push(format!(
-            "remove pf {system_anchor_path} {system_pf_conf_path}"
+            "remove pf {system_anchor_path} {system_pf_conf_path} via {candidate_dir}"
         ));
 
         Ok(())

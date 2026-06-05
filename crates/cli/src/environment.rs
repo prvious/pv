@@ -98,8 +98,9 @@ pub trait Environment {
         &self,
         system_anchor_path: &Utf8Path,
         system_pf_conf_path: &Utf8Path,
+        candidate_dir: &Utf8Path,
     ) -> Result<(), platform::PlatformError> {
-        platform::remove_pf_redirects(system_anchor_path, system_pf_conf_path)
+        platform::remove_pf_redirects(system_anchor_path, system_pf_conf_path, candidate_dir)
     }
 
     fn trusted_ca_certificates(
