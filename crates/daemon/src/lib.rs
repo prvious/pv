@@ -17,7 +17,9 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-pub use client::{CompletedJob, SubmittedJob, run_job_blocking, submit_job_blocking};
+pub use client::{
+    CompletedJob, SubmittedJob, run_job_blocking, submit_job_blocking, wait_until_healthy_blocking,
+};
 pub use dns::{dns_port_available, response_bytes};
 pub use error::DaemonError;
 pub use protocol::PROTOCOL_VERSION;

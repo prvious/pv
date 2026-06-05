@@ -9,6 +9,9 @@ use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 
+const RECONCILE_KIND: &str = "reconcile";
+const SYSTEM_SCOPE: &str = "system";
+
 pub(crate) fn enable(
     environment: &impl Environment,
     stdout: &mut impl Write,
@@ -26,6 +29,7 @@ pub(crate) fn enable(
             environment.kickstart_launch_agent()?;
             output.line("LaunchAgent already installed")?;
             output.line("Daemon started")?;
+            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -35,6 +39,7 @@ pub(crate) fn enable(
             environment.kickstart_launch_agent()?;
             output.line(&format!("LaunchAgent installed: {path}"))?;
             output.line("Daemon started")?;
+            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -106,6 +111,7 @@ pub(crate) fn restart(
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
             output.line("Daemon restarted")?;
+            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -115,6 +121,7 @@ pub(crate) fn restart(
             environment.kickstart_launch_agent()?;
             output.line(&format!("LaunchAgent installed: {path}"))?;
             output.line("Daemon restarted")?;
+            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -152,6 +159,21 @@ fn launch_agent_config(
         paths.logs().join("launchd.out.log"),
         paths.logs().join("launchd.err.log"),
     ))
+}
+
+fn wait_for_daemon_and_submit_reconciliation(
+    paths: PvPaths,
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    ::daemon::wait_until_healthy_blocking(paths.clone())?;
+    output.line("Daemon healthy")?;
+    let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, SYSTEM_SCOPE)?;
+    output.line(&format!(
+        "System reconciliation requested: {}",
+        submitted.id
+    ))?;
+
+    Ok(())
 }
 
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {

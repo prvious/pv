@@ -1,14 +1,19 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write as _};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
+use serde_json::json;
 use state::{PvPaths, StateError};
 
 #[derive(Debug)]
@@ -110,8 +115,10 @@ fn daemon_enable_installs_pv_launch_agent_and_starts_it() -> anyhow::Result<()> 
         .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
     let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
     let paths = PvPaths::for_home(&home);
+    let daemon = DaemonFixture::start(&paths, 2)?;
 
     let output = run_pv(&["daemon:enable"], &environment)?;
+    let _daemon_requests = daemon.finish()?;
     let plist = read_required_file(&launch_agent_path)?;
     let parsed = LaunchAgentConfig::parse(&plist);
 
@@ -130,6 +137,40 @@ fn daemon_enable_installs_pv_launch_agent_and_starts_it() -> anyhow::Result<()> 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, environment.operations(), plist));
     });
+
+    Ok(())
+}
+
+#[test]
+fn daemon_enable_waits_for_health_and_submits_reconciliation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let current_exe = tempdir.path().join("pv");
+    let launch_agent_path = tempdir
+        .path()
+        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
+    let paths = PvPaths::for_home(&home);
+    let daemon = DaemonFixture::start(&paths, 2)?;
+
+    let output = run_pv(&["daemon:enable"], &environment)?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        daemon_requests,
+        vec![
+            format!(
+                r#"{{"protocol_version":{},"command":"health"}}"#,
+                daemon::PROTOCOL_VERSION
+            ),
+            format!(
+                r#"{{"protocol_version":{},"command":"run_job","kind":"reconcile","scope":"system"}}"#,
+                daemon::PROTOCOL_VERSION
+            ),
+        ]
+    );
 
     Ok(())
 }
@@ -235,6 +276,122 @@ fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     state::fs::write_sensitive_file(path, content)?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct DaemonFixture {
+    requests: Arc<Mutex<Vec<String>>>,
+    thread: thread::JoinHandle<anyhow::Result<()>>,
+}
+
+impl DaemonFixture {
+    fn start(paths: &PvPaths, expected_requests: usize) -> anyhow::Result<Self> {
+        state::fs::ensure_layout(paths)?;
+        delete_optional_file(&paths.daemon_socket())?;
+        let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
+
+        listener.set_nonblocking(true)?;
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
+        let thread = spawn_daemon_fixture_thread(move || {
+            for _request_index in 0..expected_requests {
+                let (mut stream, _address) = accept_with_timeout(&listener)?;
+                let mut request = String::new();
+                let mut reader = BufReader::new(stream.try_clone()?);
+
+                reader.read_line(&mut request)?;
+                lock(&thread_requests).push(request.trim().to_string());
+                if request.contains(r#""command":"health""#) {
+                    write_daemon_line(
+                        &mut stream,
+                        json!({
+                            "type": "response",
+                            "protocol_version": daemon::PROTOCOL_VERSION,
+                            "status": "ok",
+                            "message": "daemon healthy",
+                        }),
+                    )?;
+                } else {
+                    write_daemon_line(
+                        &mut stream,
+                        json!({
+                            "type": "response",
+                            "protocol_version": daemon::PROTOCOL_VERSION,
+                            "status": "accepted",
+                            "message": "job accepted",
+                            "job_id": "job_enable_1",
+                        }),
+                    )?;
+                }
+            }
+
+            Ok(())
+        });
+
+        Ok(Self { requests, thread })
+    }
+
+    fn finish(self) -> anyhow::Result<Vec<String>> {
+        self.thread
+            .join()
+            .map_err(|_error| anyhow::anyhow!("daemon fixture thread panicked"))??;
+
+        Ok(lock(&self.requests).clone())
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI daemon tests run a synchronous fixture daemon on a short-lived thread"
+)]
+fn spawn_daemon_fixture_thread(
+    operation: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> thread::JoinHandle<anyhow::Result<()>> {
+    thread::spawn(operation)
+}
+
+fn accept_with_timeout(
+    listener: &UnixListener,
+) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
+    let started_at = Instant::now();
+
+    loop {
+        match listener.accept() {
+            Ok(accepted) => return Ok(accepted),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if started_at.elapsed() > Duration::from_secs(3) {
+                    return Err(anyhow::anyhow!(
+                        "timed out waiting for daemon client request"
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn write_daemon_line(stream: &mut UnixStream, value: serde_json::Value) -> anyhow::Result<()> {
+    writeln!(stream, "{value}")?;
+
+    Ok(())
+}
+
+fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
+    match state::fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {

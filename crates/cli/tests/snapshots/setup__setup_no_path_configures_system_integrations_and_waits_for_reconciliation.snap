@@ -9,7 +9,7 @@ expression: "(output, PfRedirectConfig::parse_anchor(&prepared_anchor),\nPfConfR
                 0,
             ),
         ),
-        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nShell profile integration skipped by --no-path.\nRun `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nInstalled system pf redirect config\nPrepared PV local CA\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  fingerprint: <fingerprint>\nSystem keychain trust: not trusted\n  fingerprint: <fingerprint>\nTrusted PV local CA in the System keychain.\nLaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\nSystem reconciliation completed: stub job completed\nPV setup complete\n",
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nShell profile integration skipped by --no-path.\nRun `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nInstalled system pf redirect config\nPrepared PV local CA\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  fingerprint: <fingerprint>\nSystem keychain trust: not trusted\n  fingerprint: <fingerprint>\nTrusted PV local CA in the System keychain.\nLaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\nDaemon healthy\nSystem reconciliation requested: job_enable_1\nSystem reconciliation completed: stub job completed\nPV setup complete\n",
         stderr: "",
     },
     Some(
@@ -36,6 +36,8 @@ expression: "(output, PfRedirectConfig::parse_anchor(&prepared_anchor),\nPfConfR
         "kickstart com.prvious.pv.daemon",
     ],
     [
+        "{\"protocol_version\":1,\"command\":\"health\"}",
+        "{\"protocol_version\":1,\"command\":\"run_job\",\"kind\":\"reconcile\",\"scope\":\"system\"}",
         "{\"protocol_version\":1,\"command\":\"run_job\",\"kind\":\"reconcile\",\"scope\":\"system\"}",
     ],
 )

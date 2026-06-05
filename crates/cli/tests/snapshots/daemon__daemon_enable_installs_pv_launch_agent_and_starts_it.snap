@@ -9,7 +9,7 @@ expression: "(output, environment.operations(), plist)"
                 0,
             ),
         ),
-        stdout: "LaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\n",
+        stdout: "LaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\nDaemon healthy\nSystem reconciliation requested: job_enable_1\n",
         stderr: "",
     },
     [

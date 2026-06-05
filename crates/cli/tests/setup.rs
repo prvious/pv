@@ -487,47 +487,80 @@ impl DaemonFixture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
         let thread = spawn_daemon_fixture_thread(move || {
-            let (mut stream, _address) = accept_with_timeout(&listener)?;
-            let mut request = String::new();
-            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut job_requests = 0;
 
-            reader.read_line(&mut request)?;
-            lock(&thread_requests).push(request.trim().to_string());
-            write_daemon_line(
-                &mut stream,
-                json!({
-                    "type": "response",
-                    "protocol_version": daemon::PROTOCOL_VERSION,
-                    "status": "accepted",
-                    "message": "job accepted",
-                    "job_id": "job_setup_1",
-                }),
-            )?;
-            write_daemon_line(
-                &mut stream,
-                json!({
-                    "type": "job_started",
-                    "job_id": "job_setup_1",
-                    "kind": "reconcile",
-                    "scope": "system",
-                }),
-            )?;
-            write_daemon_line(
-                &mut stream,
-                json!({
-                    "type": "progress",
-                    "job_id": "job_setup_1",
-                    "message": "stub job completed without reconciliation work",
-                }),
-            )?;
-            write_daemon_line(
-                &mut stream,
-                json!({
-                    "type": "job_completed",
-                    "job_id": "job_setup_1",
-                    "summary": "stub job completed",
-                }),
-            )?;
+            for _request_index in 0..3 {
+                let (mut stream, _address) = accept_with_timeout(&listener)?;
+                let mut request = String::new();
+                let mut reader = BufReader::new(stream.try_clone()?);
+
+                reader.read_line(&mut request)?;
+                lock(&thread_requests).push(request.trim().to_string());
+
+                if request.contains(r#""command":"health""#) {
+                    write_daemon_line(
+                        &mut stream,
+                        json!({
+                            "type": "response",
+                            "protocol_version": daemon::PROTOCOL_VERSION,
+                            "status": "ok",
+                            "message": "daemon healthy",
+                        }),
+                    )?;
+                    continue;
+                }
+
+                job_requests += 1;
+                if job_requests == 1 {
+                    write_daemon_line(
+                        &mut stream,
+                        json!({
+                            "type": "response",
+                            "protocol_version": daemon::PROTOCOL_VERSION,
+                            "status": "accepted",
+                            "message": "job accepted",
+                            "job_id": "job_enable_1",
+                        }),
+                    )?;
+                    continue;
+                }
+
+                write_daemon_line(
+                    &mut stream,
+                    json!({
+                        "type": "response",
+                        "protocol_version": daemon::PROTOCOL_VERSION,
+                        "status": "accepted",
+                        "message": "job accepted",
+                        "job_id": "job_setup_1",
+                    }),
+                )?;
+                write_daemon_line(
+                    &mut stream,
+                    json!({
+                        "type": "job_started",
+                        "job_id": "job_setup_1",
+                        "kind": "reconcile",
+                        "scope": "system",
+                    }),
+                )?;
+                write_daemon_line(
+                    &mut stream,
+                    json!({
+                        "type": "progress",
+                        "job_id": "job_setup_1",
+                        "message": "stub job completed without reconciliation work",
+                    }),
+                )?;
+                write_daemon_line(
+                    &mut stream,
+                    json!({
+                        "type": "job_completed",
+                        "job_id": "job_setup_1",
+                        "summary": "stub job completed",
+                    }),
+                )?;
+            }
 
             Ok(())
         });

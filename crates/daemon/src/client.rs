@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use state::PvPaths;
 use tokio::net::UnixStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::DaemonError;
 use protocol::{
@@ -13,6 +13,8 @@ const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
+const DAEMON_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubmittedJob {
@@ -51,6 +53,15 @@ pub fn run_job_blocking(
     runtime.block_on(run_job(paths, kind, scope))
 }
 
+pub fn wait_until_healthy_blocking(paths: PvPaths) -> Result<(), DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+
+    runtime.block_on(wait_until_healthy(paths))
+}
+
 async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<SubmittedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
@@ -73,6 +84,35 @@ async fn run_job(paths: PvPaths, kind: &str, scope: &str) -> Result<CompletedJob
     Ok(CompletedJob { id, summary })
 }
 
+async fn wait_until_healthy(paths: PvPaths) -> Result<(), DaemonError> {
+    let started_at = Instant::now();
+
+    loop {
+        match health(paths.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(error) if health_error_is_retryable(&error, started_at) => {
+                sleep(DAEMON_HEALTH_POLL_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn health(paths: PvPaths) -> Result<(), DaemonError> {
+    let mut transport = connect_transport(&paths).await?;
+
+    write_health_request(&mut transport).await?;
+    let response = read_response(&mut transport).await?;
+    validate_response_contract(&response)?;
+
+    match response.status() {
+        ResponseStatus::Ok => Ok(()),
+        ResponseStatus::Accepted | ResponseStatus::Error => Err(DaemonError::DaemonRejected {
+            message: response.message().to_string(),
+        }),
+    }
+}
+
 async fn connect_transport(
     paths: &PvPaths,
 ) -> Result<protocol::DaemonTransport<UnixStream>, DaemonError> {
@@ -86,6 +126,20 @@ async fn connect_transport(
     })??;
 
     Ok(protocol::transport(stream))
+}
+
+async fn write_health_request(
+    transport: &mut protocol::DaemonTransport<UnixStream>,
+) -> Result<(), DaemonError> {
+    let request = DaemonRequest {
+        protocol_version: PROTOCOL_VERSION,
+        command: DaemonCommand::Health,
+    };
+
+    timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
+        .await
+        .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
+        .map_err(DaemonError::from)
 }
 
 async fn write_job_request(
@@ -105,6 +159,26 @@ async fn write_job_request(
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
         .map_err(DaemonError::from)
+}
+
+fn health_error_is_retryable(error: &DaemonError, started_at: Instant) -> bool {
+    if started_at.elapsed() >= DAEMON_HEALTH_TIMEOUT {
+        return false;
+    }
+
+    matches!(
+        error,
+        DaemonError::Io(source)
+            if matches!(
+                source.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            )
+    ) || matches!(
+        error,
+        DaemonError::ProtocolTimedOut {
+            phase: "connection" | "response"
+        }
+    )
 }
 
 async fn read_response(
