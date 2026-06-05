@@ -3,7 +3,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
-use macos::{CaFileState, GeneratedLocalCa, LocalCaMetadata, TrustDomainState};
+use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, TrustDomainState};
 use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -16,7 +16,7 @@ pub(crate) fn status(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
-        macos::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -34,7 +34,7 @@ pub(crate) fn trust(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let initial_state =
-        macos::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let (local_state, generated) = ensure_local_ca(&paths, initial_state)?;
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
@@ -65,7 +65,7 @@ pub(crate) fn untrust(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
-        macos::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -95,13 +95,13 @@ fn ensure_local_ca(
     paths: &PvPaths,
     initial_state: CaFileState,
 ) -> Result<(CaFileState, Option<GeneratedLocalCa>), ExecuteError> {
-    ensure_local_ca_with_generator(paths, initial_state, macos::generate_local_ca)
+    ensure_local_ca_with_generator(paths, initial_state, platform::generate_local_ca)
 }
 
 fn ensure_local_ca_with_generator(
     paths: &PvPaths,
     initial_state: CaFileState,
-    generate: impl FnOnce() -> Result<GeneratedLocalCa, macos::MacosError>,
+    generate: impl FnOnce() -> Result<GeneratedLocalCa, platform::PlatformError>,
 ) -> Result<(CaFileState, Option<GeneratedLocalCa>), ExecuteError> {
     if matches!(initial_state, CaFileState::Current { .. }) {
         return Ok((initial_state, None));
@@ -111,16 +111,16 @@ fn ensure_local_ca_with_generator(
     state::fs::write_sensitive_file(&paths.ca_certificate(), &generated.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &generated.private_key_pem)?;
     let repaired_state =
-        macos::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
 
     match &repaired_state {
         CaFileState::Current { .. } => Ok((repaired_state, Some(generated))),
-        CaFileState::Missing { .. } => Err(macos::MacosError::LocalCaPostWriteMissing.into()),
+        CaFileState::Missing { .. } => Err(platform::PlatformError::LocalCaPostWriteMissing.into()),
         CaFileState::RepairRequired { reason, .. } => {
-            Err(macos::MacosError::LocalCaPostWriteRepairRequired { reason: *reason }.into())
+            Err(platform::PlatformError::LocalCaPostWriteRepairRequired { reason: *reason }.into())
         }
         CaFileState::Unreadable { path, message } => {
-            Err(macos::MacosError::LocalCaPostWriteUnreadable {
+            Err(platform::PlatformError::LocalCaPostWriteUnreadable {
                 path: path.clone(),
                 message: message.clone(),
             }
@@ -146,16 +146,16 @@ fn trust_state(
         environment: &'environment E,
     }
 
-    impl<E: Environment> macos::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
+    impl<E: Environment> platform::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
         fn trusted_certificates(
             &self,
-        ) -> Result<Vec<macos::KeychainCertificate>, macos::MacosError> {
+        ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
             self.environment.trusted_ca_certificates()
         }
     }
 
     let inspector = EnvironmentTrustInspector { environment };
-    macos::inspect_system_ca_trust(metadata, &inspector)
+    platform::inspect_system_ca_trust(metadata, &inspector)
 }
 
 fn write_local_ca_state(
@@ -246,7 +246,7 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 #[cfg(test)]
 mod tests {
     use camino_tempfile::tempdir;
-    use macos::{CaRepairReason, MacosError};
+    use platform::{CaRepairReason, PlatformError};
 
     use super::*;
 
@@ -254,7 +254,7 @@ mod tests {
     fn ensure_local_ca_rejects_failed_post_write_validation() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let generated = macos::generate_local_ca()?;
+        let generated = platform::generate_local_ca()?;
         let mut invalid_generated = generated.clone();
         invalid_generated.private_key_pem = "not a private key\n".to_string();
         let initial_state = CaFileState::Missing {
@@ -267,8 +267,8 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ExecuteError::Macos(
-                MacosError::LocalCaPostWriteRepairRequired {
+            Err(ExecuteError::Platform(
+                PlatformError::LocalCaPostWriteRepairRequired {
                     reason: CaRepairReason::MalformedPrivateKey
                 }
             ))

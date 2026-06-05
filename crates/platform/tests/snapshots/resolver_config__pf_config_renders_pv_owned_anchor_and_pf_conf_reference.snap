@@ -1,5 +1,5 @@
 ---
-source: crates/macos/tests/resolver_config.rs
+source: crates/platform/tests/resolver_config.rs
 expression: "(anchor, reference)"
 ---
 (

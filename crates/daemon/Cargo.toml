@@ -12,6 +12,7 @@ camino = { workspace = true }
 config = { path = "../config" }
 futures-util = { workspace = true }
 hickory-proto = { workspace = true }
+protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 resources = { path = "../resources" }

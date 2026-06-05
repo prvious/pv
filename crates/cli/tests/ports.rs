@@ -9,7 +9,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use macos::{PfConfReference, PfRedirectConfig};
+use platform::{PfConfReference, PfRedirectConfig};
 use state::{Database, PortOwner, PvPaths, StateError};
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ impl Environment for TestEnvironment {
         self.pf_conf_path.clone()
     }
 
-    fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, macos::MacosError> {
+    fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
         Ok(self.listening_ports.clone())
     }
 }

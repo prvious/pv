@@ -92,10 +92,11 @@ graph TD
 | ID | Package | Type | Blocked By | Blocks | Done When |
 | --- | --- | --- | --- | --- | --- |
 | PV-000 | Create Rust binary project | Enabler | None | All Rust work | `pv --version` builds and runs from source. |
-| PV-001 | Add baseline workspace crate layout | Enabler | PV-000 | CLI, daemon, state | Project has internal workspace crates for `cli`, `daemon`, `state`, `config`, `resources`, and `macos`. |
+| PV-001 | Add baseline workspace crate layout | Enabler | PV-000 | CLI, daemon, state | Project has internal workspace crates for `cli`, `daemon`, `state`, `config`, `resources`, `protocol`, and `platform`. |
 | PV-002 | Add CI quality gates | Enabler | PV-000 | Safe parallel work | CI runs format, Clippy with PV's lint policy, Nextest, and docs checks. |
 | PV-003 | Add error/output conventions | Enabler | PV-000 | CLI UX | Shared error type, exit handling, color/no-color helper, and user-facing output helpers exist. |
 | PV-004 | Add workspace lint policy | Enabler | PV-000 | Safe parallel work | Cargo lint settings enable the root `clippy.toml` policy for disallowed methods, types, macros, print/debug output, unwrap/expect, panic, todo, unimplemented, and unreachable code. |
+| PV-005 | Add host platform and daemon protocol boundaries | Enabler | PV-001, PV-025, PR 10, PR 11, PR 12 | PR 13, future host integration work | Workspace has `platform` and `protocol` crates; app crates do not depend directly on macOS host integration APIs; daemon wire types live outside daemon runtime code. |
 
 Recommended external crates for this milestone: `clap`, `tokio`, `serde`, `serde_json`, `thiserror`, `anyhow`, `tracing`, `tracing-subscriber`, `camino` or strict path helpers, and test helpers.
 
@@ -110,7 +111,8 @@ crates/
   state/
   config/
   resources/
-  macos/
+  protocol/
+  platform/
 ```
 
 Release tooling may later live in `xtask/` or an internal `crates/release/` crate. It is not part of the user-facing `pv` binary.
@@ -124,8 +126,11 @@ Suggested crate ownership:
 | `state` | `pv.db`, migrations, transactions, typed queries, desired/observed state, jobs, ports, Projects, and Managed Resource state. |
 | `config` | `pv.yml` parsing, validation, hostnames, document roots, env mappings, placeholder validation, and allocation config shape. |
 | `resources` | Compiled-in Managed Resource adapter traits, registry, artifact lifecycle helpers, allocation contracts, and common resource command plumbing. |
-| `macos` | macOS-specific integrations: LaunchAgent, `/etc/resolver/test`, `pf`, System keychain CA trust, shell profile targets, and privileged command helpers. |
+| `protocol` | Shared daemon wire contracts: protocol version, request/response envelopes, job/progress event schema, and framing helpers that do not depend on daemon runtime logic. |
+| `platform` | Host OS integration boundary. The v1 concrete implementation is macOS: LaunchAgent, `/etc/resolver/test`, `pf`, System keychain CA trust, shell profile targets, and privileged command helpers. |
 | `xtask` or `release` | Internal release tooling for artifact metadata validation, manifest generation, checksums, revocations, and publication planning. |
+
+Application crates should depend on `platform`, not directly on host-specific implementation crates or modules. Code belongs in `platform` when it decides, inspects, mutates, models, or names host OS integration. Unix filesystem permissions, symlink mechanics, Unix sockets, and signal handling may remain in their owning domain crates when they are local mechanics rather than host integration policy.
 
 Keep crate boundaries practical. If a boundary starts slowing development down, prefer moving code within the workspace over introducing another crate.
 
@@ -345,7 +350,8 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 10 | DNS resolver and `/etc/resolver/test` commands | PV-050, PV-051 | PR 4, PR 5 | Yes | Yes (#250) |
 | PR 11 | `pf` config generation and port commands | PV-052, PV-053 | PR 4, PR 5 | Yes | Yes (#252) |
 | PR 12 | CA file generation, read-only trust inspection, and trust command preparation; System keychain mutation deferred | PV-054 (preparation/read-only) | PR 2, PR 4 | Yes | Yes (#251) |
-| PR 13 | LaunchAgent, `pv setup`, safe `pv uninstall`, and System keychain CA trust/untrust mutation | PV-054 (System keychain mutation), PV-055, PV-056, PV-057 | PR 7, PR 10, PR 11, PR 12 | No | No |
+| PR 12A | Platform and protocol workspace boundary refactor | PV-005 | PR 10, PR 11, PR 12 | No | No |
+| PR 13 | LaunchAgent, `pv setup`, safe `pv uninstall`, and System keychain CA trust/untrust mutation | PV-054 (System keychain mutation), PV-055, PV-056, PV-057 | PR 7, PR 10, PR 11, PR 12, PR 12A | No | No |
 | PR 14 | PHP/FrankenPHP adapters, workers, Gateway, first Project-serving test | PV-070, PV-071, PV-072, PV-073, PV-074, PV-078 | PR 7, PR 9, PR 13 | No | No |
 | PR 15 | PHP shim, PHP commands, Composer track `2` install/shim | PV-075, PV-076, PV-077 | PR 14 | Yes | No |
 | PR 16 | Mailpit adapter | PV-083 | PR 7, PR 9 | Yes | No |

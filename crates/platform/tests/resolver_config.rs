@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use macos::{
+use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
     TrustDomainState, generate_local_ca, inspect_local_ca_files, inspect_pf_anchor_file,
@@ -17,9 +17,16 @@ use state::fs;
 fn resolver_config_renders_pv_owned_test_resolver_file() {
     let config = ResolverConfig::new(35353);
     let rendered = config.render();
+    let duplicate_port = format!("{rendered}port 35353\n");
+    let duplicate_nameserver =
+        rendered.replacen("port 35353\n", "nameserver 127.0.0.1\nport 35353\n", 1);
+    let unexpected_active_line = format!("{rendered}search test\n");
 
     assert_debug_snapshot!(&rendered);
     assert_eq!(ResolverConfig::parse(&rendered), Some(config));
+    assert_eq!(ResolverConfig::parse(&duplicate_port), None);
+    assert_eq!(ResolverConfig::parse(&duplicate_nameserver), None);
+    assert_eq!(ResolverConfig::parse(&unexpected_active_line), None);
 }
 
 #[test]
@@ -71,11 +78,28 @@ fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
     let config = PfRedirectConfig::new(48080, 48443);
     let anchor = config.render_anchor();
     let reference = PfConfReference.render();
+    let extra_active_line_reference = format!("{reference}set block-policy drop\n");
+    let duplicate_anchor_reference = format!("{reference}anchor \"com.prvious.pv\"\n");
+    let duplicate_load_reference = format!(
+        "{reference}load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n"
+    );
 
     assert_eq!(PfRedirectConfig::parse_anchor(&anchor), Some(config));
     assert_eq!(
         PfConfReference::parse_block(&reference),
         Some(PfConfReference)
+    );
+    assert_eq!(
+        PfConfReference::parse_block(&extra_active_line_reference),
+        None
+    );
+    assert_eq!(
+        PfConfReference::parse_block(&duplicate_anchor_reference),
+        None
+    );
+    assert_eq!(
+        PfConfReference::parse_block(&duplicate_load_reference),
+        None
     );
     assert_debug_snapshot!((anchor, reference));
 }
@@ -465,7 +489,7 @@ impl FakeTrustInspector {
 }
 
 impl SystemTrustInspector for FakeTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
         Ok(self.certificates.clone())
     }
 }
@@ -474,8 +498,10 @@ impl SystemTrustInspector for FakeTrustInspector {
 struct FailingTrustInspector;
 
 impl SystemTrustInspector for FailingTrustInspector {
-    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, macos::MacosError> {
-        Err(macos::MacosError::Keychain("fixture failure".to_string()))
+    fn trusted_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
+        Err(platform::PlatformError::Keychain(
+            "fixture failure".to_string(),
+        ))
     }
 }
 

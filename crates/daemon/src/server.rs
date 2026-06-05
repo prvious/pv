@@ -12,12 +12,11 @@ use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
 };
-use crate::protocol::{
-    DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
-    ResponseStatus, write_line,
-};
 use crate::reconciliation::ReconciliationQueue;
 use crate::watcher::ProjectConfigWatcher;
+use protocol::{
+    DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
+};
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
@@ -103,39 +102,27 @@ async fn handle_connection(
     queue: ReconciliationQueue,
     stream: LocalStream,
 ) -> Result<(), DaemonError> {
-    let mut transport = crate::protocol::transport(stream);
+    let mut transport = protocol::transport(stream);
     let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
         return Ok(());
     };
     let request = serde_json::from_str::<DaemonRequest>(&line)?;
 
     if request.protocol_version != PROTOCOL_VERSION {
-        return write_line(
+        write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Error,
-                message: "daemon protocol mismatch; run `pv daemon:restart`",
-                job_id: None,
-            },
+            &DaemonResponse::error("daemon protocol mismatch; run `pv daemon:restart`"),
         )
-        .await;
+        .await?;
+
+        return Ok(());
     }
 
     match request.command {
         DaemonCommand::Health => {
-            write_line(
-                &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Ok,
-                    message: "daemon healthy",
-                    job_id: None,
-                },
-            )
-            .await
+            write_line(&mut transport, &DaemonResponse::ok("daemon healthy")).await?;
+
+            Ok(())
         }
         DaemonCommand::RunJob { kind, scope } => {
             run_job(paths, queue, transport, &kind, &scope).await
@@ -163,7 +150,7 @@ mod tests {
     use tokio::io::duplex;
 
     use super::read_request_line;
-    use crate::protocol::transport;
+    use protocol::transport;
 
     #[tokio::test]
     async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {

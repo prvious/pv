@@ -1,10 +1,8 @@
 use crate::DaemonError;
 use crate::ipc::LocalStream;
 use crate::project_env::reconcile_project_env;
-use crate::protocol::{
-    DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
-};
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
+use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, PvPaths};
 use tokio::io::AsyncWrite;
 
@@ -60,15 +58,10 @@ async fn run_reconciliation_job(
             let job_id = queued.job_id().to_string();
             let accepted_result = write_line(
                 &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Accepted,
-                    message: "job accepted",
-                    job_id: Some(&job_id),
-                },
+                &DaemonResponse::accepted("job accepted", &job_id),
             )
-            .await;
+            .await
+            .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
             let running = queued.wait_for_turn().await;
             let scope = running.scope().clone();
@@ -88,15 +81,11 @@ async fn run_reconciliation_job(
         EnqueueResult::Coalesced(job) => {
             write_line(
                 &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Accepted,
-                    message: "reconciliation already queued or running",
-                    job_id: Some(job.job_id()),
-                },
+                &DaemonResponse::accepted("reconciliation already queued or running", job.job_id()),
             )
-            .await
+            .await?;
+
+            Ok(())
         }
     }
 }
@@ -331,13 +320,7 @@ async fn run_invalid_reconciliation_scope_job(
     let stream_is_open = async {
         write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Accepted,
-                message: "job accepted",
-                job_id: Some(&job.id),
-            },
+            &DaemonResponse::accepted("job accepted", &job.id),
         )
         .await?;
         write_line(
@@ -384,13 +367,7 @@ async fn run_started_job(
     let stream_is_open = async {
         write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Accepted,
-                message: "job accepted",
-                job_id: Some(&job.id),
-            },
+            &DaemonResponse::accepted("job accepted", &job.id),
         )
         .await?;
         write_line(
@@ -462,7 +439,9 @@ async fn run_started_job(
             summary,
         },
     )
-    .await
+    .await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -491,7 +470,7 @@ mod tests {
 
         let result = stream_started_reconciliation_job(
             paths.clone(),
-            crate::protocol::transport(server),
+            protocol::transport(server),
             true,
             &job_id,
             ReconciliationScope::System,

@@ -17,27 +17,27 @@ pub trait Environment {
     fn open_url(&self, url: &str) -> io::Result<()>;
 
     fn resolver_test_path(&self) -> PathBuf {
-        PathBuf::from(macos::SYSTEM_RESOLVER_TEST_PATH)
+        PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
     }
 
     fn pf_anchor_path(&self) -> PathBuf {
-        PathBuf::from(macos::SYSTEM_PF_ANCHOR_PATH)
+        PathBuf::from(platform::SYSTEM_PF_ANCHOR_PATH)
     }
 
     fn pf_conf_path(&self) -> PathBuf {
-        PathBuf::from(macos::SYSTEM_PF_CONF_PATH)
+        PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
     }
 
     fn loopback_tcp_listener_ports(
         &self,
-    ) -> Result<std::collections::BTreeSet<u16>, macos::MacosError> {
-        macos::loopback_tcp_listener_ports()
+    ) -> Result<std::collections::BTreeSet<u16>, platform::PlatformError> {
+        platform::loopback_tcp_listener_ports()
     }
 
     fn trusted_ca_certificates(
         &self,
-    ) -> Result<Vec<macos::KeychainCertificate>, macos::MacosError> {
-        macos::SystemTrustInspector::trusted_certificates(&macos::MacosSystemTrustInspector)
+    ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
+        platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
     }
 }
 
@@ -69,7 +69,7 @@ impl Environment for ProcessEnvironment {
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
-        process_open_url(url)
+        platform::open_url(url).map_err(io::Error::other)
     }
 }
 
@@ -87,19 +87,4 @@ fn process_var_os(key: &str) -> Option<OsString> {
 )]
 fn process_current_dir() -> io::Result<PathBuf> {
     std::env::current_dir()
-}
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "PV environment helper owns the macOS browser handoff for `pv open`"
-)]
-fn process_open_url(url: &str) -> io::Result<()> {
-    let status = std::process::Command::new("open").arg(url).status()?;
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(io::Error::other(format!(
-        "browser open failed with {status}"
-    )))
 }

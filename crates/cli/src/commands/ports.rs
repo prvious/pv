@@ -3,7 +3,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use macos::{PfConfReference, PfFileState, PfRedirectConfig};
+use platform::{PfConfReference, PfFileState, PfRedirectConfig};
 use state::{Database, GatewayPortAssignments, PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -21,14 +21,15 @@ pub(crate) fn status(
     let prepared_reference_path = paths.pf_conf_reference_config();
     let system_anchor_path = pf_anchor_path(environment)?;
     let system_pf_conf_path = pf_conf_path(environment)?;
-    let prepared_anchor_state = macos::inspect_pf_anchor_file(&prepared_anchor_path, None);
-    let prepared_reference_state = macos::inspect_pf_conf_reference(&prepared_reference_path, None);
+    let prepared_anchor_state = platform::inspect_pf_anchor_file(&prepared_anchor_path, None);
+    let prepared_reference_state =
+        platform::inspect_pf_conf_reference(&prepared_reference_path, None);
     let expected_anchor = pf_config_from_anchor_state(&prepared_anchor_state);
     let expected_reference = pf_reference_from_state(&prepared_reference_state);
     let system_anchor_state =
-        macos::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
+        platform::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
     let system_reference_state =
-        macos::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
+        platform::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line("Port redirect status")?;
@@ -79,9 +80,9 @@ pub(crate) fn install(
     state::fs::write_sensitive_file(&prepared_anchor_path, &config.render_anchor())?;
     state::fs::write_sensitive_file(&prepared_reference_path, &reference.render())?;
 
-    let system_anchor_state = macos::inspect_pf_anchor_file(&system_anchor_path, Some(&config));
+    let system_anchor_state = platform::inspect_pf_anchor_file(&system_anchor_path, Some(&config));
     let system_reference_state =
-        macos::inspect_pf_conf_reference(&system_pf_conf_path, Some(&reference));
+        platform::inspect_pf_conf_reference(&system_pf_conf_path, Some(&reference));
 
     output.line("Prepared PV port redirect config")?;
     output.line(&format!("  anchor path: {prepared_anchor_path}"))?;
@@ -114,8 +115,8 @@ pub(crate) fn uninstall(
     let system_pf_conf_path = pf_conf_path(environment)?;
     let deleted_anchor = delete_optional_file(&prepared_anchor_path)?;
     let deleted_reference = delete_optional_file(&prepared_reference_path)?;
-    let system_anchor_state = macos::inspect_pf_anchor_file(&system_anchor_path, None);
-    let system_reference_state = macos::inspect_pf_conf_reference(&system_pf_conf_path, None);
+    let system_anchor_state = platform::inspect_pf_anchor_file(&system_anchor_path, None);
+    let system_reference_state = platform::inspect_pf_conf_reference(&system_pf_conf_path, None);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     write_delete_result(
