@@ -30,7 +30,7 @@ pub use resolver::{
 pub use socket::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
-    TrustDomainState, inspect_system_ca_trust,
+    TrustDomainState, inspect_system_ca_trust, trust_system_ca, untrust_system_ca,
 };
 
 #[cfg(test)]

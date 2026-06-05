@@ -53,10 +53,30 @@ pub(crate) fn trust(
         None => output.line("  existing local CA is current")?,
     }
     write_system_trust_state(&mut output, &trust_state)?;
-    output
-        .line("Privileged trust installation deferred to PR 13 setup/system-integration work.")?;
 
-    Ok(ExitCode::FAILURE)
+    match trust_state {
+        TrustDomainState::Current { .. } => {
+            output.line("System keychain trust already matches PV.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::NotTrusted { .. } | TrustDomainState::Denied { .. } => {
+            environment.trust_system_ca(&paths.ca_certificate())?;
+            output.line("Trusted PV local CA in the System keychain.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::Stale {
+            actual_fingerprint, ..
+        } => {
+            environment.untrust_system_ca(&actual_fingerprint)?;
+            environment.trust_system_ca(&paths.ca_certificate())?;
+            output.line("Removed stale PV local CA trust from the System keychain.")?;
+            output.line("Trusted PV local CA in the System keychain.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 pub(crate) fn untrust(
@@ -79,15 +99,21 @@ pub(crate) fn untrust(
             output.line("System keychain trust is already absent.")?;
             Ok(ExitCode::SUCCESS)
         }
-        TrustDomainState::Current { .. } | TrustDomainState::Stale { .. } => {
-            output.line(
-                "Privileged trust removal deferred to PR 13 setup/system-integration work.",
-            )?;
+        TrustDomainState::Current { fingerprint } | TrustDomainState::Denied { fingerprint } => {
+            environment.untrust_system_ca(&fingerprint)?;
+            output.line("Removed PV local CA trust from the System keychain.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::Stale {
+            actual_fingerprint, ..
+        } => {
+            environment.untrust_system_ca(&actual_fingerprint)?;
+            output.line("Removed stale PV local CA trust from the System keychain.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
             Ok(ExitCode::FAILURE)
         }
-        TrustDomainState::Denied { .. }
-        | TrustDomainState::Unknown { .. }
-        | TrustDomainState::Unreadable { .. } => Ok(ExitCode::FAILURE),
     }
 }
 

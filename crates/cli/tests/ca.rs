@@ -8,15 +8,18 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use platform::{KeychainCertificate, KeychainTrustResult, PlatformError, generate_local_ca};
+use platform::{
+    KeychainCertificate, KeychainTrustResult, LocalCaMetadata, PlatformError, generate_local_ca,
+};
 use state::{PvPaths, StateError};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
-    certificates: Vec<KeychainCertificate>,
+    certificates: RefCell<Vec<KeychainCertificate>>,
     keychain_error: Option<String>,
+    operations: RefCell<Vec<String>>,
 }
 
 impl TestEnvironment {
@@ -24,13 +27,14 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
-            certificates: Vec::new(),
+            certificates: RefCell::new(Vec::new()),
             keychain_error: None,
+            operations: RefCell::new(Vec::new()),
         }
     }
 
-    fn with_certificate(mut self, certificate: KeychainCertificate) -> Self {
-        self.certificates.push(certificate);
+    fn with_certificate(self, certificate: KeychainCertificate) -> Self {
+        self.certificates.borrow_mut().push(certificate);
         self
     }
 
@@ -74,12 +78,41 @@ impl Environment for TestEnvironment {
             return Err(PlatformError::Keychain(message.clone()));
         }
 
-        Ok(self.certificates.clone())
+        Ok(self.certificates.borrow().clone())
+    }
+
+    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), PlatformError> {
+        let certificate_pem = state::fs::read_to_string(certificate_path)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+        let metadata = LocalCaMetadata::from_certificate_pem(&certificate_pem)?;
+        self.certificates
+            .borrow_mut()
+            .retain(|certificate| certificate.metadata.fingerprint != metadata.fingerprint);
+        self.certificates.borrow_mut().push(KeychainCertificate {
+            metadata: metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        });
+        self.operations
+            .borrow_mut()
+            .push(format!("trust {}", metadata.fingerprint));
+
+        Ok(())
+    }
+
+    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), PlatformError> {
+        self.certificates
+            .borrow_mut()
+            .retain(|certificate| certificate.metadata.fingerprint != fingerprint);
+        self.operations
+            .borrow_mut()
+            .push(format!("untrust {fingerprint}"));
+
+        Ok(())
     }
 }
 
 #[test]
-fn ca_trust_generates_local_ca_and_defers_system_keychain_trust() -> anyhow::Result<()> {
+fn ca_trust_generates_local_ca_and_trusts_system_keychain() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -90,14 +123,20 @@ fn ca_trust_generates_local_ca_and_defers_system_keychain_trust() -> anyhow::Res
     let certificate = read_required_file(&paths.ca_certificate())?;
     let private_key = read_required_file(&paths.ca_private_key())?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
     assert_no_privileged_guidance(&output.stdout);
     assert!(certificate.contains("BEGIN CERTIFICATE"));
     assert!(private_key.contains("BEGIN PRIVATE KEY"));
+    assert_eq!(environment.certificates.borrow().len(), 1);
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, paths.ca_certificate(), paths.ca_private_key()));
+        assert_debug_snapshot!((
+            output,
+            paths.ca_certificate(),
+            paths.ca_private_key(),
+            environment.operations.borrow().clone(),
+        ));
     });
 
     Ok(())
@@ -118,7 +157,7 @@ fn ca_trust_reuses_existing_current_local_ca() -> anyhow::Result<()> {
     let certificate_after = read_required_file(&paths.ca_certificate())?;
     let private_key_after = read_required_file(&paths.ca_private_key())?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(certificate_after, generated.certificate_pem);
     assert_eq!(private_key_after, generated.private_key_pem);
 
@@ -139,7 +178,7 @@ fn ca_trust_repairs_malformed_local_ca_files() -> anyhow::Result<()> {
     let certificate_after = read_required_file(&paths.ca_certificate())?;
     let private_key_after = read_required_file(&paths.ca_private_key())?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(certificate_after.contains("BEGIN CERTIFICATE"));
     assert!(private_key_after.contains("BEGIN PRIVATE KEY"));
 
@@ -186,7 +225,7 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
 }
 
 #[test]
-fn ca_untrust_leaves_local_ca_files_and_defers_system_keychain_removal() -> anyhow::Result<()> {
+fn ca_untrust_leaves_local_ca_files_and_removes_system_keychain_trust() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -202,13 +241,14 @@ fn ca_untrust_leaves_local_ca_files_and_defers_system_keychain_removal() -> anyh
 
     let output = run_pv(&["ca:untrust"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_no_privileged_guidance(&output.stdout);
     assert!(read_optional_file(&paths.ca_certificate())?.is_some());
     assert!(read_optional_file(&paths.ca_private_key())?.is_some());
+    assert!(environment.certificates.borrow().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!(output);
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
     });
 
     Ok(())

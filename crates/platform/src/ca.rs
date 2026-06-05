@@ -260,7 +260,7 @@ pub(crate) fn pem_from_der(label: &str, der: &[u8]) -> String {
     pem
 }
 
-fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
+pub(crate) fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
     let mut reader = Cursor::new(certificate_pem.as_bytes());
     let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
 

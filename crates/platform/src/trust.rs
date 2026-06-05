@@ -1,12 +1,25 @@
+use camino::Utf8Path;
+
 use crate::LocalCaMetadata;
-use crate::ca::is_pv_ca_metadata;
+use crate::ca::{certificate_der_from_pem, is_pv_ca_metadata};
 use crate::error::PlatformError;
 
 #[cfg(target_os = "macos")]
 use crate::ca::pem_from_der;
 
 #[cfg(target_os = "macos")]
+use security_framework::certificate::SecCertificate;
+#[cfg(target_os = "macos")]
+use security_framework::os::macos::keychain::SecKeychain;
+#[cfg(target_os = "macos")]
 use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+
+#[cfg(target_os = "macos")]
+const SYSTEM_KEYCHAIN_PATH: &str = "/Library/Keychains/System.keychain";
+#[cfg(target_os = "macos")]
+const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+#[cfg(target_os = "macos")]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeychainCertificate {
@@ -109,6 +122,74 @@ pub fn inspect_system_ca_trust(
                 fingerprint: local.fingerprint.clone(),
             },
         },
+    }
+}
+
+pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
+    {
+        let certificate_pem = state::fs::read_to_string(certificate_path)
+            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
+        let certificate_der = certificate_der_from_pem(&certificate_pem)
+            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
+        let certificate = SecCertificate::from_der(&certificate_der)
+            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
+        let keychain = SecKeychain::open(SYSTEM_KEYCHAIN_PATH)
+            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
+
+        match certificate.add_to_keychain(Some(keychain)) {
+            Ok(()) => {}
+            Err(error) if error.code() == ERR_SEC_DUPLICATE_ITEM => {}
+            Err(error) => return Err(PlatformError::Keychain(error.to_string())),
+        }
+
+        TrustSettings::new(Domain::Admin)
+            .set_trust_settings_always(&certificate)
+            .map_err(|error| PlatformError::Keychain(error.to_string()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = certificate_path;
+        Err(PlatformError::UnsupportedPlatform {
+            feature: "System keychain trust mutation",
+        })
+    }
+}
+
+pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
+    {
+        let trust_settings = TrustSettings::new(Domain::Admin);
+        let certificates = trust_settings
+            .iter()
+            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
+
+        for certificate in certificates {
+            let certificate_pem = pem_from_der("CERTIFICATE", &certificate.to_der());
+            let Ok(metadata) = LocalCaMetadata::from_certificate_pem(&certificate_pem) else {
+                continue;
+            };
+            if metadata.fingerprint != fingerprint || !is_pv_ca_metadata(&metadata) {
+                continue;
+            }
+
+            match certificate.delete() {
+                Ok(()) => {}
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+                Err(error) => return Err(PlatformError::Keychain(error.to_string())),
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = fingerprint;
+        Err(PlatformError::UnsupportedPlatform {
+            feature: "System keychain trust mutation",
+        })
     }
 }
 

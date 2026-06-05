@@ -101,6 +101,14 @@ pub trait Environment {
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
     }
+
+    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::trust_system_ca(certificate_path)
+    }
+
+    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
+        platform::untrust_system_ca(fingerprint)
+    }
 }
 
 #[derive(Debug, Default)]
