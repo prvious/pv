@@ -11,13 +11,13 @@ use state::{
     DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, PortOwner, PortRequest, PvPaths,
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
 };
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 
@@ -539,7 +539,7 @@ async fn dns_resolver_answers_tcp_queries() -> Result<()> {
 async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let _preferred_port_blocker = bind_preferred_dns_port()?;
+    let (_tcp_blocker, _udp_blocker) = bind_preferred_dns_port_pair().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
 
@@ -738,12 +738,27 @@ fn dns_address(port: u16) -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, port))
 }
 
-fn bind_preferred_dns_port() -> Result<Option<StdUdpSocket>> {
-    match StdUdpSocket::bind((Ipv4Addr::LOCALHOST, DNS_PREFERRED_PORT)) {
-        Ok(socket) => Ok(Some(socket)),
-        Err(error) if error.kind() == ErrorKind::AddrInUse => Ok(None),
-        Err(error) => Err(error.into()),
+async fn bind_preferred_dns_port_pair() -> Result<(StdTcpListener, StdUdpSocket)> {
+    for _attempt in 0..100 {
+        match bind_loopback_tcp_udp_at(DNS_PREFERRED_PORT) {
+            Ok(blockers) => return Ok(blockers),
+            Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
+
+    Err(anyhow!(
+        "could not bind preferred DNS port {DNS_PREFERRED_PORT} after waiting for parallel tests"
+    ))
+}
+
+fn bind_loopback_tcp_udp_at(port: u16) -> io::Result<(StdTcpListener, StdUdpSocket)> {
+    let tcp_listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
+    let udp_socket = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
+
+    Ok((tcp_listener, udp_socket))
 }
 
 fn bind_loopback_tcp_udp_pair() -> Result<(u16, StdTcpListener, StdUdpSocket)> {
