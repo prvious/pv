@@ -28,6 +28,9 @@ pub enum CliError {
         "artifact manifest cache is unavailable at `{path}`; setup cannot plan default Managed Resources"
     )]
     MissingSetupArtifactManifest { path: String },
+
+    #[error("active pf redirects do not match the prepared PV port redirect config")]
+    PfRedirectsInactive,
 }
 
 #[derive(Debug, Error)]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::PlatformError;
-use crate::command::run_system_command;
+use crate::command::{run_system_command, run_system_command_output};
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -97,6 +97,31 @@ impl PfRedirectConfig {
         } else {
             None
         }
+    }
+
+    pub fn parse_active_rules(content: &str) -> Option<Self> {
+        let mut http_port = None;
+        let mut https_port = None;
+
+        for line in content.lines().filter_map(active_pf_line) {
+            if let Some(port) = parse_active_redirect_port(line, 80) {
+                if http_port.replace(port).is_some() {
+                    return None;
+                }
+                continue;
+            }
+
+            if let Some(port) = parse_active_redirect_port(line, 443) {
+                if https_port.replace(port).is_some() {
+                    return None;
+                }
+                continue;
+            }
+
+            return None;
+        }
+
+        Some(Self::new(http_port?, https_port?))
     }
 }
 
@@ -194,6 +219,12 @@ pub fn inspect_pf_conf_reference(
 
     let actual = parse_embedded_pf_conf_reference(&content);
     classify_pv_file_state(path, expected, actual)
+}
+
+pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let rules = run_system_command_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-sr"])?;
+
+    Ok(PfRedirectConfig::parse_active_rules(&rules))
 }
 
 pub fn install_pf_redirects(
@@ -382,6 +413,18 @@ fn active_pf_line(line: &str) -> Option<&str> {
 fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
     line.starts_with("anchor \"com.prvious.pv\"")
         || line.starts_with("load anchor \"com.prvious.pv\"")
+}
+
+fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
+    let prefix = "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port ";
+    let tail = line.strip_prefix(prefix)?;
+    let tail = tail
+        .strip_prefix(&format!("{public_port} -> "))
+        .or_else(|| tail.strip_prefix(&format!("= {public_port} -> ")))?;
+    let redirect_port = tail.rsplit_once(" port ")?.1;
+    let redirect_port = redirect_port.split_whitespace().next()?;
+
+    redirect_port.parse::<u16>().ok()
 }
 
 fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {

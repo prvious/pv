@@ -125,12 +125,25 @@ pub(crate) fn install(
         return Ok(exit_code);
     }
 
-    if matches!(system_anchor_state, PfFileState::Current { .. })
-        && matches!(system_reference_state, PfFileState::Current { .. })
-    {
+    let system_files_current = matches!(system_anchor_state, PfFileState::Current { .. })
+        && matches!(system_reference_state, PfFileState::Current { .. });
+    let active_config = match environment.active_pf_redirect_config() {
+        Ok(active_config) => active_config,
+        Err(error) => {
+            release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
+
+            return Err(error.into());
+        }
+    };
+
+    if system_files_current && active_config.as_ref() == Some(&config) {
         output.line("System pf redirect config already matches PV")?;
 
         return Ok(ExitCode::SUCCESS);
+    }
+    if system_files_current {
+        output
+            .line("System pf redirect config matches PV, but active redirects are not loaded.")?;
     }
 
     if let Err(error) = environment.install_pf_redirects(
@@ -143,9 +156,41 @@ pub(crate) fn install(
 
         return Err(error.into());
     }
+    ensure_active_gateway_ports(
+        environment,
+        &config,
+        &mut database,
+        had_http_assignment,
+        had_https_assignment,
+    )?;
     output.line("Installed system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn ensure_active_gateway_ports(
+    environment: &impl Environment,
+    config: &PfRedirectConfig,
+    database: &mut Database,
+    had_http_assignment: bool,
+    had_https_assignment: bool,
+) -> Result<(), ExecuteError> {
+    let active_config = match environment.active_pf_redirect_config() {
+        Ok(active_config) => active_config,
+        Err(error) => {
+            release_new_gateway_ports(database, had_http_assignment, had_https_assignment)?;
+
+            return Err(error.into());
+        }
+    };
+
+    if active_config.as_ref() == Some(config) {
+        return Ok(());
+    }
+
+    release_new_gateway_ports(database, had_http_assignment, had_https_assignment)?;
+
+    Err(CliError::PfRedirectsInactive.into())
 }
 
 fn release_new_gateway_ports(

@@ -30,6 +30,7 @@ struct TestEnvironment {
     pf_conf_path: PathBuf,
     shell: Option<OsString>,
     certificates: Mutex<Vec<KeychainCertificate>>,
+    active_pf_config: Mutex<Option<PfRedirectConfig>>,
     operations: Mutex<Vec<String>>,
     stdin_terminal: bool,
     input: Mutex<VecDeque<String>>,
@@ -47,6 +48,7 @@ impl TestEnvironment {
             pf_conf_path: paths.pf_conf_path.as_std_path().to_path_buf(),
             shell,
             certificates: Mutex::new(Vec::new()),
+            active_pf_config: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
             stdin_terminal: false,
             input: Mutex::new(VecDeque::new()),
@@ -185,11 +187,18 @@ impl Environment for TestEnvironment {
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         write_file(system_pf_conf_path, &reference)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        *lock(&self.active_pf_config) = PfRedirectConfig::parse_anchor(&anchor);
         lock(&self.operations).push(format!(
             "install pf {prepared_anchor_path} {prepared_reference_path} -> {system_anchor_path} {system_pf_conf_path}"
         ));
 
         Ok(())
+    }
+
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        Ok(lock(&self.active_pf_config).clone())
     }
 
     fn remove_pf_redirects(
@@ -201,6 +210,7 @@ impl Environment for TestEnvironment {
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         delete_optional_file(system_pf_conf_path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        *lock(&self.active_pf_config) = None;
         lock(&self.operations).push(format!(
             "remove pf {system_anchor_path} {system_pf_conf_path}"
         ));

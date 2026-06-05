@@ -105,6 +105,29 @@ fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
 }
 
 #[test]
+fn pf_active_redirect_rules_parse_pfctl_output() {
+    let active_rules = "\
+rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 48080
+rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 48443
+";
+    let prepared_rules = "\
+rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080
+rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443
+";
+    let extra_rule = format!("{active_rules}pass in on lo0\n");
+
+    assert_eq!(
+        PfRedirectConfig::parse_active_rules(active_rules),
+        Some(PfRedirectConfig::new(48080, 48443))
+    );
+    assert_eq!(
+        PfRedirectConfig::parse_active_rules(prepared_rules),
+        Some(PfRedirectConfig::new(48080, 48443))
+    );
+    assert_eq!(PfRedirectConfig::parse_active_rules(&extra_rule), None);
+}
+
+#[test]
 fn pf_anchor_inspection_reports_missing_current_stale_conflict_and_unreadable() -> Result<()> {
     let tempdir = tempdir()?;
     let current_path = tempdir.path().join("current-anchor");

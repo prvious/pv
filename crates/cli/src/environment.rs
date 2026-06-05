@@ -88,6 +88,12 @@ pub trait Environment {
         )
     }
 
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
+        platform::active_pf_redirect_config()
+    }
+
     fn remove_pf_redirects(
         &self,
         system_anchor_path: &Utf8Path,

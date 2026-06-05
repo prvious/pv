@@ -19,6 +19,7 @@ struct TestEnvironment {
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
+    active_pf_config: RefCell<Option<PfRedirectConfig>>,
     operations: RefCell<Vec<String>>,
 }
 
@@ -35,6 +36,7 @@ impl TestEnvironment {
             pf_anchor_path: pf_anchor_path.as_std_path().to_path_buf(),
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
+            active_pf_config: RefCell::new(None),
             operations: RefCell::new(Vec::new()),
         }
     }
@@ -101,11 +103,18 @@ impl Environment for TestEnvironment {
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         write_file(system_pf_conf_path, &reference)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        *self.active_pf_config.borrow_mut() = PfRedirectConfig::parse_anchor(&anchor);
         self.operations.borrow_mut().push(format!(
             "install pf {prepared_anchor_path} {prepared_reference_path} -> {system_anchor_path} {system_pf_conf_path}"
         ));
 
         Ok(())
+    }
+
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        Ok(self.active_pf_config.borrow().clone())
     }
 
     fn remove_pf_redirects(
@@ -117,6 +126,7 @@ impl Environment for TestEnvironment {
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         delete_optional_file(system_pf_conf_path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        *self.active_pf_config.borrow_mut() = None;
         self.operations.borrow_mut().push(format!(
             "remove pf {system_anchor_path} {system_pf_conf_path}"
         ));
@@ -213,6 +223,50 @@ fn ports_install_refuses_non_pv_owned_system_anchor() -> anyhow::Result<()> {
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, system_anchor_after_install));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_reloads_current_files_when_active_redirects_are_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    );
+    let paths = pv_paths(&home);
+    let anchor = PfRedirectConfig::new(48080, 48443).render_anchor();
+    let reference = PfConfReference.render();
+
+    write_file(&paths.pf_anchor_config(), &anchor)?;
+    write_file(&paths.pf_conf_reference_config(), &reference)?;
+    write_file(&system_anchor_path, &anchor)?;
+    write_file(&system_pf_conf_path, &reference)?;
+
+    let output = run_pv(&["ports:install"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(
+        environment
+            .operations
+            .borrow()
+            .iter()
+            .any(|operation| { operation.starts_with("install pf ") })
+    );
+    assert_eq!(
+        *environment.active_pf_config.borrow(),
+        Some(PfRedirectConfig::new(48080, 48443))
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
     });
 
     Ok(())
