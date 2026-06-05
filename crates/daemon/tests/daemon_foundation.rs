@@ -152,6 +152,38 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
 }
 
 #[tokio::test]
+async fn blocking_client_reports_failed_job_streams() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let client_paths = paths.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        daemon::run_job_blocking(client_paths, "unsupported", "system")
+    })
+    .await?;
+    daemon.shutdown().await?;
+    let database = Database::open(&paths)?;
+    let jobs = database.recent_jobs()?;
+
+    assert!(matches!(
+        result,
+        Err(daemon::DaemonError::DaemonRejected { message })
+            if message == "unsupported daemon job `unsupported` with scope `system`"
+    ));
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, "unsupported");
+    assert_eq!(jobs[0].scope, "system");
+    assert_eq!(jobs[0].status, JobStatus::Failed);
+    assert_eq!(
+        jobs[0].error.as_deref(),
+        Some("unsupported daemon job `unsupported` with scope `system`")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn blocking_client_rejects_protocol_mismatch_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
