@@ -1,5 +1,5 @@
 use std::io;
-use std::process::ExitStatus;
+use std::process::Output;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -231,18 +231,25 @@ fn launchctl_service_target() -> String {
 
 fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
     let command = format!("/bin/launchctl {}", args.join(" "));
-    let status = launchctl_status(args).map_err(|source| PlatformError::LaunchAgentCommand {
+    let output = launchctl_output(args).map_err(|source| PlatformError::LaunchAgentCommand {
         command: command.clone(),
         source,
     })?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
-    } else {
+    } else if output.stderr.is_empty() {
         Err(PlatformError::LaunchAgentCommandStatus {
             command,
-            status: status.to_string(),
+            status: output.status.to_string(),
         })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        Err(PlatformError::LaunchAgent(format!(
+            "{command} exited with {status}: {stderr}",
+            status = output.status,
+        )))
     }
 }
 
@@ -252,8 +259,8 @@ fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
 )]
 type StdCommand = std::process::Command;
 
-fn launchctl_status(args: &[&str]) -> io::Result<ExitStatus> {
-    StdCommand::new("/bin/launchctl").args(args).status()
+fn launchctl_output(args: &[&str]) -> io::Result<Output> {
+    StdCommand::new("/bin/launchctl").args(args).output()
 }
 
 fn insert_pv_marker(content: &str) -> String {

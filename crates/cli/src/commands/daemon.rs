@@ -97,6 +97,7 @@ pub(crate) fn disable(
 
     match state {
         LaunchAgentFileState::Missing { .. } => {
+            bootout_launch_agent_if_loaded(environment)?;
             output.line("LaunchAgent already absent")?;
 
             Ok(ExitCode::SUCCESS)
@@ -264,15 +265,13 @@ fn bootout_launch_agent_if_loaded(environment: &impl Environment) -> Result<(), 
 
 fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
     match error {
-        platform::PlatformError::LaunchAgentCommandStatus { status, .. } => {
-            status.contains("exit status: 5")
-        }
         platform::PlatformError::LaunchAgent(message) => {
             let message = message.to_ascii_lowercase();
             message.contains("already unloaded")
                 || message.contains("not loaded")
                 || message.contains("not running")
         }
+        platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
         _ => false,
     }
 }

@@ -153,7 +153,7 @@ fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()
 }
 
 #[test]
-fn dns_install_reports_missing_daemon_after_installing_resolver_config() -> anyhow::Result<()> {
+fn dns_install_reports_missing_daemon_without_installing_resolver_config() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -163,11 +163,12 @@ fn dns_install_reports_missing_daemon_after_installing_resolver_config() -> anyh
     let output = run_pv(&["dns:install"], &environment)?;
     let prepared_path = pv_paths(&home).resolver_config();
     let prepared_config = read_required_file(&prepared_path)?;
-    let system_resolver_config = read_required_file(&system_resolver_path)?;
+    let system_resolver_config = read_optional_file(&system_resolver_path)?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stdout.contains("PV daemon is not running"));
-    assert_eq!(system_resolver_config, prepared_config);
+    assert!(system_resolver_config.is_none());
+    assert!(environment.operations.borrow().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
         let mut settings = insta::Settings::clone_current();
@@ -343,19 +344,31 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
     let system_resolver_path = tempdir.path().join("etc/resolver/test");
     let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
     let prepared_path = pv_paths(&home).resolver_config();
+    let paths = pv_paths(&home);
     let resolver_config = ResolverConfig::new(35353).render();
+    let mut database = Database::open(&paths)?;
+    database.assign_port(PortRequest::dns(35353, 35353, 35353), |candidate| {
+        candidate == 35353
+    })?;
+    drop(database);
     write_file(&prepared_path, &resolver_config)?;
     write_file(&system_resolver_path, &resolver_config)?;
 
     let output = run_pv(&["dns:uninstall"], &environment)?;
     let prepared_after_uninstall = read_optional_file(&prepared_path)?;
     let system_after_uninstall = read_optional_file(&system_resolver_path)?;
+    let assignments = Database::open(&paths)?.assigned_ports()?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert!(prepared_after_uninstall.is_none());
     assert!(system_after_uninstall.is_none());
+    assert!(
+        !assignments
+            .iter()
+            .any(|assignment| assignment.owner == PortOwner::Dns)
+    );
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
@@ -366,6 +379,33 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
             environment.operations.borrow().clone(),
         ));
     });
+
+    Ok(())
+}
+
+#[test]
+fn dns_uninstall_releases_dns_port_when_system_resolver_config_is_absent() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_resolver_path = tempdir.path().join("etc/resolver/test");
+    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
+    let paths = pv_paths(&home);
+    let mut database = Database::open(&paths)?;
+    database.assign_port(PortRequest::dns(35353, 35353, 35353), |candidate| {
+        candidate == 35353
+    })?;
+    drop(database);
+
+    let output = run_pv(&["dns:uninstall"], &environment)?;
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(
+        !assignments
+            .iter()
+            .any(|assignment| assignment.owner == PortOwner::Dns)
+    );
 
     Ok(())
 }

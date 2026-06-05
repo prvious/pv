@@ -9,7 +9,7 @@ expression: "(output, prepared_path, prepared_config, parsed_config,\nsystem_res
                 0,
             ),
         ),
-        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPV daemon is running.\n",
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is running.\nInstalled system resolver config: <tempdir>/etc/resolver/test\n",
         stderr: "",
     },
     "<tempdir>/home/.pv/config/resolver/test",

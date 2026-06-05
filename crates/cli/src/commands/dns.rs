@@ -72,20 +72,10 @@ fn install_inner(
     output.line(&format!("  path: {prepared_path}"))?;
     output.line(&format!("  DNS resolver port: {dns_port}"))?;
 
-    match system_state {
-        ResolverFileState::Current { path, port } => {
-            output.line(&format!(
-                "System resolver config already matches PV on port {port}: {path}"
-            ))?;
-        }
-        ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
-            if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
-                release_new_dns_port(&mut database, had_dns_assignment)?;
-
-                return Err(error.into());
-            }
-            output.line(&format!("Installed system resolver config: {path}"))?;
-        }
+    match &system_state {
+        ResolverFileState::Current { .. }
+        | ResolverFileState::Missing { .. }
+        | ResolverFileState::Stale { .. } => {}
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
             output.line(&format!("System resolver config is not PV-owned: {path}"))?;
@@ -106,7 +96,31 @@ fn install_inner(
     }
 
     if ensure_daemon {
-        return ensure_daemon_running(&paths, &mut output);
+        let exit_code = ensure_daemon_running(&paths, &mut output)?;
+        if exit_code != ExitCode::SUCCESS {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
+
+            return Ok(exit_code);
+        }
+    }
+
+    match system_state {
+        ResolverFileState::Current { path, port } => {
+            output.line(&format!(
+                "System resolver config already matches PV on port {port}: {path}"
+            ))?;
+        }
+        ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
+            if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
+                release_new_dns_port(&mut database, had_dns_assignment)?;
+
+                return Err(error.into());
+            }
+            output.line(&format!("Installed system resolver config: {path}"))?;
+        }
+        ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
+            return Ok(ExitCode::FAILURE);
+        }
     }
 
     Ok(ExitCode::SUCCESS)
@@ -158,6 +172,7 @@ pub(crate) fn uninstall(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
+    let mut database = Database::open(&paths)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
     let deleted_prepared = delete_optional_file(&prepared_path)?;
@@ -177,6 +192,7 @@ pub(crate) fn uninstall(
     match system_state {
         ResolverFileState::Missing { path } => {
             output.line(&format!("System resolver config already absent: {path}"))?;
+            database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -192,6 +208,7 @@ pub(crate) fn uninstall(
         ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
             environment.remove_resolver_config(&system_path)?;
             output.line(&format!("Removed PV-owned system resolver config: {path}"))?;
+            database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
