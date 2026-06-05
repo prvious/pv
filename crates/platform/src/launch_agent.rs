@@ -2,6 +2,7 @@ use std::io;
 use std::process::ExitStatus;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 
 use crate::PlatformError;
 
@@ -54,35 +55,14 @@ impl LaunchAgentConfig {
         }
     }
 
-    pub fn render(&self) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-{PV_MARKER}
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{LAUNCH_AGENT_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{program_path}</string>
-    <string>{DAEMON_COMMAND}</string>
-  </array>
-  <key>KeepAlive</key>
-  <true/>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>{stdout_path}</string>
-  <key>StandardErrorPath</key>
-  <string>{stderr_path}</string>
-</dict>
-</plist>
-"#,
-            program_path = escape_xml(self.program_path.as_str()),
-            stdout_path = escape_xml(self.stdout_path.as_str()),
-            stderr_path = escape_xml(self.stderr_path.as_str()),
-        )
+    pub fn render(&self) -> Result<String, PlatformError> {
+        let mut content = Vec::new();
+        plist::to_writer_xml(&mut content, &LaunchAgentPlist::from(self))
+            .map_err(|error| PlatformError::LaunchAgent(error.to_string()))?;
+        let content = String::from_utf8(content)
+            .map_err(|error| PlatformError::LaunchAgent(error.to_string()))?;
+
+        Ok(insert_pv_marker(&content))
     }
 
     pub fn parse(content: &str) -> Option<Self> {
@@ -90,27 +70,58 @@ impl LaunchAgentConfig {
             return None;
         }
 
-        let label = string_after_key(content, "Label")?;
-        if label != LAUNCH_AGENT_LABEL {
+        plist::from_bytes::<LaunchAgentPlist>(content.as_bytes())
+            .ok()
+            .and_then(LaunchAgentConfig::try_from_plist)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct LaunchAgentPlist {
+    #[serde(rename = "Label")]
+    label: String,
+    #[serde(rename = "ProgramArguments")]
+    program_arguments: Vec<String>,
+    #[serde(rename = "KeepAlive")]
+    keep_alive: bool,
+    #[serde(rename = "RunAtLoad")]
+    run_at_load: bool,
+    #[serde(rename = "StandardOutPath")]
+    stdout_path: String,
+    #[serde(rename = "StandardErrorPath")]
+    stderr_path: String,
+}
+
+impl From<&LaunchAgentConfig> for LaunchAgentPlist {
+    fn from(config: &LaunchAgentConfig) -> Self {
+        Self {
+            label: LAUNCH_AGENT_LABEL.to_string(),
+            program_arguments: vec![config.program_path.to_string(), DAEMON_COMMAND.to_string()],
+            keep_alive: true,
+            run_at_load: true,
+            stdout_path: config.stdout_path.to_string(),
+            stderr_path: config.stderr_path.to_string(),
+        }
+    }
+}
+
+impl LaunchAgentConfig {
+    fn try_from_plist(plist: LaunchAgentPlist) -> Option<Self> {
+        if plist.label != LAUNCH_AGENT_LABEL || !plist.keep_alive || !plist.run_at_load {
             return None;
         }
 
-        let program_arguments = program_arguments(content)?;
-        let [program_path, daemon_command] = program_arguments.as_slice() else {
+        let [program_path, daemon_command] = plist.program_arguments.as_slice() else {
             return None;
         };
         if daemon_command != DAEMON_COMMAND {
             return None;
         }
 
-        if !boolean_after_key(content, "KeepAlive")? || !boolean_after_key(content, "RunAtLoad")? {
-            return None;
-        }
-
         Some(Self::new(
             program_path.as_str(),
-            string_after_key(content, "StandardOutPath")?.as_str(),
-            string_after_key(content, "StandardErrorPath")?.as_str(),
+            plist.stdout_path.as_str(),
+            plist.stderr_path.as_str(),
         ))
     }
 }
@@ -175,7 +186,7 @@ pub fn write_launch_agent_file(
     path: &Utf8Path,
     config: &LaunchAgentConfig,
 ) -> Result<(), PlatformError> {
-    state::fs::write_sensitive_file(path, &config.render())
+    state::fs::write_sensitive_file(path, &config.render()?)
         .map_err(|error| PlatformError::LaunchAgent(error.to_string()))
 }
 
@@ -245,75 +256,10 @@ fn launchctl_status(args: &[&str]) -> io::Result<ExitStatus> {
     StdCommand::new("/bin/launchctl").args(args).status()
 }
 
-fn string_after_key(content: &str, key: &str) -> Option<String> {
-    let string_start_marker = "<string>";
-    let string_end_marker = "</string>";
-    let key_marker = format!("<key>{}</key>", escape_xml(key));
-    let after_key = content.split_once(&key_marker)?.1;
-    let string_start = after_key.find(string_start_marker)? + string_start_marker.len();
-    let string_end = after_key[string_start..].find(string_end_marker)? + string_start;
-
-    unescape_xml(&after_key[string_start..string_end])
-}
-
-fn boolean_after_key(content: &str, key: &str) -> Option<bool> {
-    let key_marker = format!("<key>{}</key>", escape_xml(key));
-    let after_key = content.split_once(&key_marker)?.1.trim_start();
-
-    if after_key.starts_with("<true/>") {
-        Some(true)
-    } else if after_key.starts_with("<false/>") {
-        Some(false)
+fn insert_pv_marker(content: &str) -> String {
+    if let Some((declaration, body)) = content.split_once('\n') {
+        format!("{declaration}\n{PV_MARKER}\n{body}")
     } else {
-        None
-    }
-}
-
-fn program_arguments(content: &str) -> Option<Vec<String>> {
-    let key_marker = "<key>ProgramArguments</key>";
-    let after_key = content.split_once(key_marker)?.1;
-    let array_start_marker = "<array>";
-    let array_end_marker = "</array>";
-    let array_start = after_key.find(array_start_marker)? + array_start_marker.len();
-    let array_end = after_key[array_start..].find(array_end_marker)? + array_start;
-    let array_content = &after_key[array_start..array_end];
-    let mut arguments = Vec::new();
-    let mut remaining = array_content;
-
-    while let Some((_, after_start)) = remaining.split_once("<string>") {
-        let (argument, after_end) = after_start.split_once("</string>")?;
-        arguments.push(unescape_xml(argument)?);
-        remaining = after_end;
-    }
-
-    Some(arguments)
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-fn unescape_xml(value: &str) -> Option<String> {
-    let mut unescaped = value.to_string();
-
-    for (escaped, plain) in [
-        ("&apos;", "'"),
-        ("&quot;", "\""),
-        ("&gt;", ">"),
-        ("&lt;", "<"),
-        ("&amp;", "&"),
-    ] {
-        unescaped = unescaped.replace(escaped, plain);
-    }
-
-    if unescaped.contains('&') {
-        None
-    } else {
-        Some(unescaped)
+        format!("{PV_MARKER}\n{content}")
     }
 }

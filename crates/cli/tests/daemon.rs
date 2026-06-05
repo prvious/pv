@@ -191,7 +191,7 @@ fn daemon_restart_replaces_stale_pv_owned_launch_agent() -> anyhow::Result<()> {
         paths.logs().join("launchd.out.log"),
         paths.logs().join("launchd.err.log"),
     );
-    write_file(&launch_agent_path, &stale.render())?;
+    write_file(&launch_agent_path, &stale.render()?)?;
     let daemon = DaemonFixture::start(&paths, 2)?;
 
     let output = run_pv(&["daemon:restart"], &environment)?;
@@ -242,7 +242,7 @@ fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
         paths.logs().join("launchd.out.log"),
         paths.logs().join("launchd.err.log"),
     );
-    write_file(&launch_agent_path, &config.render())?;
+    write_file(&launch_agent_path, &config.render()?)?;
 
     let output = run_pv(&["daemon:disable"], &environment)?;
     let plist_after_disable = read_optional_file(&launch_agent_path)?;

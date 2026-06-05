@@ -11,10 +11,12 @@ workspace = true
 camino = { workspace = true }
 data-encoding = { workspace = true }
 netstat = { workspace = true }
+plist = "1.9.0"
 rcgen = { workspace = true }
 rustix = { workspace = true }
 rustls-pemfile = { workspace = true }
 security-framework = { workspace = true }
+serde = { workspace = true }
 sha2 = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
