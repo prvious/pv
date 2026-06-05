@@ -176,6 +176,57 @@ fn daemon_enable_waits_for_health_and_submits_reconciliation() -> anyhow::Result
 }
 
 #[test]
+fn daemon_restart_replaces_stale_pv_owned_launch_agent() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let current_exe = tempdir.path().join("pv");
+    let launch_agent_path = tempdir
+        .path()
+        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
+    let paths = PvPaths::for_home(&home);
+    let stale = LaunchAgentConfig::new(
+        tempdir.path().join("old-pv"),
+        paths.logs().join("launchd.out.log"),
+        paths.logs().join("launchd.err.log"),
+    );
+    write_file(&launch_agent_path, &stale.render())?;
+    let daemon = DaemonFixture::start(&paths, 2)?;
+
+    let output = run_pv(&["daemon:restart"], &environment)?;
+    let _daemon_requests = daemon.finish()?;
+    let plist_after_restart = read_required_file(&launch_agent_path)?;
+    let parsed = LaunchAgentConfig::parse(&plist_after_restart);
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Daemon restarted"));
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        parsed,
+        Some(LaunchAgentConfig::new(
+            current_exe,
+            paths.logs().join("launchd.out.log"),
+            paths.logs().join("launchd.err.log"),
+        ))
+    );
+    assert_eq!(
+        environment.operations(),
+        vec![
+            format!("bootout {LAUNCH_AGENT_LABEL}"),
+            format!("bootstrap {launch_agent_path}"),
+            format!("kickstart {LAUNCH_AGENT_LABEL}"),
+        ]
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations(), plist_after_restart));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

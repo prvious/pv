@@ -33,15 +33,24 @@ pub(crate) fn enable(
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Missing { .. } | LaunchAgentFileState::Stale { .. } => {
-            platform::write_launch_agent_file(&path, &config)?;
-            environment.bootstrap_launch_agent(&path)?;
-            environment.kickstart_launch_agent()?;
-            output.line(&format!("LaunchAgent installed: {path}"))?;
-            output.line("Daemon started")?;
-            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
-
-            Ok(ExitCode::SUCCESS)
+        LaunchAgentFileState::Missing { .. } => install_and_start_launch_agent(
+            environment,
+            &path,
+            &config,
+            paths,
+            &mut output,
+            "Daemon started",
+        ),
+        LaunchAgentFileState::Stale { .. } => {
+            environment.bootout_launch_agent()?;
+            install_and_start_launch_agent(
+                environment,
+                &path,
+                &config,
+                paths,
+                &mut output,
+                "Daemon started",
+            )
         }
         LaunchAgentFileState::Conflict { path } => {
             output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
@@ -115,15 +124,24 @@ pub(crate) fn restart(
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Missing { .. } | LaunchAgentFileState::Stale { .. } => {
-            platform::write_launch_agent_file(&path, &config)?;
-            environment.bootstrap_launch_agent(&path)?;
-            environment.kickstart_launch_agent()?;
-            output.line(&format!("LaunchAgent installed: {path}"))?;
-            output.line("Daemon restarted")?;
-            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
-
-            Ok(ExitCode::SUCCESS)
+        LaunchAgentFileState::Missing { .. } => install_and_start_launch_agent(
+            environment,
+            &path,
+            &config,
+            paths,
+            &mut output,
+            "Daemon restarted",
+        ),
+        LaunchAgentFileState::Stale { .. } => {
+            environment.bootout_launch_agent()?;
+            install_and_start_launch_agent(
+                environment,
+                &path,
+                &config,
+                paths,
+                &mut output,
+                "Daemon restarted",
+            )
         }
         LaunchAgentFileState::Conflict { path } => {
             output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
@@ -174,6 +192,24 @@ fn wait_for_daemon_and_submit_reconciliation(
     ))?;
 
     Ok(())
+}
+
+fn install_and_start_launch_agent(
+    environment: &impl Environment,
+    path: &Utf8PathBuf,
+    config: &LaunchAgentConfig,
+    paths: PvPaths,
+    output: &mut Output<'_, impl Write>,
+    started_message: &str,
+) -> Result<ExitCode, ExecuteError> {
+    platform::write_launch_agent_file(path, config)?;
+    environment.bootstrap_launch_agent(path)?;
+    environment.kickstart_launch_agent()?;
+    output.line(&format!("LaunchAgent installed: {path}"))?;
+    output.line(started_message)?;
+    wait_for_daemon_and_submit_reconciliation(paths, output)?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
