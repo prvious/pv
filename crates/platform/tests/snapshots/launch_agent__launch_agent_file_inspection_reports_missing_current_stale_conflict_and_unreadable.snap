@@ -1,0 +1,12 @@
+---
+source: crates/platform/tests/launch_agent.rs
+expression: normalized_states
+---
+[
+    "Missing { path: \"[tempdir]/missing.plist\" }",
+    "Current { path: \"[tempdir]/current.plist\", value: LaunchAgentConfig { program_path: \"/Users/alice/.pv/bin/pv\", stdout_path: \"/Users/alice/.pv/logs/launchd.out.log\", stderr_path: \"/Users/alice/.pv/logs/launchd.err.log\" } }",
+    "Stale { path: \"[tempdir]/stale.plist\", expected: Some(LaunchAgentConfig { program_path: \"/Users/alice/.pv/bin/pv\", stdout_path: \"/Users/alice/.pv/logs/launchd.out.log\", stderr_path: \"/Users/alice/.pv/logs/launchd.err.log\" }), actual: Some(LaunchAgentConfig { program_path: \"/tmp/old-pv\", stdout_path: \"/Users/alice/.pv/logs/launchd.out.log\", stderr_path: \"/Users/alice/.pv/logs/launchd.err.log\" }) }",
+    "Conflict { path: \"[tempdir]/conflict.plist\" }",
+    "Stale { path: \"[tempdir]/malformed.plist\", expected: Some(LaunchAgentConfig { program_path: \"/Users/alice/.pv/bin/pv\", stdout_path: \"/Users/alice/.pv/logs/launchd.out.log\", stderr_path: \"/Users/alice/.pv/logs/launchd.err.log\" }), actual: None }",
+    "Unreadable { path: \"[tempdir]/directory.plist\", message: \"<read error>\" }",
+]

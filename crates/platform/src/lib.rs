@@ -1,6 +1,7 @@
 mod browser;
 mod ca;
 mod error;
+mod launch_agent;
 mod pf;
 mod resolver;
 mod socket;
@@ -12,6 +13,10 @@ pub use ca::{
     inspect_local_ca_files,
 };
 pub use error::PlatformError;
+pub use launch_agent::{
+    LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
+    inspect_launch_agent_file,
+};
 pub use pf::{
     PfConfReference, PfFileState, PfRedirectConfig, SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH,
     inspect_pf_anchor_file, inspect_pf_conf_reference,
