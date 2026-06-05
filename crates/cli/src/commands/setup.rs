@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::CaFileState;
+use platform::{CaFileState, PfFileState, ResolverConfig, ResolverFileState, TrustDomainState};
 use resources::{ArtifactManifestCache, ResourceName, TrackName, TrackSelector};
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
@@ -69,6 +69,16 @@ pub(crate) fn setup(
         let mut output = Output::new(stdout, OutputMode::plain());
         output.line("PV setup")?;
         output.line(&format!("Ensured PV state layout: {}", paths.root()))?;
+    }
+
+    if args.non_interactive && setup_requires_privileged_auth(environment, &paths)? {
+        let mut output = Output::new(stdout, OutputMode::plain());
+        output.line(
+            "pv setup --non-interactive requires macOS authentication for system integrations.",
+        )?;
+        output.line("Run `pv setup` interactively, then rerun with `--non-interactive`.")?;
+
+        return Ok(ExitCode::FAILURE);
     }
 
     if configure_shell_integration(&args, environment, &paths, stdout)? != ExitCode::SUCCESS {
@@ -179,6 +189,162 @@ where
     Ok(false)
 }
 
+fn setup_requires_privileged_auth(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<bool, ExecuteError> {
+    if dns_setup_requires_privileged_auth(environment, paths)? {
+        return Ok(true);
+    }
+    if ports_setup_requires_privileged_auth(environment, paths)? {
+        return Ok(true);
+    }
+    if ca_setup_requires_privileged_auth(environment, paths)? {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn dns_setup_requires_privileged_auth(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<bool, ExecuteError> {
+    let prepared_state = platform::inspect_resolver_file(&paths.resolver_config(), None);
+    let expected_config = resolver_config_from_state(&prepared_state);
+    let system_path = resolver_test_path(environment)?;
+    let system_state = platform::inspect_resolver_file(&system_path, expected_config.as_ref());
+
+    Ok(matches!(
+        system_state,
+        ResolverFileState::Missing { .. } | ResolverFileState::Stale { .. }
+    ))
+}
+
+fn ports_setup_requires_privileged_auth(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<bool, ExecuteError> {
+    let prepared_anchor_state = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
+    let prepared_reference_state =
+        platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
+    let expected_anchor = pf_config_from_anchor_state(&prepared_anchor_state);
+    let expected_reference = pf_reference_from_state(&prepared_reference_state);
+    let system_anchor_path = pf_anchor_path(environment)?;
+    let system_pf_conf_path = pf_conf_path(environment)?;
+    let system_anchor_state =
+        platform::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
+    let system_reference_state =
+        platform::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
+
+    if matches!(
+        system_anchor_state,
+        PfFileState::Missing { .. } | PfFileState::Stale { .. }
+    ) || matches!(
+        system_reference_state,
+        PfFileState::Missing { .. } | PfFileState::Stale { .. }
+    ) {
+        return Ok(true);
+    }
+
+    let Some(expected_anchor) = expected_anchor else {
+        return Ok(false);
+    };
+    let active_config = environment.active_pf_redirect_config()?;
+
+    Ok(active_config.as_ref() != Some(&expected_anchor))
+}
+
+fn ca_setup_requires_privileged_auth(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<bool, ExecuteError> {
+    let local_state =
+        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+    let Some(metadata) = metadata_from_local_ca_state(&local_state) else {
+        return Ok(true);
+    };
+    let trust_state = system_trust_state(environment, Some(&metadata));
+
+    Ok(!matches!(trust_state, TrustDomainState::Current { .. }))
+}
+
+fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
+    match state {
+        ResolverFileState::Current { port, .. }
+        | ResolverFileState::Stale {
+            actual_port: Some(port),
+            ..
+        } => Some(ResolverConfig::new(*port)),
+        ResolverFileState::Missing { .. }
+        | ResolverFileState::Stale {
+            actual_port: None, ..
+        }
+        | ResolverFileState::Conflict { .. }
+        | ResolverFileState::Unreadable { .. } => None,
+    }
+}
+
+fn pf_config_from_anchor_state(
+    state: &PfFileState<platform::PfRedirectConfig>,
+) -> Option<platform::PfRedirectConfig> {
+    match state {
+        PfFileState::Current { value, .. }
+        | PfFileState::Stale {
+            actual: Some(value),
+            ..
+        } => Some(value.clone()),
+        PfFileState::Missing { .. }
+        | PfFileState::Stale { actual: None, .. }
+        | PfFileState::Conflict { .. }
+        | PfFileState::Unreadable { .. } => None,
+    }
+}
+
+fn pf_reference_from_state(
+    state: &PfFileState<platform::PfConfReference>,
+) -> Option<platform::PfConfReference> {
+    match state {
+        PfFileState::Current { value, .. }
+        | PfFileState::Stale {
+            actual: Some(value),
+            ..
+        } => Some(*value),
+        PfFileState::Missing { .. }
+        | PfFileState::Stale { actual: None, .. }
+        | PfFileState::Conflict { .. }
+        | PfFileState::Unreadable { .. } => None,
+    }
+}
+
+fn metadata_from_local_ca_state(state: &CaFileState) -> Option<platform::LocalCaMetadata> {
+    match state {
+        CaFileState::Current { metadata, .. } => Some(metadata.clone()),
+        CaFileState::Missing { .. }
+        | CaFileState::RepairRequired { .. }
+        | CaFileState::Unreadable { .. } => None,
+    }
+}
+
+fn system_trust_state(
+    environment: &impl Environment,
+    metadata: Option<&platform::LocalCaMetadata>,
+) -> TrustDomainState {
+    struct EnvironmentTrustInspector<'environment, E> {
+        environment: &'environment E,
+    }
+
+    impl<E: Environment> platform::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
+        fn trusted_certificates(
+            &self,
+        ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
+            self.environment.trusted_ca_certificates()
+        }
+    }
+
+    platform::inspect_system_ca_trust(metadata, &EnvironmentTrustInspector { environment })
+}
+
 fn record_default_resource_desired_state(paths: &PvPaths) -> Result<(), ExecuteError> {
     let manifest_cache = ArtifactManifestCache::new(paths.downloads());
     let manifest = match manifest_cache.load_cached() {
@@ -277,15 +443,10 @@ fn configure_shell_integration(
         None => (block, "create"),
     };
 
-    if args.non_interactive && !args.yes {
-        output.line(&format!(
-            "Shell profile integration requires {action}; rerun with --yes or --no-path: {profile_path}"
-        ))?;
-
-        return Ok(ExitCode::FAILURE);
-    }
-
-    if !args.yes && !confirm_shell_profile_update(environment, stdout, &profile_path, action)? {
+    if !args.yes
+        && !args.non_interactive
+        && !confirm_shell_profile_update(environment, stdout, &profile_path, action)?
+    {
         return Ok(ExitCode::FAILURE);
     }
 
@@ -587,6 +748,21 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
+}
+
+fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+fn pf_anchor_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.pf_anchor_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+fn pf_conf_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.pf_conf_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
 
 fn backup_user_file(path: &Utf8Path) -> Result<Utf8PathBuf, ExecuteError> {

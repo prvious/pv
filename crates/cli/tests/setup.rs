@@ -351,6 +351,31 @@ fn setup_requires_manifest_before_daemon_registration() -> anyhow::Result<()> {
 }
 
 #[test]
+fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+
+    let output = run_pv(
+        &["setup", "--no-path", "--non-interactive"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.contains("requires macOS authentication"));
+    assert!(fixture.environment.operations().is_empty());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, fixture.environment.operations()));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());

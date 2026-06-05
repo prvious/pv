@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "(output, fixture.environment.operations())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\npv setup --non-interactive requires macOS authentication for system integrations.\nRun `pv setup` interactively, then rerun with `--non-interactive`.\n",
+        stderr: "",
+    },
+    [],
+)
