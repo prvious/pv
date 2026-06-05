@@ -47,34 +47,31 @@ pub(crate) enum Command {
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
-    #[command(name = "dns:install", about = "Prepare PV .test resolver config")]
+    #[command(
+        name = "dns:install",
+        about = "Install or repair PV .test resolver config"
+    )]
     DnsInstall,
 
-    #[command(
-        name = "dns:uninstall",
-        about = "Remove prepared PV .test resolver config"
-    )]
+    #[command(name = "dns:uninstall", about = "Remove PV .test resolver config")]
     DnsUninstall,
 
     #[command(name = "ports:status", about = "Show PV pf redirect status")]
     PortsStatus,
 
-    #[command(name = "ports:install", about = "Prepare PV pf redirect config")]
+    #[command(name = "ports:install", about = "Install or repair PV pf redirects")]
     PortsInstall,
 
-    #[command(
-        name = "ports:uninstall",
-        about = "Remove prepared PV pf redirect config"
-    )]
+    #[command(name = "ports:uninstall", about = "Remove PV pf redirects")]
     PortsUninstall,
 
     #[command(name = "ca:status", about = "Show PV local CA trust status")]
     CaStatus,
 
-    #[command(name = "ca:trust", about = "Prepare PV local CA trust")]
+    #[command(name = "ca:trust", about = "Trust PV local CA in the System keychain")]
     CaTrust,
 
-    #[command(name = "ca:untrust", about = "Prepare removal of PV local CA trust")]
+    #[command(name = "ca:untrust", about = "Remove PV local CA trust")]
     CaUntrust,
 
     #[command(name = "link", about = "Link a Project")]

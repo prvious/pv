@@ -225,14 +225,14 @@ _pv_commands() {
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
 'dns:status:Show PV .test resolver status' \
-'dns:install:Prepare PV .test resolver config' \
-'dns:uninstall:Remove prepared PV .test resolver config' \
+'dns:install:Install or repair PV .test resolver config' \
+'dns:uninstall:Remove PV .test resolver config' \
 'ports:status:Show PV pf redirect status' \
-'ports:install:Prepare PV pf redirect config' \
-'ports:uninstall:Remove prepared PV pf redirect config' \
+'ports:install:Install or repair PV pf redirects' \
+'ports:uninstall:Remove PV pf redirects' \
 'ca:status:Show PV local CA trust status' \
-'ca:trust:Prepare PV local CA trust' \
-'ca:untrust:Prepare removal of PV local CA trust' \
+'ca:trust:Trust PV local CA in the System keychain' \
+'ca:untrust:Remove PV local CA trust' \
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
