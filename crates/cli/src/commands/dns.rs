@@ -33,6 +33,21 @@ pub(crate) fn install(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
+    install_inner(environment, stdout, true)
+}
+
+pub(crate) fn install_config_only(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    install_inner(environment, stdout, false)
+}
+
+fn install_inner(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+    ensure_daemon: bool,
+) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
@@ -62,8 +77,6 @@ pub(crate) fn install(
             output.line(&format!(
                 "System resolver config already matches PV on port {port}: {path}"
             ))?;
-
-            Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
             if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
@@ -72,15 +85,13 @@ pub(crate) fn install(
                 return Err(error.into());
             }
             output.line(&format!("Installed system resolver config: {path}"))?;
-
-            Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
             output.line(&format!("System resolver config is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
 
-            Ok(ExitCode::FAILURE)
+            return Ok(ExitCode::FAILURE);
         }
         ResolverFileState::Unreadable { path, message } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
@@ -90,9 +101,15 @@ pub(crate) fn install(
             output.line(&format!("  {message}"))?;
             output.line("Leaving it in place.")?;
 
-            Ok(ExitCode::FAILURE)
+            return Ok(ExitCode::FAILURE);
         }
     }
+
+    if ensure_daemon {
+        return ensure_daemon_running(&paths, &mut output);
+    }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn release_new_dns_port(
@@ -104,6 +121,36 @@ fn release_new_dns_port(
     }
 
     Ok(())
+}
+
+fn ensure_daemon_running(
+    paths: &PvPaths,
+    output: &mut Output<'_, impl Write>,
+) -> Result<ExitCode, ExecuteError> {
+    let daemon_socket = paths.daemon_socket();
+
+    if !daemon_socket.exists() {
+        output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
+        output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
+        output.line(&format!("  socket: {daemon_socket}"))?;
+
+        return Ok(ExitCode::FAILURE);
+    }
+
+    match ::daemon::wait_until_healthy_blocking(paths.clone()) {
+        Ok(()) => {
+            output.line("PV daemon is running.")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
+            output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
+            output.line(&format!("  {error}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 pub(crate) fn uninstall(

@@ -85,7 +85,7 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step("DNS resolver setup", stdout, |stdout| {
-        dns::install(environment, stdout)
+        dns::install_config_only(environment, stdout)
     })? {
         return Ok(ExitCode::FAILURE);
     }
@@ -101,7 +101,7 @@ pub(crate) fn setup(
     }
     record_default_resource_desired_state(&paths)?;
     if !run_required_step("daemon registration", stdout, |stdout| {
-        daemon_command::enable(environment, stdout)
+        daemon_command::enable_without_reconciliation(environment, stdout)
     })? {
         return Ok(ExitCode::FAILURE);
     }
@@ -443,10 +443,15 @@ fn configure_shell_integration(
         None => (block, "create"),
     };
 
-    if !args.yes
-        && !args.non_interactive
-        && !confirm_shell_profile_update(environment, stdout, &profile_path, action)?
-    {
+    if args.non_interactive {
+        output.line(&format!(
+            "Shell profile integration requires {action}; rerun without --non-interactive or use --no-path: {profile_path}"
+        ))?;
+
+        return Ok(ExitCode::FAILURE);
+    }
+
+    if !args.yes && !confirm_shell_profile_update(environment, stdout, &profile_path, action)? {
         return Ok(ExitCode::FAILURE);
     }
 

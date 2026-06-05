@@ -288,6 +288,8 @@ fn install_pf_redirects_with_runner(
     let candidate_path = prepared_reference_path.with_file_name("pf.conf.candidate");
     let anchor_backup = read_optional_platform_file(system_anchor_path)?;
     let anchor_backup_path = prepared_anchor_path.with_file_name("pf.anchor.rollback");
+    let pf_conf_backup = read_optional_platform_file(system_pf_conf_path)?;
+    let pf_conf_backup_path = prepared_reference_path.with_file_name("pf.conf.rollback");
 
     state::fs::write_sensitive_file(&candidate_path, &candidate)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
@@ -312,17 +314,31 @@ fn install_pf_redirects_with_runner(
     })();
 
     if let Err(error) = post_anchor_result {
-        rollback_pf_anchor_with_runner(
+        let mut rollback_errors = Vec::new();
+
+        if let Err(rollback_error) = rollback_pf_conf_with_runner(
+            system_pf_conf_path,
+            pf_conf_backup.as_deref(),
+            &pf_conf_backup_path,
+            run_system,
+        ) {
+            rollback_errors.push(format!("pf.conf: {rollback_error}"));
+        }
+        if let Err(rollback_error) = rollback_pf_anchor_with_runner(
             system_anchor_path,
             anchor_backup.as_deref(),
             &anchor_backup_path,
             run_system,
-        )
-        .map_err(|rollback_error| {
-            PlatformError::SystemIntegration(format!(
-                "{error}; additionally failed to rollback pf anchor: {rollback_error}"
-            ))
-        })?;
+        ) {
+            rollback_errors.push(format!("pf anchor: {rollback_error}"));
+        }
+
+        if !rollback_errors.is_empty() {
+            return Err(PlatformError::SystemIntegration(format!(
+                "{error}; additionally failed to rollback {}",
+                rollback_errors.join("; ")
+            )));
+        }
 
         return Err(error);
     }
@@ -357,6 +373,36 @@ fn rollback_pf_anchor_with_runner(
     run_system(
         "/usr/bin/sudo",
         &["/bin/rm", "-f", system_anchor_path.as_str()],
+    )
+}
+
+fn rollback_pf_conf_with_runner(
+    system_pf_conf_path: &Utf8Path,
+    pf_conf_backup: Option<&str>,
+    pf_conf_backup_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    if let Some(pf_conf_backup) = pf_conf_backup {
+        state::fs::write_sensitive_file(pf_conf_backup_path, pf_conf_backup)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+        run_system(
+            "/usr/bin/sudo",
+            &[
+                "/usr/bin/install",
+                "-m",
+                "0644",
+                pf_conf_backup_path.as_str(),
+                system_pf_conf_path.as_str(),
+            ],
+        )?;
+        let _ = state::fs::delete_file(pf_conf_backup_path);
+
+        return Ok(());
+    }
+
+    run_system(
+        "/usr/bin/sudo",
+        &["/bin/rm", "-f", system_pf_conf_path.as_str()],
     )
 }
 
@@ -751,6 +797,58 @@ mod tests {
             command.contains("/usr/bin/install")
                 && command.contains(prepared_anchor_path.as_str())
                 && command.contains(system_anchor_path.as_str())
+        }));
+        assert!(commands.iter().any(|command| {
+            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_restores_pf_conf_when_reload_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+        state::fs::write_sensitive_file(&system_pf_conf_path, "set skip on lo0\n")?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == format!("/usr/bin/sudo /sbin/pfctl -f {system_pf_conf_path}") {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "reload pf failed".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "reload pf failed"
+        ));
+        assert!(commands.iter().any(|command| {
+            command.contains("/usr/bin/install")
+                && command.contains("pf.conf.rollback")
+                && command.contains(system_pf_conf_path.as_str())
         }));
         assert!(commands.iter().any(|command| {
             command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")

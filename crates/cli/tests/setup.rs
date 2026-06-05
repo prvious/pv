@@ -14,7 +14,7 @@ use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{
     KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL, LaunchAgentConfig,
-    LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig,
+    LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, generate_local_ca,
 };
 use serde_json::json;
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
@@ -61,6 +61,10 @@ impl TestEnvironment {
 
     fn certificates(&self) -> Vec<KeychainCertificate> {
         lock(&self.certificates).clone()
+    }
+
+    fn set_active_pf_config(&self, config: PfRedirectConfig) {
+        *lock(&self.active_pf_config) = Some(config);
     }
 }
 
@@ -277,6 +281,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     assert!(daemon_requests.iter().any(|request| {
         request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
     }));
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -320,6 +325,7 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
     assert!(daemon_requests.iter().any(|request| {
         request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
     }));
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
 }
@@ -371,6 +377,63 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, fixture.environment.operations()));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
+    let profile_path = fixture.paths.home().join(".zprofile");
+    let resolver_config = ResolverConfig::new(35353).render();
+    let pf_config = PfRedirectConfig::new(48080, 48443);
+    let generated = generate_local_ca()?;
+
+    seed_setup_manifest(&fixture.paths)?;
+    write_file(&fixture.paths.resolver_config(), &resolver_config)?;
+    write_file(&fixture.system_resolver_path, &resolver_config)?;
+    write_file(
+        &fixture.paths.pf_anchor_config(),
+        &pf_config.render_anchor(),
+    )?;
+    write_file(&fixture.system_anchor_path, &pf_config.render_anchor())?;
+    write_file(
+        &fixture.paths.pf_conf_reference_config(),
+        &PfConfReference.render(),
+    )?;
+    write_file(&fixture.system_pf_conf_path, &PfConfReference.render())?;
+    write_file(&fixture.paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&fixture.paths.ca_private_key(), &generated.private_key_pem)?;
+    write_file(&profile_path, "export EXISTING=1\n")?;
+    fixture.environment.set_active_pf_config(pf_config);
+    lock(&fixture.environment.certificates).push(KeychainCertificate {
+        metadata: generated.metadata,
+        trust: KeychainTrustResult::TrustRoot,
+    });
+
+    let output = run_pv(
+        &["setup", "--non-interactive"],
+        fixture.environment.as_ref(),
+    )?;
+    let profile_after_setup = read_required_file(&profile_path)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(
+        output
+            .stdout
+            .contains("Shell profile integration requires update")
+    );
+    assert_eq!(profile_after_setup, "export EXISTING=1\n");
+    assert!(fixture.environment.operations().is_empty());
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            profile_after_setup,
+            fixture.environment.operations()
+        ));
     });
 
     Ok(())
@@ -626,9 +689,7 @@ impl DaemonFixture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
         let thread = spawn_daemon_fixture_thread(move || {
-            let mut job_requests = 0;
-
-            for _request_index in 0..3 {
+            for _request_index in 0..2 {
                 let (mut stream, _address) = accept_with_timeout(&listener)?;
                 let mut request = String::new();
                 let mut reader = BufReader::new(stream.try_clone()?);
@@ -644,21 +705,6 @@ impl DaemonFixture {
                             "protocol_version": daemon::PROTOCOL_VERSION,
                             "status": "ok",
                             "message": "daemon healthy",
-                        }),
-                    )?;
-                    continue;
-                }
-
-                job_requests += 1;
-                if job_requests == 1 {
-                    write_daemon_line(
-                        &mut stream,
-                        json!({
-                            "type": "response",
-                            "protocol_version": daemon::PROTOCOL_VERSION,
-                            "status": "accepted",
-                            "message": "job accepted",
-                            "job_id": "job_enable_1",
                         }),
                     )?;
                     continue;
@@ -714,6 +760,15 @@ impl DaemonFixture {
 
         Ok(lock(&self.requests).clone())
     }
+}
+
+fn reconciliation_request_count(requests: &[String]) -> usize {
+    requests
+        .iter()
+        .filter(|request| {
+            request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
+        })
+        .count()
 }
 
 #[expect(

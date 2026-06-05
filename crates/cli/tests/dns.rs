@@ -1,15 +1,20 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write as _};
 use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::ResolverConfig;
+use serde_json::json;
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 #[derive(Debug)]
@@ -101,8 +106,10 @@ fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()
     let current_dir = tempdir.path().join("work");
     let system_resolver_path = tempdir.path().join("etc/resolver/test");
     let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
+    let daemon = DaemonFixture::start(&pv_paths(&home))?;
 
     let output = run_pv(&["dns:install"], &environment)?;
+    let daemon_requests = daemon.finish()?;
     let prepared_path = pv_paths(&home).resolver_config();
     let prepared_config = read_required_file(&prepared_path)?;
     let parsed_config = ResolverConfig::parse(&prepared_config)
@@ -114,6 +121,13 @@ fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert_eq!(system_resolver_config, prepared_config);
+    assert_eq!(
+        daemon_requests,
+        vec![format!(
+            r#"{{"protocol_version":{},"command":"health"}}"#,
+            daemon::PROTOCOL_VERSION
+        )]
+    );
     with_normalized_tempdir(tempdir.path(), || {
         let mut settings = insta::Settings::clone_current();
         settings.add_filter(
@@ -128,6 +142,45 @@ fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()
                 prepared_path,
                 prepared_config,
                 parsed_config,
+                system_resolver_config,
+                environment.operations.borrow().clone(),
+                daemon_requests,
+            ));
+        });
+    });
+
+    Ok(())
+}
+
+#[test]
+fn dns_install_reports_missing_daemon_after_installing_resolver_config() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_resolver_path = tempdir.path().join("etc/resolver/test");
+    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
+
+    let output = run_pv(&["dns:install"], &environment)?;
+    let prepared_path = pv_paths(&home).resolver_config();
+    let prepared_config = read_required_file(&prepared_path)?;
+    let system_resolver_config = read_required_file(&system_resolver_path)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.contains("PV daemon is not running"));
+    assert_eq!(system_resolver_config, prepared_config);
+
+    with_normalized_tempdir(tempdir.path(), || {
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(
+            r"DNS resolver port: [0-9]+",
+            "DNS resolver port: <dns-port>",
+        );
+        settings.add_filter(r"port [0-9]+", "port <dns-port>");
+        settings.bind(|| {
+            assert_debug_snapshot!((
+                output,
+                prepared_path,
+                prepared_config,
                 system_resolver_config,
                 environment.operations.borrow().clone(),
             ));
@@ -152,8 +205,10 @@ fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Resu
         |candidate| candidate == dns_port,
     )?;
     drop(database);
+    let daemon = DaemonFixture::start(&paths)?;
 
     let output = run_pv(&["dns:install"], &environment)?;
+    let daemon_requests = daemon.finish()?;
     let prepared_config = read_required_file(&paths.resolver_config())?;
     let parsed_config = ResolverConfig::parse(&prepared_config)
         .ok_or_else(|| anyhow::anyhow!("prepared resolver config did not parse"))?;
@@ -167,6 +222,13 @@ fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Resu
     assert_eq!(seeded_assignment.port, dns_port);
     assert_eq!(parsed_config.port, dns_port);
     assert_eq!(dns_assignment.port, dns_port);
+    assert_eq!(
+        daemon_requests,
+        vec![format!(
+            r#"{{"protocol_version":{},"command":"health"}}"#,
+            daemon::PROTOCOL_VERSION
+        )]
+    );
 
     Ok(())
 }
@@ -336,6 +398,54 @@ fn dns_uninstall_fails_when_system_resolver_cannot_be_inspected() -> anyhow::Res
 }
 
 #[derive(Debug)]
+struct DaemonFixture {
+    requests: Arc<Mutex<Vec<String>>>,
+    thread: thread::JoinHandle<anyhow::Result<()>>,
+}
+
+impl DaemonFixture {
+    fn start(paths: &PvPaths) -> anyhow::Result<Self> {
+        state::fs::ensure_layout(paths)?;
+        delete_optional_file(&paths.daemon_socket())?;
+        let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
+
+        listener.set_nonblocking(true)?;
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
+        let thread = spawn_daemon_fixture_thread(move || {
+            let (mut stream, _address) = accept_with_timeout(&listener)?;
+            let mut request = String::new();
+            let mut reader = BufReader::new(stream.try_clone()?);
+
+            reader.read_line(&mut request)?;
+            lock(&thread_requests).push(request.trim().to_string());
+            write_daemon_line(
+                &mut stream,
+                json!({
+                    "type": "response",
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "status": "ok",
+                    "message": "daemon healthy",
+                }),
+            )?;
+
+            Ok(())
+        });
+
+        Ok(Self { requests, thread })
+    }
+
+    fn finish(self) -> anyhow::Result<Vec<String>> {
+        self.thread
+            .join()
+            .map_err(|_error| anyhow::anyhow!("daemon fixture thread panicked"))??;
+
+        Ok(lock(&self.requests).clone())
+    }
+}
+
+#[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,
@@ -353,6 +463,43 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI DNS tests run a synchronous fixture daemon on a short-lived thread"
+)]
+fn spawn_daemon_fixture_thread(
+    operation: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> thread::JoinHandle<anyhow::Result<()>> {
+    thread::spawn(operation)
+}
+
+fn accept_with_timeout(
+    listener: &UnixListener,
+) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
+    let started_at = Instant::now();
+
+    loop {
+        match listener.accept() {
+            Ok(accepted) => return Ok(accepted),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if started_at.elapsed() > Duration::from_secs(3) {
+                    return Err(anyhow::anyhow!(
+                        "timed out waiting for daemon client request"
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn write_daemon_line(stream: &mut UnixStream, value: serde_json::Value) -> anyhow::Result<()> {
+    writeln!(stream, "{value}")?;
+
+    Ok(())
 }
 
 fn pv_paths(home: &Utf8Path) -> PvPaths {
@@ -388,6 +535,12 @@ fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn bind_loopback_tcp_udp_pair() -> anyhow::Result<(u16, TcpListener, UdpSocket)> {

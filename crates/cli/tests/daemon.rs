@@ -23,6 +23,7 @@ struct TestEnvironment {
     current_exe: PathBuf,
     launch_agent_path: PathBuf,
     operations: RefCell<Vec<String>>,
+    launch_agent_already_unloaded: bool,
 }
 
 impl TestEnvironment {
@@ -38,7 +39,13 @@ impl TestEnvironment {
             current_exe: current_exe.as_std_path().to_path_buf(),
             launch_agent_path: launch_agent_path.as_std_path().to_path_buf(),
             operations: RefCell::new(Vec::new()),
+            launch_agent_already_unloaded: false,
         }
+    }
+
+    fn with_unloaded_launch_agent(mut self) -> Self {
+        self.launch_agent_already_unloaded = true;
+        self
     }
 
     fn operations(&self) -> Vec<String> {
@@ -91,6 +98,12 @@ impl Environment for TestEnvironment {
         self.operations
             .borrow_mut()
             .push(format!("bootout {LAUNCH_AGENT_LABEL}"));
+        if self.launch_agent_already_unloaded {
+            return Err(platform::PlatformError::LaunchAgentCommandStatus {
+                command: format!("/bin/launchctl bootout gui/501/{LAUNCH_AGENT_LABEL}"),
+                status: "exit status: 5".to_string(),
+            });
+        }
 
         Ok(())
     }
@@ -236,6 +249,41 @@ fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
         .path()
         .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
     let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
+    let paths = PvPaths::for_home(&home);
+    let config = LaunchAgentConfig::new(
+        &current_exe,
+        paths.logs().join("launchd.out.log"),
+        paths.logs().join("launchd.err.log"),
+    );
+    write_file(&launch_agent_path, &config.render()?)?;
+
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    let plist_after_disable = read_optional_file(&launch_agent_path)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("LaunchAgent removed"));
+    assert!(output.stderr.is_empty());
+    assert!(plist_after_disable.is_none());
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations(), plist_after_disable));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_removes_pv_owned_plist_when_launch_agent_is_already_unloaded()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let current_exe = tempdir.path().join("pv");
+    let launch_agent_path = tempdir
+        .path()
+        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path)
+        .with_unloaded_launch_agent();
     let paths = PvPaths::for_home(&home);
     let config = LaunchAgentConfig::new(
         &current_exe,
