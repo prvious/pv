@@ -28,10 +28,6 @@ pub(crate) fn run_system_command(program: &str, args: &[&str]) -> Result<(), Pla
 )]
 type StdCommand = std::process::Command;
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "platform system integration helper owns privileged process execution"
-)]
 fn command_status(program: &str, args: &[&str]) -> io::Result<ExitStatus> {
     StdCommand::new(program).args(args).status()
 }

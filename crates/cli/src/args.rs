@@ -26,6 +26,12 @@ pub(crate) enum Command {
     #[command(name = "completions", about = "Generate shell completions")]
     Completions(CompletionsArgs),
 
+    #[command(name = "setup", about = "Configure PV system integrations")]
+    Setup(SetupArgs),
+
+    #[command(name = "uninstall", about = "Uninstall PV safely")]
+    Uninstall(UninstallArgs),
+
     #[command(name = "daemon:enable", about = "Enable the PV login daemon")]
     DaemonEnable,
 
@@ -103,6 +109,27 @@ pub(crate) struct EnvArgs {
 pub(crate) struct CompletionsArgs {
     #[arg(value_enum, help = "Shell to generate completions for")]
     pub(crate) shell: Shell,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct SetupArgs {
+    #[arg(long, help = "Accept PV-owned setup confirmations")]
+    pub(crate) yes: bool,
+
+    #[arg(long, help = "Disable interactive prompts")]
+    pub(crate) non_interactive: bool,
+
+    #[arg(long, help = "Skip shell profile integration")]
+    pub(crate) no_path: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UninstallArgs {
+    #[arg(long, help = "Remove PV-owned state under ~/.pv")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Skip prune confirmation")]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, clap::Args)]

@@ -130,6 +130,28 @@ async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
 }
 
 #[tokio::test]
+async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let client_paths = paths.clone();
+
+    let completed = tokio::task::spawn_blocking(move || {
+        daemon::run_job_blocking(client_paths, "reconcile", "system")
+    })
+    .await??;
+    let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
+    daemon.shutdown().await?;
+
+    assert_eq!(completed.summary, "stub job completed");
+    assert_eq!(job.kind, "reconcile");
+    assert_eq!(job.scope, "system");
+    assert_eq!(job.status, JobStatus::Succeeded);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn blocking_client_rejects_protocol_mismatch_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

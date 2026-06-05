@@ -241,10 +241,6 @@ fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
 )]
 type StdCommand = std::process::Command;
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "platform LaunchAgent helper owns launchctl process execution"
-)]
 fn launchctl_status(args: &[&str]) -> io::Result<ExitStatus> {
     StdCommand::new("/bin/launchctl").args(args).status()
 }

@@ -511,10 +511,6 @@ fn temporary_pf_conf_candidate_path() -> Result<Utf8PathBuf, PlatformError> {
     Ok(temp_dir.join(format!("pv-pf-conf-{}-uninstall", std::process::id())))
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "platform pf helper owns process temporary directory lookup"
-)]
 fn process_temp_dir() -> PathBuf {
     std::env::temp_dir()
 }

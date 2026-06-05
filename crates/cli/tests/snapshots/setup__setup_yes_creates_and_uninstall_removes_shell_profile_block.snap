@@ -1,0 +1,48 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "(setup, profile_after_setup, second_setup, profile_after_second_setup,\nuninstall, profile_after_uninstall, fixture.environment.operations(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nBacked up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak\nUpdated shell profile integration: <tempdir>/home/.zprofile\nOpen a new terminal, or run `pv env --shell zsh` for current-session shell integration.\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nInstalled system pf redirect config\nPrepared PV local CA\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  fingerprint: <fingerprint>\nSystem keychain trust: not trusted\n  fingerprint: <fingerprint>\nTrusted PV local CA in the System keychain.\nLaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\nSystem reconciliation completed: stub job completed\nPV setup complete\n",
+        stderr: "",
+    },
+    "export EXISTING=1\n\n# >>> PV ENV\nif [ -x \"$HOME/.pv/bin/pv\" ]; then\n  eval \"$(\"$HOME/.pv/bin/pv\" env --shell zsh)\"\nfi\n# <<< PV ENV\n",
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nShell profile integration already current: <tempdir>/home/.zprofile\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem resolver config already matches PV on port <dns-port>: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nSystem pf redirect config already matches PV\nPrepared PV local CA\n  existing local CA is current\nSystem keychain trust: current\n  fingerprint: <fingerprint>\nSystem keychain trust already matches PV.\nLaunchAgent already installed\nDaemon started\nSystem reconciliation completed: stub job completed\nPV setup complete\n",
+        stderr: "",
+    },
+    "export EXISTING=1\n\n# >>> PV ENV\nif [ -x \"$HOME/.pv/bin/pv\" ]; then\n  eval \"$(\"$HOME/.pv/bin/pv\" env --shell zsh)\"\nfi\n# <<< PV ENV\n",
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV uninstall\nDaemon disabled\nLaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDeleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\nRemoved PV-owned system resolver config: <tempdir>/etc/resolver/test\nDeleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv\nDeleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf\nRemoved PV-owned system pf redirect config\nPrepared PV local CA trust removal\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem keychain trust: current\n  fingerprint: <fingerprint>\nRemoved PV local CA trust from the System keychain.\nBacked up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak\nRemoved shell profile integration: <tempdir>/home/.zprofile\nRemoved PV app binaries and shims: <tempdir>/home/.pv/bin\nRemoved runtime metadata: <tempdir>/home/.pv/run\nRemoved generated configs: <tempdir>/home/.pv/config\nRemoved download cache: <tempdir>/home/.pv/downloads\nPreserved logs, pv.db, certificates, Composer home/cache, and resources data.\nPV uninstall complete\n",
+        stderr: "",
+    },
+    "export EXISTING=1\n\n",
+    [
+        "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
+        "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "trust <fingerprint>",
+        "bootstrap <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist",
+        "kickstart com.prvious.pv.daemon",
+        "kickstart com.prvious.pv.daemon",
+        "bootout com.prvious.pv.daemon",
+        "remove resolver <tempdir>/etc/resolver/test",
+        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "untrust <fingerprint>",
+    ],
+)
