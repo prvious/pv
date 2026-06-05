@@ -25,6 +25,15 @@ pub enum PlatformError {
     #[error("local CA certificate and private key do not match")]
     KeyMismatch,
 
+    #[error("{feature} is unsupported on this platform")]
+    UnsupportedPlatform { feature: &'static str },
+
+    #[error("could not open URL in the browser: {0}")]
+    BrowserOpen(#[source] io::Error),
+
+    #[error("browser open failed with {status}")]
+    BrowserOpenStatus { status: String },
+
     #[error("generated PV local CA files are missing after writing")]
     LocalCaPostWriteMissing,
 

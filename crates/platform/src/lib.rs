@@ -1,3 +1,4 @@
+mod browser;
 mod ca;
 mod error;
 mod pf;
@@ -5,6 +6,7 @@ mod resolver;
 mod socket;
 mod trust;
 
+pub use browser::open_url;
 pub use ca::{
     CaFileState, CaRepairReason, GeneratedLocalCa, LocalCaMetadata, generate_local_ca,
     inspect_local_ca_files,
@@ -27,7 +29,31 @@ pub use trust::{
 mod tests {
     use insta::assert_debug_snapshot;
 
+    use crate::error::PlatformError;
     use crate::socket::parse_netstat_tcp_listener_ports;
+
+    #[test]
+    fn browser_open_helper_reports_failed_status() {
+        let result = crate::browser::open_url_with_launcher("https://example.test", |_| Ok(false));
+
+        assert!(matches!(
+            result,
+            Err(PlatformError::BrowserOpenStatus { status })
+                if status == "exit status: unsuccessful"
+        ));
+    }
+
+    #[test]
+    fn unsupported_platform_error_names_feature() {
+        let error = PlatformError::UnsupportedPlatform {
+            feature: "System keychain trust inspection",
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "System keychain trust inspection is unsupported on this platform"
+        );
+    }
 
     #[test]
     fn netstat_tcp_listener_port_parser_covers_loopback_and_wildcard_addresses() {

@@ -15,8 +15,7 @@ use crate::jobs::{
 use crate::reconciliation::ReconciliationQueue;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
-    DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION,
-    ResponseStatus, write_line,
+    DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
 };
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
@@ -112,13 +111,7 @@ async fn handle_connection(
     if request.protocol_version != PROTOCOL_VERSION {
         write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Error,
-                message: "daemon protocol mismatch; run `pv daemon:restart`",
-                job_id: None,
-            },
+            &DaemonResponse::error("daemon protocol mismatch; run `pv daemon:restart`"),
         )
         .await?;
 
@@ -127,17 +120,7 @@ async fn handle_connection(
 
     match request.command {
         DaemonCommand::Health => {
-            write_line(
-                &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Ok,
-                    message: "daemon healthy",
-                    job_id: None,
-                },
-            )
-            .await?;
+            write_line(&mut transport, &DaemonResponse::ok("daemon healthy")).await?;
 
             Ok(())
         }

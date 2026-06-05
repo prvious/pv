@@ -18,11 +18,14 @@ fn resolver_config_renders_pv_owned_test_resolver_file() {
     let config = ResolverConfig::new(35353);
     let rendered = config.render();
     let duplicate_port = format!("{rendered}port 35353\n");
+    let duplicate_nameserver =
+        rendered.replacen("port 35353\n", "nameserver 127.0.0.1\nport 35353\n", 1);
     let unexpected_active_line = format!("{rendered}search test\n");
 
     assert_debug_snapshot!(&rendered);
     assert_eq!(ResolverConfig::parse(&rendered), Some(config));
     assert_eq!(ResolverConfig::parse(&duplicate_port), None);
+    assert_eq!(ResolverConfig::parse(&duplicate_nameserver), None);
     assert_eq!(ResolverConfig::parse(&unexpected_active_line), None);
 }
 

@@ -2,9 +2,7 @@ use crate::DaemonError;
 use crate::ipc::LocalStream;
 use crate::project_env::reconcile_project_env;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
-use protocol::{
-    DaemonEvent, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, ResponseStatus, write_line,
-};
+use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, PvPaths};
 use tokio::io::AsyncWrite;
 
@@ -60,13 +58,7 @@ async fn run_reconciliation_job(
             let job_id = queued.job_id().to_string();
             let accepted_result = write_line(
                 &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Accepted,
-                    message: "job accepted",
-                    job_id: Some(&job_id),
-                },
+                &DaemonResponse::accepted("job accepted", &job_id),
             )
             .await
             .map_err(DaemonError::from);
@@ -89,13 +81,7 @@ async fn run_reconciliation_job(
         EnqueueResult::Coalesced(job) => {
             write_line(
                 &mut transport,
-                &DaemonResponse {
-                    line_type: "response",
-                    protocol_version: PROTOCOL_VERSION,
-                    status: ResponseStatus::Accepted,
-                    message: "reconciliation already queued or running",
-                    job_id: Some(job.job_id()),
-                },
+                &DaemonResponse::accepted("reconciliation already queued or running", job.job_id()),
             )
             .await?;
 
@@ -334,13 +320,7 @@ async fn run_invalid_reconciliation_scope_job(
     let stream_is_open = async {
         write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Accepted,
-                message: "job accepted",
-                job_id: Some(&job.id),
-            },
+            &DaemonResponse::accepted("job accepted", &job.id),
         )
         .await?;
         write_line(
@@ -387,13 +367,7 @@ async fn run_started_job(
     let stream_is_open = async {
         write_line(
             &mut transport,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Accepted,
-                message: "job accepted",
-                job_id: Some(&job.id),
-            },
+            &DaemonResponse::accepted("job accepted", &job.id),
         )
         .await?;
         write_line(

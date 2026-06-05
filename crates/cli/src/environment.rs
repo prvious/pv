@@ -69,7 +69,7 @@ impl Environment for ProcessEnvironment {
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
-        process_open_url(url)
+        platform::open_url(url).map_err(io::Error::other)
     }
 }
 
@@ -87,19 +87,4 @@ fn process_var_os(key: &str) -> Option<OsString> {
 )]
 fn process_current_dir() -> io::Result<PathBuf> {
     std::env::current_dir()
-}
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "PV environment helper owns the macOS browser handoff for `pv open`"
-)]
-fn process_open_url(url: &str) -> io::Result<()> {
-    let status = std::process::Command::new("open").arg(url).status()?;
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(io::Error::other(format!(
-        "browser open failed with {status}"
-    )))
 }

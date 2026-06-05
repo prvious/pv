@@ -7,6 +7,7 @@ use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 pub const PROTOCOL_VERSION: u16 = 1;
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+const RESPONSE_LINE_TYPE: &str = "response";
 
 pub type DaemonTransport<Stream> = Framed<Stream, LinesCodec>;
 
@@ -34,19 +35,63 @@ pub enum DaemonCommand {
     RunJob { kind: String, scope: String },
 }
 
-#[derive(Debug, Serialize)]
-pub struct DaemonResponse<'message> {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DaemonResponse {
     #[serde(rename = "type")]
-    pub line_type: &'static str,
-    pub protocol_version: u16,
-    pub status: ResponseStatus,
-    pub message: &'message str,
+    line_type: String,
+    protocol_version: u16,
+    status: ResponseStatus,
+    message: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<&'message str>,
+    job_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+impl DaemonResponse {
+    pub fn ok(message: impl Into<String>) -> Self {
+        Self::new(ResponseStatus::Ok, message, None)
+    }
+
+    pub fn accepted(message: impl Into<String>, job_id: impl Into<String>) -> Self {
+        Self::new(ResponseStatus::Accepted, message, Some(job_id.into()))
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(ResponseStatus::Error, message, None)
+    }
+
+    pub fn line_type(&self) -> &str {
+        &self.line_type
+    }
+
+    pub fn protocol_version(&self) -> u16 {
+        self.protocol_version
+    }
+
+    pub fn status(&self) -> ResponseStatus {
+        self.status
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn job_id(&self) -> Option<&str> {
+        self.job_id.as_deref()
+    }
+
+    fn new(status: ResponseStatus, message: impl Into<String>, job_id: Option<String>) -> Self {
+        Self {
+            line_type: RESPONSE_LINE_TYPE.to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            status,
+            message: message.into(),
+            job_id,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseStatus {
     Ok,
@@ -112,23 +157,38 @@ mod tests {
 
     use super::{DaemonResponse, PROTOCOL_VERSION, ResponseStatus, transport, write_line};
 
+    #[test]
+    fn response_envelope_round_trips_through_protocol_type() -> anyhow::Result<()> {
+        let response = DaemonResponse::accepted("job accepted", "job-1");
+        let encoded = serde_json::to_value(&response)?;
+
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "response",
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "accepted",
+                "message": "job accepted",
+                "job_id": "job-1",
+            })
+        );
+
+        let decoded = serde_json::from_value::<DaemonResponse>(encoded)?;
+
+        assert_eq!(decoded.status(), ResponseStatus::Accepted);
+        assert_eq!(decoded.message(), "job accepted");
+        assert_eq!(decoded.job_id(), Some("job-1"));
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn transport_frames_generic_async_streams() -> anyhow::Result<()> {
         let (client, server) = duplex(1024);
         let mut writer = transport(client);
         let mut reader = transport(server);
 
-        write_line(
-            &mut writer,
-            &DaemonResponse {
-                line_type: "response",
-                protocol_version: PROTOCOL_VERSION,
-                status: ResponseStatus::Ok,
-                message: "daemon healthy",
-                job_id: None,
-            },
-        )
-        .await?;
+        write_line(&mut writer, &DaemonResponse::ok("daemon healthy")).await?;
 
         let Some(line) = reader.next().await else {
             anyhow::bail!("reader closed before receiving a protocol line");

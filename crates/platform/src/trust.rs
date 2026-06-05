@@ -1,6 +1,9 @@
 use crate::LocalCaMetadata;
-use crate::ca::{is_pv_ca_metadata, pem_from_der};
+use crate::ca::is_pv_ca_metadata;
 use crate::error::PlatformError;
+
+#[cfg(target_os = "macos")]
+use crate::ca::pem_from_der;
 
 #[cfg(target_os = "macos")]
 use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
@@ -147,7 +150,9 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
 
         #[cfg(not(target_os = "macos"))]
         {
-            Ok(Vec::new())
+            Err(PlatformError::UnsupportedPlatform {
+                feature: "System keychain trust inspection",
+            })
         }
     }
 }
