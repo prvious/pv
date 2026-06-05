@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(output, paths.pf_anchor_config(), prepared_anchor,\npaths.pf_conf_reference_config(), prepared_reference,\nsystem_anchor_after_install, system_pf_conf_after_install,\nenvironment.operations.borrow().clone(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nInstalled system pf redirect config\n",
+        stderr: "",
+    },
+    "<tempdir>/home/.pv/config/pf/com.prvious.pv",
+    "# Managed by PV\n# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n",
+    "<tempdir>/home/.pv/config/pf/pf.conf",
+    "# Managed by PV\n# Source: PV prepared pf.conf reference for /etc/pf.conf\nanchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+    "# Managed by PV\n# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n",
+    "# Managed by PV\n# Source: PV prepared pf.conf reference for /etc/pf.conf\nanchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+    [
+        "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+    ],
+)

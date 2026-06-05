@@ -73,6 +73,29 @@ pub trait Environment {
         platform::loopback_tcp_listener_ports()
     }
 
+    fn install_pf_redirects(
+        &self,
+        prepared_anchor_path: &Utf8Path,
+        prepared_reference_path: &Utf8Path,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::install_pf_redirects(
+            prepared_anchor_path,
+            prepared_reference_path,
+            system_anchor_path,
+            system_pf_conf_path,
+        )
+    }
+
+    fn remove_pf_redirects(
+        &self,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::remove_pf_redirects(system_anchor_path, system_pf_conf_path)
+    }
+
     fn trusted_ca_certificates(
         &self,
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {

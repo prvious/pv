@@ -97,11 +97,30 @@ pub(crate) fn install(
         "  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:{}",
         config.https_port
     ))?;
-    output.line("Privileged install deferred to PR 13 setup/system-integration work.")?;
-    write_pf_anchor_install_guidance(&mut output, &system_anchor_state)?;
-    write_pf_reference_install_guidance(&mut output, &system_reference_state)?;
 
-    Ok(ExitCode::FAILURE)
+    if let Some(exit_code) =
+        write_pf_install_blocker(&mut output, &system_anchor_state, &system_reference_state)?
+    {
+        return Ok(exit_code);
+    }
+
+    if matches!(system_anchor_state, PfFileState::Current { .. })
+        && matches!(system_reference_state, PfFileState::Current { .. })
+    {
+        output.line("System pf redirect config already matches PV")?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    environment.install_pf_redirects(
+        &prepared_anchor_path,
+        &prepared_reference_path,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )?;
+    output.line("Installed system pf redirect config")?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn uninstall(
@@ -132,15 +151,24 @@ pub(crate) fn uninstall(
         deleted_reference,
     )?;
 
-    let anchor_exit = write_pf_anchor_uninstall_guidance(&mut output, &system_anchor_state)?;
-    let reference_exit =
-        write_pf_reference_uninstall_guidance(&mut output, &system_reference_state)?;
-
-    if anchor_exit == ExitCode::SUCCESS && reference_exit == ExitCode::SUCCESS {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::FAILURE)
+    if let Some(exit_code) =
+        write_pf_uninstall_blocker(&mut output, &system_anchor_state, &system_reference_state)?
+    {
+        return Ok(exit_code);
     }
+
+    if matches!(system_anchor_state, PfFileState::Missing { .. })
+        && matches!(system_reference_state, PfFileState::Missing { .. })
+    {
+        output.line("System pf redirect config already absent")?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    environment.remove_pf_redirects(&system_anchor_path, &system_pf_conf_path)?;
+    output.line("Removed PV-owned system pf redirect config")?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn low_port_conflicts(listening_ports: &std::collections::BTreeSet<u16>) -> Vec<u16> {
@@ -277,106 +305,31 @@ fn write_optional_pf_config(
     }
 }
 
-fn write_pf_anchor_install_guidance(
+fn write_pf_install_blocker(
     output: &mut Output<'_, impl Write>,
-    state: &PfFileState<PfRedirectConfig>,
-) -> io::Result<()> {
-    match state {
-        PfFileState::Missing { path } => {
-            output.line(&format!("System pf anchor is not installed: {path}"))
-        }
-        PfFileState::Current { path, .. } => {
-            output.line(&format!("System pf anchor already matches PV: {path}"))
-        }
-        PfFileState::Stale { path, .. } => {
-            output.line(&format!("PV-owned system pf anchor is stale: {path}"))
-        }
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf anchor is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!("System pf anchor could not be inspected: {path}"))?;
-            output.line(&format!("  {message}"))
-        }
-    }
-}
-
-fn write_pf_reference_install_guidance(
-    output: &mut Output<'_, impl Write>,
-    state: &PfFileState<PfConfReference>,
-) -> io::Result<()> {
-    match state {
-        PfFileState::Missing { path } => output.line(&format!(
-            "System pf.conf reference is not installed: {path}"
-        )),
-        PfFileState::Current { path, .. } => output.line(&format!(
-            "System pf.conf reference already matches PV: {path}"
-        )),
-        PfFileState::Stale { path, .. } => output.line(&format!(
-            "PV-owned system pf.conf reference is stale: {path}"
-        )),
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf.conf reference is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!(
-                "System pf.conf reference could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))
-        }
-    }
-}
-
-fn write_pf_anchor_uninstall_guidance(
-    output: &mut Output<'_, impl Write>,
-    state: &PfFileState<PfRedirectConfig>,
-) -> io::Result<ExitCode> {
-    match state {
-        PfFileState::Missing { path } => {
-            output.line(&format!("System pf anchor already absent: {path}"))?;
-            Ok(ExitCode::SUCCESS)
-        }
-        PfFileState::Current { path, .. } | PfFileState::Stale { path, .. } => {
-            output.line(&format!("PV-owned system pf anchor remains: {path}"))?;
-            output.line("Privileged removal deferred to PR 13 setup/system-integration work.")?;
-            Ok(ExitCode::FAILURE)
-        }
+    anchor_state: &PfFileState<PfRedirectConfig>,
+    reference_state: &PfFileState<PfConfReference>,
+) -> io::Result<Option<ExitCode>> {
+    match anchor_state {
         PfFileState::Conflict { path } => {
             output.line(&format!("System pf anchor is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
-            Ok(ExitCode::FAILURE)
+            return Ok(Some(ExitCode::FAILURE));
         }
         PfFileState::Unreadable { path, message } => {
             output.line(&format!("System pf anchor could not be inspected: {path}"))?;
             output.line(&format!("  {message}"))?;
             output.line("Leaving it in place.")?;
-            Ok(ExitCode::FAILURE)
+            return Ok(Some(ExitCode::FAILURE));
         }
+        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {}
     }
-}
 
-fn write_pf_reference_uninstall_guidance(
-    output: &mut Output<'_, impl Write>,
-    state: &PfFileState<PfConfReference>,
-) -> io::Result<ExitCode> {
-    match state {
-        PfFileState::Missing { path } => {
-            output.line(&format!("System pf.conf reference already absent: {path}"))?;
-            Ok(ExitCode::SUCCESS)
-        }
-        PfFileState::Current { path, .. } | PfFileState::Stale { path, .. } => {
-            output.line(&format!(
-                "PV-owned system pf.conf reference remains: {path}"
-            ))?;
-            output.line("Privileged removal deferred to PR 13 setup/system-integration work.")?;
-            Ok(ExitCode::FAILURE)
-        }
+    match reference_state {
         PfFileState::Conflict { path } => {
             output.line(&format!("System pf.conf reference is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
-            Ok(ExitCode::FAILURE)
+            Ok(Some(ExitCode::FAILURE))
         }
         PfFileState::Unreadable { path, message } => {
             output.line(&format!(
@@ -384,7 +337,50 @@ fn write_pf_reference_uninstall_guidance(
             ))?;
             output.line(&format!("  {message}"))?;
             output.line("Leaving it in place.")?;
-            Ok(ExitCode::FAILURE)
+            Ok(Some(ExitCode::FAILURE))
+        }
+        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {
+            Ok(None)
+        }
+    }
+}
+
+fn write_pf_uninstall_blocker(
+    output: &mut Output<'_, impl Write>,
+    anchor_state: &PfFileState<PfRedirectConfig>,
+    reference_state: &PfFileState<PfConfReference>,
+) -> io::Result<Option<ExitCode>> {
+    match anchor_state {
+        PfFileState::Conflict { path } => {
+            output.line(&format!("System pf anchor is not PV-owned: {path}"))?;
+            output.line("Leaving it in place.")?;
+            return Ok(Some(ExitCode::FAILURE));
+        }
+        PfFileState::Unreadable { path, message } => {
+            output.line(&format!("System pf anchor could not be inspected: {path}"))?;
+            output.line(&format!("  {message}"))?;
+            output.line("Leaving it in place.")?;
+            return Ok(Some(ExitCode::FAILURE));
+        }
+        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {}
+    }
+
+    match reference_state {
+        PfFileState::Conflict { path } => {
+            output.line(&format!("System pf.conf reference is not PV-owned: {path}"))?;
+            output.line("Leaving it in place.")?;
+            Ok(Some(ExitCode::FAILURE))
+        }
+        PfFileState::Unreadable { path, message } => {
+            output.line(&format!(
+                "System pf.conf reference could not be inspected: {path}"
+            ))?;
+            output.line(&format!("  {message}"))?;
+            output.line("Leaving it in place.")?;
+            Ok(Some(ExitCode::FAILURE))
+        }
+        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {
+            Ok(None)
         }
     }
 }

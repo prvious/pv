@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(output, system_anchor_after_install)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nSystem pf anchor is not PV-owned: <tempdir>/etc/pf.anchors/com.prvious.pv\nLeaving it in place.\n",
+        stderr: "",
+    },
+    "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\n",
+)

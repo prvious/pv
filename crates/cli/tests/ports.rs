@@ -19,6 +19,7 @@ struct TestEnvironment {
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
+    operations: RefCell<Vec<String>>,
 }
 
 impl TestEnvironment {
@@ -34,6 +35,7 @@ impl TestEnvironment {
             pf_anchor_path: pf_anchor_path.as_std_path().to_path_buf(),
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
+            operations: RefCell::new(Vec::new()),
         }
     }
 
@@ -83,10 +85,48 @@ impl Environment for TestEnvironment {
     fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
         Ok(self.listening_ports.clone())
     }
+
+    fn install_pf_redirects(
+        &self,
+        prepared_anchor_path: &Utf8Path,
+        prepared_reference_path: &Utf8Path,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        let anchor = state::fs::read_to_string(prepared_anchor_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        let reference = state::fs::read_to_string(prepared_reference_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        write_file(system_anchor_path, &anchor)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        write_file(system_pf_conf_path, &reference)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        self.operations.borrow_mut().push(format!(
+            "install pf {prepared_anchor_path} {prepared_reference_path} -> {system_anchor_path} {system_pf_conf_path}"
+        ));
+
+        Ok(())
+    }
+
+    fn remove_pf_redirects(
+        &self,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        delete_optional_file(system_anchor_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        delete_optional_file(system_pf_conf_path)
+            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
+        self.operations.borrow_mut().push(format!(
+            "remove pf {system_anchor_path} {system_pf_conf_path}"
+        ));
+
+        Ok(())
+    }
 }
 
 #[test]
-fn ports_install_prepares_pf_artifacts_without_touching_system_paths() -> anyhow::Result<()> {
+fn ports_install_writes_prepared_and_system_pf_artifacts() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -107,17 +147,17 @@ fn ports_install_prepares_pf_artifacts_without_touching_system_paths() -> anyhow
         .ok_or_else(|| anyhow::anyhow!("prepared pf anchor did not parse"))?;
     let parsed_reference = PfConfReference::parse_block(&prepared_reference)
         .ok_or_else(|| anyhow::anyhow!("prepared pf.conf reference did not parse"))?;
-    let system_anchor_after_install = read_optional_file(&system_anchor_path)?;
-    let system_pf_conf_after_install = read_optional_file(&system_pf_conf_path)?;
+    let system_anchor_after_install = read_required_file(&system_anchor_path)?;
+    let system_pf_conf_after_install = read_required_file(&system_pf_conf_path)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
     assert_no_privileged_guidance(&output.stdout);
     assert_eq!(parsed_anchor.http_port, 48080);
     assert_eq!(parsed_anchor.https_port, 48443);
     assert_eq!(parsed_reference, PfConfReference);
-    assert!(system_anchor_after_install.is_none());
-    assert!(system_pf_conf_after_install.is_none());
+    assert_eq!(system_anchor_after_install, prepared_anchor);
+    assert_eq!(system_pf_conf_after_install, prepared_reference);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -128,7 +168,41 @@ fn ports_install_prepares_pf_artifacts_without_touching_system_paths() -> anyhow
             prepared_reference,
             system_anchor_after_install,
             system_pf_conf_after_install,
+            environment.operations.borrow().clone(),
         ));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_refuses_non_pv_owned_system_anchor() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    );
+    let conflict_anchor =
+        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\n";
+    write_file(&system_anchor_path, conflict_anchor)?;
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let system_anchor_after_install = read_required_file(&system_anchor_path)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_no_privileged_guidance(&output.stdout);
+    assert_eq!(system_anchor_after_install, conflict_anchor);
+    assert!(environment.operations.borrow().is_empty());
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, system_anchor_after_install));
     });
 
     Ok(())
@@ -218,7 +292,7 @@ fn ports_status_reports_prepared_and_system_pf_states_without_mutating_state() -
 }
 
 #[test]
-fn ports_uninstall_removes_prepared_artifacts_and_defers_system_removal() -> anyhow::Result<()> {
+fn ports_uninstall_removes_prepared_and_pv_owned_system_pf_artifacts() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -241,16 +315,16 @@ fn ports_uninstall_removes_prepared_artifacts_and_defers_system_removal() -> any
 
     let output = run_pv(&["ports:uninstall"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
     assert_no_privileged_guidance(&output.stdout);
     assert!(read_optional_file(&paths.pf_anchor_config())?.is_none());
     assert!(read_optional_file(&paths.pf_conf_reference_config())?.is_none());
-    assert_eq!(read_required_file(&system_anchor_path)?, anchor);
-    assert_eq!(read_required_file(&system_pf_conf_path)?, reference);
+    assert!(read_optional_file(&system_anchor_path)?.is_none());
+    assert!(read_optional_file(&system_pf_conf_path)?.is_none());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!(output);
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
     });
 
     Ok(())
@@ -283,7 +357,7 @@ fn ports_install_reuses_persisted_gateway_ports_even_when_they_have_listeners() 
         .ok_or_else(|| anyhow::anyhow!("prepared pf anchor did not parse"))?;
     let assignments = Database::open(&paths)?.assigned_ports()?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(parsed_anchor.http_port, seeded.http.port);
     assert_eq!(parsed_anchor.https_port, seeded.https.port);
     assert!(assignments.iter().any(|assignment| {
@@ -321,7 +395,7 @@ fn ports_install_uses_fallback_gateway_ports_when_preferred_ports_are_busy() -> 
         .ok_or_else(|| anyhow::anyhow!("prepared pf anchor did not parse"))?;
     let assignments = Database::open(&paths)?.assigned_ports()?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(parsed_anchor.http_port, 45000);
     assert_eq!(parsed_anchor.https_port, 45001);
     assert!(assignments.iter().any(|assignment| {
@@ -383,6 +457,16 @@ fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     state::fs::write_sensitive_file(path, content)?;
 
     Ok(())
+}
+
+fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
+    match state::fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn assert_no_privileged_guidance(output: &str) {

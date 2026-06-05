@@ -6,10 +6,10 @@ expression: "(output, prepared_anchor)"
     RunOutput {
         exit_code: ExitCode(
             unix_exit_status(
-                1,
+                0,
             ),
         ),
-        stdout: "Prepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:45000\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:45001\nPrivileged install deferred to PR 13 setup/system-integration work.\nSystem pf anchor is not installed: <tempdir>/etc/pf.anchors/com.prvious.pv\nSystem pf.conf reference is not installed: <tempdir>/etc/pf.conf\n",
+        stdout: "Prepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:45000\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:45001\nInstalled system pf redirect config\n",
         stderr: "",
     },
     "# Managed by PV\n# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 45000\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 45001\n",
