@@ -1,6 +1,9 @@
 use std::io;
+use std::process::ExitStatus;
 
 use camino::{Utf8Path, Utf8PathBuf};
+
+use crate::PlatformError;
 
 pub const LAUNCH_AGENT_LABEL: &str = "com.prvious.pv.daemon";
 pub const LAUNCH_AGENT_FILE_NAME: &str = "com.prvious.pv.daemon.plist";
@@ -161,6 +164,89 @@ pub fn inspect_launch_agent_file(
             actual: None,
         },
     }
+}
+
+pub fn launch_agent_path(home: &Utf8Path) -> Utf8PathBuf {
+    home.join("Library/LaunchAgents")
+        .join(LAUNCH_AGENT_FILE_NAME)
+}
+
+pub fn write_launch_agent_file(
+    path: &Utf8Path,
+    config: &LaunchAgentConfig,
+) -> Result<(), PlatformError> {
+    state::fs::write_sensitive_file(path, &config.render())
+        .map_err(|error| PlatformError::LaunchAgent(error.to_string()))
+}
+
+pub fn remove_launch_agent_file(path: &Utf8Path) -> Result<(), PlatformError> {
+    match state::fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(state::StateError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(PlatformError::LaunchAgent(error.to_string())),
+    }
+}
+
+pub fn bootstrap_launch_agent(plist_path: &Utf8Path) -> Result<(), PlatformError> {
+    let target = launchctl_gui_target();
+    let plist_path = plist_path.to_string();
+
+    run_launchctl(&["bootstrap", &target, &plist_path])
+}
+
+pub fn bootout_launch_agent() -> Result<(), PlatformError> {
+    let service = launchctl_service_target();
+
+    run_launchctl(&["bootout", &service])
+}
+
+pub fn kickstart_launch_agent() -> Result<(), PlatformError> {
+    let service = launchctl_service_target();
+
+    run_launchctl(&["kickstart", "-k", &service])
+}
+
+fn launchctl_gui_target() -> String {
+    format!("gui/{}", rustix::process::getuid().as_raw())
+}
+
+fn launchctl_service_target() -> String {
+    format!("{}/{}", launchctl_gui_target(), LAUNCH_AGENT_LABEL)
+}
+
+fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
+    let command = format!("/bin/launchctl {}", args.join(" "));
+    let status = launchctl_status(args).map_err(|source| PlatformError::LaunchAgentCommand {
+        command: command.clone(),
+        source,
+    })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(PlatformError::LaunchAgentCommandStatus {
+            command,
+            status: status.to_string(),
+        })
+    }
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "platform LaunchAgent helper owns launchctl process execution"
+)]
+type StdCommand = std::process::Command;
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "platform LaunchAgent helper owns launchctl process execution"
+)]
+fn launchctl_status(args: &[&str]) -> io::Result<ExitStatus> {
+    StdCommand::new("/bin/launchctl").args(args).status()
 }
 
 fn string_after_key(content: &str, key: &str) -> Option<String> {

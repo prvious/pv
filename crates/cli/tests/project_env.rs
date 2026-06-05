@@ -43,6 +43,10 @@ impl Environment for TestEnvironment {
         Ok(self.current_dir.borrow().clone())
     }
 
+    fn current_exe(&self) -> io::Result<PathBuf> {
+        Ok(PathBuf::from("/bin/pv"))
+    }
+
     fn stdin_is_terminal(&self) -> bool {
         false
     }

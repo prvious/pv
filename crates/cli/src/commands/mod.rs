@@ -23,9 +23,9 @@ pub(crate) fn execute(
     match cli.command {
         Command::Env(args) => env::run(args, cli.no_color, environment, stdout),
         Command::Completions(args) => Ok(completions::run(args, stdout)),
-        Command::DaemonEnable => daemon::enable(),
-        Command::DaemonDisable => daemon::disable(),
-        Command::DaemonRestart => daemon::restart(),
+        Command::DaemonEnable => daemon::enable(environment, stdout),
+        Command::DaemonDisable => daemon::disable(environment, stdout),
+        Command::DaemonRestart => daemon::restart(environment, stdout),
         Command::DaemonRun => daemon::run(),
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),

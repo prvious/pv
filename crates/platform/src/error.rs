@@ -46,6 +46,19 @@ pub enum PlatformError {
     #[error("macOS keychain inspection failed: {0}")]
     Keychain(String),
 
+    #[error("LaunchAgent operation failed: {0}")]
+    LaunchAgent(String),
+
+    #[error("could not run LaunchAgent command `{command}`: {source}")]
+    LaunchAgentCommand {
+        command: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("LaunchAgent command `{command}` exited with {status}")]
+    LaunchAgentCommandStatus { command: String, status: String },
+
     #[error("could not inspect socket table: {0}")]
     SocketTable(#[from] netstat::Error),
 

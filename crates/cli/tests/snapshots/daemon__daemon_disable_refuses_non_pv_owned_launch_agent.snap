@@ -1,0 +1,17 @@
+---
+source: crates/cli/tests/daemon.rs
+expression: "(output, environment.operations(), plist_after_disable)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "error: LaunchAgent file is not PV-owned; leaving it unchanged\n  path: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\n",
+        stderr: "",
+    },
+    [],
+    "<plist><dict><key>Label</key><string>com.prvious.pv.daemon</string></dict></plist>\n",
+)

@@ -296,6 +296,9 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::BrowserOpen(_)
         | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
+        | PlatformError::LaunchAgent(_)
+        | PlatformError::LaunchAgentCommand { .. }
+        | PlatformError::LaunchAgentCommandStatus { .. }
         | PlatformError::SocketTable(_)
         | PlatformError::SocketTableCommand(_)
         | PlatformError::SocketTableCommandStatus { .. }

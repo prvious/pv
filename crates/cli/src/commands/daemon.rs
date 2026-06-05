@@ -1,28 +1,136 @@
+use std::io::Write;
 use std::process::ExitCode;
 
-use state::PvPaths;
+use camino::Utf8PathBuf;
+use platform::{LaunchAgentConfig, LaunchAgentFileState};
+use state::{PvPaths, StateError};
 
+use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
+use crate::output::{Output, OutputMode};
 
-pub(crate) fn enable() -> Result<ExitCode, ExecuteError> {
-    Err(CliError::DeferredDaemonLifecycle {
-        command: "daemon:enable",
+pub(crate) fn enable(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
+    state::fs::ensure_layout(&paths)?;
+
+    let config = launch_agent_config(environment, &paths)?;
+    let path = launch_agent_path(environment)?;
+    let state = platform::inspect_launch_agent_file(&path, Some(&config));
+    let mut output = Output::new(stdout, OutputMode::plain());
+
+    match state {
+        LaunchAgentFileState::Current { .. } => {
+            environment.kickstart_launch_agent()?;
+            output.line("LaunchAgent already installed")?;
+            output.line("Daemon started")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Missing { .. } | LaunchAgentFileState::Stale { .. } => {
+            platform::write_launch_agent_file(&path, &config)?;
+            environment.bootstrap_launch_agent(&path)?;
+            environment.kickstart_launch_agent()?;
+            output.line(&format!("LaunchAgent installed: {path}"))?;
+            output.line("Daemon started")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Conflict { path } => {
+            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
+            output.line(&format!("  path: {path}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        LaunchAgentFileState::Unreadable { message, .. } => {
+            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
+            output.line(&format!("  {message}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
     }
-    .into())
 }
 
-pub(crate) fn disable() -> Result<ExitCode, ExecuteError> {
-    Err(CliError::DeferredDaemonLifecycle {
-        command: "daemon:disable",
+pub(crate) fn disable(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let path = launch_agent_path(environment)?;
+    let state = platform::inspect_launch_agent_file(&path, None);
+    let mut output = Output::new(stdout, OutputMode::plain());
+
+    match state {
+        LaunchAgentFileState::Missing { .. } => {
+            output.line("LaunchAgent already absent")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
+            environment.bootout_launch_agent()?;
+            platform::remove_launch_agent_file(&path)?;
+            output.line("Daemon disabled")?;
+            output.line(&format!("LaunchAgent removed: {path}"))?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Conflict { path } => {
+            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
+            output.line(&format!("  path: {path}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        LaunchAgentFileState::Unreadable { message, .. } => {
+            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
+            output.line(&format!("  {message}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
     }
-    .into())
 }
 
-pub(crate) fn restart() -> Result<ExitCode, ExecuteError> {
-    Err(CliError::DeferredDaemonLifecycle {
-        command: "daemon:restart",
+pub(crate) fn restart(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
+    state::fs::ensure_layout(&paths)?;
+
+    let config = launch_agent_config(environment, &paths)?;
+    let path = launch_agent_path(environment)?;
+    let state = platform::inspect_launch_agent_file(&path, Some(&config));
+    let mut output = Output::new(stdout, OutputMode::plain());
+
+    match state {
+        LaunchAgentFileState::Current { .. } => {
+            environment.kickstart_launch_agent()?;
+            output.line("Daemon restarted")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Missing { .. } | LaunchAgentFileState::Stale { .. } => {
+            platform::write_launch_agent_file(&path, &config)?;
+            environment.bootstrap_launch_agent(&path)?;
+            environment.kickstart_launch_agent()?;
+            output.line(&format!("LaunchAgent installed: {path}"))?;
+            output.line("Daemon restarted")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        LaunchAgentFileState::Conflict { path } => {
+            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
+            output.line(&format!("  path: {path}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        LaunchAgentFileState::Unreadable { message, .. } => {
+            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
+            output.line(&format!("  {message}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
     }
-    .into())
 }
 
 pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
@@ -31,4 +139,32 @@ pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     ::daemon::run_blocking(paths)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn launch_agent_config(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<LaunchAgentConfig, ExecuteError> {
+    let program_path = utf8_path(environment.current_exe()?)?;
+
+    Ok(LaunchAgentConfig::new(
+        program_path,
+        paths.logs().join("launchd.out.log"),
+        paths.logs().join("launchd.err.log"),
+    ))
+}
+
+fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
+    let home = environment.home_dir().ok_or(StateError::MissingHome)?;
+    let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
+
+    Ok(PvPaths::for_home(home))
+}
+
+fn launch_agent_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    utf8_path(environment.launch_agent_path())
+}
+
+fn utf8_path(path: impl Into<std::path::PathBuf>) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(path.into()).map_err(|path| CliError::NonUtf8Path { path }.into())
 }

@@ -3,6 +3,8 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use camino::Utf8Path;
+
 pub trait Environment {
     fn var_os(&self, key: &str) -> Option<OsString>;
 
@@ -10,11 +12,33 @@ pub trait Environment {
 
     fn current_dir(&self) -> io::Result<PathBuf>;
 
+    fn current_exe(&self) -> io::Result<PathBuf>;
+
     fn stdin_is_terminal(&self) -> bool;
 
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
+
+    fn launch_agent_path(&self) -> PathBuf {
+        self.home_dir()
+            .unwrap_or_default()
+            .join("Library")
+            .join("LaunchAgents")
+            .join(platform::LAUNCH_AGENT_FILE_NAME)
+    }
+
+    fn bootstrap_launch_agent(&self, plist_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::bootstrap_launch_agent(plist_path)
+    }
+
+    fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        platform::bootout_launch_agent()
+    }
+
+    fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        platform::kickstart_launch_agent()
+    }
 
     fn resolver_test_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
@@ -57,6 +81,10 @@ impl Environment for ProcessEnvironment {
         process_current_dir()
     }
 
+    fn current_exe(&self) -> io::Result<PathBuf> {
+        process_current_exe()
+    }
+
     fn stdin_is_terminal(&self) -> bool {
         io::stdin().is_terminal()
     }
@@ -87,4 +115,12 @@ fn process_var_os(key: &str) -> Option<OsString> {
 )]
 fn process_current_dir() -> io::Result<PathBuf> {
     std::env::current_dir()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV environment helper owns current executable reads for testable LaunchAgent setup"
+)]
+fn process_current_exe() -> io::Result<PathBuf> {
+    std::env::current_exe()
 }
