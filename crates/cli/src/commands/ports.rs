@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::{PfConfReference, PfFileState, PfRedirectConfig};
-use state::{Database, GatewayPortAssignments, PvPaths, StateError};
+use state::{Database, GatewayPort, GatewayPortAssignments, PortOwner, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
@@ -69,6 +69,13 @@ pub(crate) fn install(
     }
 
     let mut database = Database::open(&paths)?;
+    let existing_assignments = database.assigned_ports()?;
+    let had_http_assignment = existing_assignments
+        .iter()
+        .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Http));
+    let had_https_assignment = existing_assignments
+        .iter()
+        .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Https));
     let assignments = database.assign_gateway_ports(|port| !listening_ports.contains(&port))?;
     let config = pf_config_from_assignments(&assignments);
     let reference = PfConfReference;
@@ -77,8 +84,20 @@ pub(crate) fn install(
     let system_anchor_path = pf_anchor_path(environment)?;
     let system_pf_conf_path = pf_conf_path(environment)?;
 
-    state::fs::write_sensitive_file(&prepared_anchor_path, &config.render_anchor())?;
-    state::fs::write_sensitive_file(&prepared_reference_path, &reference.render())?;
+    if let Err(error) =
+        state::fs::write_sensitive_file(&prepared_anchor_path, &config.render_anchor())
+    {
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
+
+        return Err(error.into());
+    }
+    if let Err(error) =
+        state::fs::write_sensitive_file(&prepared_reference_path, &reference.render())
+    {
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
+
+        return Err(error.into());
+    }
 
     let system_anchor_state = platform::inspect_pf_anchor_file(&system_anchor_path, Some(&config));
     let system_reference_state =
@@ -101,6 +120,8 @@ pub(crate) fn install(
     if let Some(exit_code) =
         write_pf_install_blocker(&mut output, &system_anchor_state, &system_reference_state)?
     {
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
+
         return Ok(exit_code);
     }
 
@@ -112,15 +133,34 @@ pub(crate) fn install(
         return Ok(ExitCode::SUCCESS);
     }
 
-    environment.install_pf_redirects(
+    if let Err(error) = environment.install_pf_redirects(
         &prepared_anchor_path,
         &prepared_reference_path,
         &system_anchor_path,
         &system_pf_conf_path,
-    )?;
+    ) {
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
+
+        return Err(error.into());
+    }
     output.line("Installed system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn release_new_gateway_ports(
+    database: &mut Database,
+    had_http_assignment: bool,
+    had_https_assignment: bool,
+) -> Result<(), ExecuteError> {
+    if !had_http_assignment {
+        database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
+    }
+    if !had_https_assignment {
+        database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn uninstall(

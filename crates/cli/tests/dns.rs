@@ -185,11 +185,17 @@ fn dns_install_reports_non_pv_owned_system_resolver_conflict() -> anyhow::Result
     let prepared_path = pv_paths(&home).resolver_config();
     let prepared_config = read_required_file(&prepared_path)?;
     let system_after_install = read_required_file(&system_resolver_path)?;
+    let assignments = Database::open(&pv_paths(&home))?.assigned_ports()?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert_eq!(system_after_install, conflict_config);
+    assert!(
+        !assignments
+            .iter()
+            .any(|assignment| assignment.owner == PortOwner::Dns)
+    );
     assert!(environment.operations.borrow().is_empty());
     with_normalized_tempdir(tempdir.path(), || {
         let mut settings = insta::Settings::clone_current();

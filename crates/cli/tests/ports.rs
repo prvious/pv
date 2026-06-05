@@ -194,11 +194,21 @@ fn ports_install_refuses_non_pv_owned_system_anchor() -> anyhow::Result<()> {
 
     let output = run_pv(&["ports:install"], &environment)?;
     let system_anchor_after_install = read_required_file(&system_anchor_path)?;
+    let assignments = Database::open(&pv_paths(&home))?.assigned_ports()?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
     assert_no_privileged_guidance(&output.stdout);
     assert_eq!(system_anchor_after_install, conflict_anchor);
+    assert!(!assignments.iter().any(|assignment| {
+        matches!(
+            assignment.owner,
+            PortOwner::Gateway(state::GatewayPort::Http)
+        ) || matches!(
+            assignment.owner,
+            PortOwner::Gateway(state::GatewayPort::Https)
+        )
+    }));
     assert!(environment.operations.borrow().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {

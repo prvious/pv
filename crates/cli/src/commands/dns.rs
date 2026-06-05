@@ -36,11 +36,19 @@ pub(crate) fn install(
     let paths = pv_paths(environment)?;
     let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
+    let had_dns_assignment = database
+        .assigned_ports()?
+        .iter()
+        .any(|assignment| assignment.owner == PortOwner::Dns);
     let dns_port = prepared_dns_port(&mut database)?;
     let config = ResolverConfig::new(dns_port);
     let prepared_path = paths.resolver_config();
 
-    state::fs::write_sensitive_file(&prepared_path, &config.render())?;
+    if let Err(error) = state::fs::write_sensitive_file(&prepared_path, &config.render()) {
+        release_new_dns_port(&mut database, had_dns_assignment)?;
+
+        return Err(error.into());
+    }
 
     let system_state = platform::inspect_resolver_file(&system_path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -58,18 +66,24 @@ pub(crate) fn install(
             Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
-            environment.install_resolver_config(&prepared_path, &system_path)?;
+            if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
+                release_new_dns_port(&mut database, had_dns_assignment)?;
+
+                return Err(error.into());
+            }
             output.line(&format!("Installed system resolver config: {path}"))?;
 
             Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
             output.line(&format!("System resolver config is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
 
             Ok(ExitCode::FAILURE)
         }
         ResolverFileState::Unreadable { path, message } => {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
             output.line(&format!(
                 "System resolver config could not be inspected: {path}"
             ))?;
@@ -79,6 +93,17 @@ pub(crate) fn install(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn release_new_dns_port(
+    database: &mut Database,
+    had_dns_assignment: bool,
+) -> Result<(), ExecuteError> {
+    if !had_dns_assignment {
+        database.release_port(PortOwner::Dns)?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn uninstall(
