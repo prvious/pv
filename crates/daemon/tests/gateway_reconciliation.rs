@@ -830,6 +830,57 @@ hostnames:
     Ok(())
 }
 
+#[tokio::test]
+async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+    let ports = available_loopback_ports(4)?;
+    let old_http_port = ports[0];
+    let old_https_port = ports[1];
+    let new_http_port = ports[2];
+    let new_https_port = ports[3];
+
+    write_fake_frankenphp_that_hangs_on_port(&fake_frankenphp, new_http_port)?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    seed_runtime_ports(&mut database, old_http_port, old_https_port, &[])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let previous_root_config = fs::read_to_string(&paths.gateway_root_config())?;
+
+    let mut database = Database::open(&paths)?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
+    seed_runtime_ports(&mut database, new_http_port, new_https_port, &[])?;
+    drop(database);
+
+    let result = reconcile_gateway_runtimes(&paths).await;
+    let root_config = fs::read_to_string(&paths.gateway_root_config())?;
+    let first_gateway_is_alive = process_is_alive(first_gateway_pid)?;
+    if first_gateway_is_alive {
+        stop_runtime_pid(first_gateway_pid).await?;
+    } else if paths.gateway_pid().exists() {
+        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    }
+
+    assert!(matches!(result, Err(DaemonError::ReadinessTimedOut { .. })));
+    assert_eq!(root_config, previous_root_config);
+    assert!(first_gateway_is_alive);
+
+    Ok(())
+}
+
 fn assert_worker_command(paths: &PvPaths, php_track: &str, expected: &Utf8Path) -> Result<()> {
     let metadata = fs::read_to_string(&paths.worker_runtime_metadata(php_track))?;
     let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
@@ -1090,6 +1141,53 @@ fi
 
 exit 2
 "#,
+    )?;
+    set_executable(path)?;
+
+    Ok(())
+}
+
+fn write_fake_frankenphp_that_hangs_on_port(path: &Utf8Path, blocked_port: u16) -> Result<()> {
+    fs::write_sensitive_file(
+        path,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  test -f "$3"
+  exit 0
+fi
+
+if [ "$1" = "run" ]; then
+  port="$(awk '/^# PV_FAKE_PORT / {{ print $3; exit }}' "$3")"
+  if [ "$port" = "{}" ]; then
+    sleep 30
+    exit 0
+  fi
+  python3 -c 'import http.server, signal, sys
+signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+port = int(sys.argv[1])
+with http.server.ThreadingHTTPServer(("127.0.0.1", port), http.server.SimpleHTTPRequestHandler) as server:
+    server.serve_forever()
+' "$port" &
+  child="$!"
+  trap ':' USR1
+  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
+  while true; do
+    wait "$child" && exit 0
+    status="$?"
+    if kill -0 "$child" 2>/dev/null; then
+      continue
+    fi
+    exit "$status"
+  done
+fi
+
+exit 2
+"#,
+            blocked_port
+        ),
     )?;
     set_executable(path)?;
 

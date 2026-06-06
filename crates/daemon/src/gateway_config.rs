@@ -152,11 +152,11 @@ pub(crate) async fn promote_validated_config_tree_async<Validate, Validation, Pr
     active_content: &str,
     validate: Validate,
     promote_fragments: Promote,
-) -> Result<(), DaemonError>
+) -> Result<PromotedConfigTree, DaemonError>
 where
     Validate: FnOnce(Utf8PathBuf) -> Validation,
     Validation: Future<Output = Result<(), DaemonError>>,
-    Promote: FnOnce() -> Result<(), DaemonError>,
+    Promote: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
 {
     let candidate_path = candidate_path_for(path);
     write_candidate_config(&candidate_path, candidate_content)?;
@@ -168,45 +168,102 @@ where
     }
 
     write_candidate_config(&candidate_path, active_content)?;
-    let backup_path = backup_path_for(path);
-    let active_existed = path.exists();
-    if let Err(error) = delete_optional_config(&backup_path) {
-        let _cleanup_result = remove_candidate_config(&candidate_path);
+    let root = match promote_config_file(path, &candidate_path) {
+        Ok(root) => root,
+        Err(error) => {
+            let _cleanup_result = remove_candidate_config(&candidate_path);
 
-        return Err(error);
-    }
-    if active_existed && let Err(error) = rename_candidate_config(path, &backup_path) {
-        let _cleanup_result = remove_candidate_config(&candidate_path);
-
-        return Err(error);
-    }
-    if let Err(error) = rename_candidate_config(&candidate_path, path) {
-        if active_existed {
-            if let Err(restore_error) = rename_candidate_config(&backup_path, path) {
-                let _cleanup_result = remove_candidate_config(&candidate_path);
-
+            return Err(error);
+        }
+    };
+    let fragments = match promote_fragments() {
+        Ok(fragments) => fragments,
+        Err(error) => {
+            if let Err(restore_error) = root.rollback() {
                 return Err(rollback_failed_error(error, restore_error));
             }
+
+            return Err(error);
         }
-        let _cleanup_result = remove_candidate_config(&candidate_path);
+    };
 
-        return Err(error);
+    Ok(PromotedConfigTree { root, fragments })
+}
+
+#[derive(Debug)]
+pub(crate) struct PromotedConfigTree {
+    root: PromotedConfigFile,
+    fragments: PromotedConfigDir,
+}
+
+impl PromotedConfigTree {
+    pub(crate) fn commit(self) -> Result<(), DaemonError> {
+        self.fragments.commit()?;
+        self.root.commit()
     }
-    if let Err(error) = promote_fragments() {
-        let _active_cleanup_result = remove_candidate_config(path);
-        if active_existed {
-            if let Err(restore_error) = rename_candidate_config(&backup_path, path) {
-                return Err(rollback_failed_error(error, restore_error));
-            }
+
+    pub(crate) fn rollback(self) -> Result<(), DaemonError> {
+        let fragments = self.fragments.rollback();
+        let root = self.root.rollback();
+
+        match (fragments, root) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(restore_error)) => Err(rollback_failed_error(error, restore_error)),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PromotedConfigFile {
+    active_path: Utf8PathBuf,
+    backup_path: Utf8PathBuf,
+    active_existed: bool,
+}
+
+impl PromotedConfigFile {
+    fn commit(self) -> Result<(), DaemonError> {
+        if self.active_existed {
+            delete_optional_config(&self.backup_path)?;
         }
 
-        return Err(error);
-    }
-    if active_existed {
-        let _cleanup_result = remove_candidate_config(&backup_path);
+        Ok(())
     }
 
-    Ok(())
+    fn rollback(self) -> Result<(), DaemonError> {
+        delete_optional_config(&self.active_path)?;
+        if self.active_existed {
+            rename_candidate_config(&self.backup_path, &self.active_path)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PromotedConfigDir {
+    active_dir: Utf8PathBuf,
+    backup_dir: Utf8PathBuf,
+    active_existed: bool,
+}
+
+impl PromotedConfigDir {
+    fn commit(self) -> Result<(), DaemonError> {
+        if self.active_existed {
+            delete_optional_dir(&self.backup_dir)?;
+        }
+
+        Ok(())
+    }
+
+    fn rollback(self) -> Result<(), DaemonError> {
+        delete_optional_dir(&self.active_dir)?;
+        if self.active_existed {
+            rename_config_dir(&self.backup_dir, &self.active_dir)?;
+        }
+
+        Ok(())
+    }
 }
 
 pub(crate) fn promote_validated_config(
@@ -303,6 +360,60 @@ fn write_candidate_config(path: &Utf8Path, content: &str) -> Result<(), DaemonEr
     Ok(())
 }
 
+fn promote_config_file(
+    active_path: &Utf8Path,
+    candidate_path: &Utf8Path,
+) -> Result<PromotedConfigFile, DaemonError> {
+    let backup_path = backup_path_for(active_path);
+    let active_existed = active_path.exists();
+    delete_optional_config(&backup_path)?;
+    if active_existed {
+        rename_candidate_config(active_path, &backup_path)?;
+    }
+
+    if let Err(error) = rename_candidate_config(candidate_path, active_path) {
+        if active_existed
+            && let Err(restore_error) = rename_candidate_config(&backup_path, active_path)
+        {
+            return Err(rollback_failed_error(error, restore_error));
+        }
+
+        return Err(error);
+    }
+
+    Ok(PromotedConfigFile {
+        active_path: active_path.to_path_buf(),
+        backup_path,
+        active_existed,
+    })
+}
+
+pub(crate) fn promote_config_dir(
+    active_dir: &Utf8Path,
+    candidate_dir: &Utf8Path,
+) -> Result<PromotedConfigDir, DaemonError> {
+    let backup_dir = backup_path_for(active_dir);
+    let active_existed = active_dir.exists();
+    delete_optional_dir(&backup_dir)?;
+    if active_existed {
+        rename_config_dir(active_dir, &backup_dir)?;
+    }
+
+    if let Err(error) = rename_config_dir(candidate_dir, active_dir) {
+        if active_existed && let Err(restore_error) = rename_config_dir(&backup_dir, active_dir) {
+            return Err(rollback_failed_error(error, restore_error));
+        }
+
+        return Err(error);
+    }
+
+    Ok(PromotedConfigDir {
+        active_dir: active_dir.to_path_buf(),
+        backup_dir,
+        active_existed,
+    })
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "daemon gateway config promotion owns direct candidate file replacement"
@@ -321,6 +432,28 @@ fn remove_candidate_config(path: &Utf8Path) -> Result<(), DaemonError> {
 
 fn delete_optional_config(path: &Utf8Path) -> Result<(), DaemonError> {
     match fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(state::StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon gateway config promotion owns direct candidate directory replacement"
+)]
+fn rename_config_dir(from: &Utf8Path, to: &Utf8Path) -> Result<(), DaemonError> {
+    std::fs::rename(from, to)?;
+
+    Ok(())
+}
+
+fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
+    match fs::delete_dir_all(path) {
         Ok(()) => Ok(()),
         Err(state::StateError::Filesystem { source, .. })
             if source.kind() == std::io::ErrorKind::NotFound =>

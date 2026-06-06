@@ -19,8 +19,9 @@ use tokio::time::timeout;
 
 use crate::gateway_config::{
     GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
-    promote_validated_config_tree_async, render_gateway_config, render_gateway_project_config,
-    render_php_worker_config, render_php_worker_project_config,
+    PromotedConfigDir, PromotedConfigTree, promote_config_dir, promote_validated_config_tree_async,
+    render_gateway_config, render_gateway_project_config, render_php_worker_config,
+    render_php_worker_project_config,
 };
 use crate::project_env::{resolve_project_php_track, validate_project_config_for_gateway};
 use crate::supervisor::probe_readiness_once;
@@ -157,10 +158,11 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         let subject = RuntimeSubject::PhpWorker {
             php_track: worker.php_track.clone(),
         };
-        reconcile_worker_config(paths, &worker_command, worker).await?;
-        start_or_adopt_runtime(
+        let promoted_config = reconcile_worker_config(paths, &worker_command, worker).await?;
+        start_or_adopt_promoted_runtime(
             paths,
             &supervisor,
+            promoted_config,
             worker_process_spec(paths, &worker.php_track, &worker_command),
             ReadinessCheck::Tcp {
                 host: "127.0.0.1".to_owned(),
@@ -170,10 +172,11 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         )
         .await?;
     }
-    reconcile_gateway_config(paths, &gateway_command, &plan).await?;
-    start_or_adopt_runtime(
+    let promoted_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
+        promoted_config,
         gateway_process_spec(paths, &gateway_command),
         ReadinessCheck::Tcp {
             host: "127.0.0.1".to_owned(),
@@ -484,7 +487,7 @@ async fn reconcile_gateway_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
     plan: &RuntimePlan,
-) -> Result<(), DaemonError> {
+) -> Result<PromotedConfigTree, DaemonError> {
     let routes = gateway_project_routes(plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
@@ -528,7 +531,7 @@ async fn reconcile_gateway_config(
                 paths.gateway_root_config(),
                 &candidate_content,
                 &active_content,
-                || promote_project_config_fragments(&active_dir, &candidate_dir),
+                || promote_config_dir(&active_dir, &candidate_dir),
                 command,
             )
             .await
@@ -547,7 +550,7 @@ async fn reconcile_worker_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
     worker: &PhpWorkerRuntimePlan,
-) -> Result<(), DaemonError> {
+) -> Result<PromotedConfigTree, DaemonError> {
     let subject = RuntimeSubject::PhpWorker {
         php_track: worker.php_track.clone(),
     };
@@ -603,7 +606,7 @@ async fn reconcile_worker_config(
                 paths.worker_root_config(&worker.php_track),
                 &candidate_content,
                 &active_content,
-                || promote_project_config_fragments(&active_dir, &candidate_dir),
+                || promote_config_dir(&active_dir, &candidate_dir),
                 command,
             )
             .await
@@ -624,9 +627,9 @@ async fn promote_runtime_config_tree(
     config_path: Utf8PathBuf,
     candidate_content: &str,
     active_content: &str,
-    promote_fragments: impl FnOnce() -> Result<(), DaemonError>,
+    promote_fragments: impl FnOnce() -> Result<PromotedConfigDir, DaemonError>,
     command: &FrankenphpCommand,
-) -> Result<(), DaemonError> {
+) -> Result<PromotedConfigTree, DaemonError> {
     let result = promote_validated_config_tree_async(
         &config_path,
         candidate_content,
@@ -643,6 +646,39 @@ async fn promote_runtime_config_tree(
     result
 }
 
+async fn start_or_adopt_promoted_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    readiness: ReadinessCheck,
+    subject: RuntimeSubject,
+) -> Result<(), DaemonError> {
+    let result = start_or_adopt_runtime(paths, supervisor, spec, readiness, subject.clone()).await;
+
+    match result {
+        Ok(()) => {
+            if let Err(error) = promoted_config.commit() {
+                record_runtime_error(paths, subject, &error)?;
+
+                return Err(error);
+            }
+
+            Ok(())
+        }
+        Err(error) => {
+            if let Err(rollback_error) = promoted_config.rollback() {
+                let error = runtime_config_rollback_failed_error(error, rollback_error);
+                record_runtime_error(paths, subject, &error)?;
+
+                return Err(error);
+            }
+
+            Err(error)
+        }
+    }
+}
+
 async fn start_or_adopt_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
@@ -651,16 +687,19 @@ async fn start_or_adopt_runtime(
     subject: RuntimeSubject,
 ) -> Result<(), DaemonError> {
     let result = async {
-        if let Some(adopted) = supervisor.adopt(&spec)? {
-            if supervisor.reload(&spec).unwrap_or(false)
-                && wait_for_readiness(readiness.clone(), RUNTIME_READINESS_TIMEOUT)
-                    .await
-                    .is_ok()
-            {
+        if supervisor.adopt(&spec)?.is_some() {
+            if supervisor.reload(&spec)? {
+                wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await?;
+
                 return Ok(());
             }
 
-            adopted.stop(Duration::from_secs(1)).await?;
+            return Err(DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "runtime `{}` could not be reloaded because PV ownership changed",
+                    spec.name
+                ),
+            });
         } else if probe_readiness_once(&readiness).await.is_ok() {
             return Err(DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
@@ -809,31 +848,6 @@ fn write_project_config_fragments(
     Ok(())
 }
 
-fn promote_project_config_fragments(
-    active_dir: &Utf8Path,
-    candidate_dir: &Utf8Path,
-) -> Result<(), DaemonError> {
-    let backup_dir = backup_config_dir_for(active_dir);
-    delete_optional_dir(&backup_dir)?;
-
-    let active_existed = active_dir.exists();
-    if active_existed {
-        rename_config_dir(active_dir, &backup_dir)?;
-    }
-
-    if let Err(error) = rename_config_dir(candidate_dir, active_dir) {
-        if active_existed {
-            if let Err(restore_error) = rename_config_dir(&backup_dir, active_dir) {
-                return Err(rollback_failed_error(error, restore_error));
-            }
-        }
-
-        return Err(error);
-    }
-
-    delete_optional_dir(&backup_dir)
-}
-
 async fn stop_stale_worker_runtimes(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
@@ -910,14 +924,6 @@ fn candidate_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
     directory.with_file_name(format!("{file_name}.candidate.{process_id}.{counter}.tmp"))
 }
 
-fn backup_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
-    let file_name = directory.file_name().unwrap_or("projects");
-    let process_id = std::process::id();
-    let counter = CANDIDATE_CONFIG_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    directory.with_file_name(format!("{file_name}.previous.{process_id}.{counter}.tmp"))
-}
-
 fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
     let mut tracks = Vec::new();
 
@@ -977,20 +983,15 @@ fn delete_optional_file(path: &Utf8Path) -> Result<(), DaemonError> {
     }
 }
 
-fn rollback_failed_error(original: DaemonError, rollback: DaemonError) -> DaemonError {
+fn runtime_config_rollback_failed_error(
+    original: DaemonError,
+    rollback: DaemonError,
+) -> DaemonError {
     DaemonError::UnexpectedProtocolResponse {
-        reason: format!("Gateway config promotion failed: {original}; rollback failed: {rollback}"),
+        reason: format!(
+            "Gateway runtime config rollback failed after runtime reconciliation failed: {original}; rollback failed: {rollback}"
+        ),
     }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "daemon Gateway reconciliation atomically promotes generated config directories"
-)]
-fn rename_config_dir(from: &Utf8Path, to: &Utf8Path) -> Result<(), DaemonError> {
-    std::fs::rename(from, to)?;
-
-    Ok(())
 }
 
 fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
