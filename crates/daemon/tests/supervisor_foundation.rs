@@ -310,6 +310,38 @@ async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
 }
 
 #[tokio::test]
+async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let child_pid_path = paths.run().join("descendant.pid");
+    let process = ProcessSupervisor::new(paths.clone())
+        .start(process_spec(
+            &paths,
+            "descendant-runtime",
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                format!(
+                    "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; while true; do sleep 1; done' & echo $! > \"{child_pid_path}\"; while true; do sleep 1; done"
+                ),
+            ],
+        ))
+        .await?;
+    wait_for_path(&child_pid_path).await?;
+    let child_pid = wait_for_file_contains(&child_pid_path, "\n")
+        .await?
+        .trim()
+        .parse::<u32>()?;
+
+    process.stop(Duration::from_millis(50)).await?;
+
+    wait_for_process_exit(child_pid).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

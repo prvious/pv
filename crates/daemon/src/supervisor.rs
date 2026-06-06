@@ -3,7 +3,9 @@ use std::time::Duration;
 use std::{future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
+use rustix::process::{
+    Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
+};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -185,19 +187,38 @@ impl ManagedProcess {
     }
 
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
-        if self.child.try_wait()?.is_some() {
+        if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
             return Ok(());
         }
 
         let process_group = process_group_pid(self.pid)?;
         signal_process_group(process_group, Signal::TERM)?;
 
-        if timeout(grace_period, self.child.wait()).await.is_err() {
-            signal_process_group(process_group, Signal::KILL)?;
-            self.child.wait().await?;
+        match timeout(
+            grace_period,
+            wait_for_managed_process_group_exit(&mut self.child, self.pid),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(_elapsed) => {
+                signal_process_group(process_group, Signal::KILL)?;
+            }
         }
 
-        Ok(())
+        match timeout(
+            Duration::from_secs(1),
+            wait_for_managed_process_group_exit(&mut self.child, self.pid),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("process group {process_group:?} did not exit after signal"),
+            )
+            .into()),
+        }
     }
 }
 
@@ -361,13 +382,13 @@ async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(
     let process_group = process_group_pid(pid)?;
     signal_process_group(process_group, Signal::TERM)?;
 
-    if wait_for_process_exit(pid, grace_period).await? {
+    if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
     signal_process_group(process_group, Signal::KILL)?;
 
-    if wait_for_process_exit(pid, Duration::from_secs(1)).await? {
+    if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
         return Ok(());
     }
 
@@ -378,18 +399,34 @@ async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(
     .into())
 }
 
-async fn wait_for_process_exit(pid: u32, readiness_timeout: Duration) -> Result<bool, DaemonError> {
+async fn wait_for_managed_process_group_exit(
+    child: &mut Child,
+    pid: u32,
+) -> Result<(), DaemonError> {
+    child.wait().await?;
+
+    while process_group_exists(pid)? {
+        sleep(READINESS_POLL_INTERVAL).await;
+    }
+
+    Ok(())
+}
+
+async fn wait_for_process_group_exit(
+    pid: u32,
+    readiness_timeout: Duration,
+) -> Result<bool, DaemonError> {
     let started_at = Instant::now();
 
     while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        if !process_exists(pid)? {
+        if !process_group_exists(pid)? {
             return Ok(true);
         }
 
         sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
     }
 
-    Ok(!process_exists(pid)?)
+    Ok(!process_group_exists(pid)?)
 }
 
 #[expect(
@@ -464,6 +501,22 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     let pid = process_group_pid(pid)?;
 
     match test_kill_process(pid) {
+        Ok(()) => Ok(true),
+        Err(source) => {
+            let error = io::Error::from(source);
+            if process_not_found(&error) {
+                return Ok(false);
+            }
+
+            Err(error.into())
+        }
+    }
+}
+
+fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
+    let process_group = process_group_pid(pid)?;
+
+    match test_kill_process_group(process_group) {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
