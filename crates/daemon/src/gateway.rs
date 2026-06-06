@@ -29,7 +29,8 @@ type FrankenphpProcessCommand = tokio::process::Command;
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
-const FRANKENPHP_NOT_INSTALLED: &str = "Gateway runtime skipped; FrankenPHP is not installed";
+pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
+    "Gateway runtime skipped; FrankenPHP is not installed";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrankenphpCommand {
