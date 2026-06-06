@@ -1,0 +1,42 @@
+---
+source: crates/daemon/tests/gateway_reconciliation.rs
+expression: plan
+---
+RuntimePlan {
+    gateway: GatewayRuntimePlan {
+        http_port: 48080,
+        https_port: 48443,
+        ca_certificate_path: "<tempdir>/home/.pv/certificates/ca.pem",
+        ca_private_key_path: "<tempdir>/home/.pv/certificates/ca-key.pem",
+    },
+    workers: [
+        PhpWorkerRuntimePlan {
+            php_track: "8.3",
+            port: 45001,
+            projects: [
+                RuntimeProject {
+                    id: "<project_id>",
+                    primary_hostname: "other.test",
+                    hostnames: [],
+                    project_root: "<tempdir>/other/api",
+                    document_root: "<tempdir>/other/api/public",
+                },
+            ],
+        },
+        PhpWorkerRuntimePlan {
+            php_track: "8.4",
+            port: 45000,
+            projects: [
+                RuntimeProject {
+                    id: "<project_id>",
+                    primary_hostname: "acme.test",
+                    hostnames: [
+                        "api.acme.test",
+                    ],
+                    project_root: "<tempdir>/acme",
+                    document_root: "<tempdir>/acme/public",
+                },
+            ],
+        },
+    ],
+}
