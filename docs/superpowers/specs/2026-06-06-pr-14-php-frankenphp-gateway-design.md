@@ -16,8 +16,8 @@ The work follows `DESIGN.md`: Gateway is an always-on PV-managed FrankenPHP/Cadd
 - Route linked Project hostnames to the worker for each Project's resolved PHP track.
 - Preserve original host and forwarding headers while proxying through Gateway.
 - Keep previous working Gateway/worker config and process state when new config validation or reload fails.
-- Add a real-artifact-backed Project-serving integration test for a tiny PHP Project.
-- Add small fake-artifact tests only for deterministic failure paths such as invalid layout, validation failure, and readiness failure.
+- Add an opt-in real-artifact-backed Project-serving integration test for a tiny PHP Project.
+- Keep always-run tests on small fake fixture artifacts for deterministic coverage and normal CI speed.
 
 ## Non-Goals
 
@@ -30,6 +30,8 @@ The work follows `DESIGN.md`: Gateway is an always-on PV-managed FrankenPHP/Cadd
 - Do not add per-Project workers; one worker serves all Projects assigned to a PHP track.
 - Do not add user-editable Caddy snippets or custom Gateway/worker config.
 - Do not make the unknown-host friendly page a PR 14 acceptance criterion.
+- Do not commit large PHP or FrankenPHP binary artifacts into this repository.
+- Do not require 200MB+ runtime artifact downloads during default local test or branch CI runs.
 
 ## Architecture
 
@@ -64,6 +66,18 @@ The PHP adapter validates standalone PHP artifacts. A valid PHP artifact contain
 The FrankenPHP adapter validates FrankenPHP artifacts. A valid FrankenPHP artifact contains the executable used for both Gateway and PHP-track worker processes. The adapter should expose stable helper methods for resolving the executable path from an installed release.
 
 For a PHP track, setup/install desired state requires both `php` and `frankenphp` artifacts for the same concrete track. PR 14 can reconcile already-recorded desired track state and fixture manifests; it should not build the public `pv php:*` command UX.
+
+## Artifact Test Strategy
+
+PR 14 distinguishes real runtime artifacts from always-run tests.
+
+Real artifacts are required for the browser-serving E2E path, but they live outside git. The E2E test consumes a normal PV artifact manifest URL and installs real PHP and FrankenPHP `.tar.gz` archives from that manifest. Candidate artifacts may live in a private Cloudflare R2 bucket or another maintainer-controlled artifact location. The test must exercise the real manifest, download, checksum, unpack, adapter validation, config generation, process supervision, and serving flow.
+
+The real-artifact E2E is opt-in. It runs only when explicit environment variables are present. `PV_E2E_REAL_ARTIFACTS=1` enables the test, and `PV_E2E_ARTIFACT_MANIFEST_URL` provides the candidate artifact manifest URL.
+
+The test should skip with a clear message when those variables are absent. Branch CI and ordinary local `cargo nextest` runs should not download large PHP/FrankenPHP artifacts by default. CI may run the opt-in E2E on manual dispatch, nightly, release-candidate validation, or a dedicated artifact-validation workflow. Artifact downloads should use PV's normal checksum-addressed cache so repeated opt-in runs do not redownload unchanged artifacts.
+
+Always-run tests use small fake fixture artifacts. Fake artifacts should be limited to behavior that does not need real PHP execution, such as artifact layout validation, config rendering snapshots, config validation failure, readiness failure, and supervisor/reload failure handling. Fake artifacts must not be used as the only proof that a linked Project can be served.
 
 ## Generated Config
 
@@ -133,9 +147,9 @@ Process metadata and pid files use the existing supervisor model. Runtime metada
 
 ## Testing
 
-PR 14 should use real artifacts for the main Project-serving integration test. The test should use local fixture manifests and local fixture archives rather than public object storage. It should install or seed a real PHP and FrankenPHP track, link a tiny PHP Project, reconcile the system or Project, request the app through the Gateway path, and snapshot the observable response and relevant runtime state.
+PR 14 should use real artifacts for an opt-in Project-serving integration test. The test should use a manifest URL supplied by environment variable rather than public object storage defaults or committed archives. It should install or seed a real PHP and FrankenPHP track, link a tiny PHP Project, reconcile the system or Project, request the app through the Gateway path, and snapshot the observable response and relevant runtime state.
 
-Fake artifacts are still useful for narrow deterministic failure tests:
+Fake artifacts are used for always-run deterministic tests:
 
 - PHP artifact missing the expected executable is rejected.
 - FrankenPHP artifact missing the expected executable is rejected.
@@ -153,8 +167,8 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-Broader checks such as Clippy and full workspace tests should run before the implementation branch is considered complete.
+Broader checks such as Clippy and full workspace tests should run before the implementation branch is considered complete. The opt-in real-artifact E2E should run before marking PR 14 complete when candidate artifacts are available. If candidate artifacts are not available yet, the implementation should leave the gated test in place and explicitly report that the real-artifact E2E remains pending.
 
 ## Open Decisions
 
-None. The main PR 14 Project-serving test uses real PHP/FrankenPHP artifacts; fake artifacts are limited to failure-path tests.
+None. PR 14 uses an opt-in real-artifact E2E for the Project-serving proof, keeps large runtime artifacts outside git, and uses fake artifacts only for always-run deterministic tests.
