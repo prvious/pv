@@ -45,6 +45,34 @@ fn manifest_generator_merges_release_and_revocation_records() -> Result<()> {
 }
 
 #[test]
+fn manifest_generator_writes_versioned_manifest_file_locally() -> Result<()> {
+    let tempdir = tempdir()?;
+    let records_dir = tempdir.path().join("records");
+    let revocations_dir = tempdir.path().join("revocations");
+    let output = tempdir.path().join("manifests/redis-7.2.json");
+
+    create_dir_all(&records_dir)?;
+    create_dir_all(&revocations_dir)?;
+    write_file(
+        &records_dir.join("redis-7.2.5-pv1-darwin-arm64.json"),
+        REDIS_7_2_5_ARM64,
+    )?;
+
+    generate_manifest_file(
+        &records_dir,
+        &revocations_dir,
+        &output,
+        "https://artifacts.example.test",
+    )?;
+    let manifest_json = read_file(&output)?;
+    ArtifactManifest::parse(&manifest_json)?;
+
+    assert_snapshot!(manifest_json);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_generator_rejects_revocation_for_missing_artifact() -> Result<()> {
     let tempdir = tempdir()?;
     let records_dir = tempdir.path().join("records");
