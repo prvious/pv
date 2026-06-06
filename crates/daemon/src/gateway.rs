@@ -1,14 +1,49 @@
 use std::collections::{BTreeMap, btree_map};
 use std::net::TcpListener;
+use std::time::Duration;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
 use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{
     Database, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
 };
+use tokio::time::timeout;
 
-use crate::DaemonError;
+use crate::{DaemonError, ProcessSpec};
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "daemon runtime owns FrankenPHP config validation process execution"
+)]
+type FrankenphpProcessCommand = tokio::process::Command;
+
+const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrankenphpCommand {
+    executable: Utf8PathBuf,
+}
+
+impl FrankenphpCommand {
+    pub fn new(executable: impl Into<Utf8PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+
+    pub fn executable(&self) -> &Utf8Path {
+        &self.executable
+    }
+
+    pub fn validate_arguments(&self, config_path: &Utf8Path) -> Vec<String> {
+        frankenphp_config_arguments("validate", config_path)
+    }
+
+    pub fn run_arguments(&self, config_path: &Utf8Path) -> Vec<String> {
+        frankenphp_config_arguments("run", config_path)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimePlan {
@@ -38,6 +73,76 @@ pub struct RuntimeProject {
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
     pub document_root: Utf8PathBuf,
+}
+
+pub fn promote_validated_config_for_test(
+    path: &Utf8Path,
+    content: &str,
+    validate: impl FnOnce(&Utf8Path) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    crate::gateway_config::promote_validated_config(path, content, validate)
+}
+
+pub async fn validate_config(
+    command: &FrankenphpCommand,
+    config_path: &Utf8Path,
+) -> Result<(), DaemonError> {
+    let output = timeout(CONFIG_VALIDATION_TIMEOUT, async {
+        FrankenphpProcessCommand::new(command.executable())
+            .args(command.validate_arguments(config_path))
+            .output()
+            .await
+    })
+    .await
+    .map_err(|_elapsed| DaemonError::ProtocolTimedOut {
+        phase: "FrankenPHP config validation",
+    })??;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    Err(DaemonError::UnexpectedProtocolResponse {
+        reason: format!(
+            "FrankenPHP config validation failed for {config_path}: status={status}; stdout={stdout}; stderr={stderr}",
+            status = output.status
+        ),
+    })
+}
+
+pub fn gateway_process_spec(paths: &PvPaths, command: &FrankenphpCommand) -> ProcessSpec {
+    ProcessSpec {
+        name: "gateway".to_owned(),
+        command: command.executable.clone(),
+        arguments: command.run_arguments(&paths.gateway_root_config()),
+        config_path: paths.gateway_root_config(),
+        log_path: paths.gateway_log(),
+        pid_path: paths.gateway_pid(),
+        metadata_path: paths.gateway_runtime_metadata(),
+        resource_name: "gateway".to_owned(),
+        track: "core".to_owned(),
+    }
+}
+
+pub fn worker_process_spec(
+    paths: &PvPaths,
+    php_track: &str,
+    command: &FrankenphpCommand,
+) -> ProcessSpec {
+    ProcessSpec {
+        name: format!("php-worker-{php_track}"),
+        command: command.executable.clone(),
+        arguments: command.run_arguments(&paths.worker_root_config(php_track)),
+        config_path: paths.worker_root_config(php_track),
+        log_path: paths.worker_log(php_track),
+        pid_path: paths.worker_pid(php_track),
+        metadata_path: paths.worker_runtime_metadata(php_track),
+        resource_name: "php-worker".to_owned(),
+        track: php_track.to_owned(),
+    }
 }
 
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
@@ -156,4 +261,14 @@ fn additional_hostnames(
 
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {
+    vec![
+        action.to_owned(),
+        "--config".to_owned(),
+        config_path.as_str().to_owned(),
+        "--adapter".to_owned(),
+        "caddyfile".to_owned(),
+    ]
 }

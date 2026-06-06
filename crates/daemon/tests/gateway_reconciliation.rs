@@ -1,10 +1,14 @@
 use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use daemon::gateway::build_runtime_plan;
+use daemon::DaemonError;
+use daemon::gateway::{
+    FrankenphpCommand, build_runtime_plan, gateway_process_spec, promote_validated_config_for_test,
+    validate_config, worker_process_spec,
+};
 use insta::{Settings, assert_debug_snapshot};
 use serde_json::json;
-use state::{Database, LinkProjectInput, PvPaths};
+use state::{Database, LinkProjectInput, PvPaths, fs};
 
 #[test]
 fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
@@ -88,15 +92,114 @@ document_root: public
     Ok(())
 }
 
+#[test]
+fn gateway_config_validation_failure_preserves_active_config_and_cleans_candidate() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    fs::ensure_layout(&paths)?;
+    fs::write_sensitive_file(&paths.gateway_root_config(), "previous config\n")?;
+    let mut candidate_path = None;
+
+    let result = promote_validated_config_for_test(
+        &paths.gateway_root_config(),
+        "new config\n",
+        |candidate| {
+            candidate_path = Some(candidate.to_path_buf());
+            Err(DaemonError::UnexpectedProtocolResponse {
+                reason: "validation failed".to_owned(),
+            })
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnexpectedProtocolResponse { .. })
+    ));
+    assert_eq!(
+        fs::read_to_string(&paths.gateway_root_config())?,
+        "previous config\n"
+    );
+    let candidate_removed = candidate_path
+        .as_ref()
+        .is_some_and(|candidate| !candidate.exists());
+    assert!(candidate_removed);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn frankenphp_config_validation_reports_process_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let validator = write_failing_validator(&tempdir.path().join("validator"))?;
+    let config_path = tempdir.path().join("Caddyfile");
+    fs::write_sensitive_file(&config_path, "invalid config\n")?;
+
+    let result = validate_config(&FrankenphpCommand::new(validator), &config_path).await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnexpectedProtocolResponse { reason })
+            if reason.contains("stdout=validator stdout") && reason.contains("stderr=validator stderr")
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let command = FrankenphpCommand::new(tempdir.path().join("frankenphp"));
+    let gateway = gateway_process_spec(&paths, &command);
+    let worker = worker_process_spec(&paths, "8.4", &command);
+
+    assert_process_spec_snapshot(
+        tempdir.path(),
+        (
+            command.validate_arguments(&paths.gateway_root_config()),
+            command.run_arguments(&paths.gateway_root_config()),
+            gateway,
+            worker,
+        ),
+    );
+
+    Ok(())
+}
+
 fn create_project(project_root: &Utf8Path, config_source: &str) -> Result<()> {
-    state::fs::write_sensitive_file(&project_root.join("public/index.php"), "<?php\n")?;
-    state::fs::write_sensitive_file(&project_root.join("pv.yml"), config_source)?;
+    fs::write_sensitive_file(&project_root.join("public/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&project_root.join("pv.yml"), config_source)?;
+
+    Ok(())
+}
+
+fn write_failing_validator(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
+    fs::write_sensitive_file(
+        path,
+        "#!/bin/sh\necho validator stdout\necho validator stderr >&2\nexit 42\n",
+    )?;
+    set_executable(path)?;
+
+    Ok(path.to_path_buf())
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixture marks fake FrankenPHP validator executable"
+)]
+fn set_executable(path: &Utf8Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)?;
 
     Ok(())
 }
 
 fn seed_php_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
-    state::fs::write_sensitive_file(
+    fs::write_sensitive_file(
         &paths.downloads().join("manifest.json"),
         &json!({
             "schema_version": 1,
@@ -152,5 +255,22 @@ fn assert_runtime_plan_snapshot(name: &str, plan: daemon::gateway::RuntimePlan) 
     settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
     settings.bind(|| {
         assert_debug_snapshot!(name, plan);
+    });
+}
+
+fn assert_process_spec_snapshot(
+    tempdir: &Utf8Path,
+    snapshot: (
+        Vec<String>,
+        Vec<String>,
+        daemon::ProcessSpec,
+        daemon::ProcessSpec,
+    ),
+) {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!("frankenphp_command_and_process_specs_are_stable", snapshot);
     });
 }

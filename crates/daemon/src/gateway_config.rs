@@ -1,6 +1,11 @@
-use camino::Utf8PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use camino::{Utf8Path, Utf8PathBuf};
+use state::fs;
 
 use crate::DaemonError;
+
+static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayConfigInput {
@@ -117,6 +122,25 @@ pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, 
     Ok(output)
 }
 
+pub(crate) fn promote_validated_config(
+    path: &Utf8Path,
+    content: &str,
+    validate: impl FnOnce(&Utf8Path) -> Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    let candidate_path = candidate_path_for(path);
+    write_candidate_config(&candidate_path, content)?;
+
+    if let Err(error) = validate(&candidate_path) {
+        let _cleanup_result = remove_candidate_config(&candidate_path);
+
+        return Err(error);
+    }
+
+    rename_candidate_config(&candidate_path, path)?;
+
+    Ok(())
+}
+
 fn comma_separated_hostnames(
     primary_hostname: &str,
     hostnames: &[String],
@@ -162,4 +186,34 @@ fn quoted_caddyfile_token(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
 
     format!("\"{escaped}\"")
+}
+
+fn candidate_path_for(path: &Utf8Path) -> Utf8PathBuf {
+    let file_name = path.file_name().unwrap_or("config");
+    let process_id = std::process::id();
+    let counter = CANDIDATE_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    path.with_file_name(format!("{file_name}.candidate.{process_id}.{counter}.tmp"))
+}
+
+fn write_candidate_config(path: &Utf8Path, content: &str) -> Result<(), DaemonError> {
+    fs::write_sensitive_file(path, content)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon gateway config promotion owns direct candidate file replacement"
+)]
+fn rename_candidate_config(from: &Utf8Path, to: &Utf8Path) -> Result<(), DaemonError> {
+    std::fs::rename(from, to)?;
+
+    Ok(())
+}
+
+fn remove_candidate_config(path: &Utf8Path) -> Result<(), DaemonError> {
+    fs::delete_file(path)?;
+
+    Ok(())
 }
