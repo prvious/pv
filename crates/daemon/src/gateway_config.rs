@@ -477,10 +477,11 @@ mod tests {
     use camino_tempfile::tempdir;
 
     #[tokio::test]
-    async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails() {
-        let tempdir = tempdir().expect("test tempdir");
+    async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempdir()?;
         let root_config = tempdir.path().join("Caddyfile");
-        state::fs::write_sensitive_file(&root_config, "active\n").expect("active config");
+        state::fs::write_sensitive_file(&root_config, "active\n")?;
         let root_config_for_fragment_promotion = root_config.clone();
 
         let result = promote_validated_config_tree_async(
@@ -505,6 +506,8 @@ mod tests {
                 if reason.contains("fragment promotion failed")
                     && reason.contains("rollback failed")
         ));
+
+        Ok(())
     }
 
     #[expect(
