@@ -63,28 +63,38 @@ pub(crate) fn reconcile_project_env(
     }
 }
 
+pub(crate) fn validate_project_config_for_gateway(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+) -> Result<(), DaemonError> {
+    let _plan = validate_project_config_and_plan(paths, database, project, config_file)?;
+
+    Ok(())
+}
+
 fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
-
-    database.validate_project_hostnames(
-        &project.id,
-        &project.primary_hostname,
-        &config_file.config.hostnames,
-    )?;
-    config::validate_project_env_shape(&config_file.config)?;
-
-    let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+    let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
+    let resolved_php_track = config_file
+        .config
+        .php
+        .as_deref()
+        .map(|selector| {
+            resolve_project_php_track(paths, Some(selector), project.desired_php_track.as_deref())
+        })
+        .transpose()?;
     let has_env_mappings = config_file.config.has_env_mappings();
-    if has_env_mappings {
-        let existing_content = read_optional_dotenv(project)?;
-        config::validate_managed_env_block(existing_content.as_deref())?;
-    }
 
     apply_project_resource_plan(database, &project.id, &plan)?;
+    if let Some(resolved_php_track) = resolved_php_track {
+        database.replace_project_desired_php_track(&project.id, Some(&resolved_php_track))?;
+    }
     database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
     if !has_env_mappings {
@@ -128,6 +138,28 @@ fn reconcile_loaded_project(
     };
 
     Ok(summary)
+}
+
+fn validate_project_config_and_plan(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+) -> Result<ProjectResourcePlan, DaemonError> {
+    database.validate_project_hostnames(
+        &project.id,
+        &project.primary_hostname,
+        &config_file.config.hostnames,
+    )?;
+    config::validate_project_env_shape(&config_file.config)?;
+
+    let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+    if config_file.config.has_env_mappings() {
+        let existing_content = read_optional_dotenv(project)?;
+        config::validate_managed_env_block(existing_content.as_deref())?;
+    }
+
+    Ok(plan)
 }
 
 fn project_resource_plan(
@@ -226,6 +258,30 @@ fn resolved_project_resource_track(
     let concrete_track = ConcreteTrackName::new(track)?;
 
     Ok(concrete_track.as_str().to_string())
+}
+
+pub(crate) fn resolve_project_php_track(
+    paths: &PvPaths,
+    config_selector: Option<&str>,
+    stored_selector: Option<&str>,
+) -> Result<String, DaemonError> {
+    let selector = config_selector
+        .or(stored_selector)
+        .map(TrackSelector::parse)
+        .transpose()?
+        .unwrap_or(TrackSelector::Latest);
+
+    match selector {
+        TrackSelector::Latest => {
+            let manifest =
+                ArtifactManifestCache::new(paths.downloads().to_path_buf()).load_cached()?;
+            let php = ResourceName::new("php")?;
+            let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
+
+            Ok(track.as_str().to_owned())
+        }
+        TrackSelector::Track(track) => Ok(track.as_str().to_owned()),
+    }
 }
 
 fn apply_project_resource_plan(

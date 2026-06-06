@@ -1787,6 +1787,31 @@ fn linked_projects_preserve_ids_and_refresh_hostnames() -> Result<()> {
 }
 
 #[test]
+fn linked_projects_refresh_desired_php_track_independently() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let created = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: vec!["api.acme.test".to_string()],
+    })?;
+
+    let updated = database.replace_project_desired_php_track(&created.project.id, Some("8.3"))?;
+
+    assert_eq!(updated.desired_php_track.as_deref(), Some("8.3"));
+    assert_eq!(
+        updated.additional_hostnames,
+        vec!["api.acme.test".to_string()]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn linked_projects_store_original_and_canonical_paths() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

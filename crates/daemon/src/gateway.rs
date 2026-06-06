@@ -1,22 +1,25 @@
-use std::collections::{BTreeMap, btree_map};
+use std::collections::{BTreeMap, BTreeSet, btree_map};
+use std::io;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
-use resources::{
-    ArtifactManifestCache, ResourceAdapter, ResourceName, TrackSelector, frankenphp_adapter,
-};
+use resources::{ResourceAdapter, frankenphp_adapter};
 use state::{
-    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortRequest, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject,
+    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortRequest,
+    ProjectEnvObservedStatus, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    RuntimeObservedStatus, RuntimeSubject, StateError, fs,
 };
 use tokio::time::timeout;
 
 use crate::gateway_config::{
     GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
-    promote_validated_config_async, render_gateway_config, render_php_worker_config,
+    promote_validated_config_tree_async, render_gateway_config, render_gateway_project_config,
+    render_php_worker_config, render_php_worker_project_config,
 };
+use crate::project_env::{resolve_project_php_track, validate_project_config_for_gateway};
 use crate::supervisor::probe_readiness_once;
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
@@ -31,6 +34,7 @@ const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
     "Gateway runtime skipped; FrankenPHP is not installed";
+static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrankenphpCommand {
@@ -81,6 +85,7 @@ pub struct PhpWorkerRuntimePlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeProject {
     pub id: String,
+    pub render_config: bool,
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
@@ -167,6 +172,7 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         )
         .await?;
     }
+    stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
@@ -239,50 +245,82 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut projects_by_php_track: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
 
     for project in database.projects()? {
-        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        let config_file = match ProjectConfigFile::read_from_root(&project.path) {
+            Ok(config_file) => Some(config_file),
+            Err(error) => {
+                database.record_project_env_observed_snapshot(
+                    &project.id,
+                    ProjectEnvObservedStatus::Failed,
+                    Some(error.to_string().as_str()),
+                    &[],
+                )?;
+                append_persisted_runtime_project(
+                    paths,
+                    &mut database,
+                    &mut projects_by_php_track,
+                    project,
+                )?;
+                continue;
+            }
+        };
+        let config = match config_file {
+            Some(config_file) => {
+                match validate_project_config_for_gateway(paths, &database, &project, &config_file)
+                {
+                    Ok(()) => Some(config_file.config),
+                    Err(error) => {
+                        database.record_project_env_observed_snapshot(
+                            &project.id,
+                            ProjectEnvObservedStatus::Failed,
+                            Some(error.to_string().as_str()),
+                            &[],
+                        )?;
+                        append_persisted_runtime_project(
+                            paths,
+                            &mut database,
+                            &mut projects_by_php_track,
+                            project,
+                        )?;
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
         let php_track = resolve_project_php_track(
             paths,
-            config_file.config.php.as_deref(),
+            config.as_ref().and_then(|config| config.php.as_deref()),
             project.desired_php_track.as_deref(),
         )?;
-        let document_root = match config_file.config.document_root {
+        let document_root = match config
+            .as_ref()
+            .and_then(|config| config.document_root.as_ref())
+        {
             Some(document_root) => project.path.join(document_root),
             None => project.path.clone(),
         };
         let runtime_project = RuntimeProject {
             id: project.id,
+            render_config: true,
             primary_hostname: project.primary_hostname.clone(),
             hostnames: additional_hostnames(
                 &project.primary_hostname,
                 project.additional_hostnames,
-                config_file.config.hostnames,
+                config
+                    .as_ref()
+                    .map(|config| config.hostnames.clone())
+                    .unwrap_or_default(),
             ),
             project_root: project.path,
             document_root,
         };
 
-        match projects_by_php_track.entry(php_track.clone()) {
-            btree_map::Entry::Occupied(mut entry) => {
-                entry.get_mut().projects.push(runtime_project);
-            }
-            btree_map::Entry::Vacant(entry) => {
-                let assignment = database.assign_port(
-                    PortRequest::php_worker(
-                        &php_track,
-                        RUNTIME_PORT_FALLBACK_START,
-                        RUNTIME_PORT_FALLBACK_START,
-                        RUNTIME_PORT_FALLBACK_END,
-                    ),
-                    local_loopback_port_available,
-                )?;
-
-                entry.insert(PhpWorkerRuntimePlan {
-                    php_track,
-                    port: assignment.port,
-                    projects: vec![runtime_project],
-                });
-            }
-        }
+        append_runtime_project(
+            &mut database,
+            &mut projects_by_php_track,
+            php_track,
+            runtime_project,
+        )?;
     }
 
     let workers = projects_by_php_track
@@ -306,17 +344,76 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     })
 }
 
+fn append_persisted_runtime_project(
+    paths: &PvPaths,
+    database: &mut Database,
+    projects_by_php_track: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    project: state::ProjectRecord,
+) -> Result<(), DaemonError> {
+    let php_track = resolve_project_php_track(paths, None, project.desired_php_track.as_deref())?;
+    let runtime_project = RuntimeProject {
+        id: project.id,
+        render_config: false,
+        primary_hostname: project.primary_hostname.clone(),
+        hostnames: additional_hostnames(
+            &project.primary_hostname,
+            project.additional_hostnames,
+            Vec::new(),
+        ),
+        project_root: project.path.clone(),
+        document_root: project.path,
+    };
+
+    append_runtime_project(database, projects_by_php_track, php_track, runtime_project)
+}
+
+fn append_runtime_project(
+    database: &mut Database,
+    projects_by_php_track: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    php_track: String,
+    runtime_project: RuntimeProject,
+) -> Result<(), DaemonError> {
+    match projects_by_php_track.entry(php_track.clone()) {
+        btree_map::Entry::Occupied(mut entry) => {
+            entry.get_mut().projects.push(runtime_project);
+        }
+        btree_map::Entry::Vacant(entry) => {
+            let assignment = database.assign_port(
+                PortRequest::php_worker(
+                    &php_track,
+                    RUNTIME_PORT_FALLBACK_START,
+                    RUNTIME_PORT_FALLBACK_START,
+                    RUNTIME_PORT_FALLBACK_END,
+                ),
+                local_loopback_port_available,
+            )?;
+
+            entry.insert(PhpWorkerRuntimePlan {
+                php_track,
+                port: assignment.port,
+                projects: vec![runtime_project],
+            });
+        }
+    }
+
+    Ok(())
+}
+
 async fn reconcile_gateway_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
     plan: &RuntimePlan,
 ) -> Result<(), DaemonError> {
-    let content = match render_gateway_config(&GatewayConfigInput {
+    let routes = gateway_project_routes(plan);
+    let active_dir = paths.gateway_projects_config_dir();
+    let candidate_dir = candidate_config_dir_for(&active_dir);
+    let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
-        routes: gateway_project_routes(plan),
+        projects_config_glob: active_dir.join("*.Caddyfile"),
+        routes: routes.clone(),
     }) {
         Ok(content) => content,
         Err(error) => {
@@ -325,15 +422,43 @@ async fn reconcile_gateway_config(
             return Err(error);
         }
     };
+    let candidate_content = match render_gateway_config(&GatewayConfigInput {
+        http_port: plan.gateway.http_port,
+        https_port: plan.gateway.https_port,
+        ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
+        ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        projects_config_glob: candidate_dir.join("*.Caddyfile"),
+        routes: routes.clone(),
+    }) {
+        Ok(content) => content,
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
 
-    promote_runtime_config(
-        paths,
-        RuntimeSubject::Gateway,
-        paths.gateway_root_config(),
-        &content,
-        command,
-    )
-    .await
+            return Err(error);
+        }
+    };
+    let fragments = gateway_project_config_fragments(paths, &routes)?;
+    let result = match write_project_config_fragments(&candidate_dir, &fragments) {
+        Ok(()) => {
+            promote_runtime_config_tree(
+                paths,
+                RuntimeSubject::Gateway,
+                paths.gateway_root_config(),
+                &candidate_content,
+                &active_content,
+                || promote_project_config_fragments(&active_dir, &candidate_dir),
+                command,
+            )
+            .await
+        }
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+            Err(error)
+        }
+    };
+    let _cleanup_result = delete_optional_dir(&candidate_dir);
+
+    result
 }
 
 async fn reconcile_worker_config(
@@ -344,19 +469,23 @@ async fn reconcile_worker_config(
     let subject = RuntimeSubject::PhpWorker {
         php_track: worker.php_track.clone(),
     };
-    let content = match render_php_worker_config(&PhpWorkerConfigInput {
+    let projects = worker
+        .projects
+        .iter()
+        .map(|project| PhpWorkerProject {
+            primary_hostname: project.primary_hostname.clone(),
+            hostnames: project.hostnames.clone(),
+            project_root: project.project_root.clone(),
+            document_root: project.document_root.clone(),
+        })
+        .collect::<Vec<_>>();
+    let active_dir = paths.worker_projects_config_dir(&worker.php_track);
+    let candidate_dir = candidate_config_dir_for(&active_dir);
+    let active_content = match render_php_worker_config(&PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
-        projects: worker
-            .projects
-            .iter()
-            .map(|project| PhpWorkerProject {
-                primary_hostname: project.primary_hostname.clone(),
-                hostnames: project.hostnames.clone(),
-                project_root: project.project_root.clone(),
-                document_root: project.document_root.clone(),
-            })
-            .collect(),
+        projects_config_glob: active_dir.join("*.Caddyfile"),
+        projects: projects.clone(),
     }) {
         Ok(content) => content,
         Err(error) => {
@@ -365,29 +494,60 @@ async fn reconcile_worker_config(
             return Err(error);
         }
     };
+    let candidate_content = match render_php_worker_config(&PhpWorkerConfigInput {
+        php_track: worker.php_track.clone(),
+        port: worker.port,
+        projects_config_glob: candidate_dir.join("*.Caddyfile"),
+        projects,
+    }) {
+        Ok(content) => content,
+        Err(error) => {
+            record_runtime_error(paths, subject, &error)?;
 
-    promote_runtime_config(
-        paths,
-        subject,
-        paths.worker_root_config(&worker.php_track),
-        &content,
-        command,
-    )
-    .await
+            return Err(error);
+        }
+    };
+    let fragments = worker_project_config_fragments(paths, worker)?;
+    let result = match write_project_config_fragments(&candidate_dir, &fragments) {
+        Ok(()) => {
+            promote_runtime_config_tree(
+                paths,
+                subject,
+                paths.worker_root_config(&worker.php_track),
+                &candidate_content,
+                &active_content,
+                || promote_project_config_fragments(&active_dir, &candidate_dir),
+                command,
+            )
+            .await
+        }
+        Err(error) => {
+            record_runtime_error(paths, subject, &error)?;
+            Err(error)
+        }
+    };
+    let _cleanup_result = delete_optional_dir(&candidate_dir);
+
+    result
 }
 
-async fn promote_runtime_config(
+async fn promote_runtime_config_tree(
     paths: &PvPaths,
     subject: RuntimeSubject,
     config_path: Utf8PathBuf,
-    content: &str,
+    candidate_content: &str,
+    active_content: &str,
+    promote_fragments: impl FnOnce() -> Result<(), DaemonError>,
     command: &FrankenphpCommand,
 ) -> Result<(), DaemonError> {
-    let result =
-        promote_validated_config_async(&config_path, content, |candidate_path| async move {
-            validate_config(command, &candidate_path).await
-        })
-        .await;
+    let result = promote_validated_config_tree_async(
+        &config_path,
+        candidate_content,
+        active_content,
+        |candidate_path| async move { validate_config(command, &candidate_path).await },
+        promote_fragments,
+    )
+    .await;
 
     if let Err(error) = &result {
         record_runtime_error(paths, subject, error)?;
@@ -404,16 +564,6 @@ async fn start_or_adopt_runtime(
     subject: RuntimeSubject,
 ) -> Result<(), DaemonError> {
     let result = async {
-        let reloaded = supervisor.reload(&spec)?;
-        if reloaded
-            && wait_for_readiness(readiness.clone(), RUNTIME_READINESS_TIMEOUT)
-                .await
-                .is_ok()
-            && supervisor.verify_ownership(&spec)?.is_some()
-        {
-            return Ok(());
-        }
-
         if let Some(adopted) = supervisor.adopt(&spec)? {
             adopted.stop(Duration::from_secs(1)).await?;
         } else if probe_readiness_once(&readiness).await.is_ok() {
@@ -465,12 +615,251 @@ fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
         .iter()
         .flat_map(|worker| {
             worker.projects.iter().map(|project| GatewayProjectRoute {
+                id: project.id.clone(),
+                render_config: project.render_config,
                 primary_hostname: project.primary_hostname.clone(),
                 hostnames: project.hostnames.clone(),
                 worker_port: worker.port,
             })
         })
         .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProjectConfigFragment {
+    file_name: String,
+    content: String,
+}
+
+fn gateway_project_config_fragments(
+    paths: &PvPaths,
+    routes: &[GatewayProjectRoute],
+) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
+    let active_dir = paths.gateway_projects_config_dir();
+    routes
+        .iter()
+        .map(|route| {
+            let file_name = project_config_file_name(&route.id);
+            let content = if route.render_config {
+                render_gateway_project_config(route)?
+            } else {
+                read_preserved_project_config_fragment(&active_dir, &file_name)?
+            };
+
+            Ok(ProjectConfigFragment { file_name, content })
+        })
+        .collect()
+}
+
+fn worker_project_config_fragments(
+    paths: &PvPaths,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
+    let active_dir = paths.worker_projects_config_dir(&worker.php_track);
+    worker
+        .projects
+        .iter()
+        .map(|project| {
+            let file_name = project_config_file_name(&project.id);
+            let content = if project.render_config {
+                let input = PhpWorkerProject {
+                    primary_hostname: project.primary_hostname.clone(),
+                    hostnames: project.hostnames.clone(),
+                    project_root: project.project_root.clone(),
+                    document_root: project.document_root.clone(),
+                };
+                render_php_worker_project_config(&input, worker.port)?
+            } else {
+                read_preserved_project_config_fragment(&active_dir, &file_name)?
+            };
+
+            Ok(ProjectConfigFragment { file_name, content })
+        })
+        .collect()
+}
+
+fn write_project_config_fragments(
+    directory: &Utf8Path,
+    fragments: &[ProjectConfigFragment],
+) -> Result<(), DaemonError> {
+    if fragments.is_empty() {
+        let marker_path = directory.join(".pv-empty");
+        fs::write_sensitive_file(&marker_path, "")?;
+        delete_optional_file(&marker_path)?;
+
+        return Ok(());
+    }
+
+    for fragment in fragments {
+        fs::write_sensitive_file(&directory.join(&fragment.file_name), &fragment.content)?;
+    }
+
+    Ok(())
+}
+
+fn promote_project_config_fragments(
+    active_dir: &Utf8Path,
+    candidate_dir: &Utf8Path,
+) -> Result<(), DaemonError> {
+    let backup_dir = backup_config_dir_for(active_dir);
+    delete_optional_dir(&backup_dir)?;
+
+    let active_existed = active_dir.exists();
+    if active_existed {
+        rename_config_dir(active_dir, &backup_dir)?;
+    }
+
+    if let Err(error) = rename_config_dir(candidate_dir, active_dir) {
+        if active_existed {
+            let _restore_result = rename_config_dir(&backup_dir, active_dir);
+        }
+
+        return Err(error);
+    }
+
+    delete_optional_dir(&backup_dir)
+}
+
+async fn stop_stale_worker_runtimes(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    plan: &RuntimePlan,
+) -> Result<(), DaemonError> {
+    let desired_tracks = plan
+        .workers
+        .iter()
+        .map(|worker| worker.php_track.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for php_track in runtime_worker_tracks(paths)? {
+        if desired_tracks.contains(php_track.as_str()) {
+            continue;
+        }
+        let subject = RuntimeSubject::PhpWorker {
+            php_track: php_track.clone(),
+        };
+
+        if let Some(adopted) = supervisor.adopt_recorded(
+            &paths.worker_pid(&php_track),
+            &paths.worker_runtime_metadata(&php_track),
+        )? {
+            adopted.stop(Duration::from_secs(1)).await?;
+        }
+        record_runtime_observed(
+            paths,
+            subject,
+            RuntimeObservedStatus::Stopped,
+            Some("PHP worker stopped; no Projects remain on this track"),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn project_config_file_name(project_id: &str) -> String {
+    format!("{project_id}.Caddyfile")
+}
+
+fn read_preserved_project_config_fragment(
+    directory: &Utf8Path,
+    file_name: &str,
+) -> Result<String, DaemonError> {
+    fs::read_to_string(&directory.join(file_name)).map_err(Into::into)
+}
+
+fn candidate_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
+    let file_name = directory.file_name().unwrap_or("projects");
+    let process_id = std::process::id();
+    let counter = CANDIDATE_CONFIG_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    directory.with_file_name(format!("{file_name}.candidate.{process_id}.{counter}.tmp"))
+}
+
+fn backup_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
+    let file_name = directory.file_name().unwrap_or("projects");
+    let process_id = std::process::id();
+    let counter = CANDIDATE_CONFIG_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    directory.with_file_name(format!("{file_name}.previous.{process_id}.{counter}.tmp"))
+}
+
+fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
+    let mut tracks = Vec::new();
+
+    for path in read_directory_files(&paths.run().join("workers"))? {
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        let Some(track) = file_name
+            .strip_prefix("php-")
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+
+        tracks.push(track.to_string());
+    }
+
+    Ok(tracks)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon Gateway reconciliation prunes generated Caddyfile fragments"
+)]
+fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut paths = Vec::new();
+
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
+            DaemonError::UnexpectedProtocolResponse {
+                reason: format!("generated Gateway config path is not UTF-8: {path:?}"),
+            }
+        })?;
+        paths.push(path);
+    }
+
+    Ok(paths)
+}
+
+fn delete_optional_file(path: &Utf8Path) -> Result<(), DaemonError> {
+    match fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon Gateway reconciliation atomically promotes generated config directories"
+)]
+fn rename_config_dir(from: &Utf8Path, to: &Utf8Path) -> Result<(), DaemonError> {
+    std::fs::rename(from, to)?;
+
+    Ok(())
+}
+
+fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
+    match fs::delete_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn first_installed_frankenphp_command(
@@ -557,31 +946,6 @@ fn record_runtime_observed(
     database.record_runtime_observed_snapshot(subject, status, message)?;
 
     Ok(())
-}
-
-fn resolve_project_php_track(
-    paths: &PvPaths,
-    config_selector: Option<&str>,
-    stored_selector: Option<&str>,
-) -> Result<String, DaemonError> {
-    let selector = config_selector
-        .or(stored_selector)
-        .map(TrackSelector::parse)
-        .transpose()?
-        .unwrap_or(TrackSelector::Latest);
-
-    match selector {
-        TrackSelector::Latest => latest_php_track(paths),
-        TrackSelector::Track(track) => Ok(track.as_str().to_owned()),
-    }
-}
-
-fn latest_php_track(paths: &PvPaths) -> Result<String, DaemonError> {
-    let manifest = ArtifactManifestCache::new(paths.downloads().to_path_buf()).load_cached()?;
-    let php = ResourceName::new("php")?;
-    let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
-
-    Ok(track.as_str().to_owned())
 }
 
 fn additional_hostnames(

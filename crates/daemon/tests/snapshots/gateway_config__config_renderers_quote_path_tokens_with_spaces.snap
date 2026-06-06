@@ -19,26 +19,8 @@ Gateway:
     }
 }
 
-acme.test {
-    bind 127.0.0.1 ::1
-    tls {
-        issuer internal {
-            ca local
-        }
-    }
-    reverse_proxy 127.0.0.1:45001 {
-        header_up Host {host}
-        header_up X-Forwarded-Host {host}
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {remote_host}
-    }
-}
+import "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile"
 
 Worker:
 # PV_FAKE_PORT 45001
-http://acme.test:45001 {
-    bind 127.0.0.1 ::1
-    root * "/Users/Alice Smith/Code/acme/public"
-    php_server
-    file_server
-}
+import "/Users/Alice Smith/.pv/config/workers/php-8.4/projects/*.Caddyfile"

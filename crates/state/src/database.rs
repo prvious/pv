@@ -640,6 +640,49 @@ impl Database {
         Ok(project)
     }
 
+    pub fn replace_project_desired_php_track(
+        &mut self,
+        project_id: &str,
+        desired_php_track: Option<&str>,
+    ) -> Result<ProjectRecord, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        if let Some(track) = desired_php_track
+            && track.trim().is_empty()
+        {
+            return Err(StateError::InvalidProjectTrack {
+                track: track.to_string(),
+            });
+        }
+
+        if project.desired_php_track.as_deref() != desired_php_track {
+            let input = LinkProjectInput {
+                path: project.path.clone(),
+                original_path: project.original_path.clone(),
+                primary_hostname: project.primary_hostname.clone(),
+                config_path: project.config_path.clone(),
+                desired_php_track: desired_php_track.map(str::to_string),
+                additional_hostnames: project.additional_hostnames.clone(),
+            };
+            update_project_in_transaction(&transaction, project_id, &input)?;
+        }
+
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        transaction.commit()?;
+
+        Ok(project)
+    }
+
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at

@@ -4,18 +4,19 @@ expression: plan
 ---
 RuntimePlan {
     gateway: GatewayRuntimePlan {
-        http_port: 48080,
-        https_port: 48443,
+        http_port: <port>,
+        https_port: <port>,
         ca_certificate_path: "<tempdir>/home/.pv/certificates/ca.pem",
         ca_private_key_path: "<tempdir>/home/.pv/certificates/ca-key.pem",
     },
     workers: [
         PhpWorkerRuntimePlan {
             php_track: "8.3",
-            port: 45001,
+            port: <port>,
             projects: [
                 RuntimeProject {
                     id: "<project_id>",
+                    render_config: true,
                     primary_hostname: "other.test",
                     hostnames: [],
                     project_root: "<tempdir>/other/api",
@@ -25,10 +26,11 @@ RuntimePlan {
         },
         PhpWorkerRuntimePlan {
             php_track: "8.4",
-            port: 45000,
+            port: <port>,
             projects: [
                 RuntimeProject {
                     id: "<project_id>",
+                    render_config: true,
                     primary_hostname: "acme.test",
                     hostnames: [
                         "api.acme.test",

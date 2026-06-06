@@ -154,6 +154,33 @@ impl ProcessSupervisor {
             .map(|owned| AdoptedProcess { owned }))
     }
 
+    pub fn adopt_recorded(
+        &self,
+        pid_path: &Utf8Path,
+        metadata_path: &Utf8Path,
+    ) -> Result<Option<AdoptedProcess>, DaemonError> {
+        let Some(pid) = read_pid_file(pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(metadata_path)? else {
+            return Ok(None);
+        };
+        let spec = metadata.process_spec(pid_path.to_path_buf(), metadata_path.to_path_buf());
+
+        if metadata.matches(&spec, pid) && live_process_matches_spec(pid, &spec)? {
+            return Ok(Some(AdoptedProcess {
+                owned: OwnedRuntime {
+                    pid,
+                    log_path: spec.log_path,
+                    pid_path: spec.pid_path,
+                    metadata_path: spec.metadata_path,
+                },
+            }));
+        }
+
+        Ok(None)
+    }
+
     pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
         let Some(owned) = self.verify_ownership(spec)? else {
             return Ok(false);
@@ -504,7 +531,7 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
-            if process_not_found(&error) {
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(false);
             }
 
@@ -537,15 +564,83 @@ fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, Daemo
     let Some(command_line) = live_process_command_line(pid)? else {
         return Ok(false);
     };
-    let Some(live_executable) = command_line.split_whitespace().next() else {
+    let command_tokens = command_line_tokens(&command_line);
+    let Some(live_executable) = command_tokens.first().map(String::as_str) else {
         return Ok(false);
     };
 
     let command_matches = live_executable == spec.command.as_str()
         || spec.command.file_name().is_some_and(|file_name| {
             live_executable == file_name || live_executable.ends_with(&format!("/{file_name}"))
-        });
-    Ok(command_matches)
+        })
+        || command_tokens
+            .get(1)
+            .is_some_and(|script| script == spec.command.as_str());
+    let shell_command_argument = spec
+        .command
+        .file_name()
+        .is_some_and(|file_name| file_name == "sh" || file_name == "bash");
+    let arguments_match = spec.arguments.iter().enumerate().all(|(index, argument)| {
+        if shell_command_argument
+            && index > 0
+            && spec
+                .arguments
+                .get(index - 1)
+                .is_some_and(|previous| previous == "-c")
+            && argument.split_whitespace().count() > 1
+        {
+            command_line.contains(argument)
+        } else {
+            command_tokens.iter().any(|token| token == argument)
+        }
+    });
+
+    Ok(command_matches && arguments_match)
+}
+
+fn command_line_tokens(command_line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in command_line.chars() {
+        if escaped {
+            token.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_character) = quote {
+            if character == quote_character {
+                quote = None;
+            } else {
+                token.push(character);
+            }
+            continue;
+        }
+        if character == '\'' || character == '"' {
+            quote = Some(character);
+            continue;
+        }
+        if character.is_whitespace() {
+            if !token.is_empty() {
+                tokens.push(std::mem::take(&mut token));
+            }
+            continue;
+        }
+
+        token.push(character);
+    }
+
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+
+    tokens
 }
 
 fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
@@ -570,6 +665,20 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 impl RuntimeMetadata {
+    fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
+        ProcessSpec {
+            name: self.name.clone(),
+            command: self.command.as_str().into(),
+            arguments: self.arguments.clone(),
+            config_path: self.config_path.as_str().into(),
+            log_path: self.log_path.as_str().into(),
+            pid_path,
+            metadata_path,
+            resource_name: self.resource_name.clone(),
+            track: self.track.clone(),
+        }
+    }
+
     fn matches(&self, spec: &ProcessSpec, pid: u32) -> bool {
         self.name == spec.name
             && self.pid == pid

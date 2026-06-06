@@ -1,0 +1,18 @@
+---
+source: crates/daemon/tests/gateway_config.rs
+expression: render_gateway_project_config(&route)?
+---
+acme.test, api.acme.test {
+    bind 127.0.0.1 ::1
+    tls {
+        issuer internal {
+            ca local
+        }
+    }
+    reverse_proxy 127.0.0.1:45001 {
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote_host}
+    }
+}
