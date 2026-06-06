@@ -1,0 +1,48 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "(validation_outcome(validate_archive(&symlink, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&hardlink, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&fifo, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&missing_license, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&missing_notice, &[\"LICENSE\"],\n&[\"NOTICE\"]), tempdir.path()),\nvalidation_outcome(validate_archive(&directory_license, &[\"LICENSE\"], &[]),\ntempdir.path()),)"
+---
+(
+    Err(
+        (
+            "InvalidArchive",
+            "symlink.tar.gz",
+            "unsupported entry type `Symlink`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "hardlink.tar.gz",
+            "unsupported entry type `Link`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "fifo.tar.gz",
+            "unsupported entry type `Fifo`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "missing-license.tar.gz",
+            "missing required metadata file `LICENSE`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "missing-notice.tar.gz",
+            "missing required metadata file `NOTICE`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "directory-license.tar.gz",
+            "missing required metadata file `LICENSE`",
+        ),
+    ),
+)

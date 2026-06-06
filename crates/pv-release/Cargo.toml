@@ -15,9 +15,13 @@ workspace = true
 anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
+data-encoding = { workspace = true }
+flate2 = { workspace = true }
 resources = { path = "../resources" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

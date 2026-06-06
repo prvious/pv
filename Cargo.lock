@@ -1274,10 +1274,14 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "clap",
+ "data-encoding",
+ "flate2",
  "insta",
  "resources",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
  "thiserror",
 ]
 

@@ -207,6 +207,37 @@ impl ReleaseRecord {
     pub fn identity(&self) -> ArtifactIdentity {
         self.identity.clone()
     }
+
+    pub fn license_files(&self) -> &[String] {
+        &self.license_files
+    }
+
+    pub fn notice_files(&self) -> &[String] {
+        &self.notice_files
+    }
+
+    pub fn verify_archive(
+        &self,
+        validation: &crate::archive::ArchiveValidation,
+    ) -> crate::Result<()> {
+        if self.sha256.as_str() != validation.sha256() {
+            return Err(crate::ReleaseError::ChecksumMismatch {
+                path: validation.archive_path().to_string(),
+                expected: self.sha256.as_str().to_string(),
+                actual: validation.sha256().to_string(),
+            });
+        }
+
+        if self.size != validation.size() {
+            return Err(crate::ReleaseError::SizeMismatch {
+                path: validation.archive_path().to_string(),
+                expected: self.size,
+                actual: validation.size(),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 impl RevocationRecord {

@@ -1,0 +1,55 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "(validation_outcome(validate_archive(&empty, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&multi_root, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&rootless, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&escape, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&current_dir, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&absolute, &[\"LICENSE\"], &[]),\ntempdir.path()),\nvalidation_outcome(validate_archive(&backslash, &[\"LICENSE\"], &[]),\ntempdir.path()),)"
+---
+(
+    Err(
+        (
+            "InvalidArchive",
+            "empty.tar.gz",
+            "archive is empty",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "multi-root.tar.gz",
+            "expected exactly one top-level directory, found 2",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "rootless.tar.gz",
+            "entry `LICENSE` must be under a top-level directory",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "escape.tar.gz",
+            "unsafe entry path `root/../../outside`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "current-dir.tar.gz",
+            "unsafe entry path `root/./LICENSE`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "absolute.tar.gz",
+            "absolute entry path `/root/LICENSE`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "backslash.tar.gz",
+            "backslash entry path `root\\LICENSE`",
+        ),
+    ),
+)
