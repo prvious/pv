@@ -440,6 +440,7 @@ hostnames:
     let observed = database
         .project_env_observed_state(&project.project.id)?
         .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
+    let gateway_root_config = fs::read_to_string(&paths.gateway_root_config())?;
 
     assert_eq!(
         fs::read_to_string(
@@ -461,6 +462,8 @@ hostnames:
         observed.status,
         state::ProjectEnvObservedStatus::Failed
     ));
+    assert!(gateway_root_config.contains("import "));
+    assert!(!gateway_root_config.contains("PV Gateway is running"));
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;

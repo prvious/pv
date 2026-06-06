@@ -15,7 +15,7 @@ pub struct GatewayConfigInput {
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub projects_config_glob: Utf8PathBuf,
-    pub routes: Vec<GatewayProjectRoute>,
+    pub import_project_configs: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,25 +67,18 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
 
-    let mut routes: Vec<&GatewayProjectRoute> = input
-        .routes
-        .iter()
-        .filter(|route| route.render_config)
-        .collect();
-    routes.sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
-
-    if routes.is_empty() {
-        output.push('\n');
-        output.push_str(&format!(":{} {{\n", input.http_port));
-        output.push_str("    bind 127.0.0.1 ::1\n");
-        output.push_str("    respond \"PV Gateway is running\" 404\n");
-        output.push_str("}\n");
-    } else {
+    if input.import_project_configs {
         output.push('\n');
         output.push_str(&format!(
             "import {}\n",
             quoted_caddyfile_token(input.projects_config_glob.as_str())?
         ));
+    } else {
+        output.push('\n');
+        output.push_str(&format!(":{} {{\n", input.http_port));
+        output.push_str("    bind 127.0.0.1 ::1\n");
+        output.push_str("    respond \"PV Gateway is running\" 404\n");
+        output.push_str("}\n");
     }
 
     Ok(output)

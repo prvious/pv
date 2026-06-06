@@ -489,21 +489,14 @@ async fn reconcile_gateway_config(
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = gateway_project_config_fragments(paths, &routes)?;
-    let fragment_project_ids = fragments
-        .iter()
-        .map(|fragment| fragment.project_id.as_str())
-        .collect::<BTreeSet<_>>();
-    let routes = routes
-        .into_iter()
-        .filter(|route| fragment_project_ids.contains(route.id.as_str()))
-        .collect::<Vec<_>>();
+    let import_project_configs = !fragments.is_empty();
     let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
-        routes: routes.clone(),
+        import_project_configs,
     }) {
         Ok(content) => content,
         Err(error) => {
@@ -518,7 +511,7 @@ async fn reconcile_gateway_config(
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
-        routes: routes.clone(),
+        import_project_configs,
     }) {
         Ok(content) => content,
         Err(error) => {

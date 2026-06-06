@@ -18,7 +18,4 @@ expression: render_gateway_config(&input)?
     }
 }
 
-:48080 {
-    bind 127.0.0.1 ::1
-    respond "PV Gateway is running" 404
-}
+import "/Users/alice/.pv/config/gateway/projects/*.Caddyfile"

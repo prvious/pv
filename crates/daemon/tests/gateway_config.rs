@@ -18,13 +18,7 @@ fn gateway_config_renderer_outputs_gateway_caddyfile() -> Result<()> {
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
-        routes: vec![GatewayProjectRoute {
-            id: "project_acme".to_owned(),
-            render_config: true,
-            primary_hostname: "acme.test".to_owned(),
-            hostnames: vec!["api.acme.test".to_owned()],
-            worker_port: 45001,
-        }],
+        import_project_configs: true,
     };
 
     assert_snapshot!(render_gateway_config(&input)?);
@@ -63,13 +57,7 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
         projects_config_glob: Utf8PathBuf::from(
             "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile",
         ),
-        routes: vec![GatewayProjectRoute {
-            id: "project_acme".to_owned(),
-            render_config: true,
-            primary_hostname: "acme.test".to_owned(),
-            hostnames: vec![],
-            worker_port: 45001,
-        }],
+        import_project_configs: true,
     })?;
     let worker = render_php_worker_config(&PhpWorkerConfigInput {
         php_track: "8.4".to_owned(),
@@ -100,13 +88,7 @@ fn config_renderers_reject_control_characters_in_path_tokens() {
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
-        routes: vec![GatewayProjectRoute {
-            id: "project_acme".to_owned(),
-            render_config: true,
-            primary_hostname: "acme.test".to_owned(),
-            hostnames: vec![],
-            worker_port: 45001,
-        }],
+        import_project_configs: true,
     });
 
     assert!(matches!(
@@ -126,7 +108,7 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
-        routes: vec![],
+        import_project_configs: false,
     };
 
     assert_snapshot!(render_gateway_config(&input)?);
@@ -135,7 +117,7 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
 }
 
 #[test]
-fn gateway_config_renderer_treats_non_rendered_routes_as_empty_gateway_listener() -> Result<()> {
+fn gateway_config_renderer_imports_project_configs_when_requested() -> Result<()> {
     let input = GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
@@ -144,13 +126,7 @@ fn gateway_config_renderer_treats_non_rendered_routes_as_empty_gateway_listener(
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
-        routes: vec![GatewayProjectRoute {
-            id: "project_acme".to_owned(),
-            render_config: false,
-            primary_hostname: "acme.test".to_owned(),
-            hostnames: vec!["api.acme.test".to_owned()],
-            worker_port: 45001,
-        }],
+        import_project_configs: true,
     };
 
     assert_snapshot!(render_gateway_config(&input)?);
