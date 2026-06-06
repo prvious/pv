@@ -11,7 +11,7 @@ use state::{
     GatewayPort, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
     ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationInput, StateError,
+    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 #[test]
@@ -48,6 +48,52 @@ fn pv_paths_include_prepared_pf_artifacts() {
     assert_eq!(
         paths.pf_conf_reference_config().as_str(),
         "/Users/alice/.pv/config/pf/pf.conf"
+    );
+}
+
+#[test]
+fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
+    let paths = PvPaths::for_home("/Users/alice");
+
+    assert_eq!(
+        paths.gateway_root_config().as_str(),
+        "/Users/alice/.pv/config/gateway/Caddyfile"
+    );
+    assert_eq!(
+        paths.gateway_projects_config_dir().as_str(),
+        "/Users/alice/.pv/config/gateway/projects"
+    );
+    assert_eq!(
+        paths.worker_root_config("8.4").as_str(),
+        "/Users/alice/.pv/config/workers/php-8.4/Caddyfile"
+    );
+    assert_eq!(
+        paths.worker_projects_config_dir("8.4").as_str(),
+        "/Users/alice/.pv/config/workers/php-8.4/projects"
+    );
+    assert_eq!(
+        paths.gateway_log().as_str(),
+        "/Users/alice/.pv/logs/gateway/gateway.log"
+    );
+    assert_eq!(
+        paths.worker_log("8.4").as_str(),
+        "/Users/alice/.pv/logs/workers/php-8.4.log"
+    );
+    assert_eq!(
+        paths.gateway_pid().as_str(),
+        "/Users/alice/.pv/run/gateway.pid"
+    );
+    assert_eq!(
+        paths.gateway_runtime_metadata().as_str(),
+        "/Users/alice/.pv/run/gateway.json"
+    );
+    assert_eq!(
+        paths.worker_pid("8.4").as_str(),
+        "/Users/alice/.pv/run/workers/php-8.4.pid"
+    );
+    assert_eq!(
+        paths.worker_runtime_metadata("8.4").as_str(),
+        "/Users/alice/.pv/run/workers/php-8.4.json"
     );
 }
 
@@ -1336,6 +1382,62 @@ fn unlink_project_clears_project_env_observed_state() -> Result<()> {
 }
 
 #[test]
+fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Running,
+        Some("gateway is ready"),
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpWorker {
+            php_track: "8.4".to_string(),
+        },
+        RuntimeObservedStatus::Failed,
+        Some("readiness timed out"),
+    )?;
+    let updated_gateway = database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Degraded,
+        Some("gateway config reload failed"),
+    )?;
+    let invalid = database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpWorker {
+            php_track: String::new(),
+        },
+        RuntimeObservedStatus::Pending,
+        None,
+    );
+    let reserved = database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpWorker {
+            php_track: "latest".to_string(),
+        },
+        RuntimeObservedStatus::Pending,
+        None,
+    );
+
+    assert_eq!(updated_gateway.status, RuntimeObservedStatus::Degraded);
+    assert!(matches!(
+        invalid,
+        Err(StateError::InvalidRuntimeSubject { kind: "php_track", value }) if value.is_empty()
+    ));
+    assert!(matches!(
+        reserved,
+        Err(StateError::InvalidRuntimeSubject { kind: "php_track", value }) if value == "latest"
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!(database.runtime_observed_states()?);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_removal_intent_migration_backfills_existing_tracks() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2062,6 +2164,64 @@ fn gateway_port_allocator_uses_fallbacks_when_preferred_ports_are_unavailable() 
 
     assert_eq!(assigned.http.port, RUNTIME_PORT_FALLBACK_START);
     assert_eq!(assigned.https.port, RUNTIME_PORT_FALLBACK_START + 1);
+
+    Ok(())
+}
+
+#[test]
+fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let php84 = PortRequest::php_worker("8.4", 45000, 45000, 45009);
+    let php83 = PortRequest::php_worker("8.3", 45000, 45000, 45009);
+
+    let assigned_php84 = database.assign_port(php84.clone(), |port| port == 45000)?;
+    let reused_php84 = database.assign_port(php84, |port| port == assigned_php84.port)?;
+    let assigned_php83 = database.assign_port(php83, |_port| true)?;
+    let reserved_track = database.assign_port(
+        PortRequest::php_worker("latest", 45000, 45000, 45009),
+        |_port| true,
+    );
+    let invalid_track = database.assign_port(
+        PortRequest::php_worker("../8.4", 45000, 45000, 45009),
+        |_port| true,
+    );
+
+    assert_eq!(
+        assigned_php84.owner,
+        PortOwner::PhpWorker {
+            php_track: "8.4".to_string()
+        }
+    );
+    assert_eq!(assigned_php84.port, 45000);
+    assert_eq!(reused_php84.port, assigned_php84.port);
+    assert_eq!(
+        assigned_php83.owner,
+        PortOwner::PhpWorker {
+            php_track: "8.3".to_string()
+        }
+    );
+    assert_eq!(assigned_php83.port, 45001);
+    assert!(matches!(
+        reserved_track,
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    assert!(matches!(
+        invalid_track,
+        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
+            if value == "../8.4"
+    ));
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            assigned_php84,
+            reused_php84,
+            assigned_php83,
+            database.assigned_ports()?
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }
