@@ -1,0 +1,7 @@
+---
+source: crates/pv-release/tests/manifest_generation.rs
+expression: error
+---
+GeneratedManifestInvalid {
+    reason: "resource `redis` has multiple tracks (`7.2, 8.0`) but no explicit default_track metadata",
+}

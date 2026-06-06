@@ -6,6 +6,7 @@ use resources::{
 use serde::Deserialize;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArtifactIdentity {
@@ -36,11 +37,7 @@ pub struct ReleaseRecord {
     provenance: Provenance,
 }
 
-#[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "revocation records expose narrow getters only when later tasks need fields"
-)]
+#[derive(Clone)]
 pub struct RevocationRecord {
     path: Utf8PathBuf,
     resource: ResourceName,
@@ -48,6 +45,7 @@ pub struct RevocationRecord {
     artifact_version: ArtifactVersion,
     platform: ArtifactPlatform,
     reason: String,
+    revoked_at_raw: String,
     revoked_at: PublishedAt,
     replacement_artifact_version: Option<ArtifactVersion>,
 }
@@ -79,10 +77,6 @@ struct RawReleaseRecord {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "provenance metadata is retained for later manifest and diagnostics tasks"
-)]
 pub struct Provenance {
     source_url: String,
     source_sha256: String,
@@ -208,6 +202,54 @@ impl ReleaseRecord {
         self.identity.clone()
     }
 
+    pub fn resource(&self) -> &ResourceName {
+        &self.identity.resource
+    }
+
+    pub fn track(&self) -> &TrackName {
+        &self.identity.track
+    }
+
+    pub fn artifact_version(&self) -> &ArtifactVersion {
+        &self.artifact_version
+    }
+
+    pub fn platform(&self) -> ArtifactPlatform {
+        self.identity.platform
+    }
+
+    pub fn object_key(&self) -> &str {
+        &self.object_key
+    }
+
+    pub fn sha256(&self) -> &Sha256Digest {
+        &self.sha256
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn published_at_raw(&self) -> &str {
+        &self.published_at_raw
+    }
+
+    pub fn minimum_pv_version(&self) -> &PvVersion {
+        &self.minimum_pv_version
+    }
+
+    pub fn upstream_version(&self) -> &str {
+        &self.identity.upstream_version
+    }
+
+    pub fn pv_build_revision(&self) -> &str {
+        &self.identity.pv_build_revision
+    }
+
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+
     pub fn license_files(&self) -> &[String] {
         &self.license_files
     }
@@ -257,6 +299,7 @@ impl RevocationRecord {
             platform: ArtifactPlatform::new(&raw.platform)
                 .map_err(|error| invalid_revocation_identity(path, "platform", error))?,
             reason,
+            revoked_at_raw: raw.revoked_at.clone(),
             revoked_at: PublishedAt::parse(raw.revoked_at)
                 .map_err(|error| invalid_revocation_identity(path, "revoked_at", error))?,
             replacement_artifact_version: raw
@@ -269,11 +312,23 @@ impl RevocationRecord {
         })
     }
 
-    fn target_key(&self) -> String {
+    pub fn target_key(&self) -> String {
         format!(
             "{}:{}:{}:{}",
             self.resource, self.track, self.artifact_version, self.platform
         )
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub fn revoked_at(&self) -> &str {
+        &self.revoked_at_raw
+    }
+
+    pub fn replacement_artifact_version(&self) -> Option<&ArtifactVersion> {
+        self.replacement_artifact_version.as_ref()
     }
 
     fn revocation_metadata(&self) -> RevocationMetadata {
@@ -282,6 +337,47 @@ impl RevocationRecord {
             revoked_at: self.revoked_at.clone(),
             replacement_artifact_version: self.replacement_artifact_version.clone(),
         }
+    }
+}
+
+impl Provenance {
+    pub fn source_url(&self) -> &str {
+        &self.source_url
+    }
+
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+
+    pub fn recipe(&self) -> &str {
+        &self.recipe
+    }
+
+    pub fn pv_commit(&self) -> &str {
+        &self.pv_commit
+    }
+
+    pub fn build_run_id(&self) -> &str {
+        &self.build_run_id
+    }
+}
+
+impl fmt::Debug for RevocationRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RevocationRecord")
+            .field("path", &self.path)
+            .field("resource", &self.resource)
+            .field("track", &self.track)
+            .field("artifact_version", &self.artifact_version)
+            .field("platform", &self.platform)
+            .field("reason", &self.reason)
+            .field("revoked_at", &self.revoked_at)
+            .field(
+                "replacement_artifact_version",
+                &self.replacement_artifact_version,
+            )
+            .finish()
     }
 }
 

@@ -1,0 +1,8 @@
+---
+source: crates/pv-release/tests/manifest_generation.rs
+expression: error
+---
+RevocationTargetMissing {
+    revocation: "redis:7.2:7.2.5-pv1:darwin-arm64",
+    identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+}
