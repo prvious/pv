@@ -158,6 +158,7 @@ impl ReleaseRecord {
         validate_relative_file_list(path, "license_files", &raw.license_files)?;
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
         validate_relative_path(path, "object_key", &raw.object_key)?;
+        validate_object_key_layout(path, &raw)?;
         raw.provenance.validate(path)?;
 
         let identity = ArtifactIdentity {
@@ -509,6 +510,28 @@ fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::R
         Err(invalid_release(
             path,
             format!("{field} contains invalid relative path `{value}`"),
+        ))
+    }
+}
+
+fn validate_object_key_layout(path: &Utf8Path, raw: &RawReleaseRecord) -> crate::Result<()> {
+    let expected = format!(
+        "resources/{}/{}/{}/{}/{}-{}-{}.tar.gz",
+        raw.resource,
+        raw.track,
+        raw.artifact_version,
+        raw.platform,
+        raw.resource,
+        raw.artifact_version,
+        raw.platform
+    );
+
+    if raw.object_key == expected {
+        Ok(())
+    } else {
+        Err(invalid_release(
+            path,
+            format!("object_key must be `{expected}`"),
         ))
     }
 }

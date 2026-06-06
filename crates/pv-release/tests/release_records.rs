@@ -54,6 +54,10 @@ fn release_records_reject_invalid_object_key_and_provenance_metadata() -> Result
         "\"object_key\": \"resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
         "\"object_key\": \"resources/../redis.tar.gz\"",
     );
+    let mismatched_object_key = VALID_RELEASE_RECORD.replace(
+        "\"object_key\": \"resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        "\"object_key\": \"resources/mysql/8.0/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+    );
     let invalid_source_url = VALID_RELEASE_RECORD.replace(
         "https://download.redis.io/releases/redis-7.2.5.tar.gz",
         "not a url",
@@ -72,6 +76,7 @@ fn release_records_reject_invalid_object_key_and_provenance_metadata() -> Result
     let errors = [
         ("absolute_object_key", absolute_object_key),
         ("parent_object_key", parent_object_key),
+        ("mismatched_object_key", mismatched_object_key),
         ("invalid_source_url", invalid_source_url),
         ("invalid_source_sha256", invalid_source_sha256),
         ("invalid_recipe", invalid_recipe),

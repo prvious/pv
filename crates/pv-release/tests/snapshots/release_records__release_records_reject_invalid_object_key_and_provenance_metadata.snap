@@ -18,6 +18,13 @@ expression: errors
         },
     ),
     (
+        "mismatched_object_key",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "object_key must be `resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz`",
+        },
+    ),
+    (
         "invalid_source_url",
         InvalidReleaseRecord {
             path: "invalid.json",
