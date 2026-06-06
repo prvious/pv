@@ -67,7 +67,11 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
 
-    let mut routes: Vec<&GatewayProjectRoute> = input.routes.iter().collect();
+    let mut routes: Vec<&GatewayProjectRoute> = input
+        .routes
+        .iter()
+        .filter(|route| route.render_config)
+        .collect();
     routes.sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
 
     if routes.is_empty() {

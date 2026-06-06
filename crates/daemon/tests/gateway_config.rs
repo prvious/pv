@@ -135,6 +135,30 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
 }
 
 #[test]
+fn gateway_config_renderer_treats_non_rendered_routes_as_empty_gateway_listener() -> Result<()> {
+    let input = GatewayConfigInput {
+        http_port: 48080,
+        https_port: 48443,
+        ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
+        ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
+        projects_config_glob: Utf8PathBuf::from(
+            "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
+        ),
+        routes: vec![GatewayProjectRoute {
+            id: "project_acme".to_owned(),
+            render_config: false,
+            primary_hostname: "acme.test".to_owned(),
+            hostnames: vec!["api.acme.test".to_owned()],
+            worker_port: 45001,
+        }],
+    };
+
+    assert_snapshot!(render_gateway_config(&input)?);
+
+    Ok(())
+}
+
+#[test]
 fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
     let route = GatewayProjectRoute {
         id: "project_acme".to_owned(),
