@@ -27,6 +27,8 @@ enum Command {
         archive: Utf8PathBuf,
         #[arg(long)]
         record: Utf8PathBuf,
+        #[arg(long)]
+        smoke_hook: Option<Utf8PathBuf>,
     },
 }
 
@@ -40,10 +42,16 @@ pub fn run() -> anyhow::Result<()> {
             base_url,
         } => crate::manifest::generate_manifest_file(&records, &revocations, &output, &base_url)
             .with_context(|| format!("failed to generate manifest at `{output}`")),
-        Command::ValidateArchive { archive, record } => {
-            crate::archive::validate_archive_for_record_file(&archive, &record)
-                .with_context(|| format!("failed to validate archive `{archive}`"))
-        }
+        Command::ValidateArchive {
+            archive,
+            record,
+            smoke_hook,
+        } => crate::archive::validate_archive_for_record_file_with_smoke_hook(
+            &archive,
+            &record,
+            smoke_hook.as_deref(),
+        )
+        .with_context(|| format!("failed to validate archive `{archive}`")),
     }
 }
 
@@ -97,9 +105,42 @@ mod tests {
         ])?;
 
         match args.command {
-            Command::ValidateArchive { archive, record } => {
+            Command::ValidateArchive {
+                archive,
+                record,
+                smoke_hook,
+            } => {
                 assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
                 assert_eq!(record, Utf8PathBuf::from("release.json"));
+                assert_eq!(smoke_hook, None);
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_validate_archive_smoke_hook_argument() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "validate-archive",
+            "--archive",
+            "artifact.tar.gz",
+            "--record",
+            "release.json",
+            "--smoke-hook",
+            "smoke.sh",
+        ])?;
+
+        match args.command {
+            Command::ValidateArchive {
+                archive,
+                record,
+                smoke_hook,
+            } => {
+                assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
+                assert_eq!(record, Utf8PathBuf::from("release.json"));
+                assert_eq!(smoke_hook, Some(Utf8PathBuf::from("smoke.sh")));
                 Ok(())
             }
             command => bail!("parsed unexpected command: {command:?}"),

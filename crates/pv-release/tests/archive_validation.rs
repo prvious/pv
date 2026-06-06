@@ -1,11 +1,18 @@
 use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use data_encoding::HEXLOWER;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use pv_release::ReleaseError;
-use pv_release::archive::{ArchiveValidation, validate_archive, validate_archive_for_record_file};
+use pv_release::archive::{
+    ArchiveValidation, validate_archive, validate_archive_for_record_file,
+    validate_archive_for_record_file_with_smoke_hook,
+};
+use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tar::{Builder, EntryType, Header};
 
 type ArchiveSummary = (String, String, u64, String, Vec<String>);
@@ -127,6 +134,62 @@ fn archive_validation_rejects_special_entries_and_missing_license_files() -> Res
     Ok(())
 }
 
+#[test]
+fn archive_validation_rejects_blocked_runtime_paths_from_archives() -> Result<()> {
+    let tempdir = tempdir()?;
+    let archive = tempdir.path().join("redis.tar.gz");
+    write_archive(
+        &archive,
+        &[
+            ("redis-7.2.5-pv1/LICENSE", b"license" as &[u8]),
+            ("redis-7.2.5-pv1/NOTICE", b"notice" as &[u8]),
+            (
+                "redis-7.2.5-pv1/bin/redis-server",
+                b"load /opt/homebrew/lib/libssl.dylib" as &[u8],
+            ),
+        ],
+    )?;
+    let (sha256, size) = archive_digest_and_size(&archive)?;
+    let record = tempdir.path().join("redis.json");
+    write_record(&record, &release_record_json(&sha256, size))?;
+
+    assert_debug_snapshot!(unit_validation_outcome(
+        validate_archive_for_record_file(&archive, &record),
+        tempdir.path(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn archive_validation_runs_smoke_hook_against_extracted_archive_root() -> Result<()> {
+    let tempdir = tempdir()?;
+    let archive = tempdir.path().join("redis.tar.gz");
+    write_archive(
+        &archive,
+        &[
+            ("redis-7.2.5-pv1/LICENSE", b"license" as &[u8]),
+            ("redis-7.2.5-pv1/NOTICE", b"notice" as &[u8]),
+            ("redis-7.2.5-pv1/bin/redis-server", b"redis" as &[u8]),
+        ],
+    )?;
+    let (sha256, size) = archive_digest_and_size(&archive)?;
+    let record = tempdir.path().join("redis.json");
+    write_record(&record, &release_record_json(&sha256, size))?;
+    let hook = tempdir.path().join("smoke.sh");
+    write_executable(
+        &hook,
+        "#!/bin/sh\ntest -f \"$1/bin/redis-server\" || exit 43\nexit 42\n",
+    )?;
+
+    assert_debug_snapshot!(unit_validation_outcome(
+        validate_archive_for_record_file_with_smoke_hook(&archive, &record, Some(&hook)),
+        tempdir.path(),
+    ));
+
+    Ok(())
+}
+
 fn validation_summary(validation: &ArchiveValidation, root: &Utf8Path) -> ArchiveSummary {
     (
         relative_path(validation.archive_path(), root),
@@ -144,6 +207,13 @@ fn validation_outcome(
     result
         .map(|validation| validation_summary(&validation, root))
         .map_err(|error| validation_error_summary(error, root))
+}
+
+fn unit_validation_outcome(
+    result: pv_release::Result<()>,
+    root: &Utf8Path,
+) -> Result<(), ErrorSummary> {
+    result.map_err(|error| validation_error_summary(error, root))
 }
 
 fn validation_error_summary(error: ReleaseError, root: &Utf8Path) -> ErrorSummary {
@@ -175,6 +245,16 @@ fn validation_error_summary(error: ReleaseError, root: &Utf8Path) -> ErrorSummar
             "SizeMismatch".to_string(),
             relative_path(Utf8Path::new(&path), root),
             format!("expected {expected}, got {actual}"),
+        ),
+        ReleaseError::Relocation { path, reason } => (
+            "Relocation".to_string(),
+            relative_path(Utf8Path::new(&path), root),
+            reason,
+        ),
+        ReleaseError::SmokeHookFailed { hook, status } => (
+            "SmokeHookFailed".to_string(),
+            relative_path(Utf8Path::new(&hook), root),
+            status,
         ),
         error => ("Other".to_string(), String::new(), error.to_string()),
     }
@@ -283,6 +363,41 @@ fn write_special_archive(path: &Utf8Path, entry_type: EntryType) -> Result<()> {
     reason = "release tooling tests write local fixture metadata records"
 )]
 fn write_record(path: &Utf8Path, content: &str) -> Result<()> {
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests read local fixture archives to seed matching release records"
+)]
+fn archive_digest_and_size(path: &Utf8Path) -> Result<(String, u64)> {
+    let bytes = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+
+    Ok((HEXLOWER.encode(&hasher.finalize()), bytes.len() as u64))
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests create executable smoke hook fixtures"
+)]
+fn write_executable(path: &Utf8Path, content: &str) -> Result<()> {
+    std::fs::write(path, content)?;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests create executable smoke hook fixtures"
+)]
+fn write_executable(path: &Utf8Path, content: &str) -> Result<()> {
     std::fs::write(path, content)?;
     Ok(())
 }

@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "unit_validation_outcome(validate_archive_for_record_file_with_smoke_hook(&archive,\n&record, Some(&hook)), tempdir.path(),)"
+---
+Err(
+    (
+        "SmokeHookFailed",
+        "smoke.sh",
+        "exit status: 42",
+    ),
+)

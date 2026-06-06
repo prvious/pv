@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "unit_validation_outcome(validate_archive_for_record_file(&archive, &record),\ntempdir.path(),)"
+---
+Err(
+    (
+        "Relocation",
+        "redis-7.2.5-pv1/bin/redis-server",
+        "blocked runtime path `/opt/homebrew`",
+    ),
+)
