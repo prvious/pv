@@ -1,0 +1,16 @@
+---
+source: crates/pv-release/tests/relocation_and_smoke.rs
+expression: "(summarize_result(scan_file(&clean)), summarize_result(scan_file(&blocked)),)"
+---
+(
+    Ok(
+        (),
+    ),
+    Err(
+        ErrorSummary {
+            kind: "Relocation",
+            path: "blocked.bin",
+            reason: "blocked runtime path `/opt/homebrew`",
+        },
+    ),
+)

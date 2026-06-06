@@ -1,0 +1,27 @@
+---
+source: crates/pv-release/tests/relocation_and_smoke.rs
+expression: "(scan_relocation_text(Utf8Path::new(\"clean\"),\n\"load /usr/lib/libSystem.B.dylib\"),\nscan_relocation_text(Utf8Path::new(\"homebrew\"),\n\"load /opt/homebrew/Cellar/redis/lib/libssl.dylib\"),\nscan_relocation_text(Utf8Path::new(\"cellar\"),\n\"load /usr/local/Cellar/postgresql/lib/libpq.dylib\"),\nscan_relocation_text(Utf8Path::new(\"runner\"),\n\"rpath /Users/runner/work/pv/build\"),)"
+---
+(
+    Ok(
+        (),
+    ),
+    Err(
+        Relocation {
+            path: "homebrew",
+            reason: "blocked runtime path `/opt/homebrew`",
+        },
+    ),
+    Err(
+        Relocation {
+            path: "cellar",
+            reason: "blocked runtime path `/usr/local/Cellar`",
+        },
+    ),
+    Err(
+        Relocation {
+            path: "runner",
+            reason: "blocked runtime path `/Users/runner`",
+        },
+    ),
+)
