@@ -1,0 +1,42 @@
+---
+source: crates/daemon/tests/gateway_config.rs
+expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
+---
+Gateway:
+{
+    admin off
+    http_port 48080
+    https_port 48443
+    pki {
+        ca local {
+            root {
+                format pem_file
+                cert "/Users/Alice Smith/.pv/certificates/ca.pem"
+                key "/Users/Alice Smith/.pv/certificates/ca-key.pem"
+            }
+        }
+    }
+}
+
+acme.test {
+    bind 127.0.0.1 ::1
+    tls {
+        issuer internal {
+            ca local
+        }
+    }
+    reverse_proxy 127.0.0.1:45001 {
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote_host}
+    }
+}
+
+Worker:
+http://acme.test:45001 {
+    bind 127.0.0.1 ::1
+    root * "/Users/Alice Smith/Code/acme/public"
+    php_server
+    file_server
+}
