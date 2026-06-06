@@ -111,21 +111,10 @@ workspace = true
 anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
-data-encoding = { workspace = true }
-flate2 = { workspace = true }
-resources = { path = "../resources" }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
-tar = { workspace = true }
 thiserror = { workspace = true }
-time = { workspace = true, features = ["formatting", "parsing"] }
-url = { workspace = true }
-
-[dev-dependencies]
-camino-tempfile = { workspace = true }
-insta = { workspace = true }
 ```
+
+Do not add future `pv-release` dependencies in this task. Later tasks add `data-encoding`, `flate2`, `resources`, `serde`, `serde_json`, `sha2`, `tar`, `time`, `url`, `camino-tempfile`, and `insta` when their code or tests first use them. This keeps `cargo shear` clean between task commits.
 
 Create `crates/pv-release/src/lib.rs`:
 
@@ -296,27 +285,98 @@ pub fn generate_manifest_file(
 
 ```rust
 // crates/pv-release/src/record.rs
+//! Release record types are added in Task 2.
 ```
 
 ```rust
 // crates/pv-release/src/relocation.rs
+//! Relocation scanning is added in Task 5.
 ```
 
 ```rust
 // crates/pv-release/src/smoke.rs
+//! Smoke hook execution is added in Task 5.
 ```
 
-- [ ] **Step 4: Verify the crate skeleton compiles**
+- [ ] **Step 4: Add minimal CLI parser tests**
+
+Append this test module to `crates/pv-release/src/cli.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use anyhow::bail;
+
+    use super::*;
+
+    #[test]
+    fn parses_generate_manifest_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "generate-manifest",
+            "--records",
+            "records",
+            "--revocations",
+            "revocations",
+            "--output",
+            "manifest.json",
+            "--base-url",
+            "https://artifacts.test",
+        ])?;
+
+        match args.command {
+            Command::GenerateManifest {
+                records,
+                revocations,
+                output,
+                base_url,
+            } => {
+                assert_eq!(records, Utf8PathBuf::from("records"));
+                assert_eq!(revocations, Utf8PathBuf::from("revocations"));
+                assert_eq!(output, Utf8PathBuf::from("manifest.json"));
+                assert_eq!(base_url, "https://artifacts.test");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_validate_archive_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "validate-archive",
+            "--archive",
+            "artifact.tar.gz",
+            "--record",
+            "release.json",
+        ])?;
+
+        match args.command {
+            Command::ValidateArchive { archive, record } => {
+                assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
+                assert_eq!(record, Utf8PathBuf::from("release.json"));
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+}
+```
+
+- [ ] **Step 5: Verify the crate skeleton compiles and tests**
 
 Run:
 
 ```shell
-cargo check -p pv-release --locked
+cargo check -p pv-release --all-targets --locked
+cargo test -p pv-release --all-targets --locked
+cargo shear
 ```
 
-Expected: PASS.
+Expected: PASS. The test run should include 2 `pv-release` unit tests. `cargo shear` should report no issues.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```shell
 git add Cargo.toml crates/pv-release
@@ -326,11 +386,29 @@ git commit -m "feat(release): add artifact release tooling crate"
 ## Task 2: Define Release And Revocation Records
 
 **Files:**
+- Modify: `crates/pv-release/Cargo.toml`
 - Modify: `crates/pv-release/src/record.rs`
 - Modify: `crates/pv-release/src/error.rs`
 - Test: `crates/pv-release/tests/release_records.rs`
 
-- [ ] **Step 1: Write failing record validation tests**
+- [ ] **Step 1: Add record-model dependencies**
+
+Add the dependencies first used by record parsing and snapshot tests to `crates/pv-release/Cargo.toml`:
+
+```toml
+[dependencies]
+resources = { path = "../resources" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+camino-tempfile = { workspace = true }
+insta = { workspace = true }
+```
+
+Keep the existing Task 1 dependencies. Do not add archive-generation dependencies yet.
+
+- [ ] **Step 2: Write failing record validation tests**
 
 Create `crates/pv-release/tests/release_records.rs`:
 
@@ -457,7 +535,7 @@ const VALID_REVOCATION_RECORD: &str = r#"{
 }"#;
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [ ] **Step 3: Run tests and verify they fail**
 
 Run:
 
@@ -467,7 +545,7 @@ cargo nextest run -p pv-release --test release_records --locked
 
 Expected: FAIL because `record` types and loaders are missing.
 
-- [ ] **Step 3: Implement records and loaders**
+- [ ] **Step 4: Implement records and loaders**
 
 Replace `crates/pv-release/src/record.rs` with:
 
@@ -767,7 +845,7 @@ fn invalid_identity(field: &'static str, error: resources::ResourcesError) -> cr
 
 Keep `ReleaseRecord` fields private. Later tasks should add narrow getters in `record.rs` only for fields the manifest generator or archive validator actually needs.
 
-- [ ] **Step 4: Run record tests and accept snapshots**
+- [ ] **Step 5: Run record tests and accept snapshots**
 
 Run:
 
@@ -777,21 +855,34 @@ cargo insta test --accept --test-runner nextest -p pv-release --test release_rec
 
 Expected: PASS and new snapshots are written.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```shell
-git add crates/pv-release/src/error.rs crates/pv-release/src/record.rs crates/pv-release/tests/release_records.rs crates/pv-release/tests/snapshots
+git add crates/pv-release/Cargo.toml crates/pv-release/src/error.rs crates/pv-release/src/record.rs crates/pv-release/tests/release_records.rs crates/pv-release/tests/snapshots
 git commit -m "feat(release): model local artifact release records"
 ```
 
 ## Task 3: Validate Local Artifact Archives
 
 **Files:**
+- Modify: `crates/pv-release/Cargo.toml`
 - Modify: `crates/pv-release/src/archive.rs`
 - Modify: `crates/pv-release/src/record.rs`
 - Test: `crates/pv-release/tests/archive_validation.rs`
 
-- [ ] **Step 1: Write failing archive validation tests**
+- [ ] **Step 1: Add archive-validation dependencies**
+
+Add the dependencies first used by archive validation to `crates/pv-release/Cargo.toml`:
+
+```toml
+[dependencies]
+data-encoding = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+```
+
+- [ ] **Step 2: Write failing archive validation tests**
 
 Create `crates/pv-release/tests/archive_validation.rs`:
 
@@ -935,7 +1026,7 @@ fn write_special_archive(path: &Utf8Path, entry_type: EntryType) -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [ ] **Step 3: Run tests and verify they fail**
 
 Run:
 
@@ -945,7 +1036,7 @@ cargo nextest run -p pv-release --test archive_validation --locked
 
 Expected: FAIL because archive validation behavior is not implemented.
 
-- [ ] **Step 3: Implement archive validation**
+- [ ] **Step 4: Implement archive validation**
 
 Replace `crates/pv-release/src/archive.rs` with:
 
@@ -1150,7 +1241,7 @@ pub fn verify_archive(&self, validation: &crate::archive::ArchiveValidation) -> 
 }
 ```
 
-- [ ] **Step 4: Run archive tests and accept snapshots**
+- [ ] **Step 5: Run archive tests and accept snapshots**
 
 Run:
 
@@ -1160,10 +1251,10 @@ cargo insta test --accept --test-runner nextest -p pv-release --test archive_val
 
 Expected: PASS and new snapshots are written.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```shell
-git add crates/pv-release/src/archive.rs crates/pv-release/src/record.rs crates/pv-release/tests/archive_validation.rs crates/pv-release/tests/snapshots
+git add crates/pv-release/Cargo.toml crates/pv-release/src/archive.rs crates/pv-release/src/record.rs crates/pv-release/tests/archive_validation.rs crates/pv-release/tests/snapshots
 git commit -m "feat(release): validate local artifact archives"
 ```
 
