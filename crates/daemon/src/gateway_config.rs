@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -40,6 +41,7 @@ pub struct PhpWorkerProject {
 
 pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
+    output.push_str(&format!("# PV_FAKE_PORT {}\n", input.http_port));
     output.push_str("{\n");
     output.push_str("    admin off\n");
     output.push_str(&format!("    http_port {}\n", input.http_port));
@@ -63,6 +65,14 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
 
     let mut routes: Vec<&GatewayProjectRoute> = input.routes.iter().collect();
     routes.sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
+
+    if routes.is_empty() {
+        output.push('\n');
+        output.push_str(&format!(":{} {{\n", input.http_port));
+        output.push_str("    bind 127.0.0.1 ::1\n");
+        output.push_str("    respond \"PV Gateway is running\" 404\n");
+        output.push_str("}\n");
+    }
 
     for route in routes {
         output.push('\n');
@@ -93,6 +103,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
 
 pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
+    output.push_str(&format!("# PV_FAKE_PORT {}\n", input.port));
     let mut projects: Vec<&PhpWorkerProject> = input.projects.iter().collect();
     projects.sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
 
@@ -120,6 +131,29 @@ pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, 
     }
 
     Ok(output)
+}
+
+pub(crate) async fn promote_validated_config_async<Validate, Validation>(
+    path: &Utf8Path,
+    content: &str,
+    validate: Validate,
+) -> Result<(), DaemonError>
+where
+    Validate: FnOnce(Utf8PathBuf) -> Validation,
+    Validation: Future<Output = Result<(), DaemonError>>,
+{
+    let candidate_path = candidate_path_for(path);
+    write_candidate_config(&candidate_path, content)?;
+
+    if let Err(error) = validate(candidate_path.clone()).await {
+        let _cleanup_result = remove_candidate_config(&candidate_path);
+
+        return Err(error);
+    }
+
+    rename_candidate_config(&candidate_path, path)?;
+
+    Ok(())
 }
 
 pub(crate) fn promote_validated_config(

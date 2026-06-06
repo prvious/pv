@@ -143,7 +143,10 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
     let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
     daemon.shutdown().await?;
 
-    assert_eq!(completed.summary, "stub job completed");
+    assert_eq!(
+        completed.summary,
+        "Gateway runtime skipped; FrankenPHP is not installed"
+    );
     assert_eq!(job.kind, "reconcile");
     assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);

@@ -4,13 +4,20 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
-use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
+use resources::{
+    ArtifactManifestCache, ResourceAdapter, ResourceName, TrackSelector, frankenphp_adapter,
+};
 use state::{
-    Database, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortRequest, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject,
 };
 use tokio::time::timeout;
 
-use crate::{DaemonError, ProcessSpec};
+use crate::gateway_config::{
+    GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
+    promote_validated_config_async, render_gateway_config, render_php_worker_config,
+};
+use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 #[expect(
     clippy::disallowed_types,
@@ -19,6 +26,9 @@ use crate::{DaemonError, ProcessSpec};
 type FrankenphpProcessCommand = tokio::process::Command;
 
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
+const FRANKENPHP_NOT_INSTALLED: &str = "Gateway runtime skipped; FrankenPHP is not installed";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrankenphpCommand {
@@ -81,6 +91,82 @@ pub fn promote_validated_config_for_test(
     validate: impl FnOnce(&Utf8Path) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     crate::gateway_config::promote_validated_config(path, content, validate)
+}
+
+pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
+    let Some(gateway_command) = first_installed_frankenphp_command(paths)? else {
+        record_runtime_observed(
+            paths,
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Stopped,
+            Some(FRANKENPHP_NOT_INSTALLED),
+        )?;
+
+        return Ok(FRANKENPHP_NOT_INSTALLED.to_owned());
+    };
+
+    let plan = match build_runtime_plan(paths) {
+        Ok(plan) => plan,
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+
+            return Err(error);
+        }
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    start_or_adopt_runtime(
+        paths,
+        &supervisor,
+        gateway_process_spec(paths, &gateway_command),
+        ReadinessCheck::Tcp {
+            host: "127.0.0.1".to_owned(),
+            port: plan.gateway.http_port,
+        },
+        RuntimeSubject::Gateway,
+    )
+    .await?;
+
+    for worker in &plan.workers {
+        let subject = RuntimeSubject::PhpWorker {
+            php_track: worker.php_track.clone(),
+        };
+        let worker_command = match installed_frankenphp_command_for_track(paths, &worker.php_track)
+        {
+            Ok(Some(command)) => command,
+            Ok(None) => {
+                let error = DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "FrankenPHP is not installed for PHP track `{}`",
+                        worker.php_track
+                    ),
+                };
+                record_runtime_error(paths, subject, &error)?;
+
+                return Err(error);
+            }
+            Err(error) => {
+                record_runtime_error(paths, subject, &error)?;
+
+                return Err(error);
+            }
+        };
+        reconcile_worker_config(paths, &worker_command, worker).await?;
+        start_or_adopt_runtime(
+            paths,
+            &supervisor,
+            worker_process_spec(paths, &worker.php_track, &worker_command),
+            ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_owned(),
+                port: worker.port,
+            },
+            subject,
+        )
+        .await?;
+    }
+
+    Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
 
 pub async fn validate_config(
@@ -216,6 +302,233 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         },
         workers,
     })
+}
+
+async fn reconcile_gateway_config(
+    paths: &PvPaths,
+    command: &FrankenphpCommand,
+    plan: &RuntimePlan,
+) -> Result<(), DaemonError> {
+    let content = match render_gateway_config(&GatewayConfigInput {
+        http_port: plan.gateway.http_port,
+        https_port: plan.gateway.https_port,
+        ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
+        ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        routes: gateway_project_routes(plan),
+    }) {
+        Ok(content) => content,
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+
+            return Err(error);
+        }
+    };
+
+    promote_runtime_config(
+        paths,
+        RuntimeSubject::Gateway,
+        paths.gateway_root_config(),
+        &content,
+        command,
+    )
+    .await
+}
+
+async fn reconcile_worker_config(
+    paths: &PvPaths,
+    command: &FrankenphpCommand,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<(), DaemonError> {
+    let subject = RuntimeSubject::PhpWorker {
+        php_track: worker.php_track.clone(),
+    };
+    let content = match render_php_worker_config(&PhpWorkerConfigInput {
+        php_track: worker.php_track.clone(),
+        port: worker.port,
+        projects: worker
+            .projects
+            .iter()
+            .map(|project| PhpWorkerProject {
+                primary_hostname: project.primary_hostname.clone(),
+                hostnames: project.hostnames.clone(),
+                project_root: project.project_root.clone(),
+                document_root: project.document_root.clone(),
+            })
+            .collect(),
+    }) {
+        Ok(content) => content,
+        Err(error) => {
+            record_runtime_error(paths, subject, &error)?;
+
+            return Err(error);
+        }
+    };
+
+    promote_runtime_config(
+        paths,
+        subject,
+        paths.worker_root_config(&worker.php_track),
+        &content,
+        command,
+    )
+    .await
+}
+
+async fn promote_runtime_config(
+    paths: &PvPaths,
+    subject: RuntimeSubject,
+    config_path: Utf8PathBuf,
+    content: &str,
+    command: &FrankenphpCommand,
+) -> Result<(), DaemonError> {
+    let result =
+        promote_validated_config_async(&config_path, content, |candidate_path| async move {
+            validate_config(command, &candidate_path).await
+        })
+        .await;
+
+    if let Err(error) = &result {
+        record_runtime_error(paths, subject, error)?;
+    }
+
+    result
+}
+
+async fn start_or_adopt_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: ProcessSpec,
+    readiness: ReadinessCheck,
+    subject: RuntimeSubject,
+) -> Result<(), DaemonError> {
+    let result = async {
+        if supervisor.adopt(&spec)?.is_none() {
+            let process = supervisor.start(spec).await?;
+            if let Err(error) = wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await {
+                process.stop(Duration::from_secs(1)).await?;
+
+                return Err(error);
+            }
+
+            return Ok(());
+        }
+
+        wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await
+    }
+    .await;
+
+    match result {
+        Ok(()) => record_runtime_observed(
+            paths,
+            subject,
+            RuntimeObservedStatus::Running,
+            Some(GATEWAY_RUNTIME_RECONCILED),
+        ),
+        Err(error) => {
+            record_runtime_error(paths, subject, &error)?;
+
+            Err(error)
+        }
+    }
+}
+
+fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
+    plan.workers
+        .iter()
+        .flat_map(|worker| {
+            worker.projects.iter().map(|project| GatewayProjectRoute {
+                primary_hostname: project.primary_hostname.clone(),
+                hostnames: project.hostnames.clone(),
+                worker_port: worker.port,
+            })
+        })
+        .collect()
+}
+
+fn first_installed_frankenphp_command(
+    paths: &PvPaths,
+) -> Result<Option<FrankenphpCommand>, DaemonError> {
+    let database = Database::open(paths)?;
+    let mut tracks = installed_frankenphp_tracks(&database)?;
+    let Some(record) = tracks.pop() else {
+        return Ok(None);
+    };
+
+    Ok(Some(frankenphp_command_from_record(record)?))
+}
+
+fn installed_frankenphp_command_for_track(
+    paths: &PvPaths,
+    php_track: &str,
+) -> Result<Option<FrankenphpCommand>, DaemonError> {
+    let database = Database::open(paths)?;
+    let command = installed_frankenphp_tracks(&database)?
+        .into_iter()
+        .find(|record| record.track == php_track)
+        .map(frankenphp_command_from_record)
+        .transpose()?;
+
+    Ok(command)
+}
+
+fn installed_frankenphp_tracks(
+    database: &Database,
+) -> Result<Vec<ManagedResourceTrackRecord>, DaemonError> {
+    Ok(database
+        .managed_resource_tracks()?
+        .into_iter()
+        .filter(|record| {
+            record.resource_name == "frankenphp"
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+                && record.current_artifact_path.is_some()
+        })
+        .collect())
+}
+
+fn frankenphp_command_from_record(
+    record: ManagedResourceTrackRecord,
+) -> Result<FrankenphpCommand, DaemonError> {
+    let Some(artifact_path) = record.current_artifact_path else {
+        return Err(DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "installed FrankenPHP track `{}` is missing an artifact path",
+                record.track
+            ),
+        });
+    };
+    let adapter = frankenphp_adapter()?;
+
+    adapter.validate_installation(&artifact_path)?;
+
+    Ok(FrankenphpCommand::new(
+        adapter.executable_path(&artifact_path),
+    ))
+}
+
+fn record_runtime_error(
+    paths: &PvPaths,
+    subject: RuntimeSubject,
+    error: &DaemonError,
+) -> Result<(), DaemonError> {
+    record_runtime_observed(
+        paths,
+        subject,
+        RuntimeObservedStatus::Failed,
+        Some(&error.to_string()),
+    )
+}
+
+fn record_runtime_observed(
+    paths: &PvPaths,
+    subject: RuntimeSubject,
+    status: RuntimeObservedStatus,
+    message: Option<&str>,
+) -> Result<(), DaemonError> {
+    let mut database = Database::open(paths)?;
+    database.record_runtime_observed_snapshot(subject, status, message)?;
+
+    Ok(())
 }
 
 fn resolve_project_php_track(

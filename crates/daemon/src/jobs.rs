@@ -1,4 +1,5 @@
 use crate::DaemonError;
+use crate::gateway::reconcile_gateway_runtimes;
 use crate::ipc::LocalStream;
 use crate::project_env::reconcile_project_env;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
@@ -38,7 +39,9 @@ pub(crate) async fn run_background_reconciliation_job(
     let running = queued.wait_for_turn().await;
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result = complete_reconciliation_job(&paths, &job_id, &scope).map(|_summary| ());
+    let result = complete_reconciliation_job(&paths, &job_id, &scope)
+        .await
+        .map(|_summary| ());
 
     running.finish();
 
@@ -137,12 +140,7 @@ where
                 },
             )
             .await?;
-            let message = match &scope {
-                ReconciliationScope::Project { .. } => "Project env reconciliation started",
-                ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
-                    "stub job started"
-                }
-            };
+            let message = reconciliation_started_message(&scope);
             write_line(&mut transport, &DaemonEvent::Log { job_id, message }).await?;
 
             Ok::<(), DaemonError>(())
@@ -152,7 +150,7 @@ where
         Ok(())
     };
 
-    let reconciliation_result = complete_reconciliation_job(&paths, job_id, &scope);
+    let reconciliation_result = complete_reconciliation_job(&paths, job_id, &scope).await;
     started_stream_result?;
 
     if !stream_is_open {
@@ -221,16 +219,22 @@ fn complete_stub_reconciliation(
     Ok(summary)
 }
 
-fn complete_reconciliation_job(
+async fn complete_reconciliation_job(
     paths: &PvPaths,
     job_id: &str,
     scope: &ReconciliationScope,
 ) -> Result<String, DaemonError> {
     let result = match scope {
-        ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
+        ReconciliationScope::System => complete_gateway_reconciliation(paths, job_id).await,
+        ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
+            complete_gateway_reconciliation(paths, job_id).await
+        }
+        ReconciliationScope::Resource { .. } => {
             complete_stub_reconciliation(paths, job_id).map(str::to_string)
         }
-        ReconciliationScope::Project { id } => complete_project_reconciliation(paths, job_id, id),
+        ReconciliationScope::Project { id } => {
+            complete_project_reconciliation(paths, job_id, id).await
+        }
     };
 
     if let Err(error) = &result {
@@ -242,27 +246,57 @@ fn complete_reconciliation_job(
     result
 }
 
-fn complete_project_reconciliation(
+async fn complete_gateway_reconciliation(
+    paths: &PvPaths,
+    job_id: &str,
+) -> Result<String, DaemonError> {
+    let summary = reconcile_gateway_runtimes(paths).await?;
+    let mut database = Database::open(paths)?;
+
+    database.complete_job(job_id, &summary)?;
+
+    Ok(summary)
+}
+
+async fn complete_project_reconciliation(
     paths: &PvPaths,
     job_id: &str,
     id: &crate::reconciliation::ReconciliationScopeComponent,
 ) -> Result<String, DaemonError> {
-    let summary = reconcile_project_env(paths, id.as_str())?;
-    let summary = summary.as_str();
+    let project_env_summary = reconcile_project_env(paths, id.as_str())?;
+    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+    let summary = format!("{}; {gateway_summary}", project_env_summary.as_str());
     let mut database = Database::open(paths)?;
 
-    database.complete_job(job_id, summary)?;
+    database.complete_job(job_id, &summary)?;
 
-    Ok(summary.to_string())
+    Ok(summary)
 }
 
 fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
     match scope {
-        ReconciliationScope::System | ReconciliationScope::Resource { .. } => {
+        ReconciliationScope::Resource { name, .. } if !gateway_runtime_resource(name.as_str()) => {
             "stub job completed without reconciliation work".to_string()
         }
-        ReconciliationScope::Project { .. } => summary.to_string(),
+        ReconciliationScope::System
+        | ReconciliationScope::Resource { .. }
+        | ReconciliationScope::Project { .. } => summary.to_string(),
     }
+}
+
+fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
+    match scope {
+        ReconciliationScope::Project { .. } => "Project env reconciliation started",
+        ReconciliationScope::System => "Gateway runtime reconciliation started",
+        ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
+            "Gateway runtime reconciliation started"
+        }
+        ReconciliationScope::Resource { .. } => "stub job started",
+    }
+}
+
+fn gateway_runtime_resource(resource_name: &str) -> bool {
+    matches!(resource_name, "php" | "frankenphp")
 }
 
 #[cfg(test)]

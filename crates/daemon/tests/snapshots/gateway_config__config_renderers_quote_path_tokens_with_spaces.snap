@@ -3,6 +3,7 @@ source: crates/daemon/tests/gateway_config.rs
 expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
 ---
 Gateway:
+# PV_FAKE_PORT 48080
 {
     admin off
     http_port 48080
@@ -34,6 +35,7 @@ acme.test {
 }
 
 Worker:
+# PV_FAKE_PORT 45001
 http://acme.test:45001 {
     bind 127.0.0.1 ::1
     root * "/Users/Alice Smith/Code/acme/public"

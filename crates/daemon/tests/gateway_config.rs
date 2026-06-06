@@ -71,3 +71,18 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
+    let input = GatewayConfigInput {
+        http_port: 48080,
+        https_port: 48443,
+        ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
+        ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
+        routes: vec![],
+    };
+
+    assert_snapshot!(render_gateway_config(&input)?);
+
+    Ok(())
+}

@@ -1,0 +1,24 @@
+---
+source: crates/daemon/tests/gateway_reconciliation.rs
+expression: snapshot
+---
+[
+    RuntimeObservedStateRecord {
+        subject: Gateway,
+        status: Running,
+        message: Some(
+            "Gateway runtime reconciled",
+        ),
+        observed_at: "<timestamp>",
+    },
+    RuntimeObservedStateRecord {
+        subject: PhpWorker {
+            php_track: "8.4",
+        },
+        status: Running,
+        message: Some(
+            "Gateway runtime reconciled",
+        ),
+        observed_at: "<timestamp>",
+    },
+]

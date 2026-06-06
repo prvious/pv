@@ -4,11 +4,123 @@ use camino_tempfile::tempdir;
 use daemon::DaemonError;
 use daemon::gateway::{
     FrankenphpCommand, build_runtime_plan, gateway_process_spec, promote_validated_config_for_test,
-    validate_config, worker_process_spec,
+    reconcile_gateway_runtimes, validate_config, worker_process_spec,
 };
 use insta::{Settings, assert_debug_snapshot};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::json;
-use state::{Database, LinkProjectInput, PvPaths, fs};
+use state::{
+    Database, GatewayPort, LinkProjectInput, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, fs,
+};
+use std::net::TcpListener;
+use std::time::Duration;
+use tokio::time::sleep;
+
+const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
+
+#[tokio::test]
+async fn gateway_reconciliation_starts_gateway_and_one_worker_per_php_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let decoy_release_path = tempdir.path().join("fake-frankenphp-83-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+    let decoy_frankenphp = decoy_release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    write_fake_frankenphp(&decoy_frankenphp)?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.3",
+        "fake-frankenphp-83-pv1",
+        &decoy_release_path,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    drop(database);
+
+    let summary = reconcile_gateway_runtimes(&paths).await?;
+
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert!(paths.gateway_pid().exists());
+    assert!(paths.worker_pid("8.4").exists());
+
+    let database = Database::open(&paths)?;
+    assert_runtime_states_snapshot(
+        "gateway_reconciliation_starts_gateway_and_one_worker_per_php_track",
+        database.runtime_observed_states()?,
+    )?;
+    assert_worker_command(&paths, "8.4", &fake_frankenphp)?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let summary = reconcile_gateway_runtimes(&paths).await?;
+
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert!(paths.gateway_pid().exists());
+    assert!(!paths.worker_pid("8.4").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+fn assert_worker_command(paths: &PvPaths, php_track: &str, expected: &Utf8Path) -> Result<()> {
+    let metadata = fs::read_to_string(&paths.worker_runtime_metadata(php_track))?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+
+    assert_eq!(metadata["command"], expected.as_str());
+
+    Ok(())
+}
 
 #[test]
 fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
@@ -49,6 +161,7 @@ document_root: public
         desired_php_track: None,
         additional_hostnames: Vec::new(),
     })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4", "8.3"])?;
     drop(database);
 
     let plan = build_runtime_plan(&paths)?;
@@ -80,6 +193,7 @@ document_root: public
         desired_php_track: None,
         additional_hostnames: Vec::new(),
     })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
     drop(database);
 
     let plan = build_runtime_plan(&paths)?;
@@ -183,6 +297,104 @@ fn write_failing_validator(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
     Ok(path.to_path_buf())
 }
 
+fn write_fake_frankenphp(path: &Utf8Path) -> Result<()> {
+    fs::write_sensitive_file(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  test -f "$3"
+  exit 0
+fi
+
+if [ "$1" = "run" ]; then
+  port="$(awk '/^# PV_FAKE_PORT / { print $3; exit }' "$3")"
+  exec python3 -m http.server "$port" --bind 127.0.0.1
+fi
+
+exit 2
+"#,
+    )?;
+    set_executable(path)?;
+
+    Ok(())
+}
+
+fn seed_stable_runtime_plan_ports(database: &mut Database, php_tracks: &[&str]) -> Result<()> {
+    database.assign_gateway_ports(|_port| true)?;
+
+    for (index, php_track) in php_tracks.iter().enumerate() {
+        let preferred_port = RUNTIME_PORT_FALLBACK_START + u16::try_from(index)?;
+        database.assign_port(
+            PortRequest::php_worker(
+                *php_track,
+                preferred_port,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            |_port| true,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn seed_runtime_ports(
+    database: &mut Database,
+    gateway_http_port: u16,
+    gateway_https_port: u16,
+    php_workers: &[(&str, u16)],
+) -> Result<()> {
+    database.assign_port(
+        PortRequest::gateway(
+            GatewayPort::Http,
+            gateway_http_port,
+            gateway_http_port,
+            gateway_http_port,
+        ),
+        |_port| true,
+    )?;
+    database.assign_port(
+        PortRequest::gateway(
+            GatewayPort::Https,
+            gateway_https_port,
+            gateway_https_port,
+            gateway_https_port,
+        ),
+        |_port| true,
+    )?;
+
+    for (php_track, port) in php_workers {
+        database.assign_port(
+            PortRequest::php_worker(*php_track, *port, *port, *port),
+            |_port| true,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
+    let mut listeners = Vec::with_capacity(count);
+    let mut ports = Vec::with_capacity(count);
+
+    while ports.len() < count {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        if ports.contains(&port) {
+            continue;
+        }
+
+        ports.push(port);
+        listeners.push(listener);
+    }
+
+    drop(listeners);
+
+    Ok(ports)
+}
+
 #[cfg(unix)]
 #[expect(
     clippy::disallowed_methods,
@@ -194,6 +406,28 @@ fn set_executable(path: &Utf8Path) -> Result<()> {
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)?;
+
+    Ok(())
+}
+
+async fn stop_runtime_from_pid_file(path: &Utf8Path) -> Result<()> {
+    let pid = state::testing::read_to_string(path)?
+        .trim()
+        .parse::<u32>()?;
+    let raw_pid = i32::try_from(pid)?;
+    let process_group =
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+
+    let _term_result = kill_process_group(process_group, Signal::TERM);
+    for _attempt in 0..50 {
+        if test_kill_process(process_group).is_err() {
+            return Ok(());
+        }
+
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    kill_process_group(process_group, Signal::KILL)?;
 
     Ok(())
 }
@@ -256,6 +490,18 @@ fn assert_runtime_plan_snapshot(name: &str, plan: daemon::gateway::RuntimePlan) 
     settings.bind(|| {
         assert_debug_snapshot!(name, plan);
     });
+}
+
+fn assert_runtime_states_snapshot(
+    name: &str,
+    snapshot: Vec<state::RuntimeObservedStateRecord>,
+) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 fn assert_process_spec_snapshot(

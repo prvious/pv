@@ -2,6 +2,7 @@
 source: crates/daemon/tests/gateway_config.rs
 expression: render_php_worker_config(&input)?
 ---
+# PV_FAKE_PORT 45001
 http://acme.test:45001, http://api.acme.test:45001 {
     bind 127.0.0.1 ::1
     root * "/Users/alice/Code/acme/public"

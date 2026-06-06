@@ -18,17 +18,7 @@ expression: render_gateway_config(&input)?
     }
 }
 
-acme.test, api.acme.test {
+:48080 {
     bind 127.0.0.1 ::1
-    tls {
-        issuer internal {
-            ca local
-        }
-    }
-    reverse_proxy 127.0.0.1:45001 {
-        header_up Host {host}
-        header_up X-Forwarded-Host {host}
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-For {remote_host}
-    }
+    respond "PV Gateway is running" 404
 }
