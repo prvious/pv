@@ -414,6 +414,7 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "insta",
+ "platform",
  "protocol",
  "resources",
  "rusqlite",

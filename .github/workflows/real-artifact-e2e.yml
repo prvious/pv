@@ -1,0 +1,25 @@
+name: Real Artifact E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: Candidate artifact manifest URL
+        required: true
+        type: string
+
+jobs:
+  real-artifact-e2e:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: Run real artifact Gateway E2E
+        env:
+          PV_E2E_REAL_ARTIFACTS: "1"
+          PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}
+        run: cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(real_artifact_gateway_e2e_serves_tiny_php_project)'
