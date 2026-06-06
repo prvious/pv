@@ -35,6 +35,10 @@ pub fn generate_manifest_json(
     };
 
     let release_keys = records.iter().map(release_key).collect::<BTreeSet<_>>();
+    let revoked_keys = revocations
+        .iter()
+        .map(RevocationRecord::target_key)
+        .collect::<BTreeSet<_>>();
     for revocation in revocations {
         let target = revocation.target_key();
         if !release_keys.contains(&target) {
@@ -43,6 +47,7 @@ pub fn generate_manifest_json(
                 identity: target,
             });
         }
+        validate_replacement(&release_keys, &revoked_keys, revocation)?;
     }
 
     let mut minimum_pv_version = first_record.minimum_pv_version();
@@ -226,6 +231,37 @@ fn release_key(record: &ReleaseRecord) -> String {
         record.artifact_version(),
         record.platform()
     )
+}
+
+fn validate_replacement(
+    release_keys: &BTreeSet<String>,
+    revoked_keys: &BTreeSet<String>,
+    revocation: &RevocationRecord,
+) -> crate::Result<()> {
+    let Some(replacement_key) = revocation.replacement_key() else {
+        return Ok(());
+    };
+    let revocation_key = revocation.target_key();
+
+    let reason = if replacement_key == revocation_key {
+        Some("replacement must not point at the revoked artifact itself")
+    } else if !release_keys.contains(&replacement_key) {
+        Some("replacement release must exist for the same resource, track, and platform")
+    } else if revoked_keys.contains(&replacement_key) {
+        Some("replacement release must not also be revoked")
+    } else {
+        None
+    };
+
+    if let Some(reason) = reason {
+        Err(crate::ReleaseError::RevocationReplacementInvalid {
+            revocation: revocation_key,
+            replacement: replacement_key,
+            reason: reason.to_string(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn artifact_url(base_url: &str, object_key: &str) -> String {

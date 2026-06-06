@@ -45,6 +45,57 @@ fn release_records_reject_identity_mismatches_and_missing_license_metadata() -> 
 }
 
 #[test]
+fn release_records_reject_invalid_object_key_and_provenance_metadata() -> Result<()> {
+    let absolute_object_key = VALID_RELEASE_RECORD.replace(
+        "\"object_key\": \"resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        "\"object_key\": \"/resources/redis.tar.gz\"",
+    );
+    let parent_object_key = VALID_RELEASE_RECORD.replace(
+        "\"object_key\": \"resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz\"",
+        "\"object_key\": \"resources/../redis.tar.gz\"",
+    );
+    let invalid_source_url = VALID_RELEASE_RECORD.replace(
+        "https://download.redis.io/releases/redis-7.2.5.tar.gz",
+        "not a url",
+    );
+    let invalid_source_sha256 = VALID_RELEASE_RECORD.replace(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bad",
+    );
+    let invalid_recipe =
+        VALID_RELEASE_RECORD.replace("release/artifacts/recipes/redis/build.sh", "../build.sh");
+    let invalid_commit =
+        VALID_RELEASE_RECORD.replace("0123456789abcdef0123456789abcdef01234567", "not-a-commit");
+    let empty_build_run =
+        VALID_RELEASE_RECORD.replace("\"build_run_id\": \"local-test\"", "\"build_run_id\": \"\"");
+
+    let errors = [
+        ("absolute_object_key", absolute_object_key),
+        ("parent_object_key", parent_object_key),
+        ("invalid_source_url", invalid_source_url),
+        ("invalid_source_sha256", invalid_source_sha256),
+        ("invalid_recipe", invalid_recipe),
+        ("invalid_commit", invalid_commit),
+        ("empty_build_run", empty_build_run),
+    ]
+    .into_iter()
+    .map(|(name, json)| {
+        Ok((
+            name,
+            release_record_error(ReleaseRecord::from_json(
+                Utf8Path::new("invalid.json"),
+                &json,
+            ))?,
+        ))
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(errors);
+
+    Ok(())
+}
+
+#[test]
 fn release_record_loader_rejects_duplicate_artifact_identity() -> Result<()> {
     let tempdir = tempdir()?;
     write_file(&tempdir.path().join("one.json"), VALID_RELEASE_RECORD)?;
@@ -53,6 +104,15 @@ fn release_record_loader_rejects_duplicate_artifact_identity() -> Result<()> {
     assert_debug_snapshot!(load_release_records(tempdir.path()));
 
     Ok(())
+}
+
+fn release_record_error(result: ReleaseResult<ReleaseRecord>) -> Result<ReleaseError> {
+    match result {
+        Ok(record) => Err(anyhow::anyhow!(
+            "release record parsed successfully: {record:#?}"
+        )),
+        Err(error) => Ok(error),
+    }
 }
 
 #[test]

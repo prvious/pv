@@ -6,6 +6,9 @@ use pv_release::ReleaseError;
 use pv_release::relocation::{scan_file, scan_relocation_text};
 use pv_release::smoke::run_smoke_hook;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[test]
 fn relocation_scan_rejects_blocked_runtime_paths() -> Result<()> {
     assert_debug_snapshot!((
@@ -110,8 +113,6 @@ fn write_file(path: &Utf8Path, content: &[u8]) -> Result<()> {
     reason = "release tooling tests create executable smoke hook fixtures"
 )]
 fn write_executable(path: &Utf8Path, content: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     std::fs::write(path, content)?;
     let mut permissions = std::fs::metadata(path)?.permissions();
     permissions.set_mode(0o755);

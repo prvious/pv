@@ -1283,6 +1283,7 @@ dependencies = [
  "sha2",
  "tar",
  "thiserror",
+ "url",
 ]
 
 [[package]]

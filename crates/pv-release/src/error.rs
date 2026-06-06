@@ -17,6 +17,13 @@ pub enum ReleaseError {
         identity: String,
     },
 
+    #[error("revocation `{revocation}` has invalid replacement `{replacement}`: {reason}")]
+    RevocationReplacementInvalid {
+        revocation: String,
+        replacement: String,
+        reason: String,
+    },
+
     #[error("conflicting revocation for artifact `{identity}`")]
     ConflictingRevocation { identity: String },
 

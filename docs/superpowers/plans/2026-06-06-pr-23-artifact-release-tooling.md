@@ -810,8 +810,17 @@ fn read_to_string(path: &Utf8Path) -> crate::Result<String> {
 fn validate_relative_file_list(path: &Utf8Path, field: &str, values: &[String]) -> crate::Result<()> {
     for value in values {
         let candidate = Utf8Path::new(value);
-        if candidate.is_absolute() || value.is_empty() || value.contains("..") {
-            return Err(invalid_release(path, format!("{field} contains invalid path `{value}`")));
+        if candidate.is_absolute()
+            || value.is_empty()
+            || value.contains('\\')
+            || candidate
+                .components()
+                .any(|component| matches!(component.as_str(), "." | ".."))
+        {
+            return Err(invalid_release(
+                path,
+                format!("{field} contains invalid relative path `{value}`"),
+            ));
         }
     }
     Ok(())
@@ -1862,7 +1871,6 @@ Validate a local archive against a release record:
 cargo run -p pv-release -- validate-archive \
   --archive path/to/artifact.tar.gz \
   --record release/artifacts/records/path/to/record.json
-```
 ```
 
 Create empty directory anchors:

@@ -107,6 +107,47 @@ fn manifest_generator_rejects_revocation_for_missing_artifact() -> Result<()> {
 }
 
 #[test]
+fn manifest_generator_rejects_invalid_revocation_replacements() -> Result<()> {
+    let missing_replacement = generate_manifest_error_with(
+        &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_ARM64)],
+        &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_REVOCATION)],
+    )?;
+    let self_replacement = generate_manifest_error_with(
+        &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_ARM64)],
+        &[(
+            "redis-7.2.5-pv1-darwin-arm64.json",
+            &REDIS_7_2_5_REVOCATION.replace("7.2.6-pv1", "7.2.5-pv1"),
+        )],
+    )?;
+    let wrong_platform_replacement = generate_manifest_error_with(
+        &[
+            ("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_ARM64),
+            ("redis-7.2.6-pv1-darwin-amd64.json", REDIS_7_2_6_AMD64),
+        ],
+        &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_REVOCATION)],
+    )?;
+    let revoked_replacement = generate_manifest_error_with(
+        &[
+            ("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_ARM64),
+            ("redis-7.2.6-pv1-darwin-arm64.json", REDIS_7_2_6_ARM64),
+        ],
+        &[
+            ("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_REVOCATION),
+            ("redis-7.2.6-pv1-darwin-arm64.json", REDIS_7_2_6_REVOCATION),
+        ],
+    )?;
+
+    assert_debug_snapshot!((
+        missing_replacement,
+        self_replacement,
+        wrong_platform_replacement,
+        revoked_replacement,
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn manifest_generator_rejects_multi_track_resource_without_default_metadata() -> Result<()> {
     let tempdir = tempdir()?;
     let records_dir = tempdir.path().join("records");
@@ -139,6 +180,32 @@ fn manifest_generator_rejects_multi_track_resource_without_default_metadata() ->
     assert_debug_snapshot!(error);
 
     Ok(())
+}
+
+fn generate_manifest_error_with(
+    releases: &[(&str, &str)],
+    revocations: &[(&str, &str)],
+) -> Result<ReleaseError> {
+    let tempdir = tempdir()?;
+    let records_dir = tempdir.path().join("records");
+    let revocations_dir = tempdir.path().join("revocations");
+    let output = tempdir.path().join("dist/manifest.json");
+
+    create_dir_all(&records_dir)?;
+    create_dir_all(&revocations_dir)?;
+    for (name, content) in releases {
+        write_file(&records_dir.join(name), content)?;
+    }
+    for (name, content) in revocations {
+        write_file(&revocations_dir.join(name), content)?;
+    }
+
+    manifest_error(generate_manifest_file(
+        &records_dir,
+        &revocations_dir,
+        &output,
+        "https://artifacts.example.test",
+    ))
 }
 
 fn manifest_error(result: pv_release::Result<()>) -> Result<ReleaseError> {
@@ -301,6 +368,29 @@ const REDIS_7_2_6_ARM64: &str = r#"{
   }
 }"#;
 
+const REDIS_7_2_6_AMD64: &str = r#"{
+  "resource": "redis",
+  "track": "7.2",
+  "upstream_version": "7.2.6",
+  "pv_build_revision": "pv1",
+  "artifact_version": "7.2.6-pv1",
+  "platform": "darwin-amd64",
+  "object_key": "resources/redis/7.2/7.2.6-pv1/darwin-amd64/redis-7.2.6-pv1-darwin-amd64.tar.gz",
+  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "size": 84,
+  "published_at": "2026-06-06T13:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": ["LICENSE"],
+  "notice_files": ["NOTICE"],
+  "provenance": {
+    "source_url": "https://download.redis.io/releases/redis-7.2.6.tar.gz",
+    "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "recipe": "release/artifacts/recipes/redis/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }
+}"#;
+
 const REDIS_8_0_0_ARM64: &str = r#"{
   "resource": "redis",
   "track": "8.0",
@@ -332,4 +422,13 @@ const REDIS_7_2_5_REVOCATION: &str = r#"{
   "reason": "security issue",
   "revoked_at": "2026-06-06T14:00:00Z",
   "replacement_artifact_version": "7.2.6-pv1"
+}"#;
+
+const REDIS_7_2_6_REVOCATION: &str = r#"{
+  "resource": "redis",
+  "track": "7.2",
+  "artifact_version": "7.2.6-pv1",
+  "platform": "darwin-arm64",
+  "reason": "broken archive",
+  "revoked_at": "2026-06-06T15:00:00Z"
 }"#;

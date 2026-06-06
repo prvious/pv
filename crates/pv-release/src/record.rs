@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArtifactIdentity {
@@ -156,6 +157,8 @@ impl ReleaseRecord {
         }
         validate_relative_file_list(path, "license_files", &raw.license_files)?;
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
+        validate_relative_path(path, "object_key", &raw.object_key)?;
+        raw.provenance.validate(path)?;
 
         let identity = ArtifactIdentity {
             resource: ResourceName::new(raw.resource)
@@ -319,6 +322,17 @@ impl RevocationRecord {
         )
     }
 
+    pub fn replacement_key(&self) -> Option<String> {
+        self.replacement_artifact_version
+            .as_ref()
+            .map(|replacement| {
+                format!(
+                    "{}:{}:{}:{}",
+                    self.resource, self.track, replacement, self.platform
+                )
+            })
+    }
+
     pub fn reason(&self) -> &str {
         &self.reason
     }
@@ -341,6 +355,17 @@ impl RevocationRecord {
 }
 
 impl Provenance {
+    fn validate(&self, path: &Utf8Path) -> crate::Result<()> {
+        validate_https_url(path, "source_url", &self.source_url)?;
+        Sha256Digest::new(self.source_sha256.clone())
+            .map_err(|error| invalid_release_identity(path, "source_sha256", error))?;
+        validate_relative_path(path, "recipe", &self.recipe)?;
+        validate_commit(path, &self.pv_commit)?;
+        require_non_empty_release(path, "build_run_id", &self.build_run_id)?;
+
+        Ok(())
+    }
+
     pub fn source_url(&self) -> &str {
         &self.source_url
     }
@@ -462,14 +487,7 @@ fn validate_relative_file_list(
     values: &[String],
 ) -> crate::Result<()> {
     for value in values {
-        let candidate = Utf8Path::new(value);
-        if candidate.is_absolute()
-            || value.is_empty()
-            || value.contains('\\')
-            || candidate
-                .components()
-                .any(|component| matches!(component.as_str(), "." | ".."))
-        {
+        if !relative_path_is_valid(value) {
             return Err(invalid_release(
                 path,
                 format!("{field} contains invalid relative path `{value}`"),
@@ -478,6 +496,61 @@ fn validate_relative_file_list(
     }
 
     Ok(())
+}
+
+fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::Result<()> {
+    if relative_path_is_valid(value) {
+        Ok(())
+    } else {
+        Err(invalid_release(
+            path,
+            format!("{field} contains invalid relative path `{value}`"),
+        ))
+    }
+}
+
+fn relative_path_is_valid(value: &str) -> bool {
+    let candidate = Utf8Path::new(value);
+    !candidate.is_absolute()
+        && !value.is_empty()
+        && !value.contains('\\')
+        && !value.split('/').any(str::is_empty)
+        && !candidate
+            .components()
+            .any(|component| matches!(component.as_str(), "." | ".."))
+}
+
+fn validate_https_url(path: &Utf8Path, field: &str, value: &str) -> crate::Result<()> {
+    let value = require_non_empty_release(path, field, value)?;
+    if value.contains('\\') {
+        return Err(invalid_release(
+            path,
+            format!("{field} must be an https URL with a host"),
+        ));
+    }
+
+    let parsed = Url::parse(value).map_err(|_error| {
+        invalid_release(path, format!("{field} must be an https URL with a host"))
+    })?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(invalid_release(
+            path,
+            format!("{field} must be an https URL with a host"),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_commit(path: &Utf8Path, value: &str) -> crate::Result<()> {
+    if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(invalid_release(
+            path,
+            "pv_commit must be a 40-character hex commit",
+        ))
+    }
 }
 
 fn require_non_empty_release<'a>(
