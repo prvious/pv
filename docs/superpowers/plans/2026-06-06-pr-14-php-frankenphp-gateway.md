@@ -1816,7 +1816,7 @@ Replace `123` with the actual PR number returned by GitHub. Do not update the ro
 
 ```bash
 git add IMPLEMENTATION.md
-git commit -m "docs: mark PR 14 in progress"
+git commit -m "docs: mark PR 14 complete"
 ```
 
 Only run this commit after the PR number exists.

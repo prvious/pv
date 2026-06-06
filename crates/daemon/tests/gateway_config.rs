@@ -1,5 +1,6 @@
 use anyhow::Result;
 use camino::Utf8PathBuf;
+use daemon::DaemonError;
 use daemon::gateway_config::{
     GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
     render_gateway_config, render_gateway_project_config, render_php_worker_config,
@@ -87,6 +88,32 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
     assert_snapshot!(format!("Gateway:\n{gateway}\nWorker:\n{worker}"));
 
     Ok(())
+}
+
+#[test]
+fn config_renderers_reject_control_characters_in_path_tokens() {
+    let result = render_gateway_config(&GatewayConfigInput {
+        http_port: 48080,
+        https_port: 48443,
+        ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca\n.pem"),
+        ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
+        projects_config_glob: Utf8PathBuf::from(
+            "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
+        ),
+        routes: vec![GatewayProjectRoute {
+            id: "project_acme".to_owned(),
+            render_config: true,
+            primary_hostname: "acme.test".to_owned(),
+            hostnames: vec![],
+            worker_port: 45001,
+        }],
+    });
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnexpectedProtocolResponse { reason })
+            if reason.contains("control character")
+    ));
 }
 
 #[test]

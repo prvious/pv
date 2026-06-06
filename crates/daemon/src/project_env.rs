@@ -92,8 +92,10 @@ fn reconcile_loaded_project(
     let has_env_mappings = config_file.config.has_env_mappings();
 
     apply_project_resource_plan(database, &project.id, &plan)?;
-    if let Some(resolved_php_track) = resolved_php_track {
-        database.replace_project_desired_php_track(&project.id, Some(&resolved_php_track))?;
+    if config_file.config.php.is_some() {
+        database.replace_project_desired_php_track(&project.id, resolved_php_track.as_deref())?;
+    } else if project.desired_php_track.is_some() {
+        database.replace_project_desired_php_track(&project.id, None)?;
     }
     database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
@@ -265,23 +267,29 @@ pub(crate) fn resolve_project_php_track(
     config_selector: Option<&str>,
     stored_selector: Option<&str>,
 ) -> Result<String, DaemonError> {
-    let selector = config_selector
-        .or(stored_selector)
-        .map(TrackSelector::parse)
-        .transpose()?
-        .unwrap_or(TrackSelector::Latest);
+    let selector = config_selector.map(TrackSelector::parse).transpose()?;
+    let track = match selector {
+        Some(TrackSelector::Latest) => match stored_selector {
+            Some(track) => track.to_string(),
+            None => default_project_php_track(paths)?,
+        },
+        Some(TrackSelector::Track(track)) => track.as_str().to_owned(),
+        None => match stored_selector {
+            Some(track) => track.to_string(),
+            None => default_project_php_track(paths)?,
+        },
+    };
+    let track = ConcreteTrackName::new(track)?;
 
-    match selector {
-        TrackSelector::Latest => {
-            let manifest =
-                ArtifactManifestCache::new(paths.downloads().to_path_buf()).load_cached()?;
-            let php = ResourceName::new("php")?;
-            let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
+    Ok(track.as_str().to_owned())
+}
 
-            Ok(track.as_str().to_owned())
-        }
-        TrackSelector::Track(track) => Ok(track.as_str().to_owned()),
-    }
+fn default_project_php_track(paths: &PvPaths) -> Result<String, DaemonError> {
+    let manifest = ArtifactManifestCache::new(paths.downloads().to_path_buf()).load_cached()?;
+    let php = ResourceName::new("php")?;
+    let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
+
+    Ok(track.as_str().to_owned())
 }
 
 fn apply_project_resource_plan(

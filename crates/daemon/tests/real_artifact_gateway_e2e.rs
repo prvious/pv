@@ -30,8 +30,11 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     let client = resources::UreqResourceHttpClient::new();
 
     let php_install = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
-    let frankenphp_install =
-        commands.install(&frankenphp_adapter()?, TrackSelector::Latest, &client)?;
+    let frankenphp_install = commands.install(
+        &frankenphp_adapter()?,
+        TrackSelector::Track(php_install.track().clone()),
+        &client,
+    )?;
     seed_local_ca(&paths)?;
 
     let project_root = tempdir.path().join("project");
@@ -80,6 +83,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     .await?;
 
     assert_eq!(response, "pv-real-artifact-ok");
+    assert_eq!(frankenphp_install.track(), php_install.track());
 
     Ok(())
 }

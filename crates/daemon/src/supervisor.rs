@@ -547,7 +547,7 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
-            if process_not_found(&error) {
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(false);
             }
 

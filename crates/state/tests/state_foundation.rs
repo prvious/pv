@@ -1946,6 +1946,17 @@ fn link_project_rejects_invalid_input_shapes() -> Result<()> {
         }),
         Err(state::StateError::InvalidProjectTrack { track }) if track.is_empty()
     ));
+    assert!(matches!(
+        database.link_project(state::LinkProjectInput {
+            path: tempdir.path().join("acme"),
+            original_path: tempdir.path().join("acme"),
+            primary_hostname: "acme.test".to_string(),
+            config_path: tempdir.path().join("acme/pv.yml"),
+            desired_php_track: Some("latest".to_string()),
+            additional_hostnames: Vec::new(),
+        }),
+        Err(state::StateError::InvalidProjectTrack { track }) if track == "latest"
+    ));
 
     Ok(())
 }
@@ -2202,7 +2213,7 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     let php83 = PortRequest::php_worker("8.3", 45000, 45000, 45009);
 
     let assigned_php84 = database.assign_port(php84.clone(), |port| port == 45000)?;
-    let reused_php84 = database.assign_port(php84, |port| port == assigned_php84.port)?;
+    let reused_php84 = database.assign_port(php84, |_port| false)?;
     let assigned_php83 = database.assign_port(php83, |_port| true)?;
     let reserved_track = database.assign_port(
         PortRequest::php_worker("latest", 45000, 45000, 45009),

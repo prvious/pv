@@ -92,6 +92,58 @@ async fn project_env_reconciliation_persists_latest_php_as_concrete_track() -> R
 }
 
 #[tokio::test]
+async fn project_env_reconciliation_reuses_concrete_track_for_latest_php() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: latest\n",
+    )?;
+    seed_manifest(&paths, "8.4")?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    seed_manifest(&paths, "8.3")?;
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.4"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_env_reconciliation_clears_persisted_php_track_when_config_omits_php() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: \"8.4\"\n",
+    )?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    write_project_config(&project, "hostnames: []\n")?;
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn seeded_resource_and_allocation_contexts_render_dotenv() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

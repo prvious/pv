@@ -10,8 +10,8 @@ use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::json;
 use state::{
-    Database, GatewayPort, LinkProjectInput, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, fs,
+    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
 };
 use std::net::TcpListener;
 use std::time::Duration;
@@ -109,6 +109,62 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
     assert!(!paths.worker_pid("8.4").exists());
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_preserves_running_runtimes_on_second_reconcile() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let first_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
+        .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let second_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
+        .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    assert_eq!(second_gateway_pid, first_gateway_pid);
+    assert_eq!(second_worker_pid, first_worker_pid);
 
     Ok(())
 }
@@ -221,6 +277,33 @@ document_root: public
 }
 
 #[tokio::test]
+async fn frankenphp_config_validation_timeout_stops_validator_process_group() -> Result<()> {
+    let tempdir = tempdir()?;
+    let validator = tempdir.path().join("hanging-validator");
+    let validator_child_pid = tempdir.path().join("validator-child.pid");
+    let config_path = tempdir.path().join("Caddyfile");
+
+    write_hanging_frankenphp_validator(&validator, &validator_child_pid)?;
+    fs::write_sensitive_file(&config_path, "{}\n")?;
+
+    let result = validate_config(&FrankenphpCommand::new(&validator), &config_path).await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::ProtocolTimedOut {
+            phase: "FrankenPHP config validation"
+        })
+    ));
+
+    let sleep_pid = state::testing::read_to_string(&validator_child_pid)?
+        .trim()
+        .parse::<u32>()?;
+    wait_for_process_exit(sleep_pid).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_stops_worker_when_no_projects_remain_on_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -285,6 +368,16 @@ document_root: public
     reconcile_gateway_runtimes(&paths).await?;
 
     wait_for_process_exit(worker_pid).await?;
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    assert!(!paths.worker_root_config("8.4").exists());
+
+    let database = Database::open(&paths)?;
+    assert!(!database.assigned_ports()?.iter().any(|port| matches!(
+        &port.owner,
+        PortOwner::PhpWorker { php_track } if php_track == "8.4"
+    )));
+
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
     Ok(())
@@ -368,6 +461,80 @@ hostnames:
         observed.status,
         state::ProjectEnvObservedStatus::Failed
     ));
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_skips_invalid_project_without_preserved_fragments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let acme_root = tempdir.path().join("acme");
+    let broken_root = tempdir.path().join("broken");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    create_project(
+        &acme_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+    create_project(&broken_root, "php: [\n")?;
+
+    let mut database = Database::open(&paths)?;
+    let acme = database.link_project(LinkProjectInput {
+        path: acme_root.clone(),
+        original_path: acme_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: acme_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    let broken = database.link_project(LinkProjectInput {
+        path: broken_root.clone(),
+        original_path: broken_root.clone(),
+        primary_hostname: "broken.test".to_owned(),
+        config_path: broken_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+
+    let database = Database::open(&paths)?;
+    let observed = database
+        .project_env_observed_state(&broken.project.id)?
+        .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
+    assert!(matches!(
+        observed.status,
+        state::ProjectEnvObservedStatus::Failed
+    ));
+    assert!(
+        paths
+            .gateway_projects_config_dir()
+            .join(format!("{}.Caddyfile", acme.project.id))
+            .exists()
+    );
+    assert!(
+        !paths
+            .gateway_projects_config_dir()
+            .join(format!("{}.Caddyfile", broken.project.id))
+            .exists()
+    );
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
@@ -863,6 +1030,29 @@ exit 2
     Ok(())
 }
 
+fn write_hanging_frankenphp_validator(path: &Utf8Path, child_pid_path: &Utf8Path) -> Result<()> {
+    fs::write_sensitive_file(
+        path,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  sleep 30 &
+  echo "$!" > {}
+  wait "$!"
+fi
+
+exit 2
+"#,
+            shell_single_quoted(child_pid_path.as_str())
+        ),
+    )?;
+    set_executable(path)?;
+
+    Ok(())
+}
+
 fn write_fake_frankenphp(path: &Utf8Path) -> Result<()> {
     fs::write_sensitive_file(
         path,
@@ -876,10 +1066,23 @@ fi
 
 if [ "$1" = "run" ]; then
   port="$(awk '/^# PV_FAKE_PORT / { print $3; exit }' "$3")"
-  python3 -m http.server "$port" --bind 127.0.0.1 &
+  python3 -c 'import http.server, signal, sys
+signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+port = int(sys.argv[1])
+with http.server.ThreadingHTTPServer(("127.0.0.1", port), http.server.SimpleHTTPRequestHandler) as server:
+    server.serve_forever()
+' "$port" &
   child="$!"
-  trap 'kill "$child"; wait "$child"' TERM INT
-  wait "$child"
+  trap ':' USR1
+  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
+  while true; do
+    wait "$child" && exit 0
+    status="$?"
+    if kill -0 "$child" 2>/dev/null; then
+      continue
+    fi
+    exit "$status"
+  done
 fi
 
 exit 2
@@ -888,6 +1091,10 @@ exit 2
     set_executable(path)?;
 
     Ok(())
+}
+
+fn shell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn seed_stable_runtime_plan_ports(database: &mut Database, php_tracks: &[&str]) -> Result<()> {

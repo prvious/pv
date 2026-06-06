@@ -56,11 +56,11 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("                format pem_file\n");
     output.push_str(&format!(
         "                cert {}\n",
-        quoted_caddyfile_token(input.ca_certificate_path.as_str())
+        quoted_caddyfile_token(input.ca_certificate_path.as_str())?
     ));
     output.push_str(&format!(
         "                key {}\n",
-        quoted_caddyfile_token(input.ca_private_key_path.as_str())
+        quoted_caddyfile_token(input.ca_private_key_path.as_str())?
     ));
     output.push_str("            }\n");
     output.push_str("        }\n");
@@ -80,7 +80,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
         output.push('\n');
         output.push_str(&format!(
             "import {}\n",
-            quoted_caddyfile_token(input.projects_config_glob.as_str())
+            quoted_caddyfile_token(input.projects_config_glob.as_str())?
         ));
     }
 
@@ -93,7 +93,7 @@ pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, 
     if !input.projects.is_empty() {
         output.push_str(&format!(
             "import {}\n",
-            quoted_caddyfile_token(input.projects_config_glob.as_str())
+            quoted_caddyfile_token(input.projects_config_glob.as_str())?
         ));
     }
 
@@ -140,7 +140,7 @@ pub fn render_php_worker_project_config(
     output.push_str("    bind 127.0.0.1 ::1\n");
     output.push_str(&format!(
         "    root * {}\n",
-        quoted_caddyfile_token(project.document_root.as_str())
+        quoted_caddyfile_token(project.document_root.as_str())?
     ));
     output.push_str("    php_server\n");
     output.push_str("    file_server\n");
@@ -185,7 +185,11 @@ where
     }
     if let Err(error) = rename_candidate_config(&candidate_path, path) {
         if active_existed {
-            let _restore_result = rename_candidate_config(&backup_path, path);
+            if let Err(restore_error) = rename_candidate_config(&backup_path, path) {
+                let _cleanup_result = remove_candidate_config(&candidate_path);
+
+                return Err(rollback_failed_error(error, restore_error));
+            }
         }
         let _cleanup_result = remove_candidate_config(&candidate_path);
 
@@ -194,7 +198,9 @@ where
     if let Err(error) = promote_fragments() {
         let _active_cleanup_result = remove_candidate_config(path);
         if active_existed {
-            let _restore_result = rename_candidate_config(&backup_path, path);
+            if let Err(restore_error) = rename_candidate_config(&backup_path, path) {
+                return Err(rollback_failed_error(error, restore_error));
+            }
         }
 
         return Err(error);
@@ -266,10 +272,16 @@ fn sorted_hostnames<'input>(
     Ok(hostnames)
 }
 
-fn quoted_caddyfile_token(value: &str) -> String {
+fn quoted_caddyfile_token(value: &str) -> Result<String, DaemonError> {
+    if value.chars().any(char::is_control) {
+        return Err(DaemonError::UnexpectedProtocolResponse {
+            reason: format!("Caddyfile token contains a control character: {value:?}"),
+        });
+    }
+
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
 
-    format!("\"{escaped}\"")
+    Ok(format!("\"{escaped}\""))
 }
 
 fn candidate_path_for(path: &Utf8Path) -> Utf8PathBuf {
@@ -319,5 +331,59 @@ fn delete_optional_config(path: &Utf8Path) -> Result<(), DaemonError> {
             Ok(())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+fn rollback_failed_error(original: DaemonError, rollback: DaemonError) -> DaemonError {
+    DaemonError::UnexpectedProtocolResponse {
+        reason: format!("Gateway config promotion failed: {original}; rollback failed: {rollback}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use camino_tempfile::tempdir;
+
+    #[tokio::test]
+    async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails() {
+        let tempdir = tempdir().expect("test tempdir");
+        let root_config = tempdir.path().join("Caddyfile");
+        state::fs::write_sensitive_file(&root_config, "active\n").expect("active config");
+        let root_config_for_fragment_promotion = root_config.clone();
+
+        let result = promote_validated_config_tree_async(
+            &root_config,
+            "candidate\n",
+            "active\n",
+            |_candidate_path| async { Ok(()) },
+            || {
+                state::fs::delete_file(&root_config_for_fragment_promotion)?;
+                create_dir(&root_config_for_fragment_promotion)?;
+
+                Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: "fragment promotion failed".to_owned(),
+                })
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::UnexpectedProtocolResponse { reason })
+                if reason.contains("fragment promotion failed")
+                    && reason.contains("rollback failed")
+        ));
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture blocks root config rollback by replacing the file with a directory"
+    )]
+    fn create_dir(path: &Utf8Path) -> Result<(), DaemonError> {
+        std::fs::create_dir(path)?;
+
+        Ok(())
     }
 }

@@ -52,8 +52,13 @@ fn runtime_adapters_reject_directory_executable_paths() -> Result<()> {
     let tempdir = tempdir()?;
     let release = tempdir.path();
     create_dir(&release.join("bin/php"))?;
+    create_dir(&release.join("bin/frankenphp"))?;
 
     assert_missing_executable_error(php_adapter()?.validate_installation(release), "php")?;
+    assert_missing_executable_error(
+        frankenphp_adapter()?.validate_installation(release),
+        "frankenphp",
+    )?;
 
     Ok(())
 }

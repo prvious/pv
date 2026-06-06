@@ -7,6 +7,7 @@ use config::{
     AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
     ResourceEnvContext,
 };
+use resources::{ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector};
 use state::{
     Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
     ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectRecord, PvPaths, StateError,
@@ -26,6 +27,7 @@ pub(crate) fn link(
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
+    let desired_php_track = resolved_project_php_track(&paths, config_file.config.php.as_deref())?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
     let primary_hostname = match (args.hostname, existing.as_ref()) {
@@ -38,7 +40,7 @@ pub(crate) fn link(
         original_path: original_project_path,
         primary_hostname,
         config_path: config_file.path,
-        desired_php_track: config_file.config.php,
+        desired_php_track,
         additional_hostnames: config_file.config.hostnames,
     })?;
 
@@ -60,6 +62,31 @@ pub(crate) fn link(
     request_project_reconciliation(&paths, &result.project, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn resolved_project_php_track(
+    paths: &PvPaths,
+    selector: Option<&str>,
+) -> Result<Option<String>, ExecuteError> {
+    let Some(selector) = selector else {
+        return Ok(None);
+    };
+    let selector = TrackSelector::parse(selector)?;
+    let track = match selector {
+        TrackSelector::Latest => {
+            let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+            let php = ResourceName::new("php")?;
+
+            manifest
+                .resolve_track(&php, TrackSelector::Latest)?
+                .as_str()
+                .to_owned()
+        }
+        TrackSelector::Track(track) => track.as_str().to_owned(),
+    };
+    let track = ConcreteTrackName::new(track)?;
+
+    Ok(Some(track.as_str().to_owned()))
 }
 
 pub(crate) fn unlink(

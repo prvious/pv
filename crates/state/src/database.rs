@@ -653,12 +653,8 @@ impl Database {
                 target: project_id.to_string(),
             }
         })?;
-        if let Some(track) = desired_php_track
-            && track.trim().is_empty()
-        {
-            return Err(StateError::InvalidProjectTrack {
-                track: track.to_string(),
-            });
+        if let Some(track) = desired_php_track {
+            validate_project_php_track(track)?;
         }
 
         if project.desired_php_track.as_deref() != desired_php_track {
@@ -1380,9 +1376,7 @@ impl Database {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)?
-            && is_available(existing.port)
-        {
+        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)? {
             transaction.commit()?;
 
             return Ok(existing);
@@ -2453,15 +2447,17 @@ fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateErro
     for hostname in &input.additional_hostnames {
         validate_project_hostname(hostname)?;
     }
-    if let Some(track) = &input.desired_php_track
-        && track.trim().is_empty()
-    {
-        return Err(StateError::InvalidProjectTrack {
-            track: track.clone(),
-        });
+    if let Some(track) = &input.desired_php_track {
+        validate_project_php_track(track)?;
     }
 
     Ok(())
+}
+
+fn validate_project_php_track(track: &str) -> Result<(), StateError> {
+    validate_concrete_track(track).map_err(|_error| StateError::InvalidProjectTrack {
+        track: track.to_string(),
+    })
 }
 
 fn validate_runtime_php_track(php_track: &str) -> Result<(), StateError> {
