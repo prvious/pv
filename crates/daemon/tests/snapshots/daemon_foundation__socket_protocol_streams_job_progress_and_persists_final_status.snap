@@ -19,7 +19,7 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("Gateway runtime reconciliation started"),
+            "message": String("System reconciliation started"),
             "type": String("log"),
         },
         Object {

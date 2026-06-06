@@ -4,7 +4,7 @@ use crate::ipc::LocalStream;
 use crate::project_env::reconcile_project_env;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
-use state::{Database, JobStatus, PvPaths};
+use state::{Database, JobStatus, ProjectRecord, PvPaths};
 use tokio::io::AsyncWrite;
 
 pub(crate) async fn run_job(
@@ -225,7 +225,7 @@ async fn complete_reconciliation_job(
     scope: &ReconciliationScope,
 ) -> Result<String, DaemonError> {
     let result = match scope {
-        ReconciliationScope::System => complete_gateway_reconciliation(paths, job_id).await,
+        ReconciliationScope::System => complete_system_reconciliation(paths, job_id).await,
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             complete_gateway_reconciliation(paths, job_id).await
         }
@@ -258,6 +258,20 @@ async fn complete_gateway_reconciliation(
     Ok(summary)
 }
 
+async fn complete_system_reconciliation(
+    paths: &PvPaths,
+    job_id: &str,
+) -> Result<String, DaemonError> {
+    let project_report = reconcile_system_projects(paths)?;
+    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+    let summary = system_reconciliation_summary(&project_report, &gateway_summary);
+    let mut database = Database::open(paths)?;
+
+    database.complete_job(job_id, &summary)?;
+
+    Ok(summary)
+}
+
 async fn complete_project_reconciliation(
     paths: &PvPaths,
     job_id: &str,
@@ -277,6 +291,85 @@ async fn complete_project_reconciliation(
     Ok(summary)
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SystemProjectReconciliationReport {
+    total: usize,
+    succeeded: usize,
+    summaries: Vec<String>,
+    failures: Vec<String>,
+}
+
+fn reconcile_system_projects(
+    paths: &PvPaths,
+) -> Result<SystemProjectReconciliationReport, DaemonError> {
+    let projects = linked_projects(paths)?;
+    let mut report = SystemProjectReconciliationReport {
+        total: projects.len(),
+        ..SystemProjectReconciliationReport::default()
+    };
+
+    for project in projects {
+        match reconcile_project_env(paths, &project.id) {
+            Ok(summary) => {
+                report.succeeded += 1;
+                report.summaries.push(summary.as_str().to_owned());
+            }
+            Err(error) => {
+                report
+                    .failures
+                    .push(format!("{}: {error}", project.primary_hostname));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
+    let database = Database::open(paths)?;
+
+    Ok(database.projects()?)
+}
+
+fn system_reconciliation_summary(
+    project_report: &SystemProjectReconciliationReport,
+    gateway_summary: &str,
+) -> String {
+    let Some(project_summary) = system_project_summary(project_report) else {
+        return gateway_summary.to_owned();
+    };
+
+    if gateway_summary == FRANKENPHP_NOT_INSTALLED {
+        project_summary
+    } else {
+        format!("{project_summary}; {gateway_summary}")
+    }
+}
+
+fn system_project_summary(report: &SystemProjectReconciliationReport) -> Option<String> {
+    if report.total == 0 {
+        return None;
+    }
+
+    if !report.failures.is_empty() {
+        return Some(format!(
+            "Project env reconciled for {} of {} Projects; failures: {}",
+            report.succeeded,
+            report.total,
+            report.failures.join(", ")
+        ));
+    }
+
+    if report.summaries.len() == 1 {
+        return report.summaries.first().cloned();
+    }
+
+    Some(format!(
+        "Project env reconciled for {} Projects",
+        report.succeeded
+    ))
+}
+
 fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
     match scope {
         ReconciliationScope::Resource { name, .. } if !gateway_runtime_resource(name.as_str()) => {
@@ -291,7 +384,7 @@ fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -
 fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
     match scope {
         ReconciliationScope::Project { .. } => "Project env reconciliation started",
-        ReconciliationScope::System => "Gateway runtime reconciliation started",
+        ReconciliationScope::System => "System reconciliation started",
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             "Gateway runtime reconciliation started"
         }
