@@ -49,6 +49,25 @@ _arguments "${_arguments_options[@]}" : \
 ':shell -- Shell to generate completions for:(bash fish zsh)' \
 && ret=0
 ;;
+(setup)
+_arguments "${_arguments_options[@]}" : \
+'--yes[Accept PV-owned setup confirmations]' \
+'--non-interactive[Disable interactive prompts]' \
+'--no-path[Skip shell profile integration]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned state under ~/.pv]' \
+'--force[Skip prune confirmation]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (daemon:enable)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -199,19 +218,21 @@ _pv_commands() {
     local commands; commands=(
 'env:Print shell integration code' \
 'completions:Generate shell completions' \
+'setup:Configure PV system integrations' \
+'uninstall:Uninstall PV safely' \
 'daemon:enable:Enable the PV login daemon' \
 'daemon:disable:Disable the PV login daemon' \
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
 'dns:status:Show PV .test resolver status' \
-'dns:install:Prepare PV .test resolver config' \
-'dns:uninstall:Remove prepared PV .test resolver config' \
+'dns:install:Install or repair PV .test resolver config' \
+'dns:uninstall:Remove PV .test resolver config' \
 'ports:status:Show PV pf redirect status' \
-'ports:install:Prepare PV pf redirect config' \
-'ports:uninstall:Remove prepared PV pf redirect config' \
+'ports:install:Install or repair PV pf redirects' \
+'ports:uninstall:Remove PV pf redirects' \
 'ca:status:Show PV local CA trust status' \
-'ca:trust:Prepare PV local CA trust' \
-'ca:untrust:Prepare removal of PV local CA trust' \
+'ca:trust:Trust PV local CA in the System keychain' \
+'ca:untrust:Remove PV local CA trust' \
 'link:Link a Project' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
@@ -320,6 +341,16 @@ _pv__subcmd__ports:uninstall_commands() {
 _pv__subcmd__project:env_commands() {
     local commands; commands=()
     _describe -t commands 'pv project:env commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__setup_commands] )) ||
+_pv__subcmd__setup_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv setup commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__uninstall_commands] )) ||
+_pv__subcmd__uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv uninstall commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__unlink_commands] )) ||
 _pv__subcmd__unlink_commands() {

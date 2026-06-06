@@ -1,0 +1,17 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "(output, profile_after_setup, fixture.environment.operations())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nShell profile integration requires update; rerun without --non-interactive or use --no-path: <tempdir>/home/.zprofile\n",
+        stderr: "",
+    },
+    "export EXISTING=1\n",
+    [],
+)

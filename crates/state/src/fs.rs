@@ -243,6 +243,15 @@ pub fn delete_file(path: &Utf8Path) -> Result<(), StateError> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
+pub fn delete_dir_all(path: &Utf8Path) -> Result<(), StateError> {
+    std::fs::remove_dir_all(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
 fn set_dir_mode(path: &Utf8Path, mode: u32) -> Result<(), StateError> {
     let permissions = std::fs::Permissions::from_mode(mode);
     std::fs::set_permissions(path, permissions)

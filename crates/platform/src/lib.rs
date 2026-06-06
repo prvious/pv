@@ -1,6 +1,8 @@
 mod browser;
 mod ca;
+mod command;
 mod error;
+mod launch_agent;
 mod pf;
 mod resolver;
 mod socket;
@@ -12,17 +14,25 @@ pub use ca::{
     inspect_local_ca_files,
 };
 pub use error::PlatformError;
+pub use launch_agent::{
+    LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
+    bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
+    kickstart_launch_agent, launch_agent_path, remove_launch_agent_file, write_launch_agent_file,
+};
 pub use pf::{
     PfConfReference, PfFileState, PfRedirectConfig, SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH,
-    inspect_pf_anchor_file, inspect_pf_conf_reference,
+    active_pf_redirect_config, inspect_pf_anchor_file, inspect_pf_conf_reference,
+    install_pf_redirects, remove_pf_redirects,
 };
 pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
+    install_resolver_config, remove_resolver_config,
 };
 pub use socket::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
-    TrustDomainState, inspect_system_ca_trust,
+    TrustDomainState, inspect_system_ca_trust, trust_system_ca, trusted_pv_ca_fingerprints,
+    untrust_system_ca,
 };
 
 #[cfg(test)]

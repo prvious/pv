@@ -33,23 +33,138 @@ pub(crate) fn install(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
+    install_inner(environment, stdout, true)
+}
+
+pub(crate) fn install_config_only(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    install_inner(environment, stdout, false)
+}
+
+fn install_inner(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+    ensure_daemon: bool,
+) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
+    let had_dns_assignment = database
+        .assigned_ports()?
+        .iter()
+        .any(|assignment| assignment.owner == PortOwner::Dns);
     let dns_port = prepared_dns_port(&mut database)?;
     let config = ResolverConfig::new(dns_port);
     let prepared_path = paths.resolver_config();
 
-    state::fs::write_sensitive_file(&prepared_path, &config.render())?;
+    if let Err(error) = state::fs::write_sensitive_file(&prepared_path, &config.render()) {
+        release_new_dns_port(&mut database, had_dns_assignment)?;
+
+        return Err(error.into());
+    }
 
     let system_state = platform::inspect_resolver_file(&system_path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
+
     output.line("Prepared PV DNS resolver config")?;
     output.line(&format!("  path: {prepared_path}"))?;
     output.line(&format!("  DNS resolver port: {dns_port}"))?;
-    write_install_guidance(&mut output, &system_state)?;
 
-    Ok(ExitCode::FAILURE)
+    match &system_state {
+        ResolverFileState::Current { .. }
+        | ResolverFileState::Missing { .. }
+        | ResolverFileState::Stale { .. } => {}
+        ResolverFileState::Conflict { path } => {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
+            output.line(&format!("System resolver config is not PV-owned: {path}"))?;
+            output.line("Leaving it in place.")?;
+
+            return Ok(ExitCode::FAILURE);
+        }
+        ResolverFileState::Unreadable { path, message } => {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
+            output.line(&format!(
+                "System resolver config could not be inspected: {path}"
+            ))?;
+            output.line(&format!("  {message}"))?;
+            output.line("Leaving it in place.")?;
+
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
+    if ensure_daemon {
+        let exit_code = ensure_daemon_running(&paths, &mut output)?;
+        if exit_code != ExitCode::SUCCESS {
+            release_new_dns_port(&mut database, had_dns_assignment)?;
+
+            return Ok(exit_code);
+        }
+    }
+
+    match system_state {
+        ResolverFileState::Current { path, port } => {
+            output.line(&format!(
+                "System resolver config already matches PV on port {port}: {path}"
+            ))?;
+        }
+        ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
+            if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
+                release_new_dns_port(&mut database, had_dns_assignment)?;
+
+                return Err(error.into());
+            }
+            output.line(&format!("Installed system resolver config: {path}"))?;
+        }
+        ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn release_new_dns_port(
+    database: &mut Database,
+    had_dns_assignment: bool,
+) -> Result<(), ExecuteError> {
+    if !had_dns_assignment {
+        database.release_port(PortOwner::Dns)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_daemon_running(
+    paths: &PvPaths,
+    output: &mut Output<'_, impl Write>,
+) -> Result<ExitCode, ExecuteError> {
+    let daemon_socket = paths.daemon_socket();
+
+    if !daemon_socket.exists() {
+        output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
+        output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
+        output.line(&format!("  socket: {daemon_socket}"))?;
+
+        return Ok(ExitCode::FAILURE);
+    }
+
+    match ::daemon::wait_until_healthy_blocking(paths.clone()) {
+        Ok(()) => {
+            output.line("PV daemon is running.")?;
+
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
+            output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
+            output.line(&format!("  {error}"))?;
+
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 pub(crate) fn uninstall(
@@ -57,6 +172,7 @@ pub(crate) fn uninstall(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
+    let mut database = Database::open(&paths)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
     let deleted_prepared = delete_optional_file(&prepared_path)?;
@@ -76,6 +192,7 @@ pub(crate) fn uninstall(
     match system_state {
         ResolverFileState::Missing { path } => {
             output.line(&format!("System resolver config already absent: {path}"))?;
+            database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -89,62 +206,17 @@ pub(crate) fn uninstall(
             Ok(ExitCode::FAILURE)
         }
         ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
-            output.line(&format!("PV-owned system resolver config remains: {path}"))?;
-            output.line("Privileged removal deferred to later setup/system-integration work.")?;
+            environment.remove_resolver_config(&system_path)?;
+            output.line(&format!("Removed PV-owned system resolver config: {path}"))?;
+            database.release_port(PortOwner::Dns)?;
 
-            Ok(ExitCode::FAILURE)
+            Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
             output.line(&format!("System resolver config is not PV-owned: {path}"))?;
             output.line("Leaving it in place.")?;
 
             Ok(ExitCode::FAILURE)
-        }
-    }
-}
-
-fn write_install_guidance(
-    output: &mut Output<'_, impl Write>,
-    system_state: &ResolverFileState,
-) -> io::Result<()> {
-    match system_state {
-        ResolverFileState::Conflict { path } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!("System resolver config conflict: {path}"))?;
-            output.line("The file is not PV-owned. Privileged conflict repair is deferred to later setup/system-integration work.")
-        }
-        ResolverFileState::Unreadable { path, message } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!(
-                "System resolver config could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))
-        }
-        ResolverFileState::Missing { path } => {
-            output.line("Privileged install deferred to later setup/system-integration work.")?;
-            output.line(&format!("System resolver config is not installed: {path}"))
-        }
-        ResolverFileState::Current { path, port } => {
-            output.line("Privileged install deferred to later setup/system-integration work.")?;
-            output.line(&format!(
-                "System resolver config already matches PV on port {port}: {path}"
-            ))
-        }
-        ResolverFileState::Stale {
-            path,
-            expected_port,
-            actual_port,
-        } => {
-            output.line("Privileged repair deferred to later setup/system-integration work.")?;
-            output.line(&format!("PV-owned system resolver config is stale: {path}"))?;
-            match expected_port {
-                Some(expected_port) => output.line(&format!("  expected port: {expected_port}"))?,
-                None => output.line("  expected port: unknown")?,
-            }
-            match actual_port {
-                Some(actual_port) => output.line(&format!("  actual port: {actual_port}")),
-                None => output.line("  actual port: unparseable"),
-            }
         }
     }
 }

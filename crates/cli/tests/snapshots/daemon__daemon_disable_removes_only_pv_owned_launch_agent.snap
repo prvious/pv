@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/daemon.rs
+expression: "(output, environment.operations(), plist_after_disable)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Daemon disabled\nLaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\n",
+        stderr: "",
+    },
+    [
+        "bootout com.prvious.pv.daemon",
+    ],
+    None,
+)

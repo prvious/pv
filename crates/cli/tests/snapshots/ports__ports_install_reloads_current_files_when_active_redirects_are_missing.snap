@@ -1,0 +1,18 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(output, environment.operations.borrow().clone())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nSystem pf redirect config matches PV, but active redirects are not loaded.\nInstalled system pf redirect config\n",
+        stderr: "",
+    },
+    [
+        "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+    ],
+)

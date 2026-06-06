@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/setup.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Refusing to prune PV state without an interactive confirmation.\nRerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively.\n",
+    stderr: "",
+}

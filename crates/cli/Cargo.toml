@@ -16,6 +16,7 @@ config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
 platform = { path = "../platform" }
+resources = { path = "../resources" }
 serde_json = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }

@@ -1,6 +1,10 @@
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use data_encoding::HEXLOWER;
+
+use crate::PlatformError;
+use crate::command::{run_system_command, run_system_command_output};
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -93,6 +97,31 @@ impl PfRedirectConfig {
         } else {
             None
         }
+    }
+
+    pub fn parse_active_rules(content: &str) -> Option<Self> {
+        let mut http_port = None;
+        let mut https_port = None;
+
+        for line in content.lines().filter_map(active_pf_line) {
+            if let Some(port) = parse_active_redirect_port(line, 80) {
+                if http_port.replace(port).is_some() {
+                    return None;
+                }
+                continue;
+            }
+
+            if let Some(port) = parse_active_redirect_port(line, 443) {
+                if https_port.replace(port).is_some() {
+                    return None;
+                }
+                continue;
+            }
+
+            return None;
+        }
+
+        Some(Self::new(http_port?, https_port?))
     }
 }
 
@@ -192,6 +221,254 @@ pub fn inspect_pf_conf_reference(
     classify_pv_file_state(path, expected, actual)
 }
 
+pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let rules = run_system_command_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-sr"])?;
+
+    Ok(PfRedirectConfig::parse_active_rules(&rules))
+}
+
+pub fn install_pf_redirects(
+    prepared_anchor_path: &Utf8Path,
+    prepared_reference_path: &Utf8Path,
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+) -> Result<(), PlatformError> {
+    install_pf_redirects_with_runner(
+        prepared_anchor_path,
+        prepared_reference_path,
+        system_anchor_path,
+        system_pf_conf_path,
+        &mut run_system_command,
+    )
+}
+
+fn install_pf_redirects_with_runner(
+    prepared_anchor_path: &Utf8Path,
+    prepared_reference_path: &Utf8Path,
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let prepared_anchor = read_platform_file(prepared_anchor_path)?;
+    let prepared_reference = read_platform_file(prepared_reference_path)?;
+    if PfRedirectConfig::parse_anchor(&prepared_anchor).is_none() {
+        return Err(PlatformError::SystemIntegration(format!(
+            "prepared pf anchor is not a valid PV anchor: {prepared_anchor_path}"
+        )));
+    }
+    if PfConfReference::parse_block(&prepared_reference).is_none() {
+        return Err(PlatformError::SystemIntegration(format!(
+            "prepared pf.conf reference is not valid: {prepared_reference_path}"
+        )));
+    }
+
+    let system_reference_state =
+        inspect_pf_conf_reference(system_pf_conf_path, Some(&PfConfReference));
+    let candidate = match system_reference_state {
+        PfFileState::Missing { .. } => {
+            let current = read_optional_platform_file(system_pf_conf_path)?;
+            append_pf_reference(current.as_deref().unwrap_or_default(), &prepared_reference)
+        }
+        PfFileState::Current { .. } => read_platform_file(system_pf_conf_path)?,
+        PfFileState::Stale { .. } => {
+            let current = read_platform_file(system_pf_conf_path)?;
+            append_pf_reference(&remove_pf_reference_lines(&current), &prepared_reference)
+        }
+        PfFileState::Conflict { path } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system pf.conf reference is not PV-owned: {path}"
+            )));
+        }
+        PfFileState::Unreadable { path, message } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system pf.conf reference could not be inspected: {path}: {message}"
+            )));
+        }
+    };
+    let candidate_path = prepared_reference_path.with_file_name("pf.conf.candidate");
+    let anchor_backup = read_optional_platform_file(system_anchor_path)?;
+    let anchor_backup_path = prepared_anchor_path.with_file_name("pf.anchor.rollback");
+    let pf_conf_backup = read_optional_platform_file(system_pf_conf_path)?;
+    let pf_conf_backup_path = prepared_reference_path.with_file_name("pf.conf.rollback");
+
+    state::fs::write_sensitive_file(&candidate_path, &candidate)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+    run_system(
+        "/usr/bin/sudo",
+        &["/sbin/pfctl", "-nf", candidate_path.as_str()],
+    )?;
+    install_pf_anchor_with_runner(prepared_anchor_path, system_anchor_path, run_system)?;
+    let post_anchor_result = (|| {
+        run_system(
+            "/usr/bin/sudo",
+            &[
+                "/usr/bin/install",
+                "-m",
+                "0644",
+                candidate_path.as_str(),
+                system_pf_conf_path.as_str(),
+            ],
+        )?;
+        reload_pf_with_runner(system_pf_conf_path, run_system)?;
+        run_system("/usr/bin/sudo", &["/sbin/pfctl", "-E"])
+    })();
+
+    if let Err(error) = post_anchor_result {
+        let mut rollback_errors = Vec::new();
+
+        if let Err(rollback_error) = rollback_pf_conf_with_runner(
+            system_pf_conf_path,
+            pf_conf_backup.as_deref(),
+            &pf_conf_backup_path,
+            run_system,
+        ) {
+            rollback_errors.push(format!("pf.conf: {rollback_error}"));
+        }
+        if let Err(rollback_error) = rollback_pf_anchor_with_runner(
+            system_anchor_path,
+            anchor_backup.as_deref(),
+            &anchor_backup_path,
+            run_system,
+        ) {
+            rollback_errors.push(format!("pf anchor: {rollback_error}"));
+        }
+
+        if !rollback_errors.is_empty() {
+            return Err(PlatformError::SystemIntegration(format!(
+                "{error}; additionally failed to rollback {}",
+                rollback_errors.join("; ")
+            )));
+        }
+
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn rollback_pf_anchor_with_runner(
+    system_anchor_path: &Utf8Path,
+    anchor_backup: Option<&str>,
+    anchor_backup_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    if let Some(anchor_backup) = anchor_backup {
+        state::fs::write_sensitive_file(anchor_backup_path, anchor_backup)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+        run_system(
+            "/usr/bin/sudo",
+            &[
+                "/usr/bin/install",
+                "-m",
+                "0644",
+                anchor_backup_path.as_str(),
+                system_anchor_path.as_str(),
+            ],
+        )?;
+        let _ = state::fs::delete_file(anchor_backup_path);
+
+        return Ok(());
+    }
+
+    run_system(
+        "/usr/bin/sudo",
+        &["/bin/rm", "-f", system_anchor_path.as_str()],
+    )
+}
+
+fn rollback_pf_conf_with_runner(
+    system_pf_conf_path: &Utf8Path,
+    pf_conf_backup: Option<&str>,
+    pf_conf_backup_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    if let Some(pf_conf_backup) = pf_conf_backup {
+        state::fs::write_sensitive_file(pf_conf_backup_path, pf_conf_backup)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+        run_system(
+            "/usr/bin/sudo",
+            &[
+                "/usr/bin/install",
+                "-m",
+                "0644",
+                pf_conf_backup_path.as_str(),
+                system_pf_conf_path.as_str(),
+            ],
+        )?;
+        let _ = state::fs::delete_file(pf_conf_backup_path);
+
+        return Ok(());
+    }
+
+    run_system(
+        "/usr/bin/sudo",
+        &["/bin/rm", "-f", system_pf_conf_path.as_str()],
+    )
+}
+
+pub fn remove_pf_redirects(
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+    candidate_dir: &Utf8Path,
+) -> Result<(), PlatformError> {
+    remove_pf_redirects_with_runner(
+        system_anchor_path,
+        system_pf_conf_path,
+        candidate_dir,
+        &mut run_system_command,
+    )
+}
+
+fn remove_pf_redirects_with_runner(
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+    candidate_dir: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let system_reference_state = inspect_pf_conf_reference(system_pf_conf_path, None);
+
+    match system_reference_state {
+        PfFileState::Missing { .. } => {}
+        PfFileState::Current { .. } | PfFileState::Stale { .. } => {
+            let current = read_platform_file(system_pf_conf_path)?;
+            let candidate = remove_pf_reference_lines(&current);
+            let candidate_path = temporary_pf_conf_candidate_path(candidate_dir)?;
+
+            write_temporary_file(&candidate_path, &candidate)?;
+            run_system(
+                "/usr/bin/sudo",
+                &["/sbin/pfctl", "-nf", candidate_path.as_str()],
+            )?;
+            run_system(
+                "/usr/bin/sudo",
+                &[
+                    "/usr/bin/install",
+                    "-m",
+                    "0644",
+                    candidate_path.as_str(),
+                    system_pf_conf_path.as_str(),
+                ],
+            )?;
+        }
+        PfFileState::Conflict { path } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system pf.conf reference is not PV-owned: {path}"
+            )));
+        }
+        PfFileState::Unreadable { path, message } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system pf.conf reference could not be inspected: {path}: {message}"
+            )));
+        }
+    }
+
+    run_system(
+        "/usr/bin/sudo",
+        &["/bin/rm", "-f", system_anchor_path.as_str()],
+    )?;
+    reload_pf_with_runner(system_pf_conf_path, run_system)
+}
+
 fn inspect_pv_file<T: Clone + Eq>(
     path: &Utf8Path,
     expected: Option<&T>,
@@ -267,6 +544,18 @@ fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
         || line.starts_with("load anchor \"com.prvious.pv\"")
 }
 
+fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
+    let prefix = "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port ";
+    let tail = line.strip_prefix(prefix)?;
+    let tail = tail
+        .strip_prefix(&format!("{public_port} -> "))
+        .or_else(|| tail.strip_prefix(&format!("= {public_port} -> ")))?;
+    let redirect_port = tail.rsplit_once(" port ")?.1;
+    let redirect_port = redirect_port.split_whitespace().next()?;
+
+    redirect_port.parse::<u16>().ok()
+}
+
 fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
     let mut has_anchor = false;
     let mut has_load = false;
@@ -297,5 +586,343 @@ fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
         Some(PfConfReference)
     } else {
         None
+    }
+}
+
+fn install_pf_anchor_with_runner(
+    prepared_anchor_path: &Utf8Path,
+    system_anchor_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let parent = system_anchor_path.parent().ok_or_else(|| {
+        PlatformError::SystemIntegration(format!(
+            "pf anchor path has no parent directory: {system_anchor_path}"
+        ))
+    })?;
+
+    run_system(
+        "/usr/bin/sudo",
+        &["/sbin/pfctl", "-nf", prepared_anchor_path.as_str()],
+    )?;
+    run_system("/usr/bin/sudo", &["/bin/mkdir", "-p", parent.as_str()])?;
+    run_system(
+        "/usr/bin/sudo",
+        &[
+            "/usr/bin/install",
+            "-m",
+            "0644",
+            prepared_anchor_path.as_str(),
+            system_anchor_path.as_str(),
+        ],
+    )
+}
+
+fn reload_pf_with_runner(
+    system_pf_conf_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    run_system(
+        "/usr/bin/sudo",
+        &["/sbin/pfctl", "-f", system_pf_conf_path.as_str()],
+    )
+}
+
+fn append_pf_reference(content: &str, reference: &str) -> String {
+    if content.trim().is_empty() {
+        return reference.to_string();
+    }
+
+    let mut candidate = content.to_string();
+    if !candidate.ends_with('\n') {
+        candidate.push('\n');
+    }
+    candidate.push_str(reference);
+    candidate
+}
+
+fn remove_pf_reference_lines(content: &str) -> String {
+    let mut candidate = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if matches!(
+            trimmed,
+            PV_MARKER | PF_CONF_SOURCE_MARKER | PF_ANCHOR_DIRECTIVE | PF_LOAD_ANCHOR_DIRECTIVE
+        ) {
+            continue;
+        }
+
+        candidate.push_str(line);
+        candidate.push('\n');
+    }
+
+    candidate
+}
+
+fn read_platform_file(path: &Utf8Path) -> Result<String, PlatformError> {
+    state::fs::read_to_string(path)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
+}
+
+fn read_optional_platform_file(path: &Utf8Path) -> Result<Option<String>, PlatformError> {
+    match state::fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(state::StateError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(PlatformError::SystemIntegration(error.to_string())),
+    }
+}
+
+fn temporary_pf_conf_candidate_path(
+    candidate_dir: &Utf8Path,
+) -> Result<Utf8PathBuf, PlatformError> {
+    let mut suffix = [0_u8; 16];
+    getrandom::fill(&mut suffix)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+
+    Ok(candidate_dir.join(format!("pv-pf-conf-{}-uninstall", HEXLOWER.encode(&suffix))))
+}
+
+fn write_temporary_file(path: &Utf8Path, content: &str) -> Result<(), PlatformError> {
+    state::fs::write_sensitive_file(path, content)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8Path;
+    use camino_tempfile::tempdir;
+
+    use super::{
+        PfConfReference, PfRedirectConfig, install_pf_redirects_with_runner, read_platform_file,
+        remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
+    };
+
+    #[test]
+    fn install_pf_redirects_validates_candidate_before_installing_anchor() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+
+                Ok(())
+            },
+        )?;
+
+        let candidate =
+            read_platform_file(&prepared_reference_path.with_file_name("pf.conf.candidate"))?;
+        let validate_candidate_index = commands
+            .iter()
+            .position(|command| {
+                command.contains("/sbin/pfctl -nf") && command.contains("pf.conf.candidate")
+            })
+            .ok_or_else(|| anyhow::anyhow!("candidate validation command was not recorded"))?;
+        let install_anchor_index = commands
+            .iter()
+            .position(|command| {
+                command.contains("/usr/bin/install")
+                    && command.contains(prepared_anchor_path.as_str())
+                    && command.contains(system_anchor_path.as_str())
+            })
+            .ok_or_else(|| anyhow::anyhow!("anchor install command was not recorded"))?;
+
+        assert!(candidate.contains("load anchor \"com.prvious.pv\""));
+        assert!(validate_candidate_index < install_anchor_index);
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_removes_new_anchor_when_later_install_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.contains("/usr/bin/install")
+                    && command.contains("pf.conf.candidate")
+                    && command.contains(system_pf_conf_path.as_str())
+                {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "install pf.conf failed".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "install pf.conf failed"
+        ));
+        assert!(commands.iter().any(|command| {
+            command.contains("/usr/bin/install")
+                && command.contains(prepared_anchor_path.as_str())
+                && command.contains(system_anchor_path.as_str())
+        }));
+        assert!(commands.iter().any(|command| {
+            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_restores_pf_conf_when_reload_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+        state::fs::write_sensitive_file(&system_pf_conf_path, "set skip on lo0\n")?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == format!("/usr/bin/sudo /sbin/pfctl -f {system_pf_conf_path}") {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "reload pf failed".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "reload pf failed"
+        ));
+        assert!(commands.iter().any(|command| {
+            command.contains("/usr/bin/install")
+                && command.contains("pf.conf.rollback")
+                && command.contains(system_pf_conf_path.as_str())
+        }));
+        assert!(commands.iter().any(|command| {
+            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn temporary_pf_conf_candidate_path_uses_candidate_dir_and_random_suffix() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let candidate_dir = tempdir.path().join("config/pf");
+        let first = temporary_pf_conf_candidate_path(&candidate_dir)?;
+        let second = temporary_pf_conf_candidate_path(&candidate_dir)?;
+        let process_id = std::process::id().to_string();
+
+        assert_eq!(first.parent(), Some(candidate_dir.as_path()));
+        assert_eq!(second.parent(), Some(candidate_dir.as_path()));
+        assert_ne!(first, second);
+        assert!(first.file_name().is_some_and(|name| {
+            name.starts_with("pv-pf-conf-") && name.ends_with("-uninstall")
+        }));
+        assert!(
+            !first
+                .file_name()
+                .is_some_and(|name| name.contains(&process_id))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_pf_redirects_writes_candidate_in_pv_config_dir() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let candidate_dir = tempdir.path().join("home/.pv/config/pf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &system_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(
+            &system_pf_conf_path,
+            &format!("{}\n{}", "set skip on lo0", PfConfReference.render()),
+        )?;
+
+        remove_pf_redirects_with_runner(
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &candidate_dir,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+
+                Ok(())
+            },
+        )?;
+
+        let candidate_command = commands
+            .iter()
+            .find(|command| command.contains("/sbin/pfctl -nf"))
+            .ok_or_else(|| anyhow::anyhow!("candidate validation command was not recorded"))?;
+        let candidate_path = candidate_command
+            .split_whitespace()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("candidate validation command had no path"))?;
+        let candidate_path = Utf8Path::new(candidate_path);
+        let candidate = read_platform_file(candidate_path)?;
+
+        assert!(candidate_path.starts_with(&candidate_dir));
+        assert_eq!(candidate, "set skip on lo0\n");
+
+        Ok(())
     }
 }

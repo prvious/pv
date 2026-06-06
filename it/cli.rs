@@ -120,11 +120,11 @@ fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
 }
 
 #[test]
-fn daemon_lifecycle_commands_are_routed_as_stubs() -> Result<()> {
+fn daemon_lifecycle_commands_are_documented_without_running_them() -> Result<()> {
     let output = [
-        run_pv(&["daemon:enable"])?,
-        run_pv(&["daemon:disable"])?,
-        run_pv(&["daemon:restart"])?,
+        run_pv(&["daemon:enable", "--help"])?,
+        run_pv(&["daemon:disable", "--help"])?,
+        run_pv(&["daemon:restart", "--help"])?,
     ];
 
     assert_debug_snapshot!(output);

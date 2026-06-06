@@ -2,6 +2,9 @@ use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use crate::PlatformError;
+use crate::command::run_system_command;
+
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";
 const PV_MARKER: &str = "# Managed by PV";
 const PREPARED_MARKER: &str = "# Source: PV prepared resolver config for /etc/resolver/test";
@@ -131,4 +134,28 @@ pub fn inspect_resolver_file(
             actual_port: None,
         },
     }
+}
+
+pub fn install_resolver_config(
+    prepared_path: &Utf8Path,
+    system_path: &Utf8Path,
+) -> Result<(), PlatformError> {
+    let parent = system_path.parent().ok_or_else(|| {
+        PlatformError::SystemIntegration(format!(
+            "resolver config path has no parent directory: {system_path}"
+        ))
+    })?;
+    let parent = parent.as_str();
+    let prepared_path = prepared_path.as_str();
+    let system_path = system_path.as_str();
+
+    run_system_command("/usr/bin/sudo", &["/bin/mkdir", "-p", parent])?;
+    run_system_command(
+        "/usr/bin/sudo",
+        &["/usr/bin/install", "-m", "0644", prepared_path, system_path],
+    )
+}
+
+pub fn remove_resolver_config(system_path: &Utf8Path) -> Result<(), PlatformError> {
+    run_system_command("/usr/bin/sudo", &["/bin/rm", "-f", system_path.as_str()])
 }

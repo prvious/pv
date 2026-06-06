@@ -3,6 +3,8 @@ use std::io;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use camino::Utf8Path;
+
 pub trait Environment {
     fn var_os(&self, key: &str) -> Option<OsString>;
 
@@ -10,14 +12,51 @@ pub trait Environment {
 
     fn current_dir(&self) -> io::Result<PathBuf>;
 
+    fn current_exe(&self) -> io::Result<PathBuf>;
+
     fn stdin_is_terminal(&self) -> bool;
 
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
 
+    fn launch_agent_path(&self) -> PathBuf {
+        self.home_dir()
+            .unwrap_or_default()
+            .join("Library")
+            .join("LaunchAgents")
+            .join(platform::LAUNCH_AGENT_FILE_NAME)
+    }
+
+    fn bootstrap_launch_agent(&self, plist_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::bootstrap_launch_agent(plist_path)
+    }
+
+    fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        platform::bootout_launch_agent()
+    }
+
+    fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        platform::kickstart_launch_agent()
+    }
+
     fn resolver_test_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
+    }
+
+    fn install_resolver_config(
+        &self,
+        prepared_path: &Utf8Path,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::install_resolver_config(prepared_path, system_path)
+    }
+
+    fn remove_resolver_config(
+        &self,
+        system_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::remove_resolver_config(system_path)
     }
 
     fn pf_anchor_path(&self) -> PathBuf {
@@ -34,10 +73,48 @@ pub trait Environment {
         platform::loopback_tcp_listener_ports()
     }
 
+    fn install_pf_redirects(
+        &self,
+        prepared_anchor_path: &Utf8Path,
+        prepared_reference_path: &Utf8Path,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::install_pf_redirects(
+            prepared_anchor_path,
+            prepared_reference_path,
+            system_anchor_path,
+            system_pf_conf_path,
+        )
+    }
+
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
+        platform::active_pf_redirect_config()
+    }
+
+    fn remove_pf_redirects(
+        &self,
+        system_anchor_path: &Utf8Path,
+        system_pf_conf_path: &Utf8Path,
+        candidate_dir: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::remove_pf_redirects(system_anchor_path, system_pf_conf_path, candidate_dir)
+    }
+
     fn trusted_ca_certificates(
         &self,
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
+    }
+
+    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::trust_system_ca(certificate_path)
+    }
+
+    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
+        platform::untrust_system_ca(fingerprint)
     }
 }
 
@@ -55,6 +132,10 @@ impl Environment for ProcessEnvironment {
 
     fn current_dir(&self) -> io::Result<PathBuf> {
         process_current_dir()
+    }
+
+    fn current_exe(&self) -> io::Result<PathBuf> {
+        process_current_exe()
     }
 
     fn stdin_is_terminal(&self) -> bool {
@@ -87,4 +168,12 @@ fn process_var_os(key: &str) -> Option<OsString> {
 )]
 fn process_current_dir() -> io::Result<PathBuf> {
     std::env::current_dir()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV environment helper owns current executable reads for testable LaunchAgent setup"
+)]
+fn process_current_exe() -> io::Result<PathBuf> {
+    std::env::current_exe()
 }

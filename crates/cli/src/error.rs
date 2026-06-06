@@ -15,9 +15,6 @@ pub enum CliError {
     #[error("{command} is routed, but Managed Resource installs start after PV-023")]
     DeferredCommand { command: &'static str },
 
-    #[error("{command} is routed, but LaunchAgent lifecycle management starts after PV-055")]
-    DeferredDaemonLifecycle { command: &'static str },
-
     #[error("path is not valid UTF-8: {path:?}")]
     NonUtf8Path { path: std::path::PathBuf },
 
@@ -26,6 +23,14 @@ pub enum CliError {
 
     #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
     InvalidProjectSelection { selection: String, count: usize },
+
+    #[error(
+        "artifact manifest cache is unavailable at `{path}`; setup cannot plan default Managed Resources"
+    )]
+    MissingSetupArtifactManifest { path: String },
+
+    #[error("active pf redirects do not match the prepared PV port redirect config")]
+    PfRedirectsInactive,
 }
 
 #[derive(Debug, Error)]
@@ -50,4 +55,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Platform(#[from] platform::PlatformError),
+
+    #[error(transparent)]
+    Resources(#[from] resources::ResourcesError),
 }

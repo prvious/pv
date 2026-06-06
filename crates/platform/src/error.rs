@@ -46,6 +46,32 @@ pub enum PlatformError {
     #[error("macOS keychain inspection failed: {0}")]
     Keychain(String),
 
+    #[error("LaunchAgent operation failed: {0}")]
+    LaunchAgent(String),
+
+    #[error("could not run LaunchAgent command `{command}`: {source}")]
+    LaunchAgentCommand {
+        command: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("LaunchAgent command `{command}` exited with {status}")]
+    LaunchAgentCommandStatus { command: String, status: String },
+
+    #[error("system integration operation failed: {0}")]
+    SystemIntegration(String),
+
+    #[error("could not run system integration command `{command}`: {source}")]
+    SystemIntegrationCommand {
+        command: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("system integration command `{command}` exited with {status}")]
+    SystemIntegrationCommandStatus { command: String, status: String },
+
     #[error("could not inspect socket table: {0}")]
     SocketTable(#[from] netstat::Error),
 

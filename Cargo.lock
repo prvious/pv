@@ -298,6 +298,7 @@ dependencies = [
  "home",
  "insta",
  "platform",
+ "resources",
  "serde_json",
  "state",
  "thiserror",
@@ -1144,15 +1145,32 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "data-encoding",
+ "getrandom 0.4.2",
  "insta",
  "netstat-esr",
+ "plist",
  "rcgen",
+ "rustix",
  "rustls-pemfile",
  "security-framework",
+ "serde",
  "sha2",
  "state",
  "thiserror",
  "x509-parser",
+]
+
+[[package]]
+name = "plist"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
+dependencies = [
+ "base64",
+ "indexmap",
+ "quick-xml",
+ "serde",
+ "time",
 ]
 
 [[package]]
@@ -1246,6 +1264,15 @@ dependencies = [
  "cli",
  "insta",
  "state",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.39.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

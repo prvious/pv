@@ -260,7 +260,7 @@ pub(crate) fn pem_from_der(label: &str, der: &[u8]) -> String {
     pem
 }
 
-fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
+pub(crate) fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
     let mut reader = Cursor::new(certificate_pem.as_bytes());
     let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
 
@@ -296,6 +296,12 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::BrowserOpen(_)
         | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
+        | PlatformError::LaunchAgent(_)
+        | PlatformError::LaunchAgentCommand { .. }
+        | PlatformError::LaunchAgentCommandStatus { .. }
+        | PlatformError::SystemIntegration(_)
+        | PlatformError::SystemIntegrationCommand { .. }
+        | PlatformError::SystemIntegrationCommandStatus { .. }
         | PlatformError::SocketTable(_)
         | PlatformError::SocketTableCommand(_)
         | PlatformError::SocketTableCommandStatus { .. }

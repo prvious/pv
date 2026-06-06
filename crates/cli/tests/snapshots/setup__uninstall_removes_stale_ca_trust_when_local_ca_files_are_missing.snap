@@ -1,0 +1,26 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "(uninstall, fixture.environment.operations())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV uninstall\nDaemon disabled\nLaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDeleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\nRemoved PV-owned system resolver config: <tempdir>/etc/resolver/test\nDeleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv\nDeleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf\nRemoved PV-owned system pf redirect config\nRemoved stale PV local CA trust from the System keychain: <fingerprint>\nShell profile integration not inspected because $SHELL is not set.\nRemoved PV app binaries and shims: <tempdir>/home/.pv/bin\nRemoved runtime metadata: <tempdir>/home/.pv/run\nRemoved generated configs: <tempdir>/home/.pv/config\nRemoved download cache: <tempdir>/home/.pv/downloads\nPreserved logs, pv.db, certificates, Composer home/cache, and resources data.\nPV uninstall complete\n",
+        stderr: "",
+    },
+    [
+        "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
+        "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "trust <fingerprint>",
+        "bootstrap <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist",
+        "kickstart com.prvious.pv.daemon",
+        "bootout com.prvious.pv.daemon",
+        "remove resolver <tempdir>/etc/resolver/test",
+        "remove pf <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf via <tempdir>/home/.pv/config/pf",
+        "untrust <fingerprint>",
+    ],
+)
