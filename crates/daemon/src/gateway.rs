@@ -17,6 +17,7 @@ use crate::gateway_config::{
     GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
     promote_validated_config_async, render_gateway_config, render_php_worker_config,
 };
+use crate::supervisor::probe_readiness_once;
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 #[expect(
@@ -402,18 +403,44 @@ async fn start_or_adopt_runtime(
     subject: RuntimeSubject,
 ) -> Result<(), DaemonError> {
     let result = async {
-        if supervisor.adopt(&spec)?.is_none() {
-            let process = supervisor.start(spec).await?;
-            if let Err(error) = wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await {
-                process.stop(Duration::from_secs(1)).await?;
-
-                return Err(error);
-            }
-
+        let reloaded = supervisor.reload(&spec)?;
+        if reloaded
+            && wait_for_readiness(readiness.clone(), RUNTIME_READINESS_TIMEOUT)
+                .await
+                .is_ok()
+            && supervisor.verify_ownership(&spec)?.is_some()
+        {
             return Ok(());
         }
 
-        wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await
+        if let Some(adopted) = supervisor.adopt(&spec)? {
+            adopted.stop(Duration::from_secs(1)).await?;
+        } else if probe_readiness_once(&readiness).await.is_ok() {
+            return Err(DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "runtime `{}` is listening but no PV-owned process could be verified",
+                    spec.name
+                ),
+            });
+        }
+
+        let mut process = supervisor.start(spec.clone()).await?;
+        if let Err(error) = wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await {
+            process.stop(Duration::from_secs(1)).await?;
+
+            return Err(error);
+        }
+
+        if process.has_exited()? {
+            return Err(DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "runtime `{}` exited before readiness was verified",
+                    spec.name
+                ),
+            });
+        }
+
+        Ok(())
     }
     .await;
 

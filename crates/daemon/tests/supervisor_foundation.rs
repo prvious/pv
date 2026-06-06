@@ -280,6 +280,36 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 }
 
 #[tokio::test]
+async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let marker = paths.run().join("reload-marker");
+    let ready = paths.run().join("reload-ready");
+    let spec = process_spec(
+        &paths,
+        "reloadable-runtime",
+        "/bin/sh",
+        vec![
+            "-c".to_string(),
+            format!(
+                "trap 'touch \"{marker}\"' USR1; touch \"{ready}\"; while true; do sleep 1; done"
+            ),
+        ],
+    );
+    let process = ProcessSupervisor::new(paths.clone())
+        .start(spec.clone())
+        .await?;
+
+    wait_for_path(&ready).await?;
+    ProcessSupervisor::new(paths.clone()).reload(&spec)?;
+    wait_for_path(&marker).await?;
+    process.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -394,6 +424,18 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
     }
 
     Err(anyhow!("process {pid:?} was still running"))
+}
+
+async fn wait_for_path(path: &camino::Utf8Path) -> Result<()> {
+    for _attempt in 0..50 {
+        if path.exists() {
+            return Ok(());
+        }
+
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    Err(anyhow!("file {path} did not exist"))
 }
 
 fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Result<()> {

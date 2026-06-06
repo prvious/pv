@@ -151,6 +151,16 @@ impl ProcessSupervisor {
             .verify_ownership(spec)?
             .map(|owned| AdoptedProcess { owned }))
     }
+
+    pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        let Some(owned) = self.verify_ownership(spec)? else {
+            return Ok(false);
+        };
+        let process_group = process_group_pid(owned.pid)?;
+        signal_process_group(process_group, Signal::USR1)?;
+
+        Ok(true)
+    }
 }
 
 impl ManagedProcess {
@@ -168,6 +178,10 @@ impl ManagedProcess {
 
     pub fn metadata_path(&self) -> &Utf8Path {
         &self.metadata_path
+    }
+
+    pub fn has_exited(&mut self) -> Result<bool, DaemonError> {
+        Ok(self.child.try_wait()?.is_some())
     }
 
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -197,6 +211,10 @@ impl AdoptedProcess {
     pub fn pid(&self) -> u32 {
         self.owned.pid()
     }
+
+    pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        stop_process_group_by_pid(self.owned.pid, grace_period).await
+    }
 }
 
 pub async fn wait_for_readiness(
@@ -225,6 +243,10 @@ pub async fn wait_for_readiness(
         timeout_ms: readiness_timeout.as_millis(),
         last_error,
     })
+}
+
+pub(crate) async fn probe_readiness_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
+    check_once(check).await
 }
 
 pub async fn wait_for_custom_readiness<F, Fut>(
@@ -333,6 +355,41 @@ async fn terminate_spawned_child(pid: u32, child: &mut Child) {
     }
 
     let _result = child.wait().await;
+}
+
+async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(), DaemonError> {
+    let process_group = process_group_pid(pid)?;
+    signal_process_group(process_group, Signal::TERM)?;
+
+    if wait_for_process_exit(pid, grace_period).await? {
+        return Ok(());
+    }
+
+    signal_process_group(process_group, Signal::KILL)?;
+
+    if wait_for_process_exit(pid, Duration::from_secs(1)).await? {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("process {pid} did not exit after signal"),
+    )
+    .into())
+}
+
+async fn wait_for_process_exit(pid: u32, readiness_timeout: Duration) -> Result<bool, DaemonError> {
+    let started_at = Instant::now();
+
+    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+        if !process_exists(pid)? {
+            return Ok(true);
+        }
+
+        sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+    }
+
+    Ok(!process_exists(pid)?)
 }
 
 #[expect(
