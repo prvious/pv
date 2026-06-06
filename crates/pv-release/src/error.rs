@@ -27,6 +27,9 @@ pub enum ReleaseError {
     #[error("conflicting revocation for artifact `{identity}`")]
     ConflictingRevocation { identity: String },
 
+    #[error("duplicate revocation for artifact `{identity}`")]
+    DuplicateRevocation { identity: String },
+
     #[error("invalid artifact archive `{path}`: {reason}")]
     InvalidArchive { path: String, reason: String },
 

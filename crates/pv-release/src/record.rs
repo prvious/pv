@@ -441,7 +441,11 @@ pub fn load_revocation_records(root: &Utf8Path) -> crate::Result<Vec<RevocationR
                     identity: entry.key().clone(),
                 });
             }
-            Entry::Occupied(_entry) => {}
+            Entry::Occupied(entry) => {
+                return Err(crate::ReleaseError::DuplicateRevocation {
+                    identity: entry.key().clone(),
+                });
+            }
         }
         records.push(record);
     }

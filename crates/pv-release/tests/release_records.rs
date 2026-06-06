@@ -142,6 +142,19 @@ fn revocation_loader_rejects_conflicting_revocations() -> Result<()> {
 }
 
 #[test]
+fn revocation_loader_rejects_duplicate_revocation_records() -> Result<()> {
+    let result = load_revocation_pair(VALID_REVOCATION_RECORD)?;
+
+    assert!(matches!(
+        result,
+        Err(ReleaseError::DuplicateRevocation { .. })
+    ));
+    assert_debug_snapshot!(result);
+
+    Ok(())
+}
+
+#[test]
 fn revocation_loader_rejects_same_reason_metadata_conflicts() -> Result<()> {
     let different_replacement = load_revocation_pair(&VALID_REVOCATION_RECORD.replace(
         "\"replacement_artifact_version\": \"7.2.6-pv1\"",
