@@ -1,0 +1,9 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: load_release_records(tempdir.path())
+---
+Err(
+    DuplicateArtifactIdentity {
+        identity: "redis:7.2:7.2.5:pv1:darwin-arm64",
+    },
+)

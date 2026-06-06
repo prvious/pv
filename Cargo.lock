@@ -1272,7 +1272,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "camino",
+ "camino-tempfile",
  "clap",
+ "insta",
+ "resources",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

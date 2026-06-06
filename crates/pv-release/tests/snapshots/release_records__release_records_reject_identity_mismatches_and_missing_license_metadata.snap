@@ -1,0 +1,10 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: "ReleaseRecord::from_json(Utf8Path::new(\"mismatch.json\"),\n&mismatched_artifact_version,)"
+---
+Err(
+    InvalidReleaseRecord {
+        path: "mismatch.json",
+        reason: "artifact_version `7.2.5-pv2` must equal `7.2.5-pv1`",
+    },
+)
