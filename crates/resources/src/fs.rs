@@ -81,6 +81,14 @@ pub(crate) fn path_entry_exists(path: &Utf8Path) -> Result<bool> {
     }
 }
 
+pub(crate) fn path_is_file(path: &Utf8Path) -> Result<bool> {
+    match symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(filesystem_error(path, source)),
+    }
+}
+
 pub(crate) fn path_is_directory(path: &Utf8Path) -> Result<bool> {
     symlink_metadata(path)
         .map(|metadata| metadata.is_dir())
