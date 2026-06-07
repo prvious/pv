@@ -8,6 +8,9 @@ pub enum ReleaseError {
     #[error("invalid revocation record `{path}`: {reason}")]
     InvalidRevocationRecord { path: String, reason: String },
 
+    #[error("invalid manifest default tracks `{path}`: {reason}")]
+    InvalidDefaultTracks { path: String, reason: String },
+
     #[error("duplicate artifact identity `{identity}`")]
     DuplicateArtifactIdentity { identity: String },
 

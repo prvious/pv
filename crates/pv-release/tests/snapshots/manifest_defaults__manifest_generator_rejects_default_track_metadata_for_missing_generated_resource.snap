@@ -1,0 +1,7 @@
+---
+source: crates/pv-release/tests/manifest_defaults.rs
+expression: error
+---
+GeneratedManifestInvalid {
+    reason: "manifest default metadata includes resource `mysql` but no release records generated that resource",
+}
