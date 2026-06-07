@@ -689,7 +689,7 @@ impl DaemonFixture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
         let thread = spawn_daemon_fixture_thread(move || {
-            for _request_index in 0..2 {
+            loop {
                 let (mut stream, _address) = accept_with_timeout(&listener)?;
                 let mut request = String::new();
                 let mut reader = BufReader::new(stream.try_clone()?);
@@ -698,7 +698,7 @@ impl DaemonFixture {
                 lock(&thread_requests).push(request.trim().to_string());
 
                 if request.contains(r#""command":"health""#) {
-                    write_daemon_line(
+                    if let Err(error) = write_daemon_line(
                         &mut stream,
                         json!({
                             "type": "response",
@@ -706,7 +706,14 @@ impl DaemonFixture {
                             "status": "ok",
                             "message": "daemon healthy",
                         }),
-                    )?;
+                    ) {
+                        if error.kind() == io::ErrorKind::BrokenPipe {
+                            continue;
+                        }
+
+                        return Err(error.into());
+                    }
+
                     continue;
                 }
 
@@ -745,6 +752,8 @@ impl DaemonFixture {
                         "summary": "stub job completed",
                     }),
                 )?;
+
+                break;
             }
 
             Ok(())
