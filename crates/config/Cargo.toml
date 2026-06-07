@@ -17,4 +17,9 @@ yaml_serde = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
+divan = { version = "4.7.0", package = "codspeed-divan-compat" }
 insta = { workspace = true }
+
+[[bench]]
+name = "config"
+harness = false
