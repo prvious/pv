@@ -3,8 +3,8 @@ use std::io;
 use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use config::{ConfigError, ProjectConfig, ProjectConfigFile};
-use insta::assert_debug_snapshot;
+use config::{ConfigError, ProjectConfig, ProjectConfigFile, write_project_php_track};
+use insta::{assert_debug_snapshot, assert_snapshot};
 
 #[test]
 fn project_config_parses_strict_resource_env_shape() -> Result<()> {
@@ -450,6 +450,100 @@ fn project_config_discovery_validates_paths_and_conflicts() -> Result<()> {
 }
 
 #[test]
+fn project_config_writer_updates_php_in_discovered_file() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    let public = project.join("public");
+    create_dir(&public)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"
+document_root: public
+hostnames:
+  - Admin.Acme.test.
+env:
+  APP_URL: "${project_url}"
+mysql:
+  version: 8.0
+  env:
+    DB_HOST: "${host}"
+  allocations:
+    app-db:
+      env:
+        DB_DATABASE: "${database}"
+postgres:
+  version: latest
+"#,
+    )?;
+
+    let updated = write_project_php_track(&project, "8.4")?;
+    let reloaded = ProjectConfigFile::read_from_root(&project)?;
+
+    assert_debug_snapshot!((
+        updated.path.file_name(),
+        updated.exists,
+        updated.config,
+        reloaded.config,
+    ));
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_updates_php_in_alternate_file() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yaml"), "php: 8.2\n")?;
+
+    let updated = write_project_php_track(&project, "latest")?;
+
+    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
+    assert!(!path_exists(&project.join("pv.yml"))?);
+    assert_snapshot!(read_file(&project.join("pv.yaml"))?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_creates_preferred_file_when_missing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+
+    let updated = write_project_php_track(&project, "8.3")?;
+
+    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
+    assert!(path_exists(&project.join("pv.yml"))?);
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_keeps_conflicting_files_unchanged() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.2\n")?;
+    write_file(&project.join("pv.yaml"), "php: 8.3\n")?;
+    let preferred_before = read_file(&project.join("pv.yml"))?;
+    let alternate_before = read_file(&project.join("pv.yaml"))?;
+
+    let result = write_project_php_track(&project, "8.4");
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::ConfigFileConflict { .. })
+    ));
+    assert_eq!(read_file(&project.join("pv.yml"))?, preferred_before);
+    assert_eq!(read_file(&project.join("pv.yaml"))?, alternate_before);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_discovery_reports_broken_config_symlinks() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
@@ -530,6 +624,26 @@ fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests read fixture files"
+)]
+fn read_file(path: &Utf8Path) -> Result<String> {
+    Ok(std::fs::read_to_string(path)?)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests check fixture file presence"
+)]
+fn path_exists(path: &Utf8Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_metadata) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(source.into()),
+    }
 }
 
 #[expect(

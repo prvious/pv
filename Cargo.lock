@@ -329,6 +329,7 @@ dependencies = [
  "camino-tempfile",
  "insta",
  "resources",
+ "serde",
  "thiserror",
  "yaml_serde",
 ]
