@@ -32,6 +32,15 @@ _pv() {
             pv,completions)
                 cmd="pv__subcmd__completions"
                 ;;
+            pv,composer:install)
+                cmd="pv__subcmd__composer:install"
+                ;;
+            pv,composer:uninstall)
+                cmd="pv__subcmd__composer:uninstall"
+                ;;
+            pv,composer:update)
+                cmd="pv__subcmd__composer:update"
+                ;;
             pv,daemon:disable)
                 cmd="pv__subcmd__daemon:disable"
                 ;;
@@ -95,6 +104,9 @@ _pv() {
             pv,setup)
                 cmd="pv__subcmd__setup"
                 ;;
+            pv,shim:composer)
+                cmd="pv__subcmd__shim:composer"
+                ;;
             pv,shim:php)
                 cmd="pv__subcmd__shim:php"
                 ;;
@@ -111,7 +123,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list"
+            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -168,6 +180,48 @@ _pv() {
             ;;
         pv__subcmd__completions)
             opts="-h --no-color --help bash fish zsh"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__composer:install)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__composer:uninstall)
+            opts="-h --prune --force --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__composer:update)
+            opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -470,6 +524,20 @@ _pv() {
             ;;
         pv__subcmd__setup)
             opts="-h --yes --non-interactive --no-path --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__shim:composer)
+            opts="--no-color [args]..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

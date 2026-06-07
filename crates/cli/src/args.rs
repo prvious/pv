@@ -54,6 +54,16 @@ pub(crate) enum Command {
     )]
     ShimPhp(ShimArgs),
 
+    #[command(
+        name = "shim:composer",
+        about = "Run the internal PV Composer shim",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true,
+        trailing_var_arg = true
+    )]
+    ShimComposer(ShimArgs),
+
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
@@ -116,6 +126,15 @@ pub(crate) enum Command {
 
     #[command(name = "php:list", about = "List installed PHP tracks")]
     PhpList,
+
+    #[command(name = "composer:install", about = "Install Composer track 2")]
+    ComposerInstall,
+
+    #[command(name = "composer:update", about = "Update Composer track 2")]
+    ComposerUpdate,
+
+    #[command(name = "composer:uninstall", about = "Uninstall Composer")]
+    ComposerUninstall(ComposerUninstallArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -185,6 +204,15 @@ pub(crate) struct PhpUninstallArgs {
     pub(crate) prune: bool,
 
     #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ComposerUninstallArgs {
+    #[arg(long, help = "Remove PV-owned Composer home/cache")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove Composer even if in use")]
     pub(crate) force: bool,
 }
 

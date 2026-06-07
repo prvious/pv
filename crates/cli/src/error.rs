@@ -39,6 +39,9 @@ pub enum CliError {
 
     #[error("PHP track {track} is not installed.\nRun `pv php:install {track}` to install it.")]
     MissingPhpTrack { track: String },
+
+    #[error("Composer track 2 is not installed.\nRun `pv composer:install` to install it.")]
+    MissingComposer,
 }
 
 #[derive(Debug, Error)]

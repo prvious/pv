@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Updated 1 Composer track(s)\n",
+        stderr: "",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "composer",
+            track: "2",
+            desired_state: "Installed",
+            installed_version: Some(
+                "2.8.1-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    1,
+    0,
+)

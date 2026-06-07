@@ -191,13 +191,20 @@ pub(crate) fn shim(
     args: ShimArgs,
     environment: &impl Environment,
 ) -> Result<ExitCode, ExecuteError> {
+    shim_with_args(args.args, environment)
+}
+
+pub(crate) fn shim_with_args(
+    args: Vec<String>,
+    environment: &impl Environment,
+) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let track = resolve_php_track_for_shim(&paths, &database, environment)?;
     let executable = installed_php_executable(&database, &track)?;
 
     environment
-        .exec(executable.as_std_path(), &args.args)
+        .exec(executable.as_std_path(), &args)
         .map_err(ExecuteError::from)
 }
 

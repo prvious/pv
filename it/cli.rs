@@ -126,6 +126,19 @@ fn php_management_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn composer_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["composer:install", "--help"])?,
+        run_pv(&["composer:update", "--help"])?,
+        run_pv(&["composer:uninstall", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 

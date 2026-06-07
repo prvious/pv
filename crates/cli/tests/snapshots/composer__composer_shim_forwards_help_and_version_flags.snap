@@ -1,0 +1,74 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(outputs, exec_calls)"
+---
+(
+    [
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+    ],
+    [
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "--help",
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "-h",
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "--version",
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "-V",
+            ],
+        },
+    ],
+)

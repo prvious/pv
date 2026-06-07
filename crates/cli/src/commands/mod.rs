@@ -7,6 +7,7 @@ use crate::error::ExecuteError;
 
 mod ca;
 mod completions;
+mod composer;
 mod daemon;
 mod dns;
 mod env;
@@ -31,6 +32,7 @@ pub(crate) fn execute(
         Command::DaemonRestart => daemon::restart(environment, stdout),
         Command::DaemonRun => daemon::run(),
         Command::ShimPhp(args) => php::shim(args, environment),
+        Command::ShimComposer(args) => composer::shim(args, environment),
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),
         Command::DnsUninstall => dns::uninstall(environment, stdout),
@@ -50,5 +52,8 @@ pub(crate) fn execute(
         Command::PhpUpdate => php::update(environment, stdout),
         Command::PhpUninstall(args) => php::uninstall(args, environment, stdout),
         Command::PhpList => php::list(environment, stdout),
+        Command::ComposerInstall => composer::install(environment, stdout),
+        Command::ComposerUpdate => composer::update(environment, stdout),
+        Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
     }
 }

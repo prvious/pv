@@ -102,6 +102,12 @@ _arguments "${_arguments_options[@]}" : \
 '*::args:_default' \
 && ret=0
 ;;
+(shim:composer)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'*::args:_default' \
+&& ret=0
+;;
 (dns:status)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -248,6 +254,29 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(composer:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(composer:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(composer:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned Composer home/cache]' \
+'--force[Remove Composer even if in use]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -265,6 +294,7 @@ _pv_commands() {
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
 'shim:php:Run the internal PV PHP shim' \
+'shim:composer:Run the internal PV Composer shim' \
 'dns:status:Show PV .test resolver status' \
 'dns:install:Install or repair PV .test resolver config' \
 'dns:uninstall:Remove PV .test resolver config' \
@@ -284,6 +314,9 @@ _pv_commands() {
 'php:update:Update installed PHP tracks' \
 'php:uninstall:Uninstall a PHP track' \
 'php:list:List installed PHP tracks' \
+'composer:install:Install Composer track 2' \
+'composer:update:Update Composer track 2' \
+'composer:uninstall:Uninstall Composer' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -306,6 +339,21 @@ _pv__subcmd__ca:untrust_commands() {
 _pv__subcmd__completions_commands() {
     local commands; commands=()
     _describe -t commands 'pv completions commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__composer:install_commands] )) ||
+_pv__subcmd__composer:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv composer:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__composer:uninstall_commands] )) ||
+_pv__subcmd__composer:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv composer:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__composer:update_commands] )) ||
+_pv__subcmd__composer:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv composer:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__daemon:disable_commands] )) ||
 _pv__subcmd__daemon:disable_commands() {
@@ -411,6 +459,11 @@ _pv__subcmd__project:env_commands() {
 _pv__subcmd__setup_commands() {
     local commands; commands=()
     _describe -t commands 'pv setup commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__shim:composer_commands] )) ||
+_pv__subcmd__shim:composer_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv shim:composer commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__shim:php_commands] )) ||
 _pv__subcmd__shim:php_commands() {
