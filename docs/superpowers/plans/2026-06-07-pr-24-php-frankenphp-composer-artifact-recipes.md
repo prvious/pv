@@ -10,6 +10,12 @@
 
 ---
 
+## Paired StaticPHP Build Amendment
+
+The original Task 6 and Task 9 steps described independently selected `php` and `frankenphp` native builds. That is superseded by `docs/superpowers/plans/2026-06-07-pr-24-paired-staticphp-build.md`.
+
+PHP-family native builds are now pair-first: one StaticPHP v3 buildroot per PHP track/platform produces both `php` and `frankenphp` archives and release records. Composer remains a separate portable artifact path.
+
 ## File Structure
 
 - Modify `Cargo.toml`: add workspace `toml` dependency.
@@ -1594,129 +1600,9 @@ git commit -m "feat(release): add PHP and FrankenPHP artifact recipes"
 **Files:**
 - Create: `.github/workflows/artifact-recipes.yml`
 
-- [ ] **Step 1: Add manual workflow**
+This original workflow template is superseded by `docs/superpowers/plans/2026-06-07-pr-24-paired-staticphp-build.md` Task 3. Do not copy the old independent-build workflow shape from this plan.
 
-Create `.github/workflows/artifact-recipes.yml`:
-
-```yaml
-name: Artifact Recipes
-
-on:
-  workflow_dispatch:
-    inputs:
-      resource:
-        description: "Resource to build: all, php, frankenphp, composer"
-        required: true
-        default: "all"
-        type: choice
-        options:
-          - all
-          - php
-          - frankenphp
-          - composer
-      track:
-        description: "Track to build: all, 8.2, 8.3, 8.4, 2"
-        required: true
-        default: "all"
-        type: string
-      platform:
-        description: "Artifact platform"
-        required: true
-        default: "darwin-arm64"
-        type: choice
-        options:
-          - darwin-arm64
-          - darwin-amd64
-
-jobs:
-  build:
-    runs-on: ${{ inputs.platform == 'darwin-amd64' && 'macos-13' || 'macos-14' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install release tooling dependencies
-        run: |
-          brew update
-          brew install shellcheck php
-          curl -L --fail --show-error --silent https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-macos-$(uname -m) -o /usr/local/bin/spc
-          chmod +x /usr/local/bin/spc
-
-      - name: Validate recipe metadata
-        run: |
-          cargo run -p pv-release -- generate-recipe-fixtures \
-            --php release/artifacts/recipes/php/tracks.toml \
-            --composer release/artifacts/recipes/composer/composer.toml \
-            --archives /tmp/pv-recipe-fixtures/archives \
-            --records /tmp/pv-recipe-fixtures/records \
-            --pv-commit "$(git rev-parse HEAD)" \
-            --build-run-id "${{ github.run_id }}"
-          cargo run -p pv-release -- generate-manifest \
-            --records /tmp/pv-recipe-fixtures/records \
-            --revocations release/artifacts/revocations \
-            --defaults release/artifacts/default-tracks.toml \
-            --output /tmp/pv-recipe-fixtures/manifest.json \
-            --base-url https://artifacts.example.test
-
-      - name: Build selected artifacts
-        env:
-          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
-          PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
-          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
-          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
-          PV_COMMIT: ${{ github.sha }}
-          PV_BUILD_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -eu
-          resources="$PV_RECIPE_RESOURCE"
-          php_tracks="$PV_RECIPE_TRACK"
-          if [ "$resources" = all ]; then
-            resources="php frankenphp composer"
-          fi
-          if [ "$php_tracks" = all ]; then
-            php_tracks="8.2 8.3 8.4"
-          fi
-          for resource in $resources; do
-            if [ "$resource" = composer ]; then
-              composer_track="$PV_RECIPE_TRACK"
-              [ "$composer_track" = all ] && composer_track=2
-              PV_RECIPE_RESOURCE=composer PV_RECIPE_TRACK="$composer_track" PV_RECIPE_PLATFORM=any PV_COMPOSER_SMOKE_PHP="$(command -v php)" release/artifacts/recipes/composer/build.sh
-              continue
-            fi
-            for track in $php_tracks; do
-              PV_RECIPE_RESOURCE="$resource" PV_RECIPE_TRACK="$track" release/artifacts/recipes/php/build.sh
-            done
-          done
-
-      - name: Generate manifest from records
-        run: |
-          cargo run -p pv-release -- generate-manifest \
-            --records "${{ runner.temp }}/pv-records" \
-            --revocations release/artifacts/revocations \
-            --defaults release/artifacts/default-tracks.toml \
-            --output "${{ runner.temp }}/pv-artifacts/manifest.json" \
-            --base-url https://artifacts.example.test
-
-      - name: Upload artifact archives and records
-        uses: actions/upload-artifact@v7
-        with:
-          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ inputs.platform }}-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/pv-artifacts
-            ${{ runner.temp }}/pv-records
-          if-no-files-found: error
-```
-
-- [ ] **Step 2: Commit Task 7**
-
-```bash
-git add .github/workflows/artifact-recipes.yml
-git commit -m "ci: add manual artifact recipe workflow"
-```
+Current manual workflow resource choices are `all`, `php`, and `composer`. `resource=php` is the PHP-family paired build path: each selected PHP track/platform produces both PHP and FrankenPHP artifacts. Composer remains independently selectable as `resource=composer`.
 
 ## Task 8: Add Cheap Recipe Validation to Normal CI
 
@@ -1887,7 +1773,6 @@ If there are no changes, do not create an empty commit.
 After pushing the branch, run the manual `Artifact Recipes` workflow for:
 
 - `resource=composer`, `track=2`, `platform=darwin-arm64`
-- `resource=php`, `track=8.4`, `platform=darwin-arm64`
-- `resource=frankenphp`, `track=8.4`, `platform=darwin-arm64`
+- `resource=php`, `track=8.4`, `platform=darwin-arm64`, which should produce both PHP and FrankenPHP artifacts
 
-If those pass, run `resource=all`, `track=all`, `platform=darwin-arm64`. Run `darwin-amd64` when GitHub-hosted Intel macOS capacity is available for this repository. Uploads remain GitHub Actions artifacts and are not public release publication.
+If those pass, run `resource=all`, `track=all`, `platform=darwin-arm64`; the `all/all` run builds PHP-family pairs plus Composer. Run `darwin-amd64` when GitHub-hosted Intel macOS capacity is available for this repository. Uploads remain GitHub Actions artifacts and are not public release publication.
