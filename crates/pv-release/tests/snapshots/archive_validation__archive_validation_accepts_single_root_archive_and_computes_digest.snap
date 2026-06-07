@@ -1,0 +1,20 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "(validation_summary(&validation, tempdir.path()),\nvalidate_archive_for_record_file(&archive, &record),)"
+---
+(
+    (
+        "redis.tar.gz",
+        "c0108ea94a249d19b7aec530bf9947181dfdde484dd2134b336c7eae2213c7c9",
+        170,
+        "redis-7.2.5-pv1",
+        [
+            "redis-7.2.5-pv1/LICENSE",
+            "redis-7.2.5-pv1/NOTICE",
+            "redis-7.2.5-pv1/bin/redis-server",
+        ],
+    ),
+    Ok(
+        (),
+    ),
+)

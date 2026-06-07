@@ -1,0 +1,26 @@
+---
+source: crates/pv-release/tests/manifest_generation.rs
+expression: "(missing_replacement, self_replacement, wrong_platform_replacement,\nrevoked_replacement,)"
+---
+(
+    RevocationReplacementInvalid {
+        revocation: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        replacement: "redis:7.2:7.2.6-pv1:darwin-arm64",
+        reason: "replacement release must exist for the same resource, track, and platform",
+    },
+    RevocationReplacementInvalid {
+        revocation: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        replacement: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        reason: "replacement must not point at the revoked artifact itself",
+    },
+    RevocationReplacementInvalid {
+        revocation: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        replacement: "redis:7.2:7.2.6-pv1:darwin-arm64",
+        reason: "replacement release must exist for the same resource, track, and platform",
+    },
+    RevocationReplacementInvalid {
+        revocation: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        replacement: "redis:7.2:7.2.6-pv1:darwin-arm64",
+        reason: "replacement release must not also be revoked",
+    },
+)

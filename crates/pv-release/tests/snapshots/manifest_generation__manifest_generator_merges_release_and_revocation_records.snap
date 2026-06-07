@@ -1,0 +1,59 @@
+---
+source: crates/pv-release/tests/manifest_generation.rs
+expression: manifest_json
+---
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "redis",
+      "default_track": "7.2",
+      "tracks": [
+        {
+          "name": "7.2",
+          "artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 42,
+              "published_at": "2026-06-06T12:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-7.2.5.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              },
+              "revoked": true,
+              "revocation_reason": "security issue",
+              "revoked_at": "2026-06-06T14:00:00Z",
+              "replacement_artifact_version": "7.2.6-pv1"
+            },
+            {
+              "artifact_version": "7.2.6-pv1",
+              "upstream_version": "7.2.6",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/7.2/7.2.6-pv1/darwin-arm64/redis-7.2.6-pv1-darwin-arm64.tar.gz",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "size": 84,
+              "published_at": "2026-06-06T13:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-7.2.6.tar.gz",
+                "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1268,6 +1268,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pv-release"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "camino",
+ "camino-tempfile",
+ "clap",
+ "data-encoding",
+ "flate2",
+ "insta",
+ "resources",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

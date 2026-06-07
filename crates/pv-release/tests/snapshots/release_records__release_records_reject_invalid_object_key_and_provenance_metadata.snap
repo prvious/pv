@@ -1,0 +1,62 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: errors
+---
+[
+    (
+        "absolute_object_key",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "object_key contains invalid relative path `/resources/redis.tar.gz`",
+        },
+    ),
+    (
+        "parent_object_key",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "object_key contains invalid relative path `resources/../redis.tar.gz`",
+        },
+    ),
+    (
+        "mismatched_object_key",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "object_key must be `resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz`",
+        },
+    ),
+    (
+        "invalid_source_url",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "source_url must be an https URL with a host",
+        },
+    ),
+    (
+        "invalid_source_sha256",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "invalid source_sha256: invalid sha256 `bad`",
+        },
+    ),
+    (
+        "invalid_recipe",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "recipe contains invalid relative path `../build.sh`",
+        },
+    ),
+    (
+        "invalid_commit",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "pv_commit must be a 40-character hex commit",
+        },
+    ),
+    (
+        "empty_build_run",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "build_run_id must not be empty",
+        },
+    ),
+]

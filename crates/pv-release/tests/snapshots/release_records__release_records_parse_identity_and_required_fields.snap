@@ -1,0 +1,49 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: record
+---
+ReleaseRecord {
+    path: "redis-7.2.5.json",
+    identity: ArtifactIdentity {
+        resource: ResourceName(
+            "redis",
+        ),
+        track: TrackName(
+            "7.2",
+        ),
+        upstream_version: "7.2.5",
+        pv_build_revision: "pv1",
+        platform: DarwinArm64,
+    },
+    artifact_version: ArtifactVersion(
+        "7.2.5-pv1",
+    ),
+    object_key: "resources/redis/7.2/7.2.5-pv1/darwin-arm64/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+    sha256: Sha256Digest(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ),
+    size: 42,
+    published_at_raw: "2026-06-06T12:00:00Z",
+    published_at: PublishedAt(
+        2026-06-06 12:00:00.0 +00:00:00,
+    ),
+    minimum_pv_version: PvVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        raw: "0.1.0",
+    },
+    license_files: [
+        "LICENSE",
+    ],
+    notice_files: [
+        "NOTICE",
+    ],
+    provenance: Provenance {
+        source_url: "https://download.redis.io/releases/redis-7.2.5.tar.gz",
+        source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        recipe: "release/artifacts/recipes/redis/build.sh",
+        pv_commit: "0123456789abcdef0123456789abcdef01234567",
+        build_run_id: "local-test",
+    },
+}

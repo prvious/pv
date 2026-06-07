@@ -1,0 +1,16 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: "(summarize_result(run_smoke_hook(&success, tempdir.path())),\nsummarize_result(run_smoke_hook(&failure, tempdir.path())),)"
+---
+(
+    Ok(
+        (),
+    ),
+    Err(
+        ErrorSummary {
+            kind: "SmokeHookFailed",
+            path: "failure.sh",
+            reason: "exit status: 42",
+        },
+    ),
+)

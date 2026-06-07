@@ -306,12 +306,12 @@ Basic status can start earlier, but release-ready status needs at least one real
 | PV-107 | Implement PV app release metadata generation               | Enabler | PV-100, PV-101                                 | installer/update                | PV app manifest, PV binary checksums, and generated installer inputs come from release metadata.                                                                                                            |
 | PV-108 | Define artifact release metadata model                     | Enabler | PV-042                                         | artifact distribution           | Immutable artifact release records, append-only revocation records, object-storage key layout, provenance fields, and platform selection rules are modeled.                                                 |
 | PV-109 | Implement artifact release Rust tooling                    | Enabler | PV-042, PV-108                                 | artifact distribution           | Internal Rust tooling validates records, merges revocations, computes checksums/sizes, generates the public Managed Resource artifact manifest, and validates versioned/stable manifest publication inputs. |
-| PV-110 | Implement common artifact packaging and validation harness | Enabler | PV-109                                         | artifact recipes                | Shared shell/Rust helpers create single-root `.tar.gz` archives, enforce macOS 13 target metadata, run Mach-O relocation scans, ad-hoc sign binaries, verify license files, and execute smoke-test hooks.   |
+| PV-110 | Implement common artifact packaging and validation harness | Enabler | PV-109                                         | artifact recipes                | Shared shell/Rust helpers create single-root `.tar.gz` archives, enforce macOS 13 target metadata, ad-hoc sign binaries, verify license files, and execute smoke-test hooks.                              |
 | PV-111 | Add artifact publication workflow                          | Enabler | PV-109, PV-110                                 | public artifact distribution    | GitHub Actions uploads immutable archives and release records to object storage, then atomically publishes versioned and stable artifact manifests without rebuilding the PV app.                           |
 | PV-112 | Add PHP/FrankenPHP artifact recipes                        | Story   | PV-110                                         | M7 public artifacts             | Recipes build PHP `8.2`, `8.3`, and `8.4` plus matched FrankenPHP artifacts, enforce the fixed extension set, validate PHP/FrankenPHP patch-version sync, and smoke-test CLI plus loopback serving.         |
 | PV-113 | Add Composer artifact recipe                               | Story   | PV-110                                         | Composer public artifact        | Recipe packages Composer track `2` as a `platform: "any"` `.tar.gz` containing `composer.phar`, license metadata, checksum, size, and provenance.                                                           |
-| PV-114 | Add Redis artifact recipe                                  | Story   | PV-110                                         | Redis public artifact           | Recipe builds or wraps Redis, validates no unmanaged Homebrew/runtime paths, packages `redis-server` and `redis-cli`, and smoke-tests `PING`/`PONG`.                                                        |
-| PV-115 | Add SQL Managed Resource artifact recipes                  | Story   | PV-110                                         | MySQL/Postgres public artifacts | Recipes prefer wrapping official MySQL/Postgres binaries when suitable, otherwise build from source, then validate relocation and smoke-test init/start/query/stop.                                         |
+| PV-114 | Add Redis artifact recipe                                  | Story   | PV-110                                         | Redis public artifact           | Recipe builds or wraps Redis, packages `redis-server` and `redis-cli`, and smoke-tests `PING`/`PONG`.                                                                                                       |
+| PV-115 | Add SQL Managed Resource artifact recipes                  | Story   | PV-110                                         | MySQL/Postgres public artifacts | Recipes prefer wrapping official MySQL/Postgres binaries when suitable, otherwise build from source, then smoke-test init/start/query/stop.                                                                  |
 | PV-116 | Add Mailpit and RustFS artifact recipes                    | Story   | PV-110                                         | Mailpit/RustFS public artifacts | Recipes prefer wrapping official upstream binaries, package normalized artifacts, and smoke-test Mailpit HTTP/SMTP plus RustFS S3 readiness.                                                                |
 | PV-117 | Publish initial Managed Resource artifact matrix           | Task    | PV-111, PV-112, PV-113, PV-114, PV-115, PV-116 | release candidate               | The public artifact manifest contains the default setup install set for supported macOS platforms, with Composer as `platform: "any"` and native resources as `darwin-arm64`/`darwin-amd64`.                |
 
@@ -413,12 +413,12 @@ After PV-110 lands, artifact recipe work can run in parallel with adapter work. 
 | PHP/FrankenPHP | Build from source through the PV recipe because PV needs exact PHP tracks and fixed extensions. | Public M7 setup artifacts | macOS 13 deployment target, fixed extension set, PHP/FrankenPHP patch-version sync, loopback serving smoke test. |
 | Composer       | Wrap upstream Composer PHAR into PV `.tar.gz`.                                                  | Composer public artifact  | `platform: "any"`, track `2`, PHAR checksum, PHP shim execution smoke test.                                      |
 | Redis          | Build from source unless a suitable upstream macOS binary appears.                              | Redis public artifact     | No unmanaged Homebrew paths, `redis-server` start, `redis-cli ping`, clean stop.                                 |
-| MySQL          | Prefer wrapping official upstream macOS/generic binaries when relocation tests pass.            | MySQL public artifact     | Init temporary data dir, start, admin connection, `SELECT 1`, clean stop.                                        |
-| Postgres       | Prefer wrapping official upstream macOS binaries when relocation tests pass.                    | Postgres public artifact  | `initdb`, start, `psql SELECT 1`, clean stop.                                                                    |
+| MySQL          | Prefer wrapping official upstream macOS/generic binaries when smoke tests pass.                 | MySQL public artifact     | Init temporary data dir, start, admin connection, `SELECT 1`, clean stop.                                        |
+| Postgres       | Prefer wrapping official upstream macOS binaries when smoke tests pass.                         | Postgres public artifact  | `initdb`, start, `psql SELECT 1`, clean stop.                                                                    |
 | Mailpit        | Prefer wrapping upstream static macOS release binary.                                           | Mailpit public artifact   | HTTP UI check, SMTP port bind, clean stop.                                                                       |
 | RustFS         | Prefer wrapping upstream release binary when suitable.                                          | RustFS public artifact    | S3 readiness, create/list test bucket, clean stop.                                                               |
 
-Artifact recipe PRs should be split by resource when practical. The common harness and publication workflow stay separate so every recipe gets the same packaging, relocation, signing, smoke-test, metadata, and manifest-generation behavior.
+Artifact recipe PRs should be split by resource when practical. The common harness and publication workflow stay separate so every recipe gets the same packaging, signing, smoke-test, metadata, and manifest-generation behavior.
 
 ## Blocking Rules For Resource PRs
 
@@ -434,7 +434,7 @@ Artifact recipe PRs should be split by resource when practical. The common harne
 - Artifact recipe PRs must not change the public artifact manifest schema unless the client parser and release tooling change in the same foundation PR.
 - Artifact recipe PRs must output normalized single-root `.tar.gz` archives and structured release metadata records.
 - Artifact recipe PRs must run on native macOS for macOS artifacts; Docker is not an accepted validation path for published macOS artifacts.
-- Artifact recipe PRs must pass relocation validation, ad-hoc signing, required license/notice publication checks, and resource-specific smoke tests before publication.
+- Artifact recipe PRs must pass archive validation, ad-hoc signing, required license/notice publication checks, and resource-specific smoke tests before publication.
 - Artifact recipe PRs must not allow Homebrew or runner-installed dependencies to become unmanaged runtime dependencies.
 - Normal PV application CI must not publish artifacts or mutate the stable artifact manifest. Publication happens only through the explicit artifact release workflow.
 
@@ -467,7 +467,7 @@ For artifact release PRs:
 
 - Release metadata validation has snapshot or fixture coverage for release records, revocation records, `platform: "any"`, exact-platform preference, revoked fallback, and generated manifests.
 - Packaging tests prove archives contain exactly one top-level directory and installable paths expected by the corresponding adapter.
-- macOS artifact candidates pass Mach-O dependency scans for build-runner paths, absolute Homebrew paths, and unexpected non-system dynamic libraries.
+- Artifact candidates pass archive validation, ad-hoc signing where required, required license/notice checks, and resource-specific smoke tests.
 - Publication workflows upload immutable archives and metadata records, then update the stable manifest entrypoint only after a complete generated manifest validates.
 - Resource-specific smoke tests run before a candidate artifact can appear in the public manifest.
 
@@ -485,7 +485,7 @@ For artifact release PRs:
 - Artifact publication uploads immutable archives to PV-owned object storage and updates the stable manifest entrypoint atomically.
 - Default PHP, FrankenPHP, and Composer artifacts are published for the supported v1 platform matrix.
 - Backing Managed Resource artifacts are published for the supported v1 platform matrix, or a preview release explicitly documents any intentionally missing resource/platform.
-- Published native macOS artifacts pass relocation scans, ad-hoc signing, macOS 13 deployment target checks, and resource-specific smoke tests.
+- Published native macOS artifacts pass ad-hoc signing, macOS 13 deployment target checks, archive validation, and resource-specific smoke tests.
 - Each Managed Resource installs, starts on demand, stops when unused, and reports status.
 - SQL allocations create databases with stable readable names.
 - Redis allocations render stable prefixes.

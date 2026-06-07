@@ -1,0 +1,30 @@
+[package]
+name = "pv-release"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pv-release"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+camino = { workspace = true }
+camino-tempfile = { workspace = true }
+clap = { workspace = true }
+data-encoding = { workspace = true }
+flate2 = { workspace = true }
+resources = { path = "../resources" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

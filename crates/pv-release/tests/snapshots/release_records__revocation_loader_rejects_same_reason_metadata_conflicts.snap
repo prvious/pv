@@ -1,0 +1,16 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: "(different_replacement, different_revoked_at)"
+---
+(
+    Err(
+        ConflictingRevocation {
+            identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        },
+    ),
+    Err(
+        ConflictingRevocation {
+            identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+        },
+    ),
+)

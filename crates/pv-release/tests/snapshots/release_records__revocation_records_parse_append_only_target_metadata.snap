@@ -1,0 +1,26 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: record
+---
+RevocationRecord {
+    path: "redis-7.2.5-pv1-revoked.json",
+    resource: ResourceName(
+        "redis",
+    ),
+    track: TrackName(
+        "7.2",
+    ),
+    artifact_version: ArtifactVersion(
+        "7.2.5-pv1",
+    ),
+    platform: DarwinArm64,
+    reason: "security issue",
+    revoked_at: PublishedAt(
+        2026-06-06 13:00:00.0 +00:00:00,
+    ),
+    replacement_artifact_version: Some(
+        ArtifactVersion(
+            "7.2.6-pv1",
+        ),
+    ),
+}
