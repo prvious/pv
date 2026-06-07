@@ -991,10 +991,6 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>> {
     }
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "release tooling tests inspect optional smoke hook outputs"
-)]
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }
