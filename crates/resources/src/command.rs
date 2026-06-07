@@ -154,12 +154,25 @@ impl ManagedResourceCommands {
         let track = manifest
             .resolve_track(php.resource_name(), selector)?
             .clone();
+        self.validate_install_selection(&php, &track, manifest)?;
+        self.validate_install_selection(&frankenphp, &track, manifest)?;
 
         let php = self.install_track(&php, track.clone(), manifest, refresh.source(), client)?;
         let frankenphp =
             self.install_track(&frankenphp, track, manifest, refresh.source(), client)?;
 
         Ok(PhpPairInstall { php, frankenphp })
+    }
+
+    fn validate_install_selection(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: &TrackName,
+        manifest: &ArtifactManifest,
+    ) -> ManagedResourceCommandResult<()> {
+        manifest.select_latest(adapter.resource_name(), track, self.target_platform)?;
+
+        Ok(())
     }
 
     fn install_track(
@@ -310,53 +323,12 @@ impl ManagedResourceCommands {
         track: &TrackName,
         options: ManagedResourceUninstallOptions,
     ) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
-        registry::resolve_canonical(resource_name.as_str())?;
-        if TrackSelector::is_reserved_alias(track.as_str()) {
-            return Err(ResourcesError::ReservedTrackName {
-                name: track.as_str().to_string(),
-            }
-            .into());
-        }
-
+        validate_uninstall_request(resource_name, track)?;
         let mut database = Database::open(&self.paths)?;
-        let installed_track = database
-            .managed_resource_tracks()?
-            .into_iter()
-            .find(|record| {
-                record.resource_name == resource_name.as_str() && record.track == track.as_str()
-            })
-            .filter(|record| {
-                record.desired_state == ManagedResourceDesiredState::Installed
-                    && record.installed_version.is_some()
-                    && record.current_artifact_path.is_some()
-            })
-            .ok_or_else(|| ManagedResourceCommandError::TrackNotInstalled {
-                resource: resource_name.as_str().to_string(),
-                track: track.as_str().to_string(),
-            })?;
-        if installed_track.usage_count > 0 && !options.force {
-            return Err(ManagedResourceCommandError::TrackInUse {
-                resource: resource_name.as_str().to_string(),
-                track: track.as_str().to_string(),
-                usage_count: installed_track.usage_count,
-            });
-        }
+        let records = database.managed_resource_tracks()?;
+        validate_uninstall_eligibility(&records, resource_name, track, options)?;
 
-        // Uninstall records intent. Daemon reconciliation owns runtime stops,
-        // artifact removal, mutable data pruning, and installed metadata cleanup.
-        database.record_managed_resource_track_removal_intent(
-            resource_name.as_str(),
-            track.as_str(),
-            options.prune,
-            options.force,
-        )?;
-
-        Ok(ManagedResourceRemovalIntent {
-            resource_name: resource_name.clone(),
-            track: track.clone(),
-            prune: options.prune,
-            force: options.force,
-        })
+        record_removal_intent(&mut database, resource_name, track, options)
     }
 
     pub fn uninstall_php_pair(
@@ -366,8 +338,17 @@ impl ManagedResourceCommands {
     ) -> ManagedResourceCommandResult<PhpPairRemovalIntent> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
-        let php = self.uninstall(php.resource_name(), track, options)?;
-        let frankenphp = self.uninstall(frankenphp.resource_name(), track, options)?;
+        validate_uninstall_request(php.resource_name(), track)?;
+        validate_uninstall_request(frankenphp.resource_name(), track)?;
+
+        let mut database = Database::open(&self.paths)?;
+        let records = database.managed_resource_tracks()?;
+        validate_uninstall_eligibility(&records, php.resource_name(), track, options)?;
+        validate_uninstall_eligibility(&records, frankenphp.resource_name(), track, options)?;
+
+        let php = record_removal_intent(&mut database, php.resource_name(), track, options)?;
+        let frankenphp =
+            record_removal_intent(&mut database, frankenphp.resource_name(), track, options)?;
 
         Ok(PhpPairRemovalIntent { php, frankenphp })
     }
@@ -565,6 +546,78 @@ impl ManagedResourceTrack {
     pub fn usage_count(&self) -> i64 {
         self.usage_count
     }
+}
+
+fn validate_uninstall_request(
+    resource_name: &ResourceName,
+    track: &TrackName,
+) -> ManagedResourceCommandResult<()> {
+    registry::resolve_canonical(resource_name.as_str())?;
+    if TrackSelector::is_reserved_alias(track.as_str()) {
+        return Err(ResourcesError::ReservedTrackName {
+            name: track.as_str().to_string(),
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
+fn validate_uninstall_eligibility(
+    records: &[ManagedResourceTrackRecord],
+    resource_name: &ResourceName,
+    track: &TrackName,
+    options: ManagedResourceUninstallOptions,
+) -> ManagedResourceCommandResult<()> {
+    let Some(installed_track) = records
+        .iter()
+        .find(|record| {
+            record.resource_name == resource_name.as_str() && record.track == track.as_str()
+        })
+        .filter(|record| {
+            record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+                && record.current_artifact_path.is_some()
+        })
+    else {
+        return Err(ManagedResourceCommandError::TrackNotInstalled {
+            resource: resource_name.as_str().to_string(),
+            track: track.as_str().to_string(),
+        });
+    };
+
+    if installed_track.usage_count > 0 && !options.force {
+        return Err(ManagedResourceCommandError::TrackInUse {
+            resource: resource_name.as_str().to_string(),
+            track: track.as_str().to_string(),
+            usage_count: installed_track.usage_count,
+        });
+    }
+
+    Ok(())
+}
+
+fn record_removal_intent(
+    database: &mut Database,
+    resource_name: &ResourceName,
+    track: &TrackName,
+    options: ManagedResourceUninstallOptions,
+) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
+    // Uninstall records intent. Daemon reconciliation owns runtime stops,
+    // artifact removal, mutable data pruning, and installed metadata cleanup.
+    database.record_managed_resource_track_removal_intent(
+        resource_name.as_str(),
+        track.as_str(),
+        options.prune,
+        options.force,
+    )?;
+
+    Ok(ManagedResourceRemovalIntent {
+        resource_name: resource_name.clone(),
+        track: track.clone(),
+        prune: options.prune,
+        force: options.force,
+    })
 }
 
 fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourceRevokedLatest {

@@ -228,6 +228,44 @@ fn managed_resource_commands_install_php_pair_resolves_latest_once_for_both_reso
 }
 
 #[test]
+fn managed_resource_commands_install_php_pair_preflights_frankenphp_track_before_mutation()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.3.22-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.3",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.3",
+            vec![manifest_track("8.3", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes());
+
+    let result = commands.install_php_pair(TrackSelector::Latest, &client);
+    let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((result, state_after_failure, client.byte_request_count(),));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one_manifest_refresh()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -403,6 +441,82 @@ fn managed_resource_commands_uninstall_php_pair_records_both_removal_intents() -
         removal_intent_summary(intent.frankenphp()),
         state_after_uninstall,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_php_pair_missing_frankenphp_leaves_php_installed()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_adapter = php_adapter()?;
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let manifest = manifest_with_resources(&[manifest_resource(
+        "php",
+        "8.4",
+        vec![manifest_track("8.4", vec![&php_artifact])],
+    )]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes());
+
+    commands.install(&php_adapter, TrackSelector::Latest, &client)?;
+    let state_before_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+    let result = commands.uninstall_php_pair(
+        &TrackName::new("8.4")?,
+        ManagedResourceUninstallOptions::default(),
+    );
+    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((result, state_before_uninstall, state_after_uninstall));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_php_pair_in_use_frankenphp_leaves_php_installed()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    set_usage_count(&paths, "frankenphp", "8.4", 2)?;
+    let state_before_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+    let result = commands.uninstall_php_pair(
+        &TrackName::new("8.4")?,
+        ManagedResourceUninstallOptions::default(),
+    );
+    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((result, state_before_uninstall, state_after_uninstall));
 
     Ok(())
 }
