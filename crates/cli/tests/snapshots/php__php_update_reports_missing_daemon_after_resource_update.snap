@@ -1,16 +1,16 @@
 ---
 source: crates/cli/tests/php.rs
-expression: "(uninstall, resource_record_snapshots(&records, tempdir.path())?,)"
+expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
 ---
 (
     RunOutput {
         exit_code: ExitCode(
             unix_exit_status(
-                1,
+                0,
             ),
         ),
-        stdout: "",
-        stderr: "error: PHP track `8.4` has 2 active Project/global default selection(s); use --force to remove it anyway\n",
+        stdout: "Updated 2 PHP runtime artifact(s)\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
     },
     [
         ResourceRecordSnapshot {
@@ -42,4 +42,6 @@ expression: "(uninstall, resource_record_snapshots(&records, tempdir.path())?,)"
             removal_force: false,
         },
     ],
+    1,
+    0,
 )

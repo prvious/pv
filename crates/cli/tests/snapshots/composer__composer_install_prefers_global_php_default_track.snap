@@ -9,7 +9,7 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenv
                 0,
             ),
         ),
-        stdout: "Installed PHP track 8.3\nInstalled FrankenPHP track 8.3\nInstalled Composer track 2\n",
+        stdout: "Installed PHP track 8.3\nInstalled FrankenPHP track 8.3\nInstalled Composer track 2\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
         stderr: "",
     },
     [

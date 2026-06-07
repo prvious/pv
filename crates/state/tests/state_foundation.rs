@@ -9,10 +9,10 @@ use state::testing::Migration;
 use state::{
     Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT,
     GatewayPort, JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    PortOwner, PortRequest, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
-    ProjectManagedResourceInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectRecord, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 #[test]
@@ -583,6 +583,60 @@ fn managed_resource_tracks_record_removal_intent_options() -> Result<()> {
             "after_reinstall_intent",
             database.managed_resource_tracks()?
         );
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_record_removal_intents_batch_atomically() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.record_managed_resource_tracks_desired_and_installed(&[
+        ManagedResourceTrackInstallInput {
+            resource_name: "php",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: Utf8Path::new(
+                "/Users/example/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+        },
+        ManagedResourceTrackInstallInput {
+            resource_name: "frankenphp",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: Utf8Path::new(
+                "/Users/example/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+        },
+    ])?;
+    let tracks_before_invalid_batch = database.managed_resource_tracks()?;
+
+    let result = database.record_managed_resource_tracks_removal_intent(&[
+        ManagedResourceTrackRemovalInput {
+            resource_name: "php",
+            track: "8.4",
+            prune: true,
+            force: true,
+        },
+        ManagedResourceTrackRemovalInput {
+            resource_name: "frankenphp",
+            track: "latest",
+            prune: true,
+            force: true,
+        },
+    ]);
+    let tracks_after_invalid_batch = database.managed_resource_tracks()?;
+
+    assert!(matches!(
+        result,
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((tracks_before_invalid_batch, tracks_after_invalid_batch));
         Ok::<(), anyhow::Error>(())
     })?;
 

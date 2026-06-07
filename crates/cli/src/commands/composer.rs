@@ -40,6 +40,7 @@ pub(crate) fn install(
         php_pair.frankenphp().track()
     ))?;
     output.line(&format!("Installed Composer track {}", composer.track()))?;
+    request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -58,6 +59,7 @@ pub(crate) fn update(
         "Updated {} Composer track(s)",
         updated.installs().len()
     ))?;
+    request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
 }

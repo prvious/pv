@@ -146,6 +146,14 @@ pub struct ManagedResourceTrackInstallInput<'a> {
     pub current_artifact_path: &'a Utf8Path,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackRemovalInput<'a> {
+    pub resource_name: &'a str,
+    pub track: &'a str,
+    pub prune: bool,
+    pub force: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkProjectInput {
     pub path: Utf8PathBuf,
@@ -925,6 +933,34 @@ impl Database {
         )?;
 
         self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn record_managed_resource_tracks_removal_intent(
+        &mut self,
+        removals: &[ManagedResourceTrackRemovalInput<'_>],
+    ) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        for removal in removals {
+            validate_managed_resource_identity("name", removal.resource_name)?;
+            validate_concrete_track(removal.track)?;
+        }
+
+        let updated_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for removal in removals {
+            upsert_managed_resource_track_removal_intent_in_transaction(
+                &transaction,
+                removal,
+                &updated_at,
+            )?;
+        }
+        transaction.commit()?;
+
+        removals
+            .iter()
+            .map(|removal| self.managed_resource_track(removal.resource_name, removal.track))
+            .collect()
     }
 
     pub fn record_managed_resource_track_installed(
@@ -2263,6 +2299,39 @@ fn upsert_managed_resource_track_desired_and_installed_in_transaction(
             install.installed_version,
             install.current_artifact_path.as_str(),
             updated_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn upsert_managed_resource_track_removal_intent_in_transaction(
+    transaction: &Transaction<'_>,
+    removal: &ManagedResourceTrackRemovalInput<'_>,
+    updated_at: &str,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "INSERT INTO managed_resource_tracks (
+            resource_name,
+            track,
+            desired_state,
+            removal_prune,
+            removal_force,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(resource_name, track) DO UPDATE SET
+            desired_state = excluded.desired_state,
+            removal_prune = excluded.removal_prune,
+            removal_force = excluded.removal_force,
+            updated_at = excluded.updated_at",
+        params![
+            removal.resource_name,
+            removal.track,
+            ManagedResourceDesiredState::Removed.as_str(),
+            removal.prune,
+            removal.force,
+            updated_at
         ],
     )?;
 

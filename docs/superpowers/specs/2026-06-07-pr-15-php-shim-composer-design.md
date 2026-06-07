@@ -114,16 +114,17 @@ Project-level `pv php:use <track>`:
 1. Resolve the current linked Project from the current working directory.
 2. Resolve `track` to a concrete PHP track using the artifact manifest.
 3. Read and validate the Project config through `ProjectConfigFile::read_from_root`.
-4. Write or update the `php:` field in the discovered config file.
-5. Install `php:<track>` and `frankenphp:<track>` if needed.
-6. Request Project reconciliation.
-7. Report the selected track, config path, installed artifacts, and reconciliation result.
+4. Install `php:<track>` and `frankenphp:<track>` if needed.
+5. Write or update the requested `php:` selector in the discovered config file.
+6. Record the resolved concrete Project PHP track in `pv.db`.
+7. Request Project reconciliation.
+8. Report the selected track, config path, installed artifacts, and reconciliation result.
 
 Global `pv php:use <track> --global`:
 
 1. Resolve `track` to a concrete PHP track.
-2. Store the concrete global default in `pv.db`.
-3. Install `php:<track>` and `frankenphp:<track>` if needed.
+2. Install `php:<track>` and `frankenphp:<track>` if needed.
+3. Store the concrete global default in `pv.db`.
 4. Request reconciliation for Projects that inherit the global default.
 5. Report the selected track, installed artifacts, and reconciliation result.
 

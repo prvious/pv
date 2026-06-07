@@ -127,6 +127,7 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert!(output.stdout.contains("warning: PV daemon is not running"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -246,6 +247,7 @@ fn composer_update_updates_track_two_only() -> anyhow::Result<()> {
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert!(output.stdout.contains("warning: PV daemon is not running"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((

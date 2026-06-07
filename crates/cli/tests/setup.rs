@@ -867,7 +867,7 @@ fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
             "schema_version": 1,
             "minimum_pv_version": "0.1.0",
             "resources": [
-                setup_manifest_resource("frankenphp", "1.5"),
+                setup_manifest_resource_with_tracks("frankenphp", "1.5", &["1.5", "8.4"]),
                 setup_manifest_resource("php", "8.4"),
                 setup_manifest_resource("mysql", "8.4"),
                 setup_manifest_resource("postgres", "17"),
@@ -883,11 +883,20 @@ fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
 }
 
 fn setup_manifest_resource(name: &str, track: &str) -> serde_json::Value {
+    setup_manifest_resource_with_tracks(name, track, &[track])
+}
+
+fn setup_manifest_resource_with_tracks(
+    name: &str,
+    default_track: &str,
+    tracks: &[&str],
+) -> serde_json::Value {
     json!({
         "name": name,
-        "default_track": track,
-        "tracks": [
-            {
+        "default_track": default_track,
+        "tracks": tracks
+            .iter()
+            .map(|track| json!({
                 "name": track,
                 "artifacts": [
                     {
@@ -903,15 +912,15 @@ fn setup_manifest_resource(name: &str, track: &str) -> serde_json::Value {
                         "published_at": "2026-05-26T14:30:00Z"
                     }
                 ]
-            }
-        ]
+            }))
+            .collect::<Vec<_>>()
     })
 }
 
 fn expected_setup_tracks() -> Vec<(&'static str, &'static str, ManagedResourceDesiredState)> {
     vec![
         ("composer", "2", ManagedResourceDesiredState::Installed),
-        ("frankenphp", "1.5", ManagedResourceDesiredState::Installed),
+        ("frankenphp", "8.4", ManagedResourceDesiredState::Installed),
         ("mailpit", "1", ManagedResourceDesiredState::Installed),
         ("mysql", "8.4", ManagedResourceDesiredState::Installed),
         ("php", "8.4", ManagedResourceDesiredState::Installed),

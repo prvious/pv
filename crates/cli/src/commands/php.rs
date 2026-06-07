@@ -84,6 +84,7 @@ pub(crate) fn install(
     let mut output = Output::new(stdout, OutputMode::plain());
 
     write_install_lines(&installed, &mut output)?;
+    request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -102,6 +103,7 @@ pub(crate) fn update(
         "Updated {} PHP runtime artifact(s)",
         updated.installs().len()
     ))?;
+    request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -115,7 +117,9 @@ pub(crate) fn uninstall(
     let track = TrackName::new(args.track)?;
     if !args.force {
         let database = Database::open(&paths)?;
-        let usage_count = active_php_selection_usage_count(&database, &track)?;
+        let default_track = effective_global_php_default_track(&paths, &database)?;
+        let usage_count =
+            active_php_selection_usage_count(&database, default_track.as_deref(), &track)?;
         if usage_count > 0 {
             return Err(CliError::PhpTrackInUse {
                 track: track.as_str().to_string(),
@@ -151,8 +155,6 @@ pub(crate) fn list(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
-    let default_track = database.global_php_default_track()?;
-    let project_counts = php_project_selection_counts(&database, default_track.as_deref())?;
     let php = ResourceName::new("php")?;
     let commands = resource_commands(&paths, environment);
     let tracks = commands.list(Some(&php))?;
@@ -162,6 +164,9 @@ pub(crate) fn list(
         output.line("No PHP tracks installed")?;
         return Ok(ExitCode::SUCCESS);
     }
+
+    let default_track = effective_global_php_default_track(&paths, &database)?;
+    let project_counts = php_project_selection_counts(&database, default_track.as_deref())?;
 
     output.line("Track  Default  Projects  Version  Path")?;
     for track in tracks {
@@ -232,6 +237,24 @@ fn resolve_php_track_for_shim(
         .resolve_track(&php, TrackSelector::Latest)?
         .as_str()
         .to_string())
+}
+
+fn effective_global_php_default_track(
+    paths: &PvPaths,
+    database: &Database,
+) -> Result<Option<String>, ExecuteError> {
+    if let Some(track) = database.global_php_default_track()? {
+        return Ok(Some(track));
+    }
+    if !paths.downloads().join("manifest.json").exists() {
+        return Ok(None);
+    }
+
+    let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+    let php = ResourceName::new("php")?;
+    let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
+
+    Ok(Some(track.as_str().to_string()))
 }
 
 fn installed_php_executable(database: &Database, track: &str) -> Result<Utf8PathBuf, ExecuteError> {
@@ -324,15 +347,17 @@ fn current_target_platform() -> TargetPlatform {
 
 fn active_php_selection_usage_count(
     database: &Database,
+    default_track: Option<&str>,
     track: &TrackName,
 ) -> Result<i64, ExecuteError> {
     let mut usage_count = 0_i64;
     for project in database.projects()? {
-        if project.desired_php_track.as_deref() == Some(track.as_str()) {
+        let project_track = project.desired_php_track.as_deref().or(default_track);
+        if project_track == Some(track.as_str()) {
             usage_count += 1;
         }
     }
-    if database.global_php_default_track()?.as_deref() == Some(track.as_str()) {
+    if default_track == Some(track.as_str()) {
         usage_count += 1;
     }
 

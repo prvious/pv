@@ -524,6 +524,40 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert!(output.stdout.contains("warning: PV daemon is not running"));
+    assert_debug_snapshot!((
+        output,
+        resource_record_snapshots(&records, tempdir.path())?,
+        environment.text_request_count(),
+        environment.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let old_artifacts = php_pair_artifacts("8.4.7-pv1")?;
+    let new_artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.4", &old_artifacts)?;
+    prepare_existing_php_pair_releases(&home, "8.4", &new_artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &new_artifacts)),
+    );
+
+    let output = run_pv(&["php:update"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert!(output.stdout.contains("warning: PV daemon is not running"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -642,6 +676,42 @@ fn php_uninstall_refuses_global_default_track_without_force() -> anyhow::Result<
 }
 
 #[test]
+fn php_uninstall_refuses_manifest_default_track_inherited_by_project_without_force()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let _project_record = register_project(&home, &project, "acme.test")?;
+    let environment = TestEnvironment::new(&home, &project, ScriptedClient::new());
+
+    let uninstall = run_pv(&["php:uninstall", "8.4"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(uninstall.exit_code, ExitCode::FAILURE);
+    assert!(uninstall.stdout.is_empty());
+    assert!(
+        records
+            .iter()
+            .all(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+    );
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            uninstall,
+            resource_record_snapshots(&records, tempdir.path())?,
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -749,6 +819,34 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     let list = run_pv(&["php:list"], &environment)?;
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(list.exit_code, ExitCode::SUCCESS);
+    assert!(list.stderr.is_empty());
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!(list);
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_list_marks_manifest_default_track_for_inherited_projects() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let default_project = tempdir.path().join("default");
+    create_dir(&default_project)?;
+    write_file(
+        &default_project.join("pv.yml"),
+        "hostnames:\n  - api.default.test\n",
+    )?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let _default_project_record = register_project(&home, &default_project, "default.test")?;
+    let environment = TestEnvironment::new(&home, &default_project, ScriptedClient::new());
+
+    let list = run_pv(&["php:list"], &environment)?;
+
     assert_eq!(list.exit_code, ExitCode::SUCCESS);
     assert!(list.stderr.is_empty());
     with_tempdir_filters(tempdir.path(), || {
@@ -1008,6 +1106,31 @@ fn record_installed_php(
     database.record_managed_resource_track_installed("php", track, version, &release)?;
 
     Ok(release)
+}
+
+fn record_installed_php_pair(
+    home: &Utf8Path,
+    track: &str,
+    artifacts: &PhpPairArtifacts,
+) -> anyhow::Result<()> {
+    prepare_existing_php_pair_releases(home, track, artifacts)?;
+    let mut database = Database::open(&pv_paths(home))?;
+    let php_release = release_path(home, track, &artifacts.php);
+    database.record_managed_resource_track_installed(
+        "php",
+        track,
+        &artifacts.php.version,
+        &php_release,
+    )?;
+    let frankenphp_release = release_path(home, track, &artifacts.frankenphp);
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        track,
+        &artifacts.frankenphp.version,
+        &frankenphp_release,
+    )?;
+
+    Ok(())
 }
 
 fn release_path(home: &Utf8Path, track: &str, artifact: &FixtureArtifact) -> Utf8PathBuf {

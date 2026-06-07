@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    ManagedResourceTrackRecord, PvPaths, StateError,
+    ManagedResourceTrackRecord, ManagedResourceTrackRemovalInput, PvPaths, StateError,
 };
 use thiserror::Error;
 
@@ -541,9 +541,32 @@ impl ManagedResourceCommands {
         validate_uninstall_eligibility(&records, php.resource_name(), track, options)?;
         validate_uninstall_eligibility(&records, frankenphp.resource_name(), track, options)?;
 
-        let php = record_removal_intent(&mut database, php.resource_name(), track, options)?;
-        let frankenphp =
-            record_removal_intent(&mut database, frankenphp.resource_name(), track, options)?;
+        database.record_managed_resource_tracks_removal_intent(&[
+            ManagedResourceTrackRemovalInput {
+                resource_name: php.resource_name().as_str(),
+                track: track.as_str(),
+                prune: options.prune,
+                force: options.force,
+            },
+            ManagedResourceTrackRemovalInput {
+                resource_name: frankenphp.resource_name().as_str(),
+                track: track.as_str(),
+                prune: options.prune,
+                force: options.force,
+            },
+        ])?;
+        let php = ManagedResourceRemovalIntent {
+            resource_name: php.resource_name().clone(),
+            track: track.clone(),
+            prune: options.prune,
+            force: options.force,
+        };
+        let frankenphp = ManagedResourceRemovalIntent {
+            resource_name: frankenphp.resource_name().clone(),
+            track: track.clone(),
+            prune: options.prune,
+            force: options.force,
+        };
 
         Ok(PhpPairRemovalIntent { php, frankenphp })
     }

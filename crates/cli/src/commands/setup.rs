@@ -396,16 +396,25 @@ fn record_default_resource_desired_state(paths: &PvPaths) -> Result<(), ExecuteE
         Err(error) => return Err(error.into()),
     };
     let mut database = Database::open(paths)?;
+    let php_resource = ResourceName::new("php")?;
+    let php_default_track = manifest.resolve_track(&php_resource, TrackSelector::Latest)?;
 
     for resource_default in DEFAULT_SETUP_RESOURCES {
         let resource_name = ResourceName::new(resource_default.resource_name)?;
-        let track_selector = match resource_default.track {
-            SetupResourceTrackDefault::ManifestDefault => TrackSelector::Latest,
-            SetupResourceTrackDefault::Concrete(track) => {
-                TrackSelector::Track(TrackName::new(track)?)
-            }
+        let track = if resource_name.as_str() == "frankenphp" {
+            manifest.resolve_track(
+                &resource_name,
+                TrackSelector::Track(php_default_track.clone()),
+            )?
+        } else {
+            let track_selector = match resource_default.track {
+                SetupResourceTrackDefault::ManifestDefault => TrackSelector::Latest,
+                SetupResourceTrackDefault::Concrete(track) => {
+                    TrackSelector::Track(TrackName::new(track)?)
+                }
+            };
+            manifest.resolve_track(&resource_name, track_selector)?
         };
-        let track = manifest.resolve_track(&resource_name, track_selector)?;
 
         database.record_managed_resource_track_desired(
             resource_name.as_str(),
