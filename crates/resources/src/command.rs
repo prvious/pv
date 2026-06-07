@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{
-    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PvPaths, StateError,
+    Database, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    ManagedResourceTrackRecord, PvPaths, StateError,
 };
 use thiserror::Error;
 
@@ -157,11 +158,17 @@ impl ManagedResourceCommands {
         self.validate_install_selection(&php, &track, manifest)?;
         self.validate_install_selection(&frankenphp, &track, manifest)?;
 
-        let php = self.install_track(&php, track.clone(), manifest, refresh.source(), client)?;
-        let frankenphp =
-            self.install_track(&frankenphp, track, manifest, refresh.source(), client)?;
+        let install = self.prepare_php_pair_install(
+            &php,
+            &frankenphp,
+            track,
+            manifest,
+            refresh.source(),
+            client,
+        )?;
+        self.record_php_pair_install(&install)?;
 
-        Ok(PhpPairInstall { php, frankenphp })
+        Ok(install)
     }
 
     fn validate_install_selection(
@@ -188,7 +195,6 @@ impl ManagedResourceCommands {
         let revoked_latest = selection
             .revoked_latest()
             .map(revoked_fallback_from_artifact);
-        let artifact = selection.artifact().clone();
         let mut database = Database::open(&self.paths)?;
         database.record_managed_resource_track_desired(
             adapter.resource_name().as_str(),
@@ -196,6 +202,59 @@ impl ManagedResourceCommands {
             ManagedResourceDesiredState::Installed,
         )?;
 
+        let artifact = selection.artifact().clone();
+        let install = self.install_selected_artifact(
+            adapter,
+            track,
+            artifact,
+            revoked_latest,
+            manifest_source,
+            client,
+        )?;
+        database.record_managed_resource_track_installed(
+            adapter.resource_name().as_str(),
+            install.track.as_str(),
+            install.artifact_version.as_str(),
+            &install.current_artifact_path,
+        )?;
+
+        Ok(install)
+    }
+
+    fn prepare_track_install(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: TrackName,
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        let selection =
+            manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
+        let revoked_latest = selection
+            .revoked_latest()
+            .map(revoked_fallback_from_artifact);
+        let artifact = selection.artifact().clone();
+
+        self.install_selected_artifact(
+            adapter,
+            track,
+            artifact,
+            revoked_latest,
+            manifest_source,
+            client,
+        )
+    }
+
+    fn install_selected_artifact(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: TrackName,
+        artifact: ManifestArtifact,
+        revoked_latest: Option<ManagedResourceRevokedLatest>,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let installer = ArtifactInstaller::new(self.paths.resources());
         let (install, downloaded_from_cache) = if let Some(existing_install) =
             installer.install_existing_release(adapter, &track, &artifact)?
@@ -209,12 +268,6 @@ impl ManagedResourceCommands {
                 download.is_from_cache(),
             )
         };
-        database.record_managed_resource_track_installed(
-            adapter.resource_name().as_str(),
-            track.as_str(),
-            artifact.artifact_version().as_str(),
-            install.release_path(),
-        )?;
 
         Ok(ManagedResourceInstall {
             resource_name: adapter.resource_name().clone(),
@@ -225,6 +278,46 @@ impl ManagedResourceCommands {
             revoked_latest,
             downloaded_from_cache,
         })
+    }
+
+    fn prepare_php_pair_install(
+        &self,
+        php: &impl ResourceAdapter,
+        frankenphp: &impl ResourceAdapter,
+        track: TrackName,
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        let php =
+            self.prepare_track_install(php, track.clone(), manifest, manifest_source, client)?;
+        let frankenphp =
+            self.prepare_track_install(frankenphp, track, manifest, manifest_source, client)?;
+
+        Ok(PhpPairInstall { php, frankenphp })
+    }
+
+    fn record_php_pair_install(
+        &self,
+        install: &PhpPairInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        let mut database = Database::open(&self.paths)?;
+        database.record_managed_resource_tracks_desired_and_installed(&[
+            ManagedResourceTrackInstallInput {
+                resource_name: install.php.resource_name.as_str(),
+                track: install.php.track.as_str(),
+                installed_version: install.php.artifact_version.as_str(),
+                current_artifact_path: &install.php.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: install.frankenphp.resource_name.as_str(),
+                track: install.frankenphp.track.as_str(),
+                installed_version: install.frankenphp.artifact_version.as_str(),
+                current_artifact_path: &install.frankenphp.current_artifact_path,
+            },
+        ])?;
+
+        Ok(())
     }
 
     pub fn update(
@@ -285,20 +378,17 @@ impl ManagedResourceCommands {
         }
 
         for track in tracks {
-            installs.push(self.install_track(
+            let install = self.prepare_php_pair_install(
                 &php,
-                track.clone(),
-                refresh.manifest(),
-                refresh.source(),
-                client,
-            )?);
-            installs.push(self.install_track(
                 &frankenphp,
                 track,
                 refresh.manifest(),
                 refresh.source(),
                 client,
-            )?);
+            )?;
+            self.record_php_pair_install(&install)?;
+            installs.push(install.php);
+            installs.push(install.frankenphp);
         }
 
         Ok(PhpPairUpdate { installs })

@@ -1,0 +1,16 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(result, state_after_failure, client.byte_request_count(),)"
+---
+(
+    Err(
+        Resources(
+            HttpRequestFailed {
+                url: "https://artifacts.example.test/frankenphp-8.4.8-pv1-darwin-arm64.tar.gz",
+                reason: "no scripted byte response",
+            },
+        ),
+    ),
+    [],
+    3,
+)

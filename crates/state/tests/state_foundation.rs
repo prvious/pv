@@ -8,10 +8,11 @@ use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
     Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT,
-    GatewayPort, JobStatus, ManagedResourceDesiredState, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError,
+    GatewayPort, JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    PortOwner, PortRequest, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
+    ProjectManagedResourceInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
 };
 
 #[test]
@@ -465,6 +466,63 @@ fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!(database.managed_resource_tracks()?);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_tracks_record_desired_and_installed_batch_atomically() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let php_path = Utf8Path::new("/Users/example/.pv/resources/php/8.4/releases/8.4.8-pv1");
+    let frankenphp_path =
+        Utf8Path::new("/Users/example/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1");
+
+    database.record_managed_resource_tracks_desired_and_installed(&[
+        ManagedResourceTrackInstallInput {
+            resource_name: "php",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: php_path,
+        },
+        ManagedResourceTrackInstallInput {
+            resource_name: "frankenphp",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: frankenphp_path,
+        },
+    ])?;
+    let installed_tracks = database.managed_resource_tracks()?;
+
+    let result = database.record_managed_resource_tracks_desired_and_installed(&[
+        ManagedResourceTrackInstallInput {
+            resource_name: "redis",
+            track: "7.2",
+            installed_version: "7.2.5-pv1",
+            current_artifact_path: Utf8Path::new(
+                "/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+            ),
+        },
+        ManagedResourceTrackInstallInput {
+            resource_name: "mysql",
+            track: "latest",
+            installed_version: "8.4.0-pv1",
+            current_artifact_path: Utf8Path::new(
+                "/Users/example/.pv/resources/mysql/latest/releases/8.4.0-pv1",
+            ),
+        },
+    ]);
+    let tracks_after_invalid_batch = database.managed_resource_tracks()?;
+
+    assert!(matches!(
+        result,
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((installed_tracks, tracks_after_invalid_batch));
         Ok::<(), anyhow::Error>(())
     })?;
 

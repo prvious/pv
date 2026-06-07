@@ -266,6 +266,44 @@ fn managed_resource_commands_install_php_pair_preflights_frankenphp_track_before
 }
 
 #[test]
+fn managed_resource_commands_install_php_pair_second_artifact_failure_records_no_pair_state()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes());
+
+    let result = commands.install_php_pair(TrackSelector::Latest, &client);
+    let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((result, state_after_failure, client.byte_request_count(),));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one_manifest_refresh()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -431,6 +469,82 @@ fn managed_resource_commands_update_php_pairs_preflights_all_pairs_before_mutati
         .with_bytes(php_artifact.bytes())
         .with_bytes(frankenphp_artifact.bytes())
         .with_text(&broken_update_manifest)
+        .with_bytes(php_update_artifact.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let state_before_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let byte_downloads_before_update = client.byte_request_count();
+    let result = commands.update_php_pairs(&client);
+    let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let byte_downloads_during_update = client.byte_request_count() - byte_downloads_before_update;
+
+    assert_debug_snapshot!((
+        result,
+        state_before_update,
+        state_after_update,
+        byte_downloads_during_update,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_php_pairs_second_artifact_failure_preserves_pair_state()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let php_update_artifact =
+        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let frankenphp_update_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.9-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4 update",
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let update_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&php_artifact, &php_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&frankenphp_artifact, &frankenphp_update_artifact],
+            )],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes())
+        .with_text(&update_manifest)
         .with_bytes(php_update_artifact.bytes());
 
     commands.install_php_pair(TrackSelector::Latest, &client)?;
