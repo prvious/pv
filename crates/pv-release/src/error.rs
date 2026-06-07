@@ -11,6 +11,9 @@ pub enum ReleaseError {
     #[error("invalid manifest default tracks `{path}`: {reason}")]
     InvalidDefaultTracks { path: String, reason: String },
 
+    #[error("invalid recipe metadata `{path}`: {reason}")]
+    InvalidRecipeMetadata { path: String, reason: String },
+
     #[error("duplicate artifact identity `{identity}`")]
     DuplicateArtifactIdentity { identity: String },
 

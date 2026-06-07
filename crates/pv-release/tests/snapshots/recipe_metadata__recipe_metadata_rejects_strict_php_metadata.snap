@@ -1,0 +1,42 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(PhpRecipe::from_toml(Utf8Path::new(\"invalid-deployment-target.toml\"),\n&invalid_deployment_target,),\nPhpRecipe::from_toml(Utf8Path::new(\"php-version-without-patch.toml\"),\n&php_version_without_patch,),\nPhpRecipe::from_toml(Utf8Path::new(\"unexpected-expected-extension.toml\"),\n&unexpected_expected_extension,),\nPhpRecipe::from_toml(Utf8Path::new(\"empty-license-files.toml\"),\n&empty_license_files),\nPhpRecipe::from_toml(Utf8Path::new(\"unsafe-license-file.toml\"),\n&unsafe_license_file),\nPhpRecipe::from_toml(Utf8Path::new(\"unsafe-notice-file.toml\"),\n&unsafe_notice_file),)"
+---
+(
+    Err(
+        InvalidRecipeMetadata {
+            path: "invalid-deployment-target.toml",
+            reason: "deployment_target must be `13.0`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "php-version-without-patch.toml",
+            reason: "php_version `8.4` must be major.minor.patch with numeric components",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "unexpected-expected-extension.toml",
+            reason: "expected_extensions contains unexpected extensions: xdebug",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "empty-license-files.toml",
+            reason: "license_files must not be empty",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "unsafe-license-file.toml",
+            reason: "license_files contains invalid relative path `../LICENSE`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "unsafe-notice-file.toml",
+            reason: "notice_files contains invalid relative path `../NOTICE`",
+        },
+    ),
+)
