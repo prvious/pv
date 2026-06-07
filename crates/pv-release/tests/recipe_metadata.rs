@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::defaults::ManifestDefaults;
-use pv_release::recipe::{ComposerRecipe, PhpRecipe, composer_recipe_env};
+use pv_release::recipe::{ComposerRecipe, PhpRecipe, composer_recipe_env, php_recipe_env};
 use resources::ResourceName;
 
 #[test]
@@ -122,6 +122,42 @@ fn print_composer_recipe_env() -> Result<()> {
 }
 
 #[test]
+fn print_recipe_env_php() -> Result<()> {
+    let tempdir = tempdir()?;
+    let php = tempdir.path().join("tracks.toml");
+    write_file(&php, VALID_PHP_TOML)?;
+
+    let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
+
+    assert!(!env.lines().any(|line| line.starts_with("PV_PHP_SOURCE_")));
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
+fn print_recipe_env_frankenphp() -> Result<()> {
+    let tempdir = tempdir()?;
+    let php = tempdir.path().join("tracks.toml");
+    write_file(&php, VALID_PHP_TOML)?;
+
+    let env = php_recipe_env(&php, "frankenphp", "8.4", "darwin-arm64")?;
+    let php_source_env = env
+        .lines()
+        .filter(|line| line.starts_with("PV_PHP_SOURCE_"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        php_source_env,
+        vec![
+            "PV_PHP_SOURCE_URL=https://www.php.net/distributions/php-8.4.20.tar.gz",
+            "PV_PHP_SOURCE_SHA256=a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+        ]
+    );
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
 fn print_composer_recipe_env_rejects_shell_unsafe_source_url() -> Result<()> {
     let tempdir = tempdir()?;
     let composer = tempdir.path().join("composer.toml");
@@ -215,7 +251,7 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "redis", "zip"]
+build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "redis", "sodium", "zip"]
 expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]

@@ -1,0 +1,17 @@
+PV PHP and FrankenPHP artifact recipe metadata
+==============================================
+
+This recipe packages PHP source archives listed in tracks.toml for standalone
+PHP artifacts.
+
+This recipe packages FrankenPHP source archives listed in tracks.toml for
+FrankenPHP artifacts.
+
+This product includes PHP software, freely available from
+<http://www.php.net/software/>.
+
+FrankenPHP is built from the php/frankenphp project:
+https://github.com/php/frankenphp
+
+Artifact-specific resource, track, version, source URL, and source checksum
+fields are appended by build.sh when the archive is produced.

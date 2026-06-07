@@ -40,11 +40,19 @@ write_record() {
   pv_commit=${12}
   build_run_id=${13}
   minimum_pv_version=${14}
+  source_inputs_json=${15:-}
 
   artifact_version="${upstream_version}-${pv_build_revision}"
   sha256=$(sha256_file "$archive")
   size=$(file_size "$archive")
   published_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  source_inputs_record_json=
+  if [ -n "$source_inputs_json" ]; then
+    source_inputs_record_json=$(cat <<JSON
+    "source_inputs": $source_inputs_json,
+JSON
+)
+  fi
   mkdir -p "$(dirname "$record_path")"
   cat >"$record_path" <<JSON
 {
@@ -64,7 +72,7 @@ write_record() {
   "provenance": {
     "source_url": "$source_url",
     "source_sha256": "$source_sha256",
-    "recipe": "$recipe",
+$source_inputs_record_json    "recipe": "$recipe",
     "pv_commit": "$pv_commit",
     "build_run_id": "$build_run_id"
   }

@@ -1,5 +1,5 @@
 use anyhow::Context;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
@@ -49,7 +49,9 @@ enum Command {
     },
     PrintRecipeEnv {
         #[arg(long)]
-        composer: Utf8PathBuf,
+        php: Option<Utf8PathBuf>,
+        #[arg(long)]
+        composer: Option<Utf8PathBuf>,
         #[arg(long)]
         resource: String,
         #[arg(long)]
@@ -103,18 +105,45 @@ pub fn run() -> anyhow::Result<()> {
         )
         .with_context(|| format!("failed to validate archive `{archive}`")),
         Command::PrintRecipeEnv {
+            php,
             composer,
             resource,
             track,
             platform,
         } => {
-            let context = format!("failed to print Composer recipe environment for `{composer}`");
-            let env = crate::recipe::composer_recipe_env(&composer, &resource, &track, &platform)
-                .context(context)?;
+            let env = print_recipe_env(
+                php.as_deref(),
+                composer.as_deref(),
+                &resource,
+                &track,
+                &platform,
+            )?;
             let mut stdout = io::stdout().lock();
             stdout
                 .write_all(env.as_bytes())
                 .context("failed to write recipe environment to stdout")
+        }
+    }
+}
+
+fn print_recipe_env(
+    php: Option<&Utf8Path>,
+    composer: Option<&Utf8Path>,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> anyhow::Result<String> {
+    match (php, composer) {
+        (Some(php), None) => {
+            let context = format!("failed to print PHP recipe environment for `{php}`");
+            crate::recipe::php_recipe_env(php, resource, track, platform).context(context)
+        }
+        (None, Some(composer)) => {
+            let context = format!("failed to print Composer recipe environment for `{composer}`");
+            crate::recipe::composer_recipe_env(composer, resource, track, platform).context(context)
+        }
+        (None, None) | (Some(_), Some(_)) => {
+            anyhow::bail!("print-recipe-env requires exactly one of --php or --composer")
         }
     }
 }
@@ -315,14 +344,18 @@ mod tests {
 
         match args.command {
             Command::PrintRecipeEnv {
+                php,
                 composer,
                 resource,
                 track,
                 platform,
             } => {
+                assert_eq!(php, None);
                 assert_eq!(
                     composer,
-                    Utf8PathBuf::from("release/artifacts/recipes/composer/composer.toml")
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/composer/composer.toml"
+                    ))
                 );
                 assert_eq!(resource, "composer");
                 assert_eq!(track, "2");
@@ -331,5 +364,59 @@ mod tests {
             }
             command => bail!("parsed unexpected command: {command:?}"),
         }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_php_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--php",
+            "release/artifacts/recipes/php/tracks.toml",
+            "--resource",
+            "php",
+            "--track",
+            "8.4",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(
+                    php,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/php/tracks.toml"
+                    ))
+                );
+                assert_eq!(composer, None);
+                assert_eq!(resource, "php");
+                assert_eq!(track, "8.4");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn print_recipe_env_rejects_missing_or_multiple_metadata_paths() {
+        let php = Utf8Path::new("release/artifacts/recipes/php/tracks.toml");
+        let composer = Utf8Path::new("release/artifacts/recipes/composer/composer.toml");
+
+        assert!(
+            print_recipe_env(None, None, "php", "8.4", "darwin-arm64").is_err(),
+            "missing metadata path must be rejected"
+        );
+        assert!(
+            print_recipe_env(Some(php), Some(composer), "php", "8.4", "darwin-arm64").is_err(),
+            "multiple metadata paths must be rejected"
+        );
     }
 }

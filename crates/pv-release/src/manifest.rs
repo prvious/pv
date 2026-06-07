@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::defaults::ManifestDefaults;
 use crate::record::{
-    Provenance, ReleaseRecord, RevocationRecord, load_release_records, load_revocation_records,
+    Provenance, ReleaseRecord, RevocationRecord, SourceInput, load_release_records,
+    load_revocation_records,
 };
 
 pub fn generate_manifest_file(
@@ -183,9 +184,18 @@ struct ManifestArtifactJson {
 struct ManifestProvenanceJson {
     source_url: String,
     source_sha256: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_inputs: Vec<ManifestSourceInputJson>,
     recipe: String,
     pv_commit: String,
     build_run_id: String,
+}
+
+#[derive(Serialize)]
+struct ManifestSourceInputJson {
+    name: String,
+    source_url: String,
+    source_sha256: String,
 }
 
 impl ManifestResourceJson {
@@ -243,9 +253,24 @@ impl ManifestProvenanceJson {
         Self {
             source_url: provenance.source_url().to_string(),
             source_sha256: provenance.source_sha256().to_string(),
+            source_inputs: provenance
+                .source_inputs()
+                .iter()
+                .map(ManifestSourceInputJson::from_source_input)
+                .collect(),
             recipe: provenance.recipe().to_string(),
             pv_commit: provenance.pv_commit().to_string(),
             build_run_id: provenance.build_run_id().to_string(),
+        }
+    }
+}
+
+impl ManifestSourceInputJson {
+    fn from_source_input(source_input: &SourceInput) -> Self {
+        Self {
+            name: source_input.name().to_string(),
+            source_url: source_input.source_url().to_string(),
+            source_sha256: source_input.source_sha256().to_string(),
         }
     }
 }

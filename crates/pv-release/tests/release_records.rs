@@ -101,6 +101,40 @@ fn release_records_reject_invalid_object_key_and_provenance_metadata() -> Result
 }
 
 #[test]
+fn release_records_parse_additional_source_inputs() -> Result<()> {
+    let record = ReleaseRecord::from_json(
+        Utf8Path::new("frankenphp.json"),
+        FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS,
+    )?;
+
+    assert_debug_snapshot!(record.provenance().source_inputs());
+
+    Ok(())
+}
+
+#[test]
+fn release_records_reject_invalid_source_inputs() -> Result<()> {
+    let invalid_name = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS
+        .replace("\"name\": \"php\"", "\"name\": \"PHP source\"");
+    let invalid_source_url = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replace(
+        "https://www.php.net/distributions/php-8.4.20.tar.gz",
+        "not a url",
+    );
+    let invalid_source_sha256 = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replace(
+        "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+        "bad",
+    );
+
+    assert_debug_snapshot!((
+        ReleaseRecord::from_json(Utf8Path::new("invalid-name.json"), &invalid_name),
+        ReleaseRecord::from_json(Utf8Path::new("invalid-url.json"), &invalid_source_url),
+        ReleaseRecord::from_json(Utf8Path::new("invalid-sha.json"), &invalid_source_sha256),
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn release_record_loader_rejects_duplicate_artifact_identity() -> Result<()> {
     let tempdir = tempdir()?;
     write_file(&tempdir.path().join("one.json"), VALID_RELEASE_RECORD)?;
@@ -218,6 +252,41 @@ const VALID_RELEASE_RECORD: &str = r#"{
     "source_url": "https://download.redis.io/releases/redis-7.2.5.tar.gz",
     "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "recipe": "release/artifacts/recipes/redis/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }
+}"#;
+
+const FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS: &str = r#"{
+  "resource": "frankenphp",
+  "track": "8.4",
+  "upstream_version": "8.4.20-frankenphp1.12.3",
+  "pv_build_revision": "pv1",
+  "artifact_version": "8.4.20-frankenphp1.12.3-pv1",
+  "platform": "darwin-arm64",
+  "object_key": "resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "size": 42,
+  "published_at": "2026-06-06T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": ["LICENSE"],
+  "notice_files": ["NOTICE"],
+  "provenance": {
+    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+    "source_inputs": [
+      {
+        "name": "frankenphp",
+        "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+        "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+      },
+      {
+        "name": "php",
+        "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+        "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d"
+      }
+    ],
+    "recipe": "release/artifacts/recipes/php/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "local-test"
   }

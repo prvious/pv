@@ -67,6 +67,7 @@ fn write_php_fixture(
         payload_path: "bin/php",
         source_url: track.php_source_url(),
         source_sha256: track.php_source_sha256().as_str(),
+        source_inputs: Vec::new(),
         recipe: &recipe_path,
         minimum_pv_version: recipe.minimum_pv_version().as_str(),
         license_files: recipe.license_files(),
@@ -103,6 +104,18 @@ fn write_frankenphp_fixture(
         payload_path: "bin/frankenphp",
         source_url: recipe.frankenphp_source_url(),
         source_sha256: recipe.frankenphp_source_sha256().as_str(),
+        source_inputs: vec![
+            SourceInputJson {
+                name: "frankenphp",
+                source_url: recipe.frankenphp_source_url(),
+                source_sha256: recipe.frankenphp_source_sha256().as_str(),
+            },
+            SourceInputJson {
+                name: "php",
+                source_url: track.php_source_url(),
+                source_sha256: track.php_source_sha256().as_str(),
+            },
+        ],
         recipe: &recipe_path,
         minimum_pv_version: recipe.minimum_pv_version().as_str(),
         license_files: recipe.license_files(),
@@ -133,6 +146,7 @@ fn write_composer_fixture(
         payload_path: "composer.phar",
         source_url: recipe.source_url(),
         source_sha256: recipe.source_sha256().as_str(),
+        source_inputs: Vec::new(),
         recipe: &recipe_path,
         minimum_pv_version: recipe.minimum_pv_version().as_str(),
         license_files: recipe.license_files(),
@@ -153,6 +167,7 @@ struct FixtureArtifact<'a> {
     payload_path: &'a str,
     source_url: &'a str,
     source_sha256: &'a str,
+    source_inputs: Vec<SourceInputJson<'a>>,
     recipe: &'a str,
     minimum_pv_version: &'a str,
     license_files: &'a [String],
@@ -183,9 +198,18 @@ struct ReleaseRecordJson<'a> {
 struct ProvenanceJson<'a> {
     source_url: &'a str,
     source_sha256: &'a str,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    source_inputs: &'a [SourceInputJson<'a>],
     recipe: &'a str,
     pv_commit: &'a str,
     build_run_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct SourceInputJson<'a> {
+    name: &'a str,
+    source_url: &'a str,
+    source_sha256: &'a str,
 }
 
 fn write_fixture_artifact(
@@ -237,6 +261,7 @@ fn write_fixture_artifact(
         provenance: ProvenanceJson {
             source_url: artifact.source_url,
             source_sha256: artifact.source_sha256,
+            source_inputs: &artifact.source_inputs,
             recipe: artifact.recipe,
             pv_commit: artifact.pv_commit,
             build_run_id: artifact.build_run_id,

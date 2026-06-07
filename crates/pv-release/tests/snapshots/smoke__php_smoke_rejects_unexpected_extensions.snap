@@ -1,0 +1,12 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: command_output_summary(&output)
+---
+(
+    false,
+    Some(
+        43,
+    ),
+    "",
+    "unexpected PHP extension: xdebug\n",
+)

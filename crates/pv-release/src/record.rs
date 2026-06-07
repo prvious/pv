@@ -81,9 +81,18 @@ struct RawReleaseRecord {
 pub struct Provenance {
     source_url: String,
     source_sha256: String,
+    #[serde(default)]
+    source_inputs: Vec<SourceInput>,
     recipe: String,
     pv_commit: String,
     build_run_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SourceInput {
+    name: String,
+    source_url: String,
+    source_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -360,6 +369,16 @@ impl Provenance {
         validate_https_url(path, "source_url", &self.source_url)?;
         Sha256Digest::new(self.source_sha256.clone())
             .map_err(|error| invalid_release_identity(path, "source_sha256", error))?;
+        let mut source_input_names = BTreeSet::new();
+        for source_input in &self.source_inputs {
+            source_input.validate(path)?;
+            if !source_input_names.insert(source_input.name()) {
+                return Err(invalid_release(
+                    path,
+                    format!("duplicate source input `{}`", source_input.name()),
+                ));
+            }
+        }
         validate_relative_path(path, "recipe", &self.recipe)?;
         validate_commit(path, &self.pv_commit)?;
         require_non_empty_release(path, "build_run_id", &self.build_run_id)?;
@@ -375,6 +394,10 @@ impl Provenance {
         &self.source_sha256
     }
 
+    pub fn source_inputs(&self) -> &[SourceInput] {
+        &self.source_inputs
+    }
+
     pub fn recipe(&self) -> &str {
         &self.recipe
     }
@@ -385,6 +408,30 @@ impl Provenance {
 
     pub fn build_run_id(&self) -> &str {
         &self.build_run_id
+    }
+}
+
+impl SourceInput {
+    fn validate(&self, path: &Utf8Path) -> crate::Result<()> {
+        validate_source_input_name(path, &self.name)?;
+        validate_https_url(path, "source_inputs.source_url", &self.source_url)?;
+        Sha256Digest::new(self.source_sha256.clone()).map_err(|error| {
+            invalid_release_identity(path, "source_inputs.source_sha256", error)
+        })?;
+
+        Ok(())
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn source_url(&self) -> &str {
+        &self.source_url
+    }
+
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
     }
 }
 
@@ -576,6 +623,21 @@ fn validate_commit(path: &Utf8Path, value: &str) -> crate::Result<()> {
         Err(invalid_release(
             path,
             "pv_commit must be a 40-character hex commit",
+        ))
+    }
+}
+
+fn validate_source_input_name(path: &Utf8Path, value: &str) -> crate::Result<()> {
+    let value = require_non_empty_release(path, "source_inputs.name", value)?;
+    if value
+        .bytes()
+        .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        Ok(())
+    } else {
+        Err(invalid_release(
+            path,
+            format!("source_inputs.name contains invalid value `{value}`"),
         ))
     }
 }

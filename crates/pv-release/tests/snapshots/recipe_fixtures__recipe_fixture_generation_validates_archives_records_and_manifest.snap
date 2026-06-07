@@ -53,6 +53,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.2.31.tar.gz",
+                    "source_sha256": "083c2f61cc5f527eb293c4c468a91af46a9678785957e023b2796a9db290d870"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -70,6 +82,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.2.31.tar.gz",
+                    "source_sha256": "083c2f61cc5f527eb293c4c468a91af46a9678785957e023b2796a9db290d870"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -92,6 +116,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                    "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -109,6 +145,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                    "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -131,6 +179,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                    "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -148,6 +208,18 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
                 "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                    "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                    "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d"
+                  }
+                ],
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"

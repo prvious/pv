@@ -44,10 +44,6 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
 const PHP_DEPLOYMENT_TARGET: &str = "13.0";
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct PhpRecipe {
     path: Utf8PathBuf,
     header: RecipeHeader,
@@ -68,10 +64,6 @@ pub struct RecipeHeader {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct PhpSettings {
     deployment_target: String,
     build_extensions: Vec<String>,
@@ -208,6 +200,18 @@ impl PhpRecipe {
 
     pub fn notice_files(&self) -> &[String] {
         &self.header.notice_files
+    }
+
+    pub fn deployment_target(&self) -> &str {
+        &self.php.deployment_target
+    }
+
+    pub fn build_extensions(&self) -> &[String] {
+        &self.php.build_extensions
+    }
+
+    pub fn expected_extensions(&self) -> &[String] {
+        &self.php.expected_extensions
     }
 
     pub fn frankenphp_version(&self) -> &str {
@@ -489,6 +493,180 @@ PV_MINIMUM_PV_VERSION={minimum_pv_version}
 PV_PV_BUILD_REVISION={pv_build_revision}
 ",
     ))
+}
+
+pub fn php_recipe_env(
+    php: &Utf8Path,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> crate::Result<String> {
+    let recipe = PhpRecipe::load(php)?;
+    let resource = validate_php_recipe_resource(&recipe, resource)?;
+    let track = validate_php_recipe_track(&recipe, track)?;
+    let platform = validate_php_recipe_platform(&recipe, platform)?;
+
+    let php_version = track.php_version();
+    let php_source_url = track.php_source_url();
+    let php_source_sha256 = track.php_source_sha256().as_str();
+    let source_url;
+    let source_sha256;
+    let upstream_version;
+    match resource {
+        PhpRecipeResource::Php => {
+            upstream_version = php_version.to_string();
+            source_url = php_source_url;
+            source_sha256 = php_source_sha256;
+        }
+        PhpRecipeResource::Frankenphp => {
+            upstream_version = format!("{php_version}-frankenphp{}", recipe.frankenphp_version());
+            source_url = recipe.frankenphp_source_url();
+            source_sha256 = recipe.frankenphp_source_sha256().as_str();
+        }
+    }
+
+    let pv_build_revision = recipe.pv_build_revision();
+    let artifact_version = format!("{upstream_version}-{pv_build_revision}");
+    let build_extensions = recipe.build_extensions().join(",");
+    let expected_extensions = recipe.expected_extensions().join(",");
+    let minimum_pv_version = recipe.minimum_pv_version().as_str();
+    let deployment_target = recipe.deployment_target();
+
+    for (field, value) in [
+        ("resource", resource.as_str()),
+        ("track", track.name().as_str()),
+        ("platform", platform.as_str()),
+        ("php_version", php_version),
+        ("upstream_version", upstream_version.as_str()),
+        ("artifact_version", artifact_version.as_str()),
+        ("source_url", source_url),
+        ("source_sha256", source_sha256),
+        ("deployment_target", deployment_target),
+        ("build_extensions", build_extensions.as_str()),
+        ("expected_extensions", expected_extensions.as_str()),
+        ("minimum_pv_version", minimum_pv_version),
+        ("pv_build_revision", pv_build_revision),
+    ] {
+        validate_shell_unquoted_assignment_value(recipe.path(), field, value)?;
+    }
+    if matches!(resource, PhpRecipeResource::Frankenphp) {
+        validate_shell_unquoted_assignment_value(recipe.path(), "php_source_url", php_source_url)?;
+        validate_shell_unquoted_assignment_value(
+            recipe.path(),
+            "php_source_sha256",
+            php_source_sha256,
+        )?;
+    }
+
+    let php_source_env = match resource {
+        PhpRecipeResource::Php => String::new(),
+        PhpRecipeResource::Frankenphp => format!(
+            "\
+PV_PHP_SOURCE_URL={php_source_url}
+PV_PHP_SOURCE_SHA256={php_source_sha256}
+"
+        ),
+    };
+
+    Ok(format!(
+        "\
+PV_RESOURCE={resource}
+PV_TRACK={track}
+PV_PLATFORM={platform}
+PV_PHP_VERSION={php_version}
+PV_UPSTREAM_VERSION={upstream_version}
+PV_ARTIFACT_VERSION={artifact_version}
+PV_SOURCE_URL={source_url}
+PV_SOURCE_SHA256={source_sha256}
+{php_source_env}\
+PV_DEPLOYMENT_TARGET={deployment_target}
+PV_BUILD_EXTENSIONS={build_extensions}
+PV_EXPECTED_EXTENSIONS={expected_extensions}
+PV_MINIMUM_PV_VERSION={minimum_pv_version}
+PV_PV_BUILD_REVISION={pv_build_revision}
+",
+        resource = resource.as_str(),
+        track = track.name().as_str(),
+        platform = platform.as_str(),
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum PhpRecipeResource {
+    Php,
+    Frankenphp,
+}
+
+impl PhpRecipeResource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Php => "php",
+            Self::Frankenphp => "frankenphp",
+        }
+    }
+}
+
+fn validate_php_recipe_resource(
+    recipe: &PhpRecipe,
+    resource: &str,
+) -> crate::Result<PhpRecipeResource> {
+    match resource {
+        "php" => Ok(PhpRecipeResource::Php),
+        "frankenphp" => Ok(PhpRecipeResource::Frankenphp),
+        _ => Err(invalid(
+            recipe.path(),
+            format!("PHP recipe resource must be `php` or `frankenphp`, got `{resource}`"),
+        )),
+    }
+}
+
+fn validate_php_recipe_track<'a>(
+    recipe: &'a PhpRecipe,
+    track: &str,
+) -> crate::Result<&'a PhpTrack> {
+    recipe
+        .tracks()
+        .iter()
+        .find(|candidate| candidate.name().as_str() == track)
+        .ok_or_else(|| {
+            let expected = recipe
+                .tracks()
+                .iter()
+                .map(|track| track.name().as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "PHP recipe track must be one of {}, got `{track}`",
+                    format_expected_values(&expected)
+                ),
+            )
+        })
+}
+
+fn validate_php_recipe_platform(
+    recipe: &PhpRecipe,
+    platform: &str,
+) -> crate::Result<ArtifactPlatform> {
+    recipe
+        .platforms()
+        .iter()
+        .copied()
+        .find(|candidate| candidate.as_str() == platform)
+        .ok_or_else(|| {
+            let expected = recipe
+                .platforms()
+                .iter()
+                .map(|platform| platform.as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "PHP recipe platform must be one of {}, got `{platform}`",
+                    format_expected_values(&expected)
+                ),
+            )
+        })
 }
 
 fn validate_shell_unquoted_assignment_value(
