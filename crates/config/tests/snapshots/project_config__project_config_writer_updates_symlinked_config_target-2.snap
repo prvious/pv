@@ -1,0 +1,6 @@
+---
+source: crates/config/tests/project_config.rs
+expression: read_file(&target)?
+---
+php: '8.4'
+redis: {}

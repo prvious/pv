@@ -1,4 +1,5 @@
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::Result;
 use camino::Utf8Path;
@@ -544,6 +545,45 @@ fn project_config_writer_keeps_conflicting_files_unchanged() -> Result<()> {
 }
 
 #[test]
+fn project_config_writer_updates_symlinked_config_target() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    let config_directory = project.join("config");
+    let target = config_directory.join("project.yml");
+    let config_link = project.join("pv.yml");
+    create_dir(&config_directory)?;
+    write_file(&target, "redis: {}\n")?;
+    create_symlink(&target, &config_link)?;
+
+    let updated = write_project_php_track(&project, "8.4")?;
+
+    assert!(is_symlink(&config_link)?);
+    assert_eq!(read_link(&config_link)?, target);
+    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
+    assert_snapshot!(read_file(&target)?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_preserves_existing_config_file_mode() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    let config_path = project.join("pv.yml");
+    create_dir(&project)?;
+    write_file(&config_path, "php: 8.2\n")?;
+    set_file_mode(&config_path, 0o600)?;
+
+    let updated = write_project_php_track(&project, "8.4")?;
+
+    assert_eq!(mode_string(&config_path)?, "600");
+    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
+    assert_snapshot!(read_file(&config_path)?);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_discovery_reports_broken_config_symlinks() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
@@ -644,6 +684,44 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(source.into()),
     }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests inspect symlink fixtures"
+)]
+fn is_symlink(path: &Utf8Path) -> Result<bool> {
+    Ok(std::fs::symlink_metadata(path)?.file_type().is_symlink())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests inspect symlink fixture targets"
+)]
+fn read_link(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
+    let target = std::fs::read_link(path)?;
+    camino::Utf8PathBuf::from_path_buf(target)
+        .map_err(|path| anyhow::anyhow!("symlink target is not UTF-8: {path:?}"))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests set fixture permissions"
+)]
+fn set_file_mode(path: &Utf8Path, mode: u32) -> Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Project config tests inspect fixture permissions"
+)]
+fn mode_string(path: &Utf8Path) -> Result<String> {
+    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+
+    Ok(format!("{mode:o}"))
 }
 
 #[expect(
