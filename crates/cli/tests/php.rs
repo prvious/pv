@@ -170,6 +170,46 @@ fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result
 }
 
 #[test]
+fn php_use_install_failure_leaves_project_config_and_state_unchanged() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let original_config = "php: '8.3'\nhostnames:\n  - api.acme.test\n";
+    write_file(&project.join("pv.yml"), original_config)?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.3")?;
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["php:use", "8.4"], &environment)?;
+    let config_after = read_file(&project.join("pv.yml"))?;
+    let database = Database::open(&pv_paths(&home))?;
+    let project_after = database
+        .project_by_id(&project_record.id)?
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_eq!(config_after, original_config);
+    assert_eq!(project_after.desired_php_track.as_deref(), Some("8.3"));
+    assert!(records.is_empty());
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            config_after,
+            project_snapshot(&project_after, tempdir.path())?,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -383,16 +423,29 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
 fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
+    let explicit_project = tempdir.path().join("explicit");
+    let default_project = tempdir.path().join("default");
+    create_dir(&explicit_project)?;
+    create_dir(&default_project)?;
+    write_file(
+        &explicit_project.join("pv.yml"),
+        "hostnames:\n  - api.explicit.test\n",
+    )?;
+    write_file(
+        &default_project.join("pv.yml"),
+        "hostnames:\n  - api.default.test\n",
+    )?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
     let environment = TestEnvironment::new(
         &home,
-        &current_dir,
+        &explicit_project,
         ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
     );
     let install = run_pv(&["php:install", "8.4"], &environment)?;
+    let explicit_project_record = register_project(&home, &explicit_project, "explicit.test")?;
+    let _default_project_record = register_project(&home, &default_project, "default.test")?;
+    select_project_php_track(&home, &explicit_project_record, "8.4")?;
     {
         let mut database = Database::open(&pv_paths(&home))?;
         database.record_global_php_default_track("8.4")?;
@@ -853,4 +906,12 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI PHP tests read fixture files"
+)]
+fn read_file(path: &Utf8Path) -> anyhow::Result<String> {
+    Ok(std::fs::read_to_string(path)?)
 }

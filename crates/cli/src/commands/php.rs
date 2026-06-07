@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::process::ExitCode;
@@ -45,11 +46,11 @@ pub(crate) fn use_track(
 
     let mut database = Database::open(&paths)?;
     let project = resolve_current_project(&database, environment)?;
-    let config_file = config::write_project_php_track(&project.path, selector.as_str())?;
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair(selector, client)
     })?;
     let track = installed.php().track().as_str().to_string();
+    let config_file = config::write_project_php_track(&project.path, &track)?;
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
 
     output.line(&format!(
@@ -148,6 +149,7 @@ pub(crate) fn list(
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let default_track = database.global_php_default_track()?;
+    let project_counts = php_project_selection_counts(&database, default_track.as_deref())?;
     let php = ResourceName::new("php")?;
     let commands = resource_commands(&paths, environment);
     let tracks = commands.list(Some(&php))?;
@@ -165,11 +167,16 @@ pub(crate) fn list(
         } else {
             "no"
         };
+        let project_count = if let Some(count) = project_counts.get(track.track().as_str()) {
+            *count
+        } else {
+            0
+        };
         output.line(&format!(
             "{}  {}  {}  {}  {}",
             track.track(),
             default_marker,
-            track.usage_count(),
+            project_count,
             track.installed_version(),
             track.current_artifact_path()
         ))?;
@@ -255,6 +262,27 @@ fn active_php_selection_usage_count(
     Ok(usage_count)
 }
 
+fn php_project_selection_counts(
+    database: &Database,
+    default_track: Option<&str>,
+) -> Result<HashMap<String, i64>, ExecuteError> {
+    let mut counts = HashMap::new();
+    for project in database.projects()? {
+        let track = if let Some(track) = project.desired_php_track.as_deref() {
+            Some(track)
+        } else {
+            default_track
+        };
+
+        if let Some(track) = track {
+            let count = counts.entry(track.to_string()).or_insert(0);
+            *count += 1;
+        }
+    }
+
+    Ok(counts)
+}
+
 fn with_resource_http_client<T>(
     environment: &impl Environment,
     operation: impl FnOnce(&dyn ResourceHttpClient) -> Result<T, resources::ManagedResourceCommandError>,
@@ -317,17 +345,4 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
     )
-}
-
-trait TrackSelectorExt {
-    fn as_str(&self) -> &str;
-}
-
-impl TrackSelectorExt for TrackSelector {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Latest => "latest",
-            Self::Track(track) => track.as_str(),
-        }
-    }
 }
