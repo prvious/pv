@@ -1,5 +1,6 @@
 use std::io;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt as _;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,6 +18,7 @@ use crate::shell::Shell;
 
 const PV_ENV_START: &str = "# >>> PV ENV";
 const PV_ENV_END: &str = "# <<< PV ENV";
+const SHIM_FILE_MODE: u32 = 0o700;
 
 const DEFAULT_SETUP_RESOURCES: &[SetupResourceDefault] = &[
     SetupResourceDefault::manifest_default("frankenphp"),
@@ -70,6 +72,7 @@ pub(crate) fn setup(
         output.line("PV setup")?;
         output.line(&format!("Ensured PV state layout: {}", paths.root()))?;
     }
+    install_command_shims(environment, &paths)?;
 
     if args.non_interactive && setup_requires_privileged_auth(environment, &paths)? {
         let mut output = Output::new(stdout, OutputMode::plain());
@@ -116,6 +119,41 @@ pub(crate) fn setup(
     output.line("PV setup complete")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn install_command_shims(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<(), ExecuteError> {
+    let pv_executable = current_executable(environment)?;
+
+    for shim in [
+        CommandShim {
+            name: "php",
+            command: "shim:php",
+        },
+        CommandShim {
+            name: "composer",
+            command: "shim:composer",
+        },
+    ] {
+        let path = paths.bin().join(shim.name);
+        let content = format!(
+            "#!/bin/sh\nexec {} {} \"$@\"\n",
+            shell_quote(pv_executable.as_str()),
+            shim.command
+        );
+
+        write_executable_file(&path, &content)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CommandShim {
+    name: &'static str,
+    command: &'static str,
 }
 
 pub(crate) fn uninstall(
@@ -786,6 +824,11 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     Ok(PvPaths::for_home(home))
 }
 
+fn current_executable(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.current_exe()?)
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
 fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.resolver_test_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
@@ -850,6 +893,20 @@ fn write_user_file(path: &Utf8Path, content: &str) -> Result<(), ExecuteError> {
 
 #[expect(
     clippy::disallowed_methods,
+    reason = "CLI setup helper owns PV command shim writes"
+)]
+fn write_executable_file(path: &Utf8Path, content: &str) -> Result<(), ExecuteError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| path_io_error(parent, source))?;
+    }
+
+    std::fs::write(path, content).map_err(|source| path_io_error(path, source))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(SHIM_FILE_MODE))
+        .map_err(|source| path_io_error(path, source).into())
+}
+
+#[expect(
+    clippy::disallowed_methods,
     reason = "CLI shell integration helper owns user profile backups"
 )]
 fn copy_user_file(source: &Utf8Path, destination: &Utf8Path) -> Result<(), ExecuteError> {
@@ -860,4 +917,8 @@ fn copy_user_file(source: &Utf8Path, destination: &Utf8Path) -> Result<(), Execu
 
 fn path_io_error(path: &Utf8Path, source: io::Error) -> io::Error {
     io::Error::new(source.kind(), format!("{path}: {source}"))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
 }

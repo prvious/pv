@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -326,6 +327,38 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
         request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
     }));
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+
+    Ok(())
+}
+
+#[test]
+fn setup_installs_php_and_composer_shims() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+
+    seed_setup_manifest(&fixture.paths)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _daemon_requests = daemon.finish()?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        read_required_file(&fixture.paths.bin().join("php"))?,
+        format!(
+            "#!/bin/sh\nexec {} shim:php \"$@\"\n",
+            shell_quote(&fixture.environment.current_exe.to_string_lossy())
+        )
+    );
+    assert_eq!(
+        read_required_file(&fixture.paths.bin().join("composer"))?,
+        format!(
+            "#!/bin/sh\nexec {} shim:composer \"$@\"\n",
+            shell_quote(&fixture.environment.current_exe.to_string_lossy())
+        )
+    );
+    assert_eq!(file_mode(&fixture.paths.bin().join("php"))?, 0o700);
+    assert_eq!(file_mode(&fixture.paths.bin().join("composer"))?, 0o700);
 
     Ok(())
 }
@@ -695,6 +728,10 @@ impl DaemonFixture {
                 let mut reader = BufReader::new(stream.try_clone()?);
 
                 reader.read_line(&mut request)?;
+                if request.trim().is_empty() {
+                    continue;
+                }
+
                 lock(&thread_requests).push(request.trim().to_string());
 
                 if request.contains(r#""command":"health""#) {
@@ -949,6 +986,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI setup tests inspect shim executable permissions"
+)]
+fn file_mode(path: &Utf8Path) -> anyhow::Result<u32> {
+    Ok(std::fs::metadata(path)?.permissions().mode() & 0o777)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
 }
 
 fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
