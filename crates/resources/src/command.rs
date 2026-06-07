@@ -37,6 +37,14 @@ pub enum ManagedResourceCommandError {
         track: String,
         usage_count: i64,
     },
+
+    #[error(
+        "Managed Resource operation failed with `{original_error}`, and rollback also failed: {rollback_error}"
+    )]
+    RollbackFailed {
+        original_error: String,
+        rollback_error: ResourcesError,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -174,9 +182,7 @@ impl ManagedResourceCommands {
             client,
         )?;
         if let Err(error) = self.record_php_pair_install(&install) {
-            self.rollback_php_pair_install(&install);
-
-            return Err(error);
+            return Err(self.rollback_php_pair_after_error(&install, error));
         }
 
         Ok(install)
@@ -313,24 +319,72 @@ impl ManagedResourceCommands {
             client,
         ) {
             Ok(install) => install,
-            Err(error) => {
-                self.rollback_prepared_installs(&[&php]);
-
-                return Err(error);
-            }
+            Err(error) => return Err(self.rollback_after_error(&[&php], error)),
         };
 
         Ok(PhpPairInstall { php, frankenphp })
     }
 
-    fn rollback_php_pair_install(&self, install: &PhpPairInstall) {
-        self.rollback_prepared_installs(&[install.frankenphp(), install.php()]);
+    fn rollback_php_pair_install(
+        &self,
+        install: &PhpPairInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        self.rollback_prepared_installs(&[install.frankenphp(), install.php()])
     }
 
-    fn rollback_prepared_installs(&self, installs: &[&ManagedResourceInstall]) {
+    fn rollback_prepared_installs(
+        &self,
+        installs: &[&ManagedResourceInstall],
+    ) -> ManagedResourceCommandResult<()> {
         let installer = ArtifactInstaller::new(self.paths.resources());
+        let mut first_error = None;
+
         for install in installs {
-            if let Err(_error) = installer.rollback(&install.artifact_install) {}
+            if let Err(error) = installer.rollback(&install.artifact_install)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error.into());
+        }
+
+        Ok(())
+    }
+
+    fn rollback_after_error(
+        &self,
+        installs: &[&ManagedResourceInstall],
+        original_error: ManagedResourceCommandError,
+    ) -> ManagedResourceCommandError {
+        match self.rollback_prepared_installs(installs) {
+            Ok(()) => original_error,
+            Err(ManagedResourceCommandError::Resources(rollback_error)) => {
+                ManagedResourceCommandError::RollbackFailed {
+                    original_error: original_error.to_string(),
+                    rollback_error,
+                }
+            }
+            Err(error) => error,
+        }
+    }
+
+    fn rollback_php_pair_after_error(
+        &self,
+        install: &PhpPairInstall,
+        original_error: ManagedResourceCommandError,
+    ) -> ManagedResourceCommandError {
+        match self.rollback_php_pair_install(install) {
+            Ok(()) => original_error,
+            Err(ManagedResourceCommandError::Resources(rollback_error)) => {
+                ManagedResourceCommandError::RollbackFailed {
+                    original_error: original_error.to_string(),
+                    rollback_error,
+                }
+            }
+            Err(error) => error,
         }
     }
 
@@ -454,9 +508,7 @@ impl ManagedResourceCommands {
                 client,
             )?;
             if let Err(error) = self.record_php_pair_install(&install) {
-                self.rollback_php_pair_install(&install);
-
-                return Err(error);
+                return Err(self.rollback_php_pair_after_error(&install, error));
             }
             installs.push(install.php);
             installs.push(install.frankenphp);
@@ -515,17 +567,12 @@ impl ManagedResourceCommands {
             client,
         ) {
             Ok(install) => install,
-            Err(error) => {
-                self.rollback_php_pair_install(&php_pair);
-
-                return Err(error);
-            }
+            Err(error) => return Err(self.rollback_php_pair_after_error(&php_pair, error)),
         };
         if let Err(error) = self.record_composer_with_php_pair_install(&php_pair, &composer) {
-            self.rollback_prepared_installs(&[&composer]);
-            self.rollback_php_pair_install(&php_pair);
+            let error = self.rollback_after_error(&[&composer], error);
 
-            return Err(error);
+            return Err(self.rollback_php_pair_after_error(&php_pair, error));
         }
 
         Ok(ComposerWithPhpPairInstall { php_pair, composer })

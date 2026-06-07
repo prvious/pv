@@ -47,9 +47,9 @@ pv composer:update
 pv composer:uninstall [--prune] [--force]
 ```
 
-`pv php:use <track>` is Project-scoped by default. It resolves the current linked Project, updates the Project config `php:` field, ensures both standalone PHP and matched FrankenPHP artifacts for the resolved track are installed, and requests Project reconciliation so the Gateway and worker runtime use the new track.
+`pv php:use <track>` is Project-scoped by default. It resolves the current linked Project, validates the Project config, ensures both standalone PHP and matched FrankenPHP artifacts for the resolved track are installed, updates the Project config `php:` field, records the resolved concrete Project track in `pv.db`, and requests Project reconciliation so the Gateway and worker runtime use the new track.
 
-`pv php:use <track> --global` stores the global default PHP track in `pv.db`, ensures both standalone PHP and matched FrankenPHP artifacts for the resolved track are installed, and requests reconciliation for Projects that inherit the global default.
+`pv php:use <track> --global` resolves the requested track, ensures both standalone PHP and matched FrankenPHP artifacts for the resolved track are installed, stores the resolved concrete global default PHP track in `pv.db`, and requests reconciliation for Projects that inherit the global default.
 
 `pv php:install [track]` installs the standalone PHP and matched FrankenPHP pair. If the track argument is omitted, it resolves the manifest default PHP track. If the track is `latest`, it resolves to the manifest default concrete PHP track before writing state.
 

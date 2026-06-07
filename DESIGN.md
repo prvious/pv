@@ -382,9 +382,9 @@ PV does not infer PHP versions from `composer.json`. Composer constraints can be
 
 If Project config asks for a PHP version that is not installed, daemon reconciliation installs it automatically for Project serving.
 
-`pv php:use <track>` sets the current linked Project's PHP track. It updates the preferred Project config file (`pv.yml` when present, otherwise `pv.yaml`, otherwise a new `pv.yml`), installs the standalone PHP and matching FrankenPHP artifacts for the resolved track, and requests Project reconciliation.
+`pv php:use <track>` sets the current linked Project's PHP track. It resolves and validates the current Project config, installs the standalone PHP and matching FrankenPHP artifacts for the resolved track, updates the preferred Project config file (`pv.yml` when present, otherwise `pv.yaml`, otherwise a new `pv.yml`), records the resolved concrete track in `pv.db`, and requests Project reconciliation.
 
-`pv php:use <track> --global` sets the global default PHP track. The global default is used outside linked Projects and by linked Projects without `php` in Project config.
+`pv php:use <track> --global` sets the global default PHP track. It resolves the requested track, installs the standalone PHP and matching FrankenPHP artifacts, then records the resolved concrete track in `pv.db`. The global default is used outside linked Projects and by linked Projects without `php` in Project config.
 
 Both Project and global `php:use` install the missing standalone PHP and FrankenPHP artifacts before recording the selection. If installation fails, the selection is not changed. `pv php:install [track]` installs the standalone PHP and FrankenPHP pair without changing any Project or global selection.
 

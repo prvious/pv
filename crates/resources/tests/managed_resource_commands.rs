@@ -266,6 +266,65 @@ fn managed_resource_commands_install_php_pair_preflights_frankenphp_track_before
 }
 
 #[test]
+fn managed_resource_commands_install_php_pair_reports_rollback_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let php_current_path = current_path(&paths, "php", "8.4");
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_byte_error_after(
+            ResourcesError::HttpRequestFailed {
+                url: "https://artifacts.example.test/frankenphp-8.4.8-pv1-darwin-arm64.tar.gz"
+                    .to_string(),
+                reason: "scripted downstream failure".to_string(),
+            },
+            move || replace_current_pointer_with_directory(&php_current_path),
+        );
+
+    let result = commands.install_php_pair(TrackSelector::Latest, &client);
+    let php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let php_current_is_directory = path_is_directory(&current_path(&paths, "php", "8.4"))?;
+    let result = format!("{result:#?}")
+        .replace(tempdir.path().as_str(), "<tempdir>")
+        .replace(
+            "Operation not permitted (os error 1)",
+            "<directory remove error>",
+        )
+        .replace("Is a directory (os error 21)", "<directory remove error>");
+
+    assert_debug_snapshot!((result, php_release_exists, php_current_is_directory,));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_install_php_pair_second_artifact_failure_records_no_pair_state()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -1381,9 +1440,34 @@ fn raw_track_record_summary(
 #[derive(Debug)]
 struct ScriptedClient {
     text_responses: RefCell<VecDeque<Result<String, ResourcesError>>>,
-    byte_responses: RefCell<VecDeque<Result<Vec<u8>, ResourcesError>>>,
+    byte_responses: RefCell<VecDeque<ScriptedByteResponse>>,
     text_request_count: Cell<usize>,
     byte_request_count: Cell<usize>,
+}
+
+enum ScriptedByteResponse {
+    Bytes(Vec<u8>),
+    Error(ResourcesError),
+    ErrorAfter {
+        error: ResourcesError,
+        operation: Box<dyn FnOnce() -> Result<()>>,
+    },
+}
+
+impl std::fmt::Debug for ScriptedByteResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bytes(bytes) => formatter
+                .debug_tuple("Bytes")
+                .field(&format!("{} byte(s)", bytes.len()))
+                .finish(),
+            Self::Error(error) => formatter.debug_tuple("Error").field(error).finish(),
+            Self::ErrorAfter { error, .. } => formatter
+                .debug_struct("ErrorAfter")
+                .field("error", error)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl ScriptedClient {
@@ -1411,7 +1495,21 @@ impl ScriptedClient {
     fn with_bytes(self, bytes: &[u8]) -> Self {
         self.byte_responses
             .borrow_mut()
-            .push_back(Ok(bytes.to_vec()));
+            .push_back(ScriptedByteResponse::Bytes(bytes.to_vec()));
+        self
+    }
+
+    fn with_byte_error_after(
+        self,
+        error: ResourcesError,
+        operation: impl FnOnce() -> Result<()> + 'static,
+    ) -> Self {
+        self.byte_responses
+            .borrow_mut()
+            .push_back(ScriptedByteResponse::ErrorAfter {
+                error,
+                operation: Box::new(operation),
+            });
         self
     }
 
@@ -1442,16 +1540,28 @@ impl ResourceHttpClient for ScriptedClient {
     fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
         self.byte_request_count
             .set(self.byte_request_count.get() + 1);
-        let bytes = self
+        let response = self
             .byte_responses
             .borrow_mut()
             .pop_front()
             .unwrap_or_else(|| {
-                Err(ResourcesError::HttpRequestFailed {
+                ScriptedByteResponse::Error(ResourcesError::HttpRequestFailed {
                     url: url.to_string(),
                     reason: "no scripted byte response".to_string(),
                 })
-            })?;
+            });
+        let bytes = match response {
+            ScriptedByteResponse::Bytes(bytes) => bytes,
+            ScriptedByteResponse::Error(error) => return Err(error),
+            ScriptedByteResponse::ErrorAfter { error, operation } => {
+                operation().map_err(|source| ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: source.to_string(),
+                })?;
+
+                return Err(error);
+            }
+        };
         writer
             .write_all(&bytes)
             .map_err(|source| ResourcesError::DownloadWriteFailed {
@@ -1755,6 +1865,33 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "managed resource command tests inspect fixture filesystem state"
+)]
+fn path_is_directory(path: &Utf8Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "managed resource command tests corrupt fixture current pointers"
+)]
+fn replace_current_pointer_with_directory(path: &Utf8Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    std::fs::create_dir(path)?;
+
+    Ok(())
 }
 
 #[expect(

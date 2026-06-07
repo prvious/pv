@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> Status note: this plan is retained as historical implementation context for PR 15. Checkbox state in this document is not the current source of truth for completed work.
+
 **Goal:** Implement Project-aware PHP shims, `pv php:*` commands, and Composer track `2` commands from the approved PR 15 design.
 
 **Architecture:** Keep user-facing behavior in `cli`, persisted global PHP default in `state`, structured Project config mutation in `config`, and artifact lifecycle logic in `resources`. Explicit PV management commands install missing artifacts; direct `php` and `composer` shim execution fails clearly when required artifacts are missing.
