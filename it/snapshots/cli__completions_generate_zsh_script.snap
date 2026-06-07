@@ -200,12 +200,46 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(php:use)
+_arguments "${_arguments_options[@]}" : \
+'-g[Set the global PHP default]' \
+'--global[Set the global PHP default]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- PHP track to use:_default' \
+&& ret=0
+;;
 (php:install)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '::track -- PHP track to install:_default' \
+&& ret=0
+;;
+(php:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(php:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- PHP track to uninstall:_default' \
+&& ret=0
+;;
+(php:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
 && ret=0
 ;;
         esac
@@ -238,7 +272,11 @@ _pv_commands() {
 'open:Open a linked Project' \
 'project:env:Print generated Project environment values' \
 'list:List linked Projects' \
+'php:use:Set the PHP track' \
 'php:install:Install a PHP track' \
+'php:update:Update installed PHP tracks' \
+'php:uninstall:Uninstall a PHP track' \
+'php:list:List installed PHP tracks' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -321,6 +359,26 @@ _pv__subcmd__open_commands() {
 _pv__subcmd__php:install_commands() {
     local commands; commands=()
     _describe -t commands 'pv php:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__php:list_commands] )) ||
+_pv__subcmd__php:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv php:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__php:uninstall_commands] )) ||
+_pv__subcmd__php:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv php:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__php:update_commands] )) ||
+_pv__subcmd__php:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv php:update commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__php:use_commands] )) ||
+_pv__subcmd__php:use_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv php:use commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__ports:install_commands] )) ||
 _pv__subcmd__ports:install_commands() {

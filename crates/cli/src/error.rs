@@ -58,4 +58,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Resources(#[from] resources::ResourcesError),
+
+    #[error(transparent)]
+    ManagedResourceCommand(#[from] resources::ManagedResourceCommandError),
 }

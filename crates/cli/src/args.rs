@@ -92,8 +92,20 @@ pub(crate) enum Command {
     #[command(name = "list", about = "List linked Projects")]
     List,
 
+    #[command(name = "php:use", about = "Set the PHP track")]
+    PhpUse(PhpUseArgs),
+
     #[command(name = "php:install", about = "Install a PHP track")]
     PhpInstall(PhpInstallArgs),
+
+    #[command(name = "php:update", about = "Update installed PHP tracks")]
+    PhpUpdate,
+
+    #[command(name = "php:uninstall", about = "Uninstall a PHP track")]
+    PhpUninstall(PhpUninstallArgs),
+
+    #[command(name = "php:list", about = "List installed PHP tracks")]
+    PhpList,
 }
 
 #[derive(Debug, clap::Args)]
@@ -131,8 +143,29 @@ pub(crate) struct UninstallArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct PhpInstallArgs {
-    #[arg(value_name = "version", help = "PHP track to install")]
+    #[arg(value_name = "track", help = "PHP track to install")]
     pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PhpUseArgs {
+    #[arg(value_name = "track", help = "PHP track to use")]
+    pub(crate) track: String,
+
+    #[arg(short = 'g', long, help = "Set the global PHP default")]
+    pub(crate) global: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PhpUninstallArgs {
+    #[arg(value_name = "track", help = "PHP track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, clap::Args)]

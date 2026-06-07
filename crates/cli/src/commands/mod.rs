@@ -44,6 +44,10 @@ pub(crate) fn execute(
         Command::Open(args) => project::open(args, environment, stdout),
         Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),
         Command::List => project::list(environment, stdout),
-        Command::PhpInstall(args) => php::install(args),
+        Command::PhpUse(args) => php::use_track(args, environment, stdout),
+        Command::PhpInstall(args) => php::install(args, environment, stdout),
+        Command::PhpUpdate => php::update(environment, stdout),
+        Command::PhpUninstall(args) => php::uninstall(args, environment, stdout),
+        Command::PhpList => php::list(environment, stdout),
     }
 }

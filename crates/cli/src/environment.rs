@@ -116,6 +116,14 @@ pub trait Environment {
     fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
         platform::untrust_system_ca(fingerprint)
     }
+
+    fn artifact_manifest_url(&self) -> Option<String> {
+        None
+    }
+
+    fn resource_http_client(&self) -> Option<&dyn resources::ResourceHttpClient> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]

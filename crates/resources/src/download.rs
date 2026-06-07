@@ -33,7 +33,7 @@ impl ArtifactDownloader {
     pub fn download(
         &self,
         artifact: &ManifestArtifact,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> Result<ArtifactDownload> {
         let path = self.cache_path(artifact)?;
 
@@ -72,7 +72,7 @@ impl ArtifactDownloader {
     fn download_with_retry(
         &self,
         artifact: &ManifestArtifact,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
         path: &Utf8Path,
     ) -> Result<()> {
         for _ in 1..DOWNLOAD_ATTEMPTS {
@@ -139,7 +139,7 @@ fn artifact_file_name(url: &str) -> Result<&str> {
 
 fn write_download(
     artifact: &ManifestArtifact,
-    client: &impl ResourceHttpClient,
+    client: &(impl ResourceHttpClient + ?Sized),
     path: &Utf8Path,
 ) -> Result<()> {
     fs::write_atomically_with(path, |writer| {

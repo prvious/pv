@@ -110,6 +110,12 @@ fn finish_execution(
 
             Ok(ExitCode::FAILURE)
         }
+        Err(ExecuteError::ManagedResourceCommand(error)) => {
+            let mut output = Output::new(stderr, output_mode);
+            output.error(&error.to_string())?;
+
+            Ok(ExitCode::FAILURE)
+        }
         Err(ExecuteError::Daemon(error)) => Err(error.into()),
         Err(ExecuteError::State(error)) => Err(error.into()),
     }

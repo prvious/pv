@@ -124,7 +124,7 @@ impl ManagedResourceCommands {
         &self,
         adapter: &impl ResourceAdapter,
         selector: TrackSelector,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
@@ -141,7 +141,7 @@ impl ManagedResourceCommands {
     pub fn install_php_pair(
         &self,
         selector: TrackSelector,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<PhpPairInstall> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
@@ -181,7 +181,7 @@ impl ManagedResourceCommands {
         track: TrackName,
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let selection =
             manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
@@ -230,7 +230,7 @@ impl ManagedResourceCommands {
     pub fn update(
         &self,
         adapter: &impl ResourceAdapter,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
@@ -258,7 +258,7 @@ impl ManagedResourceCommands {
 
     pub fn update_php_pairs(
         &self,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<PhpPairUpdate> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
@@ -306,7 +306,7 @@ impl ManagedResourceCommands {
 
     pub fn install_composer(
         &self,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         self.install(
             &composer_adapter()?,
@@ -317,7 +317,7 @@ impl ManagedResourceCommands {
 
     pub fn update_composer(
         &self,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         let composer = composer_adapter()?;
         let track = composer_track()?;
