@@ -449,6 +449,103 @@ impl ComposerTrack {
     }
 }
 
+pub fn composer_recipe_env(
+    composer: &Utf8Path,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> crate::Result<String> {
+    let recipe = ComposerRecipe::load(composer)?;
+    validate_composer_recipe_request(&recipe, resource, track, platform)?;
+
+    let upstream_version = recipe.upstream_version();
+    let pv_build_revision = recipe.pv_build_revision();
+    let artifact_version = format!("{upstream_version}-{pv_build_revision}");
+    let source_url = recipe.source_url();
+    let source_sha256 = recipe.source_sha256().as_str();
+    let minimum_pv_version = recipe.minimum_pv_version().as_str();
+
+    for (field, value) in [
+        ("upstream_version", upstream_version),
+        ("artifact_version", artifact_version.as_str()),
+        ("source_url", source_url),
+        ("source_sha256", source_sha256),
+        ("minimum_pv_version", minimum_pv_version),
+        ("pv_build_revision", pv_build_revision),
+    ] {
+        validate_shell_unquoted_assignment_value(recipe.path(), field, value)?;
+    }
+
+    Ok(format!(
+        "\
+PV_RESOURCE=composer
+PV_TRACK=2
+PV_PLATFORM=any
+PV_UPSTREAM_VERSION={upstream_version}
+PV_ARTIFACT_VERSION={artifact_version}
+PV_SOURCE_URL={source_url}
+PV_SOURCE_SHA256={source_sha256}
+PV_MINIMUM_PV_VERSION={minimum_pv_version}
+PV_PV_BUILD_REVISION={pv_build_revision}
+",
+    ))
+}
+
+fn validate_shell_unquoted_assignment_value(
+    path: &Utf8Path,
+    field: &str,
+    value: &str,
+) -> crate::Result<()> {
+    if let Some(character) = value.chars().find(|character| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\\' | '"' | '\'' | '~'
+            )
+    }) {
+        Err(invalid(
+            path,
+            format!(
+                "{field} contains shell-unsafe character `{character}` in value `{value}` for unquoted recipe env output"
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_composer_recipe_request(
+    recipe: &ComposerRecipe,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> crate::Result<()> {
+    validate_request_value(recipe.path(), "resource", resource, "composer")?;
+    validate_request_value(recipe.path(), "track", track, recipe.track().as_str())?;
+    validate_request_value(
+        recipe.path(),
+        "platform",
+        platform,
+        recipe.platform().as_str(),
+    )
+}
+
+fn validate_request_value(
+    path: &Utf8Path,
+    field: &str,
+    actual: &str,
+    expected: &str,
+) -> crate::Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(invalid(
+            path,
+            format!("Composer recipe {field} must be `{expected}`, got `{actual}`"),
+        ))
+    }
+}
+
 fn parse_resource_list(path: &Utf8Path, values: Vec<String>) -> crate::Result<Vec<ResourceName>> {
     if values.is_empty() {
         return Err(invalid(path, "recipe.resources must not be empty"));

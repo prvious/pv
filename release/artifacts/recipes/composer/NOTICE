@@ -1,0 +1,8 @@
+PV packages the upstream Composer 2.10.1 PHAR from:
+https://getcomposer.org/download/2.10.1/composer.phar
+
+Upstream Composer source for this artifact is tracked at:
+https://github.com/composer/composer/tree/2.10.1
+
+Composer is licensed under the MIT License; see LICENSE in this archive.
+Upstream Composer tag 2.10.1 does not provide a NOTICE file.

@@ -1,6 +1,7 @@
 use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
 
 #[derive(Debug, Parser)]
 #[command(name = "pv-release")]
@@ -45,6 +46,16 @@ enum Command {
         record: Utf8PathBuf,
         #[arg(long)]
         smoke_hook: Option<Utf8PathBuf>,
+    },
+    PrintRecipeEnv {
+        #[arg(long)]
+        composer: Utf8PathBuf,
+        #[arg(long)]
+        resource: String,
+        #[arg(long)]
+        track: String,
+        #[arg(long)]
+        platform: String,
     },
 }
 
@@ -91,6 +102,20 @@ pub fn run() -> anyhow::Result<()> {
             smoke_hook.as_deref(),
         )
         .with_context(|| format!("failed to validate archive `{archive}`")),
+        Command::PrintRecipeEnv {
+            composer,
+            resource,
+            track,
+            platform,
+        } => {
+            let context = format!("failed to print Composer recipe environment for `{composer}`");
+            let env = crate::recipe::composer_recipe_env(&composer, &resource, &track, &platform)
+                .context(context)?;
+            let mut stdout = io::stdout().lock();
+            stdout
+                .write_all(env.as_bytes())
+                .context("failed to write recipe environment to stdout")
+        }
     }
 }
 
@@ -267,6 +292,41 @@ mod tests {
                 assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
                 assert_eq!(record, Utf8PathBuf::from("release.json"));
                 assert_eq!(smoke_hook, Some(Utf8PathBuf::from("smoke.sh")));
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--composer",
+            "release/artifacts/recipes/composer/composer.toml",
+            "--resource",
+            "composer",
+            "--track",
+            "2",
+            "--platform",
+            "any",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                composer,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(
+                    composer,
+                    Utf8PathBuf::from("release/artifacts/recipes/composer/composer.toml")
+                );
+                assert_eq!(resource, "composer");
+                assert_eq!(track, "2");
+                assert_eq!(platform, "any");
                 Ok(())
             }
             command => bail!("parsed unexpected command: {command:?}"),

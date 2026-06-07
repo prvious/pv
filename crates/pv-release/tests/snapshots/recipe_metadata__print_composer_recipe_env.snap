@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE=composer
+PV_TRACK=2
+PV_PLATFORM=any
+PV_UPSTREAM_VERSION=2.10.1
+PV_ARTIFACT_VERSION=2.10.1-pv1
+PV_SOURCE_URL=https://getcomposer.org/download/2.10.1/composer.phar
+PV_SOURCE_SHA256=345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06
+PV_MINIMUM_PV_VERSION=0.1.0
+PV_PV_BUILD_REVISION=pv1
