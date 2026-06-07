@@ -4,14 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       resource:
-        description: "Resource to build: all, php, frankenphp, composer"
+        description: "Resource to build: all, php, composer"
         required: true
         default: "all"
         type: choice
         options:
           - all
           - php
-          - frankenphp
           - composer
       track:
         description: "Track to build: all, 8.2, 8.3, 8.4, 2"
@@ -54,7 +53,6 @@ jobs:
           case "$PV_RECIPE_RESOURCE:$PV_RECIPE_TRACK" in
             all:all | all:8.2 | all:8.3 | all:8.4) ;;
             php:all | php:8.2 | php:8.3 | php:8.4) ;;
-            frankenphp:all | frankenphp:8.2 | frankenphp:8.3 | frankenphp:8.4) ;;
             composer:all | composer:2) ;;
             *)
               printf '%s\n' "unsupported resource/track combination: $PV_RECIPE_RESOURCE/$PV_RECIPE_TRACK" >&2
@@ -78,8 +76,15 @@ jobs:
           brew update
           brew install shellcheck php
           mkdir -p "${RUNNER_TEMP:?}/pv-tools"
-          curl -L --fail --show-error --silent "https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-macos-$static_php_architecture" -o "$RUNNER_TEMP/pv-tools/spc"
+          curl -L --fail --show-error --silent \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 \
+            "https://dl.static-php.dev/v3/spc-bin/nightly/spc-macos-$static_php_architecture" \
+            -o "$RUNNER_TEMP/pv-tools/spc"
           chmod +x "$RUNNER_TEMP/pv-tools/spc"
+          "$RUNNER_TEMP/pv-tools/spc" --version
+          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--build-frankenphp' >/dev/null
+          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--dl-custom-local' >/dev/null
           printf '%s\n' "$RUNNER_TEMP/pv-tools" >>"${GITHUB_PATH:?}"
 
       - name: Validate recipe metadata
@@ -116,14 +121,18 @@ jobs:
           rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
           mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
 
+          build_php_family=false
+          build_composer=false
           case "$PV_RECIPE_RESOURCE" in
             all)
-              resource_list='php
-          frankenphp
-          composer'
+              build_php_family=true
+              build_composer=true
               ;;
-            *)
-              resource_list=$PV_RECIPE_RESOURCE
+            php)
+              build_php_family=true
+              ;;
+            composer)
+              build_composer=true
               ;;
           esac
 
@@ -138,29 +147,22 @@ jobs:
               ;;
           esac
 
-          while IFS= read -r resource; do
-            [ -n "$resource" ] || continue
-
-            if [ "$resource" = composer ]; then
-              PV_RECIPE_RESOURCE=composer \
-                PV_RECIPE_TRACK=2 \
-                PV_RECIPE_PLATFORM=any \
-                PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
-                release/artifacts/recipes/composer/build.sh
-              continue
-            fi
-
+          if [ "$build_php_family" = true ]; then
             while IFS= read -r track; do
               [ -n "$track" ] || continue
-              PV_RECIPE_RESOURCE="$resource" \
-                PV_RECIPE_TRACK="$track" \
+              PV_RECIPE_TRACK="$track" \
                 release/artifacts/recipes/php/build.sh
             done <<PHP_TRACKS
           $php_track_list
           PHP_TRACKS
-          done <<RESOURCES
-          $resource_list
-          RESOURCES
+          fi
+
+          if [ "$build_composer" = true ]; then
+            PV_RECIPE_TRACK=2 \
+              PV_RECIPE_PLATFORM=any \
+              PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
+              release/artifacts/recipes/composer/build.sh
+          fi
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
 
@@ -197,8 +199,9 @@ jobs:
               write_default_track frankenphp "$php_default_track"
               write_default_track composer 2
               ;;
-            php | frankenphp)
-              write_default_track "$PV_RECIPE_RESOURCE" "$php_default_track"
+            php)
+              write_default_track php "$php_default_track"
+              write_default_track frankenphp "$php_default_track"
               ;;
             composer)
               write_default_track composer 2
