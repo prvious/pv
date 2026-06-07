@@ -96,6 +96,12 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(shim:php)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'*::args:_default' \
+&& ret=0
+;;
 (dns:status)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -258,6 +264,7 @@ _pv_commands() {
 'daemon:disable:Disable the PV login daemon' \
 'daemon:restart:Restart the PV login daemon' \
 'daemon:run:Run the internal PV daemon' \
+'shim:php:Run the internal PV PHP shim' \
 'dns:status:Show PV .test resolver status' \
 'dns:install:Install or repair PV .test resolver config' \
 'dns:uninstall:Remove PV .test resolver config' \
@@ -404,6 +411,11 @@ _pv__subcmd__project:env_commands() {
 _pv__subcmd__setup_commands() {
     local commands; commands=()
     _describe -t commands 'pv setup commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__shim:php_commands] )) ||
+_pv__subcmd__shim:php_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv shim:php commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__uninstall_commands] )) ||
 _pv__subcmd__uninstall_commands() {

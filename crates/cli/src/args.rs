@@ -48,6 +48,8 @@ pub(crate) enum Command {
         name = "shim:php",
         about = "Run the internal PV PHP shim",
         hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true,
         trailing_var_arg = true
     )]
     ShimPhp(ShimArgs),

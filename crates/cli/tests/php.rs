@@ -209,6 +209,54 @@ fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
 }
 
 #[test]
+fn php_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.4")?;
+    }
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let outputs = [
+        run_pv(&["shim:php", "--help"], &environment)?,
+        run_pv(&["shim:php", "-h"], &environment)?,
+        run_pv(&["shim:php", "--version"], &environment)?,
+        run_pv(&["shim:php", "-V"], &environment)?,
+    ];
+    let exec_calls = environment.exec_calls();
+
+    assert!(
+        outputs
+            .iter()
+            .all(|output| output.exit_code == ExitCode::SUCCESS)
+    );
+    assert!(outputs.iter().all(|output| output.stdout.is_empty()));
+    assert!(outputs.iter().all(|output| output.stderr.is_empty()));
+    assert_eq!(
+        exec_calls,
+        ["--help", "-h", "--version", "-V"]
+            .into_iter()
+            .map(|arg| ExecCall {
+                program: release.join("bin/php").as_std_path().to_path_buf(),
+                args: vec![arg.to_string()],
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((outputs, exec_calls));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_shim_uses_cached_manifest_default_without_network() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
