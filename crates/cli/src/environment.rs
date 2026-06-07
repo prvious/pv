@@ -124,6 +124,10 @@ pub trait Environment {
     fn resource_http_client(&self) -> Option<&dyn resources::ResourceHttpClient> {
         None
     }
+
+    fn target_platform(&self) -> Option<resources::TargetPlatform> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]

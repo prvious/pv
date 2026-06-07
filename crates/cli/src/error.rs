@@ -31,6 +31,11 @@ pub enum CliError {
 
     #[error("active pf redirects do not match the prepared PV port redirect config")]
     PfRedirectsInactive,
+
+    #[error(
+        "PHP track `{track}` has {usage_count} active Project/global default selection(s); use --force to remove it anyway"
+    )]
+    PhpTrackInUse { track: String, usage_count: i64 },
 }
 
 #[derive(Debug, Error)]

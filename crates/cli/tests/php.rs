@@ -11,7 +11,7 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use config::ProjectConfigFile;
 use insta::assert_debug_snapshot;
-use resources::{ResourceHttpClient, ResourcesError};
+use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
     ProjectRecord, PvPaths,
@@ -24,6 +24,7 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
     client: ScriptedClient,
+    target_platform: Option<TargetPlatform>,
 }
 
 impl TestEnvironment {
@@ -32,7 +33,13 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             client,
+            target_platform: None,
         }
+    }
+
+    fn with_target_platform(mut self, target_platform: TargetPlatform) -> Self {
+        self.target_platform = Some(target_platform);
+        self
     }
 
     fn text_request_count(&self) -> usize {
@@ -79,6 +86,10 @@ impl Environment for TestEnvironment {
 
     fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
         Some(&self.client)
+    }
+
+    fn target_platform(&self) -> Option<TargetPlatform> {
+        self.target_platform
     }
 }
 
@@ -189,6 +200,148 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
 }
 
 #[test]
+fn php_install_uses_injected_target_platform() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts_for_platform("8.4.8-pv1", TargetPlatform::DarwinAmd64)?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    )
+    .with_target_platform(TargetPlatform::DarwinAmd64);
+
+    let output = run_pv(&["php:install", "8.4"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!((
+        output,
+        resource_record_snapshots(&records, tempdir.path())?,
+        environment.text_request_count(),
+        environment.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_refuses_project_selected_track_without_force() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &project,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    );
+    let install = run_pv(&["php:install", "8.4"], &environment)?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.4")?;
+
+    let uninstall = run_pv(&["php:uninstall", "8.4"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::FAILURE);
+    assert!(uninstall.stdout.is_empty());
+    assert!(
+        records
+            .iter()
+            .all(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+    );
+    assert_debug_snapshot!((
+        uninstall,
+        resource_record_snapshots(&records, tempdir.path())?,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_refuses_global_default_track_without_force() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    );
+    let install = run_pv(&["php:install", "8.4"], &environment)?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.4")?;
+    }
+
+    let uninstall = run_pv(&["php:uninstall", "8.4"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::FAILURE);
+    assert!(uninstall.stdout.is_empty());
+    assert!(
+        records
+            .iter()
+            .all(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+    );
+    assert_debug_snapshot!((
+        uninstall,
+        resource_record_snapshots(&records, tempdir.path())?,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &project,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    );
+    let install = run_pv(&["php:install", "8.4"], &environment)?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.4")?;
+
+    let uninstall = run_pv(&["php:uninstall", "8.4", "--force"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    assert!(uninstall.stderr.is_empty());
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Removed && record.removal_force
+    }));
+    assert_debug_snapshot!((
+        uninstall,
+        resource_record_snapshots(&records, tempdir.path())?,
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -259,10 +412,6 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
 }
 
 #[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,
@@ -300,6 +449,17 @@ fn register_project(
     })?;
 
     Ok(result.project)
+}
+
+fn select_project_php_track(
+    home: &Utf8Path,
+    project: &ProjectRecord,
+    track: &str,
+) -> anyhow::Result<()> {
+    let mut database = Database::open(&pv_paths(home))?;
+    database.replace_project_desired_php_track(&project.id, Some(track))?;
+
+    Ok(())
 }
 
 fn managed_resource_records(
@@ -401,9 +561,21 @@ struct PhpPairArtifacts {
 }
 
 fn php_pair_artifacts(version: &str) -> anyhow::Result<PhpPairArtifacts> {
+    php_pair_artifacts_for_platform(version, TargetPlatform::DarwinArm64)
+}
+
+fn php_pair_artifacts_for_platform(
+    version: &str,
+    target_platform: TargetPlatform,
+) -> anyhow::Result<PhpPairArtifacts> {
     Ok(PhpPairArtifacts {
-        php: runtime_fixture_artifact("php", version, "bin/php"),
-        frankenphp: runtime_fixture_artifact("frankenphp", version, "bin/frankenphp"),
+        php: runtime_fixture_artifact("php", version, "bin/php", target_platform),
+        frankenphp: runtime_fixture_artifact(
+            "frankenphp",
+            version,
+            "bin/frankenphp",
+            target_platform,
+        ),
     })
 }
 
@@ -435,13 +607,12 @@ fn runtime_fixture_artifact(
     resource_name: &str,
     version: &str,
     executable_path: &str,
+    target_platform: TargetPlatform,
 ) -> FixtureArtifact {
-    let platform = "darwin-arm64";
-
     FixtureArtifact {
         resource_name: resource_name.to_string(),
         version: version.to_string(),
-        platform: platform.to_string(),
+        platform: target_platform.as_str().to_string(),
         executable_path: executable_path.to_string(),
         sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
     }

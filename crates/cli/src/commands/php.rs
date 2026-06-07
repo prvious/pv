@@ -109,6 +109,18 @@ pub(crate) fn uninstall(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let track = TrackName::new(args.track)?;
+    if !args.force {
+        let database = Database::open(&paths)?;
+        let usage_count = active_php_selection_usage_count(&database, &track)?;
+        if usage_count > 0 {
+            return Err(CliError::PhpTrackInUse {
+                track: track.as_str().to_string(),
+                usage_count,
+            }
+            .into());
+        }
+    }
+
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);
@@ -208,8 +220,39 @@ fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> Managed
         environment
             .artifact_manifest_url()
             .unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string()),
-        TargetPlatform::DarwinArm64,
+        target_platform(environment),
     )
+}
+
+fn target_platform(environment: &impl Environment) -> TargetPlatform {
+    environment
+        .target_platform()
+        .unwrap_or_else(current_target_platform)
+}
+
+fn current_target_platform() -> TargetPlatform {
+    if cfg!(target_arch = "aarch64") {
+        TargetPlatform::DarwinArm64
+    } else {
+        TargetPlatform::DarwinAmd64
+    }
+}
+
+fn active_php_selection_usage_count(
+    database: &Database,
+    track: &TrackName,
+) -> Result<i64, ExecuteError> {
+    let mut usage_count = 0_i64;
+    for project in database.projects()? {
+        if project.desired_php_track.as_deref() == Some(track.as_str()) {
+            usage_count += 1;
+        }
+    }
+    if database.global_php_default_track()?.as_deref() == Some(track.as_str()) {
+        usage_count += 1;
+    }
+
+    Ok(usage_count)
 }
 
 fn with_resource_http_client<T>(
