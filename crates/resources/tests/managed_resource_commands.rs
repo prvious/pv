@@ -12,7 +12,7 @@ use resources::{
     ArtifactManifestSource, ManagedResourceCommands, ManagedResourceInstall,
     ManagedResourceRemovalIntent, ManagedResourceTrack, ManagedResourceUninstallOptions,
     ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError,
-    TargetPlatform, TrackName, TrackSelector, frankenphp_adapter, php_adapter,
+    TargetPlatform, TrackName, TrackSelector, composer_adapter, frankenphp_adapter, php_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -379,6 +379,78 @@ fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one
 }
 
 #[test]
+fn managed_resource_commands_update_php_pairs_preflights_all_pairs_before_mutation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let php_update_artifact =
+        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let frankenphp_decoy_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.3.23-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.3",
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let broken_update_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&php_artifact, &php_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.3",
+            vec![manifest_track("8.3", vec![&frankenphp_decoy_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes())
+        .with_text(&broken_update_manifest)
+        .with_bytes(php_update_artifact.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let state_before_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let byte_downloads_before_update = client.byte_request_count();
+    let result = commands.update_php_pairs(&client);
+    let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let byte_downloads_during_update = client.byte_request_count() - byte_downloads_before_update;
+
+    assert_debug_snapshot!((
+        result,
+        state_before_update,
+        state_after_update,
+        byte_downloads_during_update,
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_update_php_pairs_without_installed_tracks_does_not_refresh_manifest()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -555,6 +627,61 @@ fn managed_resource_commands_install_update_and_uninstall_composer_track_two() -
         update_summary(&updated, tempdir.path())?,
         removal_intent_summary(&intent),
         state_after_uninstall,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_composer_ignores_installed_non_v2_tracks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let composer = composer_adapter()?;
+    let first_v1_artifact = composer_fixture_artifact("1.0.0-pv1", "v1 first")?;
+    let second_v1_artifact = composer_fixture_artifact("1.0.1-pv1", "v1 second")?;
+    let first_v2_artifact = composer_fixture_artifact("2.8.0-pv1", "v2 first")?;
+    let second_v2_artifact = composer_fixture_artifact("2.8.1-pv1", "v2 second")?;
+    let initial_manifest = manifest_with_resources(&[manifest_resource(
+        "composer",
+        "2",
+        vec![
+            manifest_track("1", vec![&first_v1_artifact]),
+            manifest_track("2", vec![&first_v2_artifact]),
+        ],
+    )]);
+    let updated_manifest = manifest_with_resources(&[manifest_resource(
+        "composer",
+        "2",
+        vec![
+            manifest_track("1", vec![&first_v1_artifact, &second_v1_artifact]),
+            manifest_track("2", vec![&first_v2_artifact, &second_v2_artifact]),
+        ],
+    )]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(first_v1_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(first_v2_artifact.bytes())
+        .with_text(&updated_manifest)
+        .with_bytes(second_v2_artifact.bytes());
+
+    commands.install(
+        &composer,
+        TrackSelector::Track(TrackName::new("1")?),
+        &client,
+    )?;
+    commands.install_composer(&client)?;
+    let byte_downloads_before_update = client.byte_request_count();
+    let updated = commands.update_composer(&client)?;
+    let listed_after_update = commands.list(Some(composer.resource_name()))?;
+    let byte_downloads_during_update = client.byte_request_count() - byte_downloads_before_update;
+
+    assert_debug_snapshot!((
+        update_summary(&updated, tempdir.path())?,
+        track_records_summary(&listed_after_update, tempdir.path())?,
+        byte_downloads_during_update,
     ));
 
     Ok(())
@@ -1323,6 +1450,8 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
 
 fn published_at_for(version: &str) -> &'static str {
     match version {
+        "1.0.0-pv1" => "2026-05-25T16:30:00Z",
+        "1.0.1-pv1" => "2026-05-26T16:00:00Z",
         "2.8.0-pv1" => "2026-05-26T16:30:00Z",
         "2.8.1-pv1" => "2026-05-27T16:30:00Z",
         "8.3.22-pv1" => "2026-05-25T12:30:00Z",

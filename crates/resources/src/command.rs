@@ -279,6 +279,11 @@ impl ManagedResourceCommands {
         let refresh = ArtifactManifestCache::new(self.paths.downloads())
             .refresh_latest(&self.manifest_url, client)?;
 
+        for track in &tracks {
+            self.validate_install_selection(&php, track, refresh.manifest())?;
+            self.validate_install_selection(&frankenphp, track, refresh.manifest())?;
+        }
+
         for track in tracks {
             installs.push(self.install_track(
                 &php,
@@ -314,7 +319,28 @@ impl ManagedResourceCommands {
         &self,
         client: &impl ResourceHttpClient,
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
-        self.update(&composer_adapter()?, client)
+        let composer = composer_adapter()?;
+        let track = composer_track()?;
+        let installed_tracks = self.list(Some(composer.resource_name()))?;
+        let mut installs = Vec::new();
+        if !installed_tracks
+            .iter()
+            .any(|record| record.track() == &track)
+        {
+            return Ok(ManagedResourceUpdate { installs });
+        }
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client)?;
+        installs.push(self.install_track(
+            &composer,
+            track,
+            refresh.manifest(),
+            refresh.source(),
+            client,
+        )?);
+
+        Ok(ManagedResourceUpdate { installs })
     }
 
     pub fn uninstall(
