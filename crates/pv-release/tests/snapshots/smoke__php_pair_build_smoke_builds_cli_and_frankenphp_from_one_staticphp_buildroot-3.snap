@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: build_recipe_notice_source_lines(run.frankenphp_notice.as_deref())?
+---
+[
+    "This recipe packages PHP source archives listed in tracks.toml for standalone",
+    "This recipe packages FrankenPHP source archives listed in tracks.toml for",
+    "Artifact-specific resource, track, version, source URL, and source checksum",
+    "Resource: frankenphp",
+    "Source URL: https://sources.example.test/frankenphp.tar.gz",
+    "PHP source URL: https://sources.example.test/php.tar.gz",
+    "PHP source SHA-256: bdb89561cd7fc76f85811f972deb34bde88e335be6e19bcc6983fb364195b36d",
+]

@@ -5,7 +5,6 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 # shellcheck source=/dev/null
 . "$ROOT/release/artifacts/recipes/common.sh"
 
-RESOURCE=${PV_RECIPE_RESOURCE:-php}
 TRACK=${PV_RECIPE_TRACK:-8.4}
 PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
@@ -13,11 +12,6 @@ RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-php}
 recipe_dir="$ROOT/release/artifacts/recipes/php"
-
-case "$RESOURCE" in
-  php | frankenphp) ;;
-  *) die "PV_RECIPE_RESOURCE must be php or frankenphp, got $RESOURCE" ;;
-esac
 
 need awk
 need cargo
@@ -170,96 +164,199 @@ validate_macho_binary() {
   validate_macho_runtime_paths "$binary"
 }
 
-env_file="$OUT_DIR/work/$RESOURCE-$TRACK-$PLATFORM.env"
-mkdir -p "$(dirname "$env_file")"
-cargo run -p pv-release -- print-recipe-env \
-  --php "$recipe_dir/tracks.toml" \
-  --resource "$RESOURCE" \
-  --track "$TRACK" \
-  --platform "$PLATFORM" >"$env_file"
-# shellcheck source=/dev/null
-. "$env_file"
-export PV_EXPECTED_EXTENSIONS
-export PV_PHP_VERSION
-export PV_UPSTREAM_VERSION
-export PV_DEPLOYMENT_TARGET
+print_php_env() {
+  resource=$1
+  env_file=$2
+  cargo run -p pv-release -- print-recipe-env \
+    --php "$recipe_dir/tracks.toml" \
+    --resource "$resource" \
+    --track "$TRACK" \
+    --platform "$PLATFORM" >"$env_file"
+}
 
-artifact_basename="$RESOURCE-$PV_ARTIFACT_VERSION-$PV_PLATFORM"
-work_dir="$OUT_DIR/work/$artifact_basename"
+pair_name="php-pair-$TRACK-$PLATFORM"
+work_dir="$OUT_DIR/work/$pair_name"
 spc_work_dir="$work_dir/staticphp"
-root_dir="$work_dir/$artifact_basename"
-archive="$OUT_DIR/$artifact_basename.tar.gz"
-record="$RECORD_DIR/$RESOURCE/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/$artifact_basename.json"
-object_key="resources/$RESOURCE/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/$artifact_basename.tar.gz"
+php_env_file="$work_dir/php.env"
+frankenphp_env_file="$work_dir/frankenphp.env"
 
 rm -rf "$work_dir"
-mkdir -p "$root_dir/bin" "$spc_work_dir" "$OUT_DIR/sources"
+mkdir -p "$spc_work_dir" "$OUT_DIR/sources"
 
-export MACOSX_DEPLOYMENT_TARGET="$PV_DEPLOYMENT_TARGET"
-record_source_inputs_json=
+print_php_env php "$php_env_file"
+# shellcheck source=/dev/null
+. "$php_env_file"
+PHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
+PHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
+PHP_SOURCE_URL=$PV_SOURCE_URL
+PHP_SOURCE_SHA256=$PV_SOURCE_SHA256
+PHP_PHP_VERSION=$PV_PHP_VERSION
+PHP_BUILD_EXTENSIONS=$PV_BUILD_EXTENSIONS
+PHP_EXPECTED_EXTENSIONS=$PV_EXPECTED_EXTENSIONS
+PHP_DEPLOYMENT_TARGET=$PV_DEPLOYMENT_TARGET
+PHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
+PHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
 
-case "$RESOURCE" in
-  php)
-    source_dir=$(download_source "$RESOURCE" "$PV_ARTIFACT_VERSION" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256")
-    (
-      cd "$spc_work_dir"
-      spc build:php "$PV_BUILD_EXTENSIONS" --build-cli --dl-with-php="$PV_PHP_VERSION" --dl-custom-local "php-src:$source_dir"
-    )
-    [ -f "$spc_work_dir/buildroot/bin/php" ] || die "static PHP build did not produce buildroot/bin/php"
-    cp "$spc_work_dir/buildroot/bin/php" "$root_dir/bin/php"
-    [ -f "$root_dir/bin/php" ] || die "static PHP build did not produce bin/php"
-    validate_macho_binary "$root_dir/bin/php"
-    ;;
-  frankenphp)
-    frankenphp_source_dir=$(download_source "$RESOURCE" "$PV_ARTIFACT_VERSION" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256")
-    php_source_dir=$(download_source php "$PV_PHP_VERSION" "$PV_PHP_SOURCE_URL" "$PV_PHP_SOURCE_SHA256")
-    (
-      cd "$spc_work_dir"
-      spc build:php "$PV_BUILD_EXTENSIONS" --build-frankenphp --enable-zts --dl-with-php="$PV_PHP_VERSION" --dl-custom-local "php-src:$php_source_dir" --dl-custom-local "frankenphp:$frankenphp_source_dir"
-    )
-    [ -f "$spc_work_dir/buildroot/bin/frankenphp" ] || die "FrankenPHP build did not produce buildroot/bin/frankenphp"
-    cp "$spc_work_dir/buildroot/bin/frankenphp" "$root_dir/bin/frankenphp"
-    [ -f "$root_dir/bin/frankenphp" ] || die "FrankenPHP build did not produce bin/frankenphp"
-    validate_macho_binary "$root_dir/bin/frankenphp"
-    record_source_inputs_json=$(cat <<JSON
+print_php_env frankenphp "$frankenphp_env_file"
+# shellcheck source=/dev/null
+. "$frankenphp_env_file"
+FRANKENPHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
+FRANKENPHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
+FRANKENPHP_SOURCE_URL=$PV_SOURCE_URL
+FRANKENPHP_SOURCE_SHA256=$PV_SOURCE_SHA256
+FRANKENPHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
+FRANKENPHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
+
+[ "$PV_PHP_VERSION" = "$PHP_PHP_VERSION" ] || die "PHP pair metadata mismatch: php env has $PHP_PHP_VERSION but frankenphp env has $PV_PHP_VERSION"
+[ "$PV_BUILD_EXTENSIONS" = "$PHP_BUILD_EXTENSIONS" ] || die "PHP pair metadata mismatch: extension build sets differ"
+[ "$PV_EXPECTED_EXTENSIONS" = "$PHP_EXPECTED_EXTENSIONS" ] || die "PHP pair metadata mismatch: expected extension sets differ"
+[ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
+
+export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
+
+php_source_dir=$(download_source php "$PHP_PHP_VERSION" "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256")
+frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION" "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256")
+
+(
+  cd "$spc_work_dir"
+  spc build:php "$PHP_BUILD_EXTENSIONS" \
+    --build-cli \
+    --build-frankenphp \
+    --enable-zts \
+    --dl-with-php="$PHP_PHP_VERSION" \
+    --dl-custom-local "php-src:$php_source_dir" \
+    --dl-custom-local "frankenphp:$frankenphp_source_dir"
+)
+
+[ -f "$spc_work_dir/buildroot/bin/php" ] || die "StaticPHP pair build did not produce buildroot/bin/php"
+[ -f "$spc_work_dir/buildroot/bin/frankenphp" ] || die "StaticPHP pair build did not produce buildroot/bin/frankenphp"
+
+stage_artifact() {
+  resource=$1
+  upstream_version=$2
+  artifact_version=$3
+  source_url=$4
+  source_sha256=$5
+  binary_name=$6
+
+  artifact_basename="$resource-$artifact_version-$PLATFORM"
+  root_dir="$work_dir/$artifact_basename"
+
+  mkdir -p "$root_dir/bin"
+  cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
+  [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
+  validate_macho_binary "$root_dir/bin/$binary_name"
+
+  cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
+  {
+    cat "$recipe_dir/NOTICE"
+    printf '\nArtifact build metadata:\n'
+    printf 'Resource: %s\n' "$resource"
+    printf 'Track: %s\n' "$TRACK"
+    printf 'Artifact version: %s\n' "$artifact_version"
+    printf 'Upstream version: %s\n' "$upstream_version"
+    printf 'Source URL: %s\n' "$source_url"
+    printf 'Source SHA-256: %s\n' "$source_sha256"
+    if [ "$resource" = "frankenphp" ]; then
+      printf 'PHP source URL: %s\n' "$PHP_SOURCE_URL"
+      printf 'PHP source SHA-256: %s\n' "$PHP_SOURCE_SHA256"
+    fi
+  } >"$root_dir/NOTICE"
+}
+
+write_staged_artifact() {
+  resource=$1
+  upstream_version=$2
+  artifact_version=$3
+  source_url=$4
+  source_sha256=$5
+  minimum_pv_version=$6
+  pv_build_revision=$7
+  expected_extensions=$8
+  source_inputs_json=${9:-}
+
+  artifact_basename="$resource-$artifact_version-$PLATFORM"
+  archive="$work_dir/staged-archives/$artifact_basename.tar.gz"
+  record="$work_dir/staged-records/$resource/$TRACK/$artifact_version/$PLATFORM/$artifact_basename.json"
+  object_key="resources/$resource/$TRACK/$artifact_version/$PLATFORM/$artifact_basename.tar.gz"
+
+  mkdir -p "$(dirname "$archive")"
+  COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
+  write_record "$record" "$resource" "$TRACK" "$upstream_version" "$pv_build_revision" "$PLATFORM" "$object_key" "$archive" "$source_url" "$source_sha256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$minimum_pv_version" "$source_inputs_json"
+
+  PV_EXPECTED_EXTENSIONS="$expected_extensions" \
+    PV_PHP_VERSION="$PHP_PHP_VERSION" \
+    PV_UPSTREAM_VERSION="$upstream_version" \
+    PV_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET" \
+    cargo run -p pv-release -- validate-archive --archive "$archive" --record "$record" --smoke-hook "$ROOT/release/artifacts/recipes/php/smoke.sh"
+}
+
+publish_artifact() {
+  resource=$1
+  artifact_version=$2
+
+  artifact_basename="$resource-$artifact_version-$PLATFORM"
+  staged_archive="$work_dir/staged-archives/$artifact_basename.tar.gz"
+  staged_record="$work_dir/staged-records/$resource/$TRACK/$artifact_version/$PLATFORM/$artifact_basename.json"
+  final_archive="$OUT_DIR/$artifact_basename.tar.gz"
+  final_record="$RECORD_DIR/$resource/$TRACK/$artifact_version/$PLATFORM/$artifact_basename.json"
+
+  mkdir -p "$(dirname "$final_archive")" "$(dirname "$final_record")"
+  mv "$staged_archive" "$final_archive"
+  mv "$staged_record" "$final_record"
+}
+
+stage_artifact php \
+  "$PHP_UPSTREAM_VERSION" \
+  "$PHP_ARTIFACT_VERSION" \
+  "$PHP_SOURCE_URL" \
+  "$PHP_SOURCE_SHA256" \
+  php
+
+stage_artifact frankenphp \
+  "$FRANKENPHP_UPSTREAM_VERSION" \
+  "$FRANKENPHP_ARTIFACT_VERSION" \
+  "$FRANKENPHP_SOURCE_URL" \
+  "$FRANKENPHP_SOURCE_SHA256" \
+  frankenphp
+
+frankenphp_source_inputs_json=$(cat <<JSON
 [
       {
         "name": "frankenphp",
-        "source_url": "$PV_SOURCE_URL",
-        "source_sha256": "$PV_SOURCE_SHA256"
+        "source_url": "$FRANKENPHP_SOURCE_URL",
+        "source_sha256": "$FRANKENPHP_SOURCE_SHA256"
       },
       {
         "name": "php",
-        "source_url": "$PV_PHP_SOURCE_URL",
-        "source_sha256": "$PV_PHP_SOURCE_SHA256"
+        "source_url": "$PHP_SOURCE_URL",
+        "source_sha256": "$PHP_SOURCE_SHA256"
       }
     ]
 JSON
 )
-    ;;
-esac
 
-cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
-{
-  cat "$recipe_dir/NOTICE"
-  printf '\nArtifact build metadata:\n'
-  printf 'Resource: %s\n' "$RESOURCE"
-  printf 'Track: %s\n' "$PV_TRACK"
-  printf 'Artifact version: %s\n' "$PV_ARTIFACT_VERSION"
-  printf 'Upstream version: %s\n' "$PV_UPSTREAM_VERSION"
-  if [ "$RESOURCE" = "frankenphp" ]; then
-    printf 'FrankenPHP source URL: %s\n' "$PV_SOURCE_URL"
-    printf 'FrankenPHP source SHA-256: %s\n' "$PV_SOURCE_SHA256"
-    printf 'PHP source URL: %s\n' "$PV_PHP_SOURCE_URL"
-    printf 'PHP source SHA-256: %s\n' "$PV_PHP_SOURCE_SHA256"
-  else
-    printf 'Source URL: %s\n' "$PV_SOURCE_URL"
-    printf 'Source SHA-256: %s\n' "$PV_SOURCE_SHA256"
-  fi
-} >"$root_dir/NOTICE"
+write_staged_artifact php \
+  "$PHP_UPSTREAM_VERSION" \
+  "$PHP_ARTIFACT_VERSION" \
+  "$PHP_SOURCE_URL" \
+  "$PHP_SOURCE_SHA256" \
+  "$PHP_MINIMUM_PV_VERSION" \
+  "$PHP_PV_BUILD_REVISION" \
+  "$PHP_EXPECTED_EXTENSIONS"
 
-COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
-write_record "$record" "$RESOURCE" "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION" "$record_source_inputs_json"
+write_staged_artifact frankenphp \
+  "$FRANKENPHP_UPSTREAM_VERSION" \
+  "$FRANKENPHP_ARTIFACT_VERSION" \
+  "$FRANKENPHP_SOURCE_URL" \
+  "$FRANKENPHP_SOURCE_SHA256" \
+  "$FRANKENPHP_MINIMUM_PV_VERSION" \
+  "$FRANKENPHP_PV_BUILD_REVISION" \
+  "$PHP_EXPECTED_EXTENSIONS" \
+  "$frankenphp_source_inputs_json"
 
-cargo run -p pv-release -- validate-archive --archive "$archive" --record "$record" --smoke-hook "$ROOT/release/artifacts/recipes/php/smoke.sh"
-printf '%s\n' "$archive"
+publish_artifact php "$PHP_ARTIFACT_VERSION"
+publish_artifact frankenphp "$FRANKENPHP_ARTIFACT_VERSION"
+
+printf '%s\n' "$OUT_DIR/php-$PHP_ARTIFACT_VERSION-$PLATFORM.tar.gz"
+printf '%s\n' "$OUT_DIR/frankenphp-$FRANKENPHP_ARTIFACT_VERSION-$PLATFORM.tar.gz"

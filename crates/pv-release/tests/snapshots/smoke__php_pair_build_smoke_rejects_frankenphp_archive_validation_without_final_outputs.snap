@@ -1,0 +1,12 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: build_recipe_output_summary(&run)
+---
+(
+    false,
+    Some(
+        79,
+    ),
+    "",
+    "validate-archive failed for frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz\n",
+)

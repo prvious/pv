@@ -8,5 +8,5 @@ expression: build_recipe_output_summary(&run)
         1,
     ),
     "",
-    "error: <out>/work/php-8.4.20-pv1-darwin-arm64/php-8.4.20-pv1-darwin-arm64/bin/php Mach-O linked library references unmanaged runtime path /usr/local/lib/libfoo.dylib\n",
+    "error: <out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/bin/php Mach-O linked library references unmanaged runtime path /usr/local/lib/libfoo.dylib\n",
 )

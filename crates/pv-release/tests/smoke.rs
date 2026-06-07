@@ -223,6 +223,11 @@ argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-
         run.frankenphp_record_json.is_some(),
         "FrankenPHP record was not written"
     );
+    assert!(run.php_archive_exists, "PHP archive was not written");
+    assert!(
+        run.frankenphp_archive_exists,
+        "FrankenPHP archive was not written"
+    );
     assert_debug_snapshot!(build_recipe_record_provenance(
         run.php_record_json.as_deref()
     )?);
@@ -247,6 +252,63 @@ fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
         !run.output.status.success(),
         "build recipe unexpectedly succeeded: {}",
         command_output_debug(&run.output)
+    );
+    assert_debug_snapshot!(build_recipe_output_summary(&run));
+
+    Ok(())
+}
+
+#[test]
+fn php_pair_build_smoke_passes_per_resource_metadata_to_archive_validation() -> Result<()> {
+    let run = run_php_build_recipe_smoke()?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(
+        run.validate_log,
+        "archive=php-8.4.20-pv1-darwin-arm64.tar.gz record=php-8.4.20-pv1-darwin-arm64.json upstream=8.4.20 php=8.4.20 expected=json deployment=13.0\n\
+archive=frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz record=frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.json upstream=8.4.20-frankenphp1.12.3 php=8.4.20 expected=json deployment=13.0\n"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_pair_build_smoke_rejects_frankenphp_archive_validation_without_final_outputs() -> Result<()>
+{
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        validate_archive_failure_resource: "frankenphp",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.php_record_json.is_none(),
+        "PHP record should not be written before the FrankenPHP archive is valid"
+    );
+    assert!(
+        run.frankenphp_record_json.is_none(),
+        "FrankenPHP record should not be written when its archive is invalid"
+    );
+    assert!(
+        !run.php_archive_exists,
+        "PHP archive should not be written before the FrankenPHP archive is valid"
+    );
+    assert!(
+        !run.frankenphp_archive_exists,
+        "FrankenPHP archive should not be written when its archive is invalid"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.output.stdout),
+        "",
+        "archive paths should not be printed before both archives are valid"
     );
     assert_debug_snapshot!(build_recipe_output_summary(&run));
 
@@ -317,6 +379,18 @@ fn php_pair_build_smoke_rejects_homebrew_rpath_on_frankenphp_binary() -> Result<
         "build recipe unexpectedly succeeded: {}",
         command_output_debug(&run.output)
     );
+    assert!(
+        run.php_record_json.is_none(),
+        "PHP record should not be written before the FrankenPHP binary is valid"
+    );
+    assert!(
+        !run.php_archive_exists,
+        "PHP archive should not be written before the FrankenPHP binary is valid"
+    );
+    assert_eq!(
+        run.validate_log, "",
+        "archive validation should not run before both pair binaries are valid"
+    );
     assert_debug_snapshot!(build_recipe_output_summary(&run));
 
     Ok(())
@@ -369,6 +443,9 @@ struct BuildRecipeRun {
     php_notice: Option<String>,
     frankenphp_notice: Option<String>,
     spc_log: String,
+    validate_log: String,
+    php_archive_exists: bool,
+    frankenphp_archive_exists: bool,
 }
 
 struct BuildRecipeOptions<'a> {
@@ -378,6 +455,7 @@ struct BuildRecipeOptions<'a> {
     macho_rpaths: &'a str,
     frankenphp_macho_libraries: &'a str,
     frankenphp_macho_rpaths: &'a str,
+    validate_archive_failure_resource: &'a str,
 }
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
@@ -396,6 +474,7 @@ fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
         macho_rpaths: "",
         frankenphp_macho_libraries: "",
         frankenphp_macho_rpaths: "",
+        validate_archive_failure_resource: "",
     }
 }
 
@@ -409,6 +488,7 @@ fn run_php_build_recipe_smoke_with_options(
     let source_archive = tempdir.path().join("source.tar.gz");
     let php_source_archive = tempdir.path().join("php-source.tar.gz");
     let spc_log = tempdir.path().join("spc.log");
+    let validate_log = tempdir.path().join("validate.log");
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "frankenphp-source")?;
@@ -419,6 +499,7 @@ fn run_php_build_recipe_smoke_with_options(
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&spc_log, "")?;
+    write_file(&validate_log, "")?;
 
     let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/php/build.sh");
@@ -450,11 +531,17 @@ fn run_php_build_recipe_smoke_with_options(
         )
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env(
+            "PV_TEST_VALIDATE_ARCHIVE_FAILURE_RESOURCE",
+            options.validate_archive_failure_resource,
+        )
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
         .env("PV_TEST_SPC_LOG", &spc_log);
     let output = command.output()?;
 
     let php_artifact_version = "8.4.20-pv1";
     let php_artifact_basename = "php-8.4.20-pv1-darwin-arm64";
+    let php_archive = out_dir.join(format!("{php_artifact_basename}.tar.gz"));
     let php_record = record_dir
         .join("php")
         .join("8.4")
@@ -469,6 +556,7 @@ fn run_php_build_recipe_smoke_with_options(
 
     let frankenphp_artifact_version = "8.4.20-frankenphp1.12.3-pv1";
     let frankenphp_artifact_basename = "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64";
+    let frankenphp_archive = out_dir.join(format!("{frankenphp_artifact_basename}.tar.gz"));
     let frankenphp_record = record_dir
         .join("frankenphp")
         .join("8.4")
@@ -481,17 +569,10 @@ fn run_php_build_recipe_smoke_with_options(
         .join(frankenphp_artifact_basename)
         .join("NOTICE");
 
-    let (php_record_json, frankenphp_record_json, php_notice, frankenphp_notice) =
-        if output.status.success() {
-            (
-                read_optional_file(&php_record)?,
-                read_optional_file(&frankenphp_record)?,
-                read_optional_file(&php_notice)?,
-                read_optional_file(&frankenphp_notice)?,
-            )
-        } else {
-            (None, None, None, None)
-        };
+    let php_record_json = read_optional_file(&php_record)?;
+    let frankenphp_record_json = read_optional_file(&frankenphp_record)?;
+    let php_notice = read_optional_file(&php_notice)?;
+    let frankenphp_notice = read_optional_file(&frankenphp_notice)?;
 
     Ok(BuildRecipeRun {
         out_dir: out_dir.to_string(),
@@ -501,6 +582,9 @@ fn run_php_build_recipe_smoke_with_options(
         php_notice,
         frankenphp_notice,
         spc_log: read_file(&spc_log)?,
+        validate_log: read_file(&validate_log)?,
+        php_archive_exists: path_exists(&php_archive),
+        frankenphp_archive_exists: path_exists(&frankenphp_archive),
     })
 }
 
@@ -600,6 +684,36 @@ PV_MINIMUM_PV_VERSION=0.1.0
 EOF
       ;;
     validate-archive)
+      archive=
+      record=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --archive)
+            shift
+            archive=${1:-}
+            ;;
+          --record)
+            shift
+            record=${1:-}
+            ;;
+        esac
+        shift
+      done
+      archive_basename=${archive##*/}
+      record_basename=${record##*/}
+      printf 'archive=%s record=%s upstream=%s php=%s expected=%s deployment=%s\n' \
+        "$archive_basename" \
+        "$record_basename" \
+        "$PV_UPSTREAM_VERSION" \
+        "$PV_PHP_VERSION" \
+        "$PV_EXPECTED_EXTENSIONS" \
+        "$PV_DEPLOYMENT_TARGET" >>"$PV_TEST_VALIDATE_LOG"
+      case "$archive_basename" in
+        "$PV_TEST_VALIDATE_ARCHIVE_FAILURE_RESOURCE"-*)
+          printf 'validate-archive failed for %s\n' "$archive_basename" >&2
+          exit 79
+          ;;
+      esac
       exit 0
       ;;
     *) exit 77 ;;
@@ -875,4 +989,12 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests inspect optional smoke hook outputs"
+)]
+fn path_exists(path: &Utf8Path) -> bool {
+    path.exists()
 }
