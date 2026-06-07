@@ -102,15 +102,6 @@ fn routes_literal_colon_commands_without_space_aliases() -> Result<()> {
 }
 
 #[test]
-fn php_install_allows_manifest_default_track_when_omitted() -> Result<()> {
-    let output = run_pv(&["php:install", "--help"])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
 fn php_management_commands_are_documented() -> Result<()> {
     let output = [
         run_pv(&["php:use", "--help"])?,

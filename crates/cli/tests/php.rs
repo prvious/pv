@@ -524,7 +524,6 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert!(output.stdout.contains("warning: PV daemon is not running"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -557,7 +556,6 @@ fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<(
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert!(output.stdout.contains("warning: PV daemon is not running"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,

@@ -1,6 +1,6 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
-expression: "(result, state_before_update, state_after_update,\nbyte_downloads_during_update,)"
+expression: "(result, state_before_update, state_after_update, old_php_release_exists,\nnew_php_release_exists, php_current_target, byte_downloads_during_update,)"
 ---
 (
     Err(
@@ -71,5 +71,10 @@ expression: "(result, state_before_update, state_after_update,\nbyte_downloads_d
             removal_force: false,
         },
     ],
+    true,
+    false,
+    Some(
+        "releases/8.4.8-pv1",
+    ),
     0,
 )

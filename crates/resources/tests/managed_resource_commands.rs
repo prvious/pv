@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::io::{Error, Write};
+use std::io::{Error, ErrorKind, Write};
 
 use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -297,8 +297,95 @@ fn managed_resource_commands_install_php_pair_second_artifact_failure_records_no
 
     let result = commands.install_php_pair(TrackSelector::Latest, &client);
     let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
+    let php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let php_current_target = symlink_target(&current_path(&paths, "php", "8.4"))?;
 
-    assert_debug_snapshot!((result, state_after_failure, client.byte_request_count(),));
+    assert!(!php_release_exists);
+    assert_eq!(php_current_target, None);
+
+    assert_debug_snapshot!((
+        result,
+        state_after_failure,
+        php_release_exists,
+        php_current_target,
+        client.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_composer_failure_removes_prepared_php_pair() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1", "v2")?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+        manifest_resource(
+            "composer",
+            "2",
+            vec![manifest_track("2", vec![&composer_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+
+    let result = commands.install_composer_with_php_pair(TrackSelector::Latest, &client);
+    let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
+    let php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let frankenphp_release_exists = path_exists(&release_path(
+        &paths,
+        "frankenphp",
+        "8.4",
+        frankenphp_artifact.version.as_str(),
+    ))?;
+    let php_current_target = symlink_target(&current_path(&paths, "php", "8.4"))?;
+    let frankenphp_current_target = symlink_target(&current_path(&paths, "frankenphp", "8.4"))?;
+
+    assert!(!php_release_exists);
+    assert!(!frankenphp_release_exists);
+    assert_eq!(php_current_target, None);
+    assert_eq!(frankenphp_current_target, None);
+
+    assert_debug_snapshot!((
+        result,
+        state_after_failure,
+        php_release_exists,
+        frankenphp_release_exists,
+        php_current_target,
+        frankenphp_current_target,
+        client.byte_request_count(),
+    ));
 
     Ok(())
 }
@@ -477,11 +564,31 @@ fn managed_resource_commands_update_php_pairs_preflights_all_pairs_before_mutati
     let result = commands.update_php_pairs(&client);
     let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
     let byte_downloads_during_update = client.byte_request_count() - byte_downloads_before_update;
+    let old_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let new_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_update_artifact.version.as_str(),
+    ))?;
+    let php_current_target = symlink_target(&current_path(&paths, "php", "8.4"))?;
+
+    assert!(old_php_release_exists);
+    assert!(!new_php_release_exists);
+    assert_eq!(php_current_target.as_deref(), Some("releases/8.4.8-pv1"));
 
     assert_debug_snapshot!((
         result,
         state_before_update,
         state_after_update,
+        old_php_release_exists,
+        new_php_release_exists,
+        php_current_target,
         byte_downloads_during_update,
     ));
 
@@ -553,11 +660,31 @@ fn managed_resource_commands_update_php_pairs_second_artifact_failure_preserves_
     let result = commands.update_php_pairs(&client);
     let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
     let byte_downloads_during_update = client.byte_request_count() - byte_downloads_before_update;
+    let old_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let new_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_update_artifact.version.as_str(),
+    ))?;
+    let php_current_target = symlink_target(&current_path(&paths, "php", "8.4"))?;
+
+    assert!(old_php_release_exists);
+    assert!(!new_php_release_exists);
+    assert_eq!(php_current_target.as_deref(), Some("releases/8.4.8-pv1"));
 
     assert_debug_snapshot!((
         result,
         state_before_update,
         state_after_update,
+        old_php_release_exists,
+        new_php_release_exists,
+        php_current_target,
         byte_downloads_during_update,
     ));
 
@@ -1592,6 +1719,52 @@ fn remove_download_cache(paths: &PvPaths) -> Result<()> {
     match std::fs::remove_dir_all(paths.downloads()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn release_path(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    artifact_version: &str,
+) -> Utf8PathBuf {
+    paths
+        .resources()
+        .join(resource_name)
+        .join(track)
+        .join("releases")
+        .join(artifact_version)
+}
+
+fn current_path(paths: &PvPaths, resource_name: &str, track: &str) -> Utf8PathBuf {
+    paths
+        .resources()
+        .join(resource_name)
+        .join(track)
+        .join("current")
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "managed resource command tests inspect fixture filesystem state"
+)]
+fn path_exists(path: &Utf8Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_metadata) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "managed resource command tests inspect fixture current symlinks"
+)]
+fn symlink_target(path: &Utf8Path) -> Result<Option<String>> {
+    match std::fs::read_link(path) {
+        Ok(target) => Ok(Some(target.to_string_lossy().into_owned())),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }

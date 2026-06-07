@@ -27,6 +27,8 @@ pub struct ArtifactInstall {
     artifact_version: ArtifactVersion,
     release_path: Utf8PathBuf,
     current_path: Utf8PathBuf,
+    previous_release: Option<String>,
+    release_existed_before: bool,
 }
 
 impl ArtifactInstaller {
@@ -88,6 +90,8 @@ impl ArtifactInstaller {
             artifact.artifact_version().clone(),
             release_path,
             current_path,
+            previous_release,
+            false,
         ))
     }
 
@@ -135,7 +139,37 @@ impl ArtifactInstaller {
             artifact.artifact_version().clone(),
             release_path,
             current_path,
+            previous_release,
+            true,
         )))
+    }
+
+    pub fn rollback(&self, install: &ArtifactInstall) -> Result<()> {
+        let track_dir =
+            install
+                .current_path
+                .parent()
+                .ok_or_else(|| ResourcesError::InvalidArtifactLayout {
+                    resource: install.resource_name.as_str().to_string(),
+                    reason: format!("current pointer `{}` has no parent", install.current_path),
+                })?;
+
+        if !install.release_existed_before {
+            fs::remove_dir_all_if_exists(&install.release_path)?;
+            if let Some(releases_dir) = install.release_path.parent() {
+                fs::sync_directory(releases_dir)?;
+            }
+        }
+
+        if let Some(previous_release) = &install.previous_release {
+            let previous_release = ArtifactVersion::new(previous_release.clone())?;
+            update_current_pointer(track_dir, &previous_release)?;
+        } else {
+            fs::remove_file_if_exists(&install.current_path)?;
+            fs::sync_directory(track_dir)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -167,6 +201,8 @@ impl ArtifactInstall {
         artifact_version: ArtifactVersion,
         release_path: Utf8PathBuf,
         current_path: Utf8PathBuf,
+        previous_release: Option<String>,
+        release_existed_before: bool,
     ) -> Self {
         Self {
             resource_name,
@@ -174,6 +210,8 @@ impl ArtifactInstall {
             artifact_version,
             release_path,
             current_path,
+            previous_release,
+            release_existed_before,
         }
     }
 

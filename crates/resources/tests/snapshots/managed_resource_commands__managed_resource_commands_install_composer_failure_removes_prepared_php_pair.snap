@@ -1,0 +1,20 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(result, state_after_failure, php_release_exists, frankenphp_release_exists,\nphp_current_target, frankenphp_current_target, client.byte_request_count(),)"
+---
+(
+    Err(
+        Resources(
+            HttpRequestFailed {
+                url: "https://artifacts.example.test/composer-2.8.1-pv1-any.tar.gz",
+                reason: "no scripted byte response",
+            },
+        ),
+    ),
+    [],
+    false,
+    false,
+    None,
+    None,
+    4,
+)

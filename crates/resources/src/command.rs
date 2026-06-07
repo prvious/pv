@@ -11,9 +11,9 @@ use crate::http::ResourceHttpClient;
 use crate::registry;
 use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
-    ArtifactDownloader, ArtifactInstaller, ArtifactManifest, ArtifactManifestCache,
-    ArtifactManifestSource, ArtifactVersion, ManifestArtifact, ResourceAdapter, ResourceName,
-    ResourcesError, TargetPlatform, TrackName, TrackSelector,
+    ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
+    ArtifactManifestCache, ArtifactManifestSource, ArtifactVersion, ManifestArtifact,
+    ResourceAdapter, ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector,
 };
 
 pub type ManagedResourceCommandResult<T> = std::result::Result<T, ManagedResourceCommandError>;
@@ -55,6 +55,7 @@ pub struct ManagedResourceInstall {
     manifest_source: ArtifactManifestSource,
     revoked_latest: Option<ManagedResourceRevokedLatest>,
     downloaded_from_cache: bool,
+    artifact_install: ArtifactInstall,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -172,7 +173,11 @@ impl ManagedResourceCommands {
             refresh.source(),
             client,
         )?;
-        self.record_php_pair_install(&install)?;
+        if let Err(error) = self.record_php_pair_install(&install) {
+            self.rollback_php_pair_install(&install);
+
+            return Err(error);
+        }
 
         Ok(install)
     }
@@ -275,14 +280,17 @@ impl ManagedResourceCommands {
             )
         };
 
+        let current_artifact_path = install.release_path().to_path_buf();
+
         Ok(ManagedResourceInstall {
             resource_name: adapter.resource_name().clone(),
             track,
             artifact_version: artifact.artifact_version().clone(),
-            current_artifact_path: install.release_path().to_path_buf(),
+            current_artifact_path,
             manifest_source: manifest_source.clone(),
             revoked_latest,
             downloaded_from_cache,
+            artifact_install: install,
         })
     }
 
@@ -297,10 +305,33 @@ impl ManagedResourceCommands {
     ) -> ManagedResourceCommandResult<PhpPairInstall> {
         let php =
             self.prepare_track_install(php, track.clone(), manifest, manifest_source, client)?;
-        let frankenphp =
-            self.prepare_track_install(frankenphp, track, manifest, manifest_source, client)?;
+        let frankenphp = match self.prepare_track_install(
+            frankenphp,
+            track,
+            manifest,
+            manifest_source,
+            client,
+        ) {
+            Ok(install) => install,
+            Err(error) => {
+                self.rollback_prepared_installs(&[&php]);
+
+                return Err(error);
+            }
+        };
 
         Ok(PhpPairInstall { php, frankenphp })
+    }
+
+    fn rollback_php_pair_install(&self, install: &PhpPairInstall) {
+        self.rollback_prepared_installs(&[install.frankenphp(), install.php()]);
+    }
+
+    fn rollback_prepared_installs(&self, installs: &[&ManagedResourceInstall]) {
+        let installer = ArtifactInstaller::new(self.paths.resources());
+        for install in installs {
+            if let Err(_error) = installer.rollback(&install.artifact_install) {}
+        }
     }
 
     fn record_php_pair_install(
@@ -422,7 +453,11 @@ impl ManagedResourceCommands {
                 refresh.source(),
                 client,
             )?;
-            self.record_php_pair_install(&install)?;
+            if let Err(error) = self.record_php_pair_install(&install) {
+                self.rollback_php_pair_install(&install);
+
+                return Err(error);
+            }
             installs.push(install.php);
             installs.push(install.frankenphp);
         }
@@ -472,14 +507,26 @@ impl ManagedResourceCommands {
             refresh.source(),
             client,
         )?;
-        let composer = self.prepare_track_install(
+        let composer = match self.prepare_track_install(
             &composer,
             composer_track,
             manifest,
             refresh.source(),
             client,
-        )?;
-        self.record_composer_with_php_pair_install(&php_pair, &composer)?;
+        ) {
+            Ok(install) => install,
+            Err(error) => {
+                self.rollback_php_pair_install(&php_pair);
+
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.record_composer_with_php_pair_install(&php_pair, &composer) {
+            self.rollback_prepared_installs(&[&composer]);
+            self.rollback_php_pair_install(&php_pair);
+
+            return Err(error);
+        }
 
         Ok(ComposerWithPhpPairInstall { php_pair, composer })
     }

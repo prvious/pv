@@ -523,6 +523,26 @@ fn project_config_writer_creates_preferred_file_when_missing() -> Result<()> {
 }
 
 #[test]
+fn project_config_writer_rejects_invalid_php_track_without_writing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    let config_path = project.join("pv.yml");
+    create_dir(&project)?;
+    write_file(&config_path, "php: 8.3\n")?;
+    let before = read_file(&config_path)?;
+
+    let result = write_project_php_track(&project, "../8.4");
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::InvalidPhpTrack { track, .. }) if track == "../8.4"
+    ));
+    assert_eq!(read_file(&config_path)?, before);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_writer_keeps_conflicting_files_unchanged() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");

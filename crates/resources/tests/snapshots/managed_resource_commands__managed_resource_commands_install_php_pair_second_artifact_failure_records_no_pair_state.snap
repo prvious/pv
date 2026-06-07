@@ -1,6 +1,6 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
-expression: "(result, state_after_failure, client.byte_request_count(),)"
+expression: "(result, state_after_failure, php_release_exists, php_current_target,\nclient.byte_request_count(),)"
 ---
 (
     Err(
@@ -12,5 +12,7 @@ expression: "(result, state_after_failure, client.byte_request_count(),)"
         ),
     ),
     [],
+    false,
+    None,
     3,
 )

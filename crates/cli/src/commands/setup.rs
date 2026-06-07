@@ -1,6 +1,5 @@
 use std::io;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt as _;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +17,7 @@ use crate::shell::Shell;
 
 const PV_ENV_START: &str = "# >>> PV ENV";
 const PV_ENV_END: &str = "# <<< PV ENV";
+#[cfg(unix)]
 const SHIM_FILE_MODE: u32 = 0o700;
 
 const DEFAULT_SETUP_RESOURCES: &[SetupResourceDefault] = &[
@@ -910,8 +910,31 @@ fn write_executable_file(path: &Utf8Path, content: &str) -> Result<(), ExecuteEr
     }
 
     std::fs::write(path, content).map_err(|source| path_io_error(path, source))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(SHIM_FILE_MODE))
-        .map_err(|source| path_io_error(path, source).into())
+    set_command_shim_permissions(path)
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI setup helper owns PV command shim permission updates"
+)]
+fn set_command_shim_permissions(path: &Utf8Path) -> Result<(), ExecuteError> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let permissions = std::fs::Permissions::from_mode(SHIM_FILE_MODE);
+    std::fs::set_permissions(path, permissions).map_err(|source| path_io_error(path, source).into())
+}
+
+#[cfg(not(unix))]
+fn set_command_shim_permissions(path: &Utf8Path) -> Result<(), ExecuteError> {
+    Err(path_io_error(
+        path,
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "PV command shims require Unix permissions",
+        ),
+    )
+    .into())
 }
 
 #[expect(

@@ -1,7 +1,7 @@
 use camino::Utf8Path;
 
 use crate::filesystem::{canonicalize_utf8, file_mode, write_string_atomically_with_mode};
-use crate::{ConfigError, ProjectConfigFile};
+use crate::{ConfigError, ProjectConfig, ProjectConfigFile};
 
 const PROJECT_CONFIG_FILE_MODE: u32 = 0o644;
 
@@ -14,6 +14,8 @@ pub fn write_project_php_track(
 
     let content = yaml_serde::to_string(&config_file.config)
         .map_err(|source| ConfigError::Parse { source })?;
+    config_file.config = ProjectConfig::parse(&content)?;
+
     let (write_path, mode) = if config_file.exists {
         let target = canonicalize_utf8(&config_file.path)?;
         let mode = file_mode(&target)?;
