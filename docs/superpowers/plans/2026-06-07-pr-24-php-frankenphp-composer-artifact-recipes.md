@@ -1254,6 +1254,8 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
+TRACK=${PV_RECIPE_TRACK:-2}
+PLATFORM=${PV_RECIPE_PLATFORM:-any}
 PV_COMMIT=${PV_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-composer}
 
@@ -1267,9 +1269,10 @@ mkdir -p "$(dirname "$env_file")"
 cargo run -p pv-release -- print-recipe-env \
   --composer "$ROOT/release/artifacts/recipes/composer/composer.toml" \
   --resource composer \
-  --track 2 \
-  --platform any >"$env_file"
+  --track "$TRACK" \
+  --platform "$PLATFORM" >"$env_file"
 . "$env_file"
+export PV_UPSTREAM_VERSION
 
 work_dir="$OUT_DIR/work/composer-$PV_ARTIFACT_VERSION"
 root_dir="$work_dir/composer-$PV_ARTIFACT_VERSION"
@@ -1306,9 +1309,14 @@ set -eu
 
 artifact_root=$1
 php_binary=${PV_COMPOSER_SMOKE_PHP:-}
+expected_version=${PV_UPSTREAM_VERSION:-}
 [ -n "$php_binary" ] || {
   printf '%s\n' "composer smoke skipped: PV_COMPOSER_SMOKE_PHP is not set" >&2
   exit 0
+}
+[ -n "$expected_version" ] || {
+  printf '%s\n' "PV_UPSTREAM_VERSION is required for Composer smoke" >&2
+  exit 42
 }
 
 [ -f "$artifact_root/composer.phar" ] || {
@@ -1317,7 +1325,7 @@ php_binary=${PV_COMPOSER_SMOKE_PHP:-}
 }
 
 "$php_binary" "$artifact_root/composer.phar" --version >/tmp/pv-composer-smoke.txt
-grep 'Composer version 2.10.1' /tmp/pv-composer-smoke.txt >/dev/null
+grep "Composer version $expected_version" /tmp/pv-composer-smoke.txt >/dev/null
 ```
 
 - [ ] **Step 5: Mark scripts executable and run shellcheck**
@@ -1665,19 +1673,21 @@ jobs:
         run: |
           set -eu
           resources="$PV_RECIPE_RESOURCE"
-          tracks="$PV_RECIPE_TRACK"
+          php_tracks="$PV_RECIPE_TRACK"
           if [ "$resources" = all ]; then
             resources="php frankenphp composer"
           fi
-          if [ "$tracks" = all ]; then
-            tracks="8.2 8.3 8.4"
+          if [ "$php_tracks" = all ]; then
+            php_tracks="8.2 8.3 8.4"
           fi
           for resource in $resources; do
             if [ "$resource" = composer ]; then
-              PV_RECIPE_RESOURCE=composer PV_COMPOSER_SMOKE_PHP="$(command -v php)" release/artifacts/recipes/composer/build.sh
+              composer_track="$PV_RECIPE_TRACK"
+              [ "$composer_track" = all ] && composer_track=2
+              PV_RECIPE_RESOURCE=composer PV_RECIPE_TRACK="$composer_track" PV_RECIPE_PLATFORM=any PV_COMPOSER_SMOKE_PHP="$(command -v php)" release/artifacts/recipes/composer/build.sh
               continue
             fi
-            for track in $tracks; do
+            for track in $php_tracks; do
               PV_RECIPE_RESOURCE="$resource" PV_RECIPE_TRACK="$track" release/artifacts/recipes/php/build.sh
             done
           done
