@@ -749,6 +749,35 @@ impl Database {
         Ok(projects)
     }
 
+    pub fn global_php_default_track(&self) -> Result<Option<String>, StateError> {
+        let track = self
+            .connection
+            .query_row(
+                "SELECT track FROM global_php_default_track WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(track)
+    }
+
+    pub fn record_global_php_default_track(&mut self, track: &str) -> Result<(), StateError> {
+        validate_concrete_track(track)?;
+
+        let updated_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO global_php_default_track (id, track, updated_at)
+            VALUES (1, ?1, ?2)
+            ON CONFLICT(id) DO UPDATE SET
+                track = excluded.track,
+                updated_at = excluded.updated_at",
+            params![track, updated_at],
+        )?;
+
+        Ok(())
+    }
+
     pub fn replace_project_managed_resources(
         &mut self,
         project_id: &str,

@@ -12,6 +12,7 @@ const PROJECT_PRIMARY_HOSTNAME_UPDATES_SQL: &str =
 const PROJECT_ORIGINAL_PATH_SQL: &str = include_str!("sql/004_project_original_path.sql");
 const PROJECT_RESOURCE_REQUIREMENTS_SQL: &str =
     include_str!("sql/005_project_resource_requirements.sql");
+const GLOBAL_PHP_DEFAULT_SQL: &str = include_str!("sql/006_global_php_default.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -31,6 +32,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         "project_resource_requirements",
         PROJECT_RESOURCE_REQUIREMENTS_SQL,
     ),
+    Migration::new(6, "global_php_default", GLOBAL_PHP_DEFAULT_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

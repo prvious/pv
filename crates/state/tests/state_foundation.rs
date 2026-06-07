@@ -532,6 +532,43 @@ fn managed_resource_tracks_record_removal_intent_options() -> Result<()> {
 }
 
 #[test]
+fn global_php_default_track_round_trips() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    assert_eq!(database.global_php_default_track()?, None);
+
+    database.record_global_php_default_track("8.3")?;
+    assert_eq!(database.global_php_default_track()?.as_deref(), Some("8.3"));
+
+    database.record_global_php_default_track("8.4")?;
+    assert_eq!(database.global_php_default_track()?.as_deref(), Some("8.4"));
+
+    Ok(())
+}
+
+#[test]
+fn global_php_default_rejects_latest_and_invalid_tracks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    assert!(matches!(
+        database.record_global_php_default_track("latest"),
+        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+    ));
+    assert!(matches!(
+        database.record_global_php_default_track("../8.4"),
+        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
+            if value == "../8.4"
+    ));
+    assert_eq!(database.global_php_default_track()?, None);
+
+    Ok(())
+}
+
+#[test]
 fn project_resource_requirements_migration_backfills_env_context() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
