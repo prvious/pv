@@ -45,7 +45,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
 #[test]
 fn recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let duplicate_track = VALID_PHP_TOML.replace("name = \"8.3\"", "name = \"8.4\"");
-    let missing_extension = VALID_PHP_TOML.replace("\"pdo_mysql\",", "");
+    let missing_extension = VALID_PHP_TOML.replace("\"phar\", \"posix\"", "\"posix\"");
     let bad_checksum = VALID_COMPOSER_TOML.replace(
         "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06",
         "bad",

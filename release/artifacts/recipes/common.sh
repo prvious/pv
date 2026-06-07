@@ -15,7 +15,16 @@ sha256_file() {
 }
 
 file_size() {
-  stat -f '%z' "$1"
+  file=$1
+  if size=$(stat -c '%s' "$file" 2>/dev/null); then
+    printf '%s\n' "$size"
+    return 0
+  fi
+  if size=$(stat -f '%z' "$file" 2>/dev/null); then
+    printf '%s\n' "$size"
+    return 0
+  fi
+  wc -c <"$file" | awk '{ print $1 }'
 }
 
 require_sha256() {

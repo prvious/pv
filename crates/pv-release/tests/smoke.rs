@@ -79,7 +79,19 @@ case "${1:-}" in
     esac
     ;;
   php-server)
-    printf '%s\n' 'php-server' >>"$PV_FRANKENPHP_LOG"
+    shift
+    listen=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --listen)
+          shift
+          listen=${1:-}
+          ;;
+      esac
+      shift
+    done
+    [ "$listen" != "127.0.0.1:48123" ] || exit 70
+    printf 'php-server %s\n' "$listen" >>"$PV_FRANKENPHP_LOG"
     exec sleep 60
     ;;
   *) exit 99 ;;
@@ -108,9 +120,11 @@ printf '%s\n' 'pv-frankenphp-ok'
         .status()?;
 
     assert!(status.success(), "smoke hook exited with {status}");
-    assert_eq!(
-        read_file(&frankenphp_log)?,
-        "php-cli -v\nphp-cli -m\nphp-server\n"
+    let frankenphp_log = read_file(&frankenphp_log)?;
+    assert!(frankenphp_log.starts_with("php-cli -v\nphp-cli -m\nphp-server 127.0.0.1:"));
+    assert!(
+        !frankenphp_log.contains("php-server 127.0.0.1:48123\n"),
+        "smoke hook should not use the old fixed loopback port: {frankenphp_log}"
     );
 
     Ok(())
@@ -217,6 +231,12 @@ argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-
         command_output_debug(&run.output)
     );
     assert_eq!(run.spc_log, expected_log);
+    let expected_curl_log = format!(
+        "argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/php.tar.gz][-o][{}/sources/php-8.4.20-source.tar.gz]\n\
+argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/frankenphp.tar.gz][-o][{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source.tar.gz]\n",
+        run.out_dir, run.out_dir
+    );
+    assert_eq!(run.curl_log, expected_curl_log);
     assert!(run.php_record_json.is_some(), "PHP record was not written");
     assert!(run.php_notice.is_some(), "PHP NOTICE was not written");
     assert!(
@@ -443,6 +463,7 @@ struct BuildRecipeRun {
     php_notice: Option<String>,
     frankenphp_notice: Option<String>,
     spc_log: String,
+    curl_log: String,
     validate_log: String,
     php_archive_exists: bool,
     frankenphp_archive_exists: bool,
@@ -487,6 +508,7 @@ fn run_php_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("source.tar.gz");
     let php_source_archive = tempdir.path().join("php-source.tar.gz");
+    let curl_log = tempdir.path().join("curl.log");
     let spc_log = tempdir.path().join("spc.log");
     let validate_log = tempdir.path().join("validate.log");
 
@@ -498,6 +520,7 @@ fn run_php_build_recipe_smoke_with_options(
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
+    write_file(&curl_log, "")?;
     write_file(&spc_log, "")?;
     write_file(&validate_log, "")?;
 
@@ -524,6 +547,7 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_MACHO_LIBRARIES", options.macho_libraries)
         .env("PV_TEST_MACHO_MINOS", options.macho_minos)
         .env("PV_TEST_MACHO_RPATHS", options.macho_rpaths)
+        .env("PV_TEST_CURL_LOG", &curl_log)
         .env("PV_TEST_PHP_SOURCE_ARCHIVE", &php_source_archive)
         .env(
             "PV_TEST_PHP_SOURCE_SHA256",
@@ -582,6 +606,7 @@ fn run_php_build_recipe_smoke_with_options(
         php_notice,
         frankenphp_notice,
         spc_log: read_file(&spc_log)?,
+        curl_log: read_file(&curl_log)?,
         validate_log: read_file(&validate_log)?,
         php_archive_exists: path_exists(&php_archive),
         frankenphp_archive_exists: path_exists(&frankenphp_archive),
@@ -733,6 +758,11 @@ set -eu
 
 output=
 url=
+printf 'argv=' >>"$PV_TEST_CURL_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_CURL_LOG"
+done
+printf '\n' >>"$PV_TEST_CURL_LOG"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o)

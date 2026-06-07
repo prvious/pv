@@ -9,7 +9,7 @@ TRACK=${PV_RECIPE_TRACK:-8.4}
 PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
-PV_COMMIT=${PV_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}
+PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-php}
 recipe_dir="$ROOT/release/artifacts/recipes/php"
 
@@ -23,13 +23,20 @@ need shasum
 need spc
 need tar
 
+if [ -z "$PV_COMMIT" ]; then
+  PV_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+fi
+
 download_source() {
   source_name=$1
   source_version=$2
   source_url=$3
   source_sha256=$4
   source_archive="$OUT_DIR/sources/$source_name-$source_version-source.tar.gz"
-  curl -L --fail --show-error --silent "$source_url" -o "$source_archive"
+  curl -L --fail --show-error --silent \
+    --retry 3 --retry-delay 2 --retry-all-errors \
+    --connect-timeout 20 --max-time 600 \
+    "$source_url" -o "$source_archive"
   require_sha256 "$source_archive" "$source_sha256"
 
   source_extract_dir="$OUT_DIR/sources/$source_name-$source_version-source"

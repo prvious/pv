@@ -30,6 +30,31 @@ default_track = "8.4"
 }
 
 #[test]
+fn manifest_defaults_rejects_unknown_root_tables() -> Result<()> {
+    let result = ManifestDefaults::from_toml(
+        Utf8Path::new("release/artifacts/default-tracks.toml"),
+        r#"
+[[resources]]
+name = "php"
+default_track = "8.4"
+"#,
+    );
+    let error = match result {
+        Ok(defaults) => {
+            return Err(anyhow::anyhow!(
+                "unknown root table should be rejected, got {defaults:?}"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, ReleaseError::InvalidDefaultTracks { .. }));
+    assert_debug_snapshot!(error);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_generator_uses_default_track_metadata_for_multi_track_resources() -> Result<()> {
     let tempdir = tempdir()?;
     let records_dir = tempdir.path().join("records");

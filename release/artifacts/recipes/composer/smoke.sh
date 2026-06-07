@@ -18,5 +18,7 @@ expected_version=${PV_UPSTREAM_VERSION:-}
   exit 42
 }
 
-"$php_binary" "$artifact_root/composer.phar" --version >/tmp/pv-composer-smoke.txt
-grep "Composer version $expected_version" /tmp/pv-composer-smoke.txt >/dev/null
+tmp_output=$(mktemp "${TMPDIR:-/tmp}/pv-composer-smoke.XXXXXX")
+trap 'rm -f "$tmp_output"' 0
+"$php_binary" "$artifact_root/composer.phar" --version >"$tmp_output"
+grep -F "Composer version $expected_version" "$tmp_output" >/dev/null

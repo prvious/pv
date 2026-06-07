@@ -38,11 +38,51 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     )?;
     let archive_roots = generated_archive_roots(&archives, &records)?;
     assert_eq!(
-        representative_archive_roots(&archive_roots),
+        archive_roots,
         vec![
-            "composer-2.10.1-pv1-any",
-            "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64",
-            "php-8.4.20-pv1-darwin-arm64",
+            ArchiveRoot::new("composer", "2", "any", "composer-2.10.1-pv1-any"),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.2",
+                "darwin-amd64",
+                "frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.2",
+                "darwin-arm64",
+                "frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-arm64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.3",
+                "darwin-amd64",
+                "frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.3",
+                "darwin-arm64",
+                "frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-arm64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.4",
+                "darwin-amd64",
+                "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.4",
+                "darwin-arm64",
+                "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64",
+            ),
+            ArchiveRoot::new("php", "8.2", "darwin-amd64", "php-8.2.31-pv1-darwin-amd64"),
+            ArchiveRoot::new("php", "8.2", "darwin-arm64", "php-8.2.31-pv1-darwin-arm64"),
+            ArchiveRoot::new("php", "8.3", "darwin-amd64", "php-8.3.31-pv1-darwin-amd64"),
+            ArchiveRoot::new("php", "8.3", "darwin-arm64", "php-8.3.31-pv1-darwin-arm64"),
+            ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.20-pv1-darwin-amd64"),
+            ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.20-pv1-darwin-arm64"),
         ],
     );
     generate_manifest_file_with_defaults(
@@ -58,6 +98,17 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     assert_snapshot!(manifest_json);
 
     Ok(())
+}
+
+impl ArchiveRoot {
+    fn new(resource: &str, track: &str, platform: &str, root: &str) -> Self {
+        Self {
+            resource: resource.to_owned(),
+            track: track.to_owned(),
+            platform: platform.to_owned(),
+            root: root.to_owned(),
+        }
+    }
 }
 
 fn generated_archive_roots(archives: &Utf8Path, records: &Utf8Path) -> Result<Vec<ArchiveRoot>> {
@@ -89,25 +140,6 @@ fn generated_archive_root(archives: &Utf8Path, record: &ReleaseRecord) -> Result
         platform: record.platform().as_str().to_string(),
         root: validation.root().to_string(),
     })
-}
-
-fn representative_archive_roots(archive_roots: &[ArchiveRoot]) -> Vec<&str> {
-    archive_roots
-        .iter()
-        .filter(|archive_root| {
-            matches!(
-                (
-                    archive_root.resource.as_str(),
-                    archive_root.track.as_str(),
-                    archive_root.platform.as_str(),
-                ),
-                ("composer", "2", "any")
-                    | ("frankenphp", "8.4", "darwin-arm64")
-                    | ("php", "8.4", "darwin-arm64")
-            )
-        })
-        .map(|archive_root| archive_root.root.as_str())
-        .collect()
 }
 
 #[expect(

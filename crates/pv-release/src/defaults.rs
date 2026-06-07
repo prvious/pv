@@ -10,12 +10,13 @@ pub struct ManifestDefaults {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawManifestDefaults {
-    #[serde(default)]
     resource: Vec<RawResourceDefault>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawResourceDefault {
     name: String,
     default_track: String,

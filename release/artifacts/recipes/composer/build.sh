@@ -9,8 +9,13 @@ OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 TRACK=${PV_RECIPE_TRACK:-2}
 PLATFORM=${PV_RECIPE_PLATFORM:-any}
-PV_COMMIT=${PV_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}
+PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-composer}
+
+if [ -z "$PV_COMMIT" ]; then
+  need git
+  PV_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+fi
 
 need cargo
 need curl
@@ -36,7 +41,10 @@ object_key="resources/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/compo
 
 rm -rf "$work_dir"
 mkdir -p "$root_dir"
-curl -L --fail --show-error --silent "$PV_SOURCE_URL" -o "$root_dir/composer.phar"
+curl -L --fail --show-error --silent \
+  --retry 3 --retry-delay 2 --retry-all-errors \
+  --connect-timeout 20 --max-time 300 \
+  "$PV_SOURCE_URL" -o "$root_dir/composer.phar"
 require_sha256 "$root_dir/composer.phar" "$PV_SOURCE_SHA256"
 cp "$ROOT/release/artifacts/recipes/composer/LICENSE" "$root_dir/LICENSE"
 cp "$ROOT/release/artifacts/recipes/composer/NOTICE" "$root_dir/NOTICE"

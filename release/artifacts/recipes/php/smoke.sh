@@ -64,6 +64,16 @@ check_extensions() {
   IFS=$old_ifs
 }
 
+available_port() {
+  python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
 [ -n "$expected_extensions" ] || {
   printf '%s\n' "PV_EXPECTED_EXTENSIONS is required for PHP smoke" >&2
   exit 42
@@ -87,14 +97,15 @@ if [ -x "$artifact_root/bin/frankenphp" ]; then
   "$frankenphp_binary" php-cli -v | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$frankenphp_binary" php-cli -m
 
+  need python3
   site_dir=$(mktemp -d)
   cat >"$site_dir/index.php" <<'PHP'
 <?php echo "pv-frankenphp-ok";
 PHP
-  port=48123
+  port=$(available_port)
   "$frankenphp_binary" php-server --listen "127.0.0.1:$port" --root "$site_dir" &
   pid=$!
-  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$site_dir"' EXIT
+  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$site_dir"' 0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if curl --fail --silent "http://127.0.0.1:$port/" | grep -F pv-frankenphp-ok >/dev/null; then
       exit 0

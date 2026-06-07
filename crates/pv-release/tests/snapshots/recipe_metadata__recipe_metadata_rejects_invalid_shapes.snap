@@ -12,7 +12,7 @@ expression: "(PhpRecipe::from_toml(Utf8Path::new(\"duplicate.toml\"), &duplicate
     Err(
         InvalidRecipeMetadata {
             path: "missing-extension.toml",
-            reason: "expected_extensions missing required extensions: pdo_mysql",
+            reason: "expected_extensions missing required extensions: phar",
         },
     ),
     Err(
