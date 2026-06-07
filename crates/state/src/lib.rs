@@ -15,7 +15,7 @@ pub use database::{
     ProjectEnvResourceContext, ProjectEnvStateContext, ProjectManagedResourceInput,
     ProjectManagedResourceRecord, ProjectRecord, RUNTIME_PORT_FALLBACK_END,
     RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationRecord,
-    ResourceAllocationStatus,
+    ResourceAllocationStatus, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};

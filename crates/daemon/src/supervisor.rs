@@ -3,7 +3,9 @@ use std::time::Duration;
 use std::{future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
+use rustix::process::{
+    Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
+};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -151,6 +153,43 @@ impl ProcessSupervisor {
             .verify_ownership(spec)?
             .map(|owned| AdoptedProcess { owned }))
     }
+
+    pub fn adopt_recorded(
+        &self,
+        pid_path: &Utf8Path,
+        metadata_path: &Utf8Path,
+    ) -> Result<Option<AdoptedProcess>, DaemonError> {
+        let Some(pid) = read_pid_file(pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(metadata_path)? else {
+            return Ok(None);
+        };
+        let spec = metadata.process_spec(pid_path.to_path_buf(), metadata_path.to_path_buf());
+
+        if metadata.matches(&spec, pid) && live_process_matches_spec(pid, &spec)? {
+            return Ok(Some(AdoptedProcess {
+                owned: OwnedRuntime {
+                    pid,
+                    log_path: spec.log_path,
+                    pid_path: spec.pid_path,
+                    metadata_path: spec.metadata_path,
+                },
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        let Some(owned) = self.verify_ownership(spec)? else {
+            return Ok(false);
+        };
+        let process_group = process_group_pid(owned.pid)?;
+        signal_process_group(process_group, Signal::USR1)?;
+
+        Ok(true)
+    }
 }
 
 impl ManagedProcess {
@@ -170,20 +209,43 @@ impl ManagedProcess {
         &self.metadata_path
     }
 
+    pub fn has_exited(&mut self) -> Result<bool, DaemonError> {
+        Ok(self.child.try_wait()?.is_some())
+    }
+
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
-        if self.child.try_wait()?.is_some() {
+        if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
             return Ok(());
         }
 
         let process_group = process_group_pid(self.pid)?;
         signal_process_group(process_group, Signal::TERM)?;
 
-        if timeout(grace_period, self.child.wait()).await.is_err() {
-            signal_process_group(process_group, Signal::KILL)?;
-            self.child.wait().await?;
+        match timeout(
+            grace_period,
+            wait_for_managed_process_group_exit(&mut self.child, self.pid),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(_elapsed) => {
+                signal_process_group(process_group, Signal::KILL)?;
+            }
         }
 
-        Ok(())
+        match timeout(
+            Duration::from_secs(1),
+            wait_for_managed_process_group_exit(&mut self.child, self.pid),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("process group {process_group:?} did not exit after signal"),
+            )
+            .into()),
+        }
     }
 }
 
@@ -196,6 +258,10 @@ impl OwnedRuntime {
 impl AdoptedProcess {
     pub fn pid(&self) -> u32 {
         self.owned.pid()
+    }
+
+    pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        stop_process_group_by_pid(self.owned.pid, grace_period).await
     }
 }
 
@@ -225,6 +291,10 @@ pub async fn wait_for_readiness(
         timeout_ms: readiness_timeout.as_millis(),
         last_error,
     })
+}
+
+pub(crate) async fn probe_readiness_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
+    check_once(check).await
 }
 
 pub async fn wait_for_custom_readiness<F, Fut>(
@@ -335,6 +405,57 @@ async fn terminate_spawned_child(pid: u32, child: &mut Child) {
     let _result = child.wait().await;
 }
 
+async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(), DaemonError> {
+    let process_group = process_group_pid(pid)?;
+    signal_process_group(process_group, Signal::TERM)?;
+
+    if wait_for_process_group_exit(pid, grace_period).await? {
+        return Ok(());
+    }
+
+    signal_process_group(process_group, Signal::KILL)?;
+
+    if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("process {pid} did not exit after signal"),
+    )
+    .into())
+}
+
+async fn wait_for_managed_process_group_exit(
+    child: &mut Child,
+    pid: u32,
+) -> Result<(), DaemonError> {
+    child.wait().await?;
+
+    while process_group_exists(pid)? {
+        sleep(READINESS_POLL_INTERVAL).await;
+    }
+
+    Ok(())
+}
+
+async fn wait_for_process_group_exit(
+    pid: u32,
+    readiness_timeout: Duration,
+) -> Result<bool, DaemonError> {
+    let started_at = Instant::now();
+
+    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+        if !process_group_exists(pid)? {
+            return Ok(true);
+        }
+
+        sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+    }
+
+    Ok(!process_group_exists(pid)?)
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "PV process supervisor owns child process spawning"
@@ -410,7 +531,23 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
-            if process_not_found(&error) {
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
+                return Ok(false);
+            }
+
+            Err(error.into())
+        }
+    }
+}
+
+fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
+    let process_group = process_group_pid(pid)?;
+
+    match test_kill_process_group(process_group) {
+        Ok(()) => Ok(true),
+        Err(source) => {
+            let error = io::Error::from(source);
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(false);
             }
 
@@ -427,15 +564,83 @@ fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, Daemo
     let Some(command_line) = live_process_command_line(pid)? else {
         return Ok(false);
     };
-    let Some(live_executable) = command_line.split_whitespace().next() else {
+    let command_tokens = command_line_tokens(&command_line);
+    let Some(live_executable) = command_tokens.first().map(String::as_str) else {
         return Ok(false);
     };
 
     let command_matches = live_executable == spec.command.as_str()
         || spec.command.file_name().is_some_and(|file_name| {
             live_executable == file_name || live_executable.ends_with(&format!("/{file_name}"))
-        });
-    Ok(command_matches)
+        })
+        || command_tokens
+            .get(1)
+            .is_some_and(|script| script == spec.command.as_str());
+    let shell_command_argument = spec
+        .command
+        .file_name()
+        .is_some_and(|file_name| file_name == "sh" || file_name == "bash");
+    let arguments_match = spec.arguments.iter().enumerate().all(|(index, argument)| {
+        if shell_command_argument
+            && index > 0
+            && spec
+                .arguments
+                .get(index - 1)
+                .is_some_and(|previous| previous == "-c")
+            && argument.split_whitespace().count() > 1
+        {
+            command_line.contains(argument)
+        } else {
+            command_tokens.iter().any(|token| token == argument)
+        }
+    });
+
+    Ok(command_matches && arguments_match)
+}
+
+fn command_line_tokens(command_line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in command_line.chars() {
+        if escaped {
+            token.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_character) = quote {
+            if character == quote_character {
+                quote = None;
+            } else {
+                token.push(character);
+            }
+            continue;
+        }
+        if character == '\'' || character == '"' {
+            quote = Some(character);
+            continue;
+        }
+        if character.is_whitespace() {
+            if !token.is_empty() {
+                tokens.push(std::mem::take(&mut token));
+            }
+            continue;
+        }
+
+        token.push(character);
+    }
+
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+
+    tokens
 }
 
 fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
@@ -460,6 +665,20 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 impl RuntimeMetadata {
+    fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
+        ProcessSpec {
+            name: self.name.clone(),
+            command: self.command.as_str().into(),
+            arguments: self.arguments.clone(),
+            config_path: self.config_path.as_str().into(),
+            log_path: self.log_path.as_str().into(),
+            pid_path,
+            metadata_path,
+            resource_name: self.resource_name.clone(),
+            track: self.track.clone(),
+        }
+    }
+
     fn matches(&self, spec: &ProcessSpec, pid: u32) -> bool {
         self.name == spec.name
             && self.pid == pid

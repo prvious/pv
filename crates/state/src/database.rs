@@ -21,6 +21,7 @@ const MAX_HOSTNAME_LENGTH: usize = 253;
 const RESERVED_HOSTNAME: &str = "pv.test";
 const RESERVED_TRACK_NAME: &str = "latest";
 const PROJECT_ENV_OBSERVED_SUBJECT_KIND: &str = "project_env";
+const RUNTIME_OBSERVED_SUBJECT_KIND: &str = "runtime";
 
 pub type EnvContextValues = BTreeMap<String, String>;
 
@@ -94,14 +95,8 @@ pub enum GatewayPort {
 pub enum PortOwner {
     Dns,
     Gateway(GatewayPort),
-    ProjectWorker {
-        project_id: String,
-        php_track: String,
-    },
-    Resource {
-        name: String,
-        track: String,
-    },
+    PhpWorker { php_track: String },
+    Resource { name: String, track: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -273,6 +268,29 @@ pub struct ProjectEnvObservedStateRecord {
     pub warnings: Vec<ProjectEnvObservedWarningRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RuntimeSubject {
+    Gateway,
+    PhpWorker { php_track: String },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RuntimeObservedStatus {
+    Pending,
+    Running,
+    Degraded,
+    Failed,
+    Stopped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeObservedStateRecord {
+    pub subject: RuntimeSubject,
+    pub status: RuntimeObservedStatus,
+    pub message: Option<String>,
+    pub observed_at: String,
+}
+
 struct JobRecordRow {
     id: String,
     kind: String,
@@ -337,6 +355,13 @@ struct ProjectEnvObservedWarningRow {
     project_id: String,
     kind: String,
     message: String,
+    observed_at: String,
+}
+
+struct RuntimeObservedStateRow {
+    subject_id: String,
+    status: String,
+    message: Option<String>,
     observed_at: String,
 }
 
@@ -603,6 +628,45 @@ impl Database {
             };
             update_project_in_transaction(&transaction, project_id, &input)?;
             replace_project_hostnames_in_transaction(&transaction, project_id, &input)?;
+        }
+
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        transaction.commit()?;
+
+        Ok(project)
+    }
+
+    pub fn replace_project_desired_php_track(
+        &mut self,
+        project_id: &str,
+        desired_php_track: Option<&str>,
+    ) -> Result<ProjectRecord, StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
+            StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            }
+        })?;
+        if let Some(track) = desired_php_track {
+            validate_project_php_track(track)?;
+        }
+
+        if project.desired_php_track.as_deref() != desired_php_track {
+            let input = LinkProjectInput {
+                path: project.path.clone(),
+                original_path: project.original_path.clone(),
+                primary_hostname: project.primary_hostname.clone(),
+                config_path: project.config_path.clone(),
+                desired_php_track: desired_php_track.map(str::to_string),
+                additional_hostnames: project.additional_hostnames.clone(),
+            };
+            update_project_in_transaction(&transaction, project_id, &input)?;
         }
 
         let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
@@ -1242,6 +1306,64 @@ impl Database {
         project_env_observed_warnings_in_connection(&self.connection, project_id)
     }
 
+    pub fn record_runtime_observed_snapshot(
+        &mut self,
+        subject: RuntimeSubject,
+        status: RuntimeObservedStatus,
+        message: Option<&str>,
+    ) -> Result<RuntimeObservedStateRecord, StateError> {
+        let subject_id = subject.subject_id()?;
+        let observed_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO observed_states (
+                subject_kind,
+                subject_id,
+                status,
+                message,
+                observed_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(subject_kind, subject_id) DO UPDATE SET
+                status = excluded.status,
+                message = excluded.message,
+                observed_at = excluded.observed_at",
+            params![
+                RUNTIME_OBSERVED_SUBJECT_KIND,
+                subject_id.as_str(),
+                status.as_str(),
+                message,
+                observed_at.as_str(),
+            ],
+        )?;
+
+        Ok(RuntimeObservedStateRecord {
+            subject,
+            status,
+            message: message.map(str::to_string),
+            observed_at,
+        })
+    }
+
+    pub fn runtime_observed_states(&self) -> Result<Vec<RuntimeObservedStateRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT subject_id, status, message, observed_at
+            FROM observed_states
+            WHERE subject_kind = ?1
+            ORDER BY subject_id",
+        )?;
+        let rows = statement.query_map(
+            params![RUNTIME_OBSERVED_SUBJECT_KIND],
+            runtime_observed_state_from_row,
+        )?;
+        let mut states = Vec::new();
+
+        for row in rows {
+            states.push(row?.into_record()?);
+        }
+
+        Ok(states)
+    }
+
     pub fn assign_port(
         &mut self,
         request: PortRequest,
@@ -1254,9 +1376,7 @@ impl Database {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)?
-            && is_available(existing.port)
-        {
+        if let Some(existing) = port_assignment_in_transaction(&transaction, &identity)? {
             transaction.commit()?;
 
             return Ok(existing);
@@ -1502,16 +1622,14 @@ impl PortRequest {
         )
     }
 
-    pub fn project_worker(
-        project_id: impl Into<String>,
+    pub fn php_worker(
         php_track: impl Into<String>,
         preferred_port: u16,
         fallback_start: u16,
         fallback_end: u16,
     ) -> Self {
         Self::new(
-            PortOwner::ProjectWorker {
-                project_id: project_id.into(),
+            PortOwner::PhpWorker {
                 php_track: php_track.into(),
             },
             preferred_port,
@@ -1582,16 +1700,12 @@ impl PortOwner {
                 owner_id: gateway_port.as_str().to_string(),
                 owner_track: String::new(),
             }),
-            Self::ProjectWorker {
-                project_id,
-                php_track,
-            } => {
-                self.validate_component("project_id", project_id)?;
-                self.validate_component("php_track", php_track)?;
+            Self::PhpWorker { php_track } => {
+                validate_concrete_track(php_track)?;
 
                 Ok(PortIdentity {
-                    owner_kind: "project_worker",
-                    owner_id: project_id.clone(),
+                    owner_kind: "php_worker",
+                    owner_id: "php".to_string(),
                     owner_track: php_track.clone(),
                 })
             }
@@ -1626,15 +1740,12 @@ impl PortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
                 reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
             }),
-            "project_worker" if !owner_id.is_empty() && !owner_track.is_empty() => {
-                Ok(Self::ProjectWorker {
-                    project_id: owner_id,
-                    php_track: owner_track,
-                })
-            }
-            "project_worker" => Err(StateError::InvalidPortOwner {
+            "php_worker" if owner_id == "php" && !owner_track.is_empty() => Ok(Self::PhpWorker {
+                php_track: owner_track,
+            }),
+            "php_worker" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track),
-                reason: "project worker ports must include a project id and php track",
+                reason: "php worker ports must use owner id `php` and include a php track",
             }),
             "resource" if !owner_id.is_empty() && !owner_track.is_empty() => Ok(Self::Resource {
                 name: owner_id,
@@ -1653,8 +1764,7 @@ impl PortOwner {
             return Err(StateError::InvalidPortOwner {
                 owner: self.display_name(),
                 reason: match component {
-                    "project_id" => "project worker port owner project id must not be empty",
-                    "php_track" => "project worker port owner php track must not be empty",
+                    "php_track" => "php worker port owner php track must not be empty",
                     "name" => "resource port owner name must not be empty",
                     "track" => "resource port owner track must not be empty",
                     _ => "port owner component must not be empty",
@@ -1669,10 +1779,7 @@ impl PortOwner {
         match self {
             Self::Dns => "dns".to_string(),
             Self::Gateway(gateway_port) => format!("gateway {}", gateway_port.as_str()),
-            Self::ProjectWorker {
-                project_id,
-                php_track,
-            } => format!("project worker {project_id:?} php {php_track:?}"),
+            Self::PhpWorker { php_track } => format!("php worker {php_track:?}"),
             Self::Resource { name, track } => format!("resource {name:?} track {track:?}"),
         }
     }
@@ -1845,6 +1952,72 @@ impl ProjectEnvObservedWarningRow {
         Ok(ProjectEnvObservedWarningRecord {
             project_id: self.project_id,
             kind: self.kind,
+            message: self.message,
+            observed_at: self.observed_at,
+        })
+    }
+}
+
+impl RuntimeSubject {
+    fn subject_id(&self) -> Result<String, StateError> {
+        match self {
+            Self::Gateway => Ok("gateway".to_string()),
+            Self::PhpWorker { php_track } => {
+                validate_runtime_php_track(php_track)?;
+
+                Ok(format!("php_worker:{php_track}"))
+            }
+        }
+    }
+
+    fn from_subject_id(subject_id: String) -> Result<Self, StateError> {
+        if subject_id == "gateway" {
+            return Ok(Self::Gateway);
+        }
+
+        if let Some(php_track) = subject_id.strip_prefix("php_worker:") {
+            validate_runtime_php_track(php_track)?;
+
+            return Ok(Self::PhpWorker {
+                php_track: php_track.to_string(),
+            });
+        }
+
+        Err(StateError::InvalidRuntimeSubject {
+            kind: "subject_id",
+            value: subject_id,
+        })
+    }
+}
+
+impl RuntimeObservedStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Degraded => "degraded",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    fn from_database(status: String) -> Result<Self, StateError> {
+        match status.as_str() {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "degraded" => Ok(Self::Degraded),
+            "failed" => Ok(Self::Failed),
+            "stopped" => Ok(Self::Stopped),
+            _ => Err(StateError::UnknownRuntimeObservedStatus { status }),
+        }
+    }
+}
+
+impl RuntimeObservedStateRow {
+    fn into_record(self) -> Result<RuntimeObservedStateRecord, StateError> {
+        Ok(RuntimeObservedStateRecord {
+            subject: RuntimeSubject::from_subject_id(self.subject_id)?,
+            status: RuntimeObservedStatus::from_database(self.status)?,
             message: self.message,
             observed_at: self.observed_at,
         })
@@ -2274,15 +2447,33 @@ fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateErro
     for hostname in &input.additional_hostnames {
         validate_project_hostname(hostname)?;
     }
-    if let Some(track) = &input.desired_php_track
-        && track.trim().is_empty()
-    {
-        return Err(StateError::InvalidProjectTrack {
-            track: track.clone(),
-        });
+    if let Some(track) = &input.desired_php_track {
+        validate_project_php_track(track)?;
     }
 
     Ok(())
+}
+
+fn validate_project_php_track(track: &str) -> Result<(), StateError> {
+    validate_concrete_track(track).map_err(|_error| StateError::InvalidProjectTrack {
+        track: track.to_string(),
+    })
+}
+
+fn validate_runtime_php_track(php_track: &str) -> Result<(), StateError> {
+    validate_concrete_track(php_track).map_err(|error| match error {
+        StateError::InvalidManagedResourceIdentity { value, .. } => {
+            StateError::InvalidRuntimeSubject {
+                kind: "php_track",
+                value,
+            }
+        }
+        StateError::ReservedConcreteTrack { track } => StateError::InvalidRuntimeSubject {
+            kind: "php_track",
+            value: track,
+        },
+        error => error,
+    })
 }
 
 fn validate_original_project_path(path: &Utf8Path) -> Result<(), StateError> {
@@ -2806,6 +2997,17 @@ fn project_env_observed_warning_from_row(
     Ok(ProjectEnvObservedWarningRow {
         project_id: row.get(0)?,
         kind: row.get(1)?,
+        message: row.get(2)?,
+        observed_at: row.get(3)?,
+    })
+}
+
+fn runtime_observed_state_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RuntimeObservedStateRow> {
+    Ok(RuntimeObservedStateRow {
+        subject_id: row.get(0)?,
+        status: row.get(1)?,
         message: row.get(2)?,
         observed_at: row.get(3)?,
     })

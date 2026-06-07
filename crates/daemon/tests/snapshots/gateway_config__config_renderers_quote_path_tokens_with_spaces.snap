@@ -1,0 +1,26 @@
+---
+source: crates/daemon/tests/gateway_config.rs
+expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
+---
+Gateway:
+# PV_FAKE_PORT 48080
+{
+    admin off
+    http_port 48080
+    https_port 48443
+    pki {
+        ca local {
+            root {
+                format pem_file
+                cert "/Users/Alice Smith/.pv/certificates/ca.pem"
+                key "/Users/Alice Smith/.pv/certificates/ca-key.pem"
+            }
+        }
+    }
+}
+
+import "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile"
+
+Worker:
+# PV_FAKE_PORT 45001
+import "/Users/Alice Smith/.pv/config/workers/php-8.4/projects/*.Caddyfile"

@@ -1,0 +1,6 @@
+---
+source: crates/daemon/tests/gateway_config.rs
+expression: render_php_worker_config(&input)?
+---
+# PV_FAKE_PORT 45001
+import "/Users/alice/.pv/config/workers/php-8.4/projects/*.Caddyfile"

@@ -10,6 +10,7 @@ pub mod install;
 pub mod manifest;
 pub mod platform;
 pub mod registry;
+pub mod runtime;
 
 pub use allocation::{
     EnvPlaceholderContract, ResourceAllocationKind, ResourceAllocationName,
@@ -32,3 +33,4 @@ pub use install::{ArtifactInstall, ArtifactInstaller, ResourceAdapter};
 pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
+pub use runtime::{RuntimeArtifactAdapter, frankenphp_adapter, php_adapter};

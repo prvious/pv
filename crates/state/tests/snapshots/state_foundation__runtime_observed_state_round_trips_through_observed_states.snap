@@ -1,0 +1,24 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: database.runtime_observed_states()?
+---
+[
+    RuntimeObservedStateRecord {
+        subject: Gateway,
+        status: Degraded,
+        message: Some(
+            "gateway config reload failed",
+        ),
+        observed_at: "<timestamp>",
+    },
+    RuntimeObservedStateRecord {
+        subject: PhpWorker {
+            php_track: "8.4",
+        },
+        status: Failed,
+        message: Some(
+            "readiness timed out",
+        ),
+        observed_at: "<timestamp>",
+    },
+]

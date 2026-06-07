@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::{
     ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
@@ -280,6 +280,68 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 }
 
 #[tokio::test]
+async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let marker = paths.run().join("reload-marker");
+    let ready = paths.run().join("reload-ready");
+    let spec = process_spec(
+        &paths,
+        "reloadable-runtime",
+        "/bin/sh",
+        vec![
+            "-c".to_string(),
+            format!(
+                "trap 'touch \"{marker}\"' USR1; touch \"{ready}\"; while true; do sleep 1; done"
+            ),
+        ],
+    );
+    let process = ProcessSupervisor::new(paths.clone())
+        .start(spec.clone())
+        .await?;
+
+    wait_for_path(&ready).await?;
+    ProcessSupervisor::new(paths.clone()).reload(&spec)?;
+    wait_for_path(&marker).await?;
+    process.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let child_pid_path = paths.run().join("descendant.pid");
+    let process = ProcessSupervisor::new(paths.clone())
+        .start(process_spec(
+            &paths,
+            "descendant-runtime",
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                format!(
+                    "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; while true; do sleep 1; done' & echo $! > \"{child_pid_path}\"; while true; do sleep 1; done"
+                ),
+            ],
+        ))
+        .await?;
+    wait_for_path(&child_pid_path).await?;
+    let child_pid = wait_for_file_contains(&child_pid_path, "\n")
+        .await?
+        .trim()
+        .parse::<u32>()?;
+
+    process.stop(Duration::from_millis(50)).await?;
+
+    wait_for_process_exit(child_pid).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -367,6 +429,145 @@ async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arg
     Ok(())
 }
 
+#[tokio::test]
+async fn supervisor_rejects_reused_pid_with_same_binary_but_different_arguments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "actual-argument-runtime",
+            "/bin/sh",
+            vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+        ))
+        .await?;
+    let forged = process_spec(
+        &paths,
+        "forged-argument-runtime",
+        "/bin/sh",
+        vec!["-c".to_string(), "echo wrong config".to_string()],
+    );
+    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
+    state::fs::write_sensitive_file(
+        &forged.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": "forged-argument-runtime",
+            "pid": actual.pid(),
+            "command": "/bin/sh",
+            "arguments": ["-c", "echo wrong config"],
+            "config_path": forged.config_path.as_str(),
+            "resource_name": "forged-argument-runtime",
+            "track": "test",
+            "log_path": forged.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+        }))?,
+    )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_reused_pid_with_same_binary_and_argument_prefix() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let expected_config = paths.config().join("Caddyfile");
+    let actual_config = paths.config().join("Caddyfile.backup");
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "actual-prefix-runtime",
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                format!("while true; do sleep 1; done # {actual_config}"),
+            ],
+        ))
+        .await?;
+    let forged = process_spec(
+        &paths,
+        "forged-prefix-runtime",
+        "/bin/sh",
+        vec!["-c".to_string(), expected_config.to_string()],
+    );
+    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
+    state::fs::write_sensitive_file(
+        &forged.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": "forged-prefix-runtime",
+            "pid": actual.pid(),
+            "command": "/bin/sh",
+            "arguments": ["-c", expected_config.as_str()],
+            "config_path": forged.config_path.as_str(),
+            "resource_name": "forged-prefix-runtime",
+            "track": "test",
+            "log_path": forged.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+        }))?,
+    )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_reused_pid_with_spaced_argument_prefix() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let runtime = paths.root().join("fake-runtime");
+    let expected_config = paths.config().join("Alice Smith/Caddyfile");
+    let actual_config = paths.config().join("Alice Smith/Caddyfile.backup");
+    state::fs::write_sensitive_file(&runtime, "#!/bin/sh\nwhile true; do sleep 1; done\n")?;
+    set_executable(&runtime)?;
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "actual-spaced-prefix-runtime",
+            runtime.clone(),
+            vec![actual_config.to_string()],
+        ))
+        .await?;
+    let forged = process_spec(
+        &paths,
+        "forged-spaced-prefix-runtime",
+        runtime.clone(),
+        vec![expected_config.to_string()],
+    );
+    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
+    state::fs::write_sensitive_file(
+        &forged.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": "forged-spaced-prefix-runtime",
+            "pid": actual.pid(),
+            "command": runtime.as_str(),
+            "arguments": [expected_config.as_str()],
+            "config_path": forged.config_path.as_str(),
+            "resource_name": "forged-spaced-prefix-runtime",
+            "track": "test",
+            "log_path": forged.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+        }))?,
+    )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
 async fn wait_for_file_contains(path: &camino::Utf8Path, needle: &str) -> Result<String> {
     for _attempt in 0..50 {
         let content = state::testing::read_to_string(path)?;
@@ -379,6 +580,21 @@ async fn wait_for_file_contains(path: &camino::Utf8Path, needle: &str) -> Result
     }
 
     Err(anyhow!("file {path} did not contain {needle:?}"))
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test fixture marks fake runtime executable"
+)]
+fn set_executable(path: &Utf8Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)?;
+
+    Ok(())
 }
 
 async fn wait_for_process_exit(pid: u32) -> Result<()> {
@@ -394,6 +610,18 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
     }
 
     Err(anyhow!("process {pid:?} was still running"))
+}
+
+async fn wait_for_path(path: &camino::Utf8Path) -> Result<()> {
+    for _attempt in 0..50 {
+        if path.exists() {
+            return Ok(());
+        }
+
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    Err(anyhow!("file {path} did not exist"))
 }
 
 fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Result<()> {

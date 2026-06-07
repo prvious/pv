@@ -43,6 +43,108 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
 }
 
 #[tokio::test]
+async fn project_env_reconciliation_updates_persisted_php_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: \"8.4\"\n",
+    )?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    write_project_config(&project, "php: \"8.3\"\n")?;
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.3"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_env_reconciliation_persists_latest_php_as_concrete_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: latest\n",
+    )?;
+    seed_manifest(&paths, "8.4")?;
+
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.4"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_env_reconciliation_reuses_concrete_track_for_latest_php() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: latest\n",
+    )?;
+    seed_manifest(&paths, "8.4")?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    seed_manifest(&paths, "8.3")?;
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.4"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_env_reconciliation_persists_default_php_track_when_config_omits_php() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: \"8.4\"\n",
+    )?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    seed_manifest(&paths, "8.0")?;
+    write_project_config(&project, "hostnames: []\n")?;
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.0"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn seeded_resource_and_allocation_contexts_render_dotenv() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1126,6 +1228,42 @@ fn test_manifest(default_track: &str) -> String {
                                 "platform": "darwin-arm64",
                                 "url": "https://artifacts.example.test/mysql-8.4.5-pv1-darwin-arm64.tar.gz",
                                 "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                                "size": 12345,
+                                "published_at": "2026-05-27T14:30:00Z"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "php",
+                "default_track": default_track,
+                "tracks": [
+                    {
+                        "name": "8.0",
+                        "artifacts": [
+                            {
+                                "artifact_version": "8.0.30-pv1",
+                                "upstream_version": "8.0.30",
+                                "pv_build_revision": "pv1",
+                                "platform": "darwin-arm64",
+                                "url": "https://artifacts.example.test/php-8.0.30-pv1-darwin-arm64.tar.gz",
+                                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                                "size": 12345,
+                                "published_at": "2026-05-26T14:30:00Z"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "8.4",
+                        "artifacts": [
+                            {
+                                "artifact_version": "8.4.8-pv1",
+                                "upstream_version": "8.4.8",
+                                "pv_build_revision": "pv1",
+                                "platform": "darwin-arm64",
+                                "url": "https://artifacts.example.test/php-8.4.8-pv1-darwin-arm64.tar.gz",
+                                "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
                                 "size": 12345,
                                 "published_at": "2026-05-27T14:30:00Z"
                             }

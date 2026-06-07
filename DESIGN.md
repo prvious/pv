@@ -10,7 +10,7 @@ PV has laravel style commands where commmands under the same category/famility a
 - PHP — managed per-version, no homebrew/apt needed
 - Mysql, Postgresql, Redis, Composer, Mailpit, Rustfs all Ready to go
 
-Per-project versions are supported too — add a pv.yml file with php: "8.4" in your project root. Multiple PHP versions run simultaneously, each project served by its own FrankenPHP process.
+Per-project versions are supported too — add a pv.yml file with php: "8.4" in your project root. Multiple PHP versions run simultaneously, with Projects routed through workers grouped by PHP track.
 
 ## High-Level Features
 

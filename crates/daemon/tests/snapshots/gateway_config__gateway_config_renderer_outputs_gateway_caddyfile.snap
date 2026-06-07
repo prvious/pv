@@ -1,0 +1,21 @@
+---
+source: crates/daemon/tests/gateway_config.rs
+expression: render_gateway_config(&input)?
+---
+# PV_FAKE_PORT 48080
+{
+    admin off
+    http_port 48080
+    https_port 48443
+    pki {
+        ca local {
+            root {
+                format pem_file
+                cert "/Users/alice/.pv/certificates/ca.pem"
+                key "/Users/alice/.pv/certificates/ca-key.pem"
+            }
+        }
+    }
+}
+
+import "/Users/alice/.pv/config/gateway/projects/*.Caddyfile"

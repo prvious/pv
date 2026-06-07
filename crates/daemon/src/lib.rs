@@ -1,6 +1,8 @@
 mod client;
 mod dns;
 mod error;
+pub mod gateway;
+pub mod gateway_config;
 mod ipc;
 mod jobs;
 mod project_env;

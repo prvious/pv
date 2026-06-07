@@ -8,8 +8,8 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::params;
 use serde_json::{Value, json};
 use state::{
-    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, PortOwner, PortRequest, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, LinkProjectInput, PortOwner, PortRequest,
+    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
 };
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
@@ -143,10 +143,61 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
     let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
     daemon.shutdown().await?;
 
-    assert_eq!(completed.summary, "stub job completed");
+    assert_eq!(
+        completed.summary,
+        "Gateway runtime skipped; FrankenPHP is not installed"
+    );
     assert_eq!(job.kind, "reconcile");
     assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(
+        &config_path,
+        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_path.clone(),
+        original_path: project_path.clone(),
+        primary_hostname: "project.test".to_owned(),
+        config_path,
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    drop(database);
+
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let client_paths = paths.clone();
+    let completed = tokio::task::spawn_blocking(move || {
+        daemon::run_job_blocking(client_paths, "reconcile", "system")
+    })
+    .await??;
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+    let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
+    let project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(completed.summary, "Project env rendered");
+    assert_eq!(job.summary.as_deref(), Some("Project env rendered"));
+    assert_eq!(
+        state::fs::read_to_string(&project_path.join(".env"))?,
+        "# >>> PV MANAGED\nAPP_NAME=setup\nAPP_URL=https://project.test\n# <<< PV MANAGED\n"
+    );
+    assert!(database.project_env_observed_state(&project.id)?.is_some());
 
     Ok(())
 }

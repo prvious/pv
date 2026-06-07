@@ -1,0 +1,43 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(assigned_php84, reused_php84, assigned_php83, database.assigned_ports()?)"
+---
+(
+    PortAssignment {
+        owner: PhpWorker {
+            php_track: "8.4",
+        },
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: PhpWorker {
+            php_track: "8.4",
+        },
+        port: 45000,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: PhpWorker {
+            php_track: "8.3",
+        },
+        port: 45001,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: PhpWorker {
+                php_track: "8.3",
+            },
+            port: 45001,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: PhpWorker {
+                php_track: "8.4",
+            },
+            port: 45000,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

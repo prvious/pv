@@ -60,6 +60,12 @@ pub enum StateError {
     #[error("unknown Project env observed status `{status}`")]
     UnknownProjectEnvObservedStatus { status: String },
 
+    #[error("unknown runtime observed status `{status}`")]
+    UnknownRuntimeObservedStatus { status: String },
+
+    #[error("invalid runtime subject {kind} `{value}`")]
+    InvalidRuntimeSubject { kind: &'static str, value: String },
+
     #[error("Project `{target}` was not found")]
     ProjectNotFound { target: String },
 

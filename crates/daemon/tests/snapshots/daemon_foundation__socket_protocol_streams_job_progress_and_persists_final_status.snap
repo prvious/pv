@@ -19,17 +19,17 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("stub job started"),
+            "message": String("System reconciliation started"),
             "type": String("log"),
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("stub job completed without reconciliation work"),
+            "message": String("Gateway runtime skipped; FrankenPHP is not installed"),
             "type": String("progress"),
         },
         Object {
             "job_id": String("job_000001"),
-            "summary": String("stub job completed"),
+            "summary": String("Gateway runtime skipped; FrankenPHP is not installed"),
             "type": String("job_completed"),
         },
     ],
@@ -44,7 +44,7 @@ expression: snapshot
                 "<timestamp>",
             ),
             summary: Some(
-                "stub job completed",
+                "Gateway runtime skipped; FrankenPHP is not installed",
             ),
             error: None,
         },

@@ -1,0 +1,55 @@
+---
+source: crates/daemon/tests/gateway_reconciliation.rs
+assertion_line: 225
+expression: snapshot
+---
+(
+    [
+        "validate",
+        "--config",
+        "<tempdir>/home/.pv/config/gateway/Caddyfile",
+        "--adapter",
+        "caddyfile",
+    ],
+    [
+        "run",
+        "--config",
+        "<tempdir>/home/.pv/config/gateway/Caddyfile",
+        "--adapter",
+        "caddyfile",
+    ],
+    ProcessSpec {
+        name: "gateway",
+        command: "<tempdir>/frankenphp",
+        arguments: [
+            "run",
+            "--config",
+            "<tempdir>/home/.pv/config/gateway/Caddyfile",
+            "--adapter",
+            "caddyfile",
+        ],
+        config_path: "<tempdir>/home/.pv/config/gateway/Caddyfile",
+        log_path: "<tempdir>/home/.pv/logs/gateway/gateway.log",
+        pid_path: "<tempdir>/home/.pv/run/gateway.pid",
+        metadata_path: "<tempdir>/home/.pv/run/gateway.json",
+        resource_name: "gateway",
+        track: "core",
+    },
+    ProcessSpec {
+        name: "php-worker-8.4",
+        command: "<tempdir>/frankenphp",
+        arguments: [
+            "run",
+            "--config",
+            "<tempdir>/home/.pv/config/workers/php-8.4/Caddyfile",
+            "--adapter",
+            "caddyfile",
+        ],
+        config_path: "<tempdir>/home/.pv/config/workers/php-8.4/Caddyfile",
+        log_path: "<tempdir>/home/.pv/logs/workers/php-8.4.log",
+        pid_path: "<tempdir>/home/.pv/run/workers/php-8.4.pid",
+        metadata_path: "<tempdir>/home/.pv/run/workers/php-8.4.json",
+        resource_name: "php-worker",
+        track: "8.4",
+    },
+)
