@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::io;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use camino::Utf8Path;
 
@@ -19,6 +20,16 @@ pub trait Environment {
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
+
+    fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        let _program = program;
+        let _args = args;
+
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process replacement is not available in this environment",
+        ))
+    }
 
     fn launch_agent_path(&self) -> PathBuf {
         self.home_dir()
@@ -163,6 +174,10 @@ impl Environment for ProcessEnvironment {
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         platform::open_url(url).map_err(io::Error::other)
+    }
+
+    fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        platform::exec_replace(program, args)
     }
 }
 

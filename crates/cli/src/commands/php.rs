@@ -5,12 +5,13 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use resources::{
-    ManagedResourceCommands, ManagedResourceUninstallOptions, ResourceHttpClient, ResourceName,
-    TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
+    ArtifactManifestCache, ManagedResourceCommands, ManagedResourceUninstallOptions,
+    ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
+    UreqResourceHttpClient,
 };
-use state::{Database, ProjectRecord, PvPaths, StateError};
+use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 
-use crate::args::{PhpInstallArgs, PhpUninstallArgs, PhpUseArgs};
+use crate::args::{PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
@@ -184,6 +185,73 @@ pub(crate) fn list(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn shim(
+    args: ShimArgs,
+    environment: &impl Environment,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
+    let database = Database::open(&paths)?;
+    let track = resolve_php_track_for_shim(&paths, &database, environment)?;
+    let executable = installed_php_executable(&database, &track)?;
+
+    environment
+        .exec(executable.as_std_path(), &args.args)
+        .map_err(ExecuteError::from)
+}
+
+fn resolve_php_track_for_shim(
+    paths: &PvPaths,
+    database: &Database,
+    environment: &impl Environment,
+) -> Result<String, ExecuteError> {
+    let current_dir = current_dir(environment)?;
+    if let Some(project) = database.nearest_project_for_path(&current_dir)?
+        && let Some(track) = project.desired_php_track
+    {
+        return Ok(track);
+    }
+
+    if let Some(track) = database.global_php_default_track()? {
+        return Ok(track);
+    }
+
+    let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+    let php = ResourceName::new("php")?;
+
+    Ok(manifest
+        .resolve_track(&php, TrackSelector::Latest)?
+        .as_str()
+        .to_string())
+}
+
+fn installed_php_executable(database: &Database, track: &str) -> Result<Utf8PathBuf, ExecuteError> {
+    let Some(record) = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .find(|record| {
+            record.resource_name == "php"
+                && record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+                && record.current_artifact_path.is_some()
+        })
+    else {
+        return Err(CliError::MissingPhpTrack {
+            track: track.to_string(),
+        }
+        .into());
+    };
+    let release = record
+        .current_artifact_path
+        .ok_or_else(|| CliError::MissingPhpTrack {
+            track: track.to_string(),
+        })?;
+    let adapter = resources::php_adapter()?;
+    adapter.validate_installation(&release)?;
+
+    Ok(adapter.executable_path(&release))
 }
 
 fn write_install_lines(

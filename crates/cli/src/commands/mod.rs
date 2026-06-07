@@ -30,6 +30,7 @@ pub(crate) fn execute(
         Command::DaemonDisable => daemon::disable(environment, stdout),
         Command::DaemonRestart => daemon::restart(environment, stdout),
         Command::DaemonRun => daemon::run(),
+        Command::ShimPhp(args) => php::shim(args, environment),
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),
         Command::DnsUninstall => dns::uninstall(environment, stdout),

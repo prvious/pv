@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -25,6 +25,7 @@ struct TestEnvironment {
     current_dir: RefCell<PathBuf>,
     client: ScriptedClient,
     target_platform: Option<TargetPlatform>,
+    exec_calls: RefCell<Vec<ExecCall>>,
 }
 
 impl TestEnvironment {
@@ -34,6 +35,7 @@ impl TestEnvironment {
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             client,
             target_platform: None,
+            exec_calls: RefCell::new(Vec::new()),
         }
     }
 
@@ -49,6 +51,16 @@ impl TestEnvironment {
     fn byte_request_count(&self) -> usize {
         self.client.byte_request_count()
     }
+
+    fn exec_calls(&self) -> Vec<ExecCall> {
+        self.exec_calls.borrow().clone()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExecCall {
+    program: PathBuf,
+    args: Vec<String>,
 }
 
 impl Environment for TestEnvironment {
@@ -80,6 +92,15 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
+    fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        self.exec_calls.borrow_mut().push(ExecCall {
+            program: program.to_path_buf(),
+            args: args.to_vec(),
+        });
+
+        Ok(ExitCode::SUCCESS)
+    }
+
     fn artifact_manifest_url(&self) -> Option<String> {
         Some(MANIFEST_URL.to_string())
     }
@@ -91,6 +112,134 @@ impl Environment for TestEnvironment {
     fn target_platform(&self) -> Option<TargetPlatform> {
         self.target_platform
     }
+}
+
+#[test]
+fn php_shim_fails_clearly_when_resolved_project_track_is_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.4")?;
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(environment.exec_calls().is_empty());
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_execs_resolved_project_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.4")?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["-v".to_string()],
+        }]
+    );
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, exec_calls));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let release = record_installed_php(&home, "8.3", "8.3.12-pv1")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.3")?;
+    }
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-r", "echo 1;"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["-r".to_string(), "echo 1;".to_string()],
+        }]
+    );
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, exec_calls));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_uses_cached_manifest_default_without_network() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "--ini"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["--ini".to_string()],
+        }]
+    );
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, exec_calls));
+        Ok(())
+    })?;
+
+    Ok(())
 }
 
 #[test]
@@ -744,6 +893,36 @@ fn prepare_existing_release(
         .ok_or_else(|| anyhow::anyhow!("fixture executable has no parent: {executable}"))?;
     create_dir(parent)?;
     write_file(&executable, "fixture executable\n")
+}
+
+fn record_installed_php(
+    home: &Utf8Path,
+    track: &str,
+    version: &str,
+) -> anyhow::Result<Utf8PathBuf> {
+    let artifact = runtime_fixture_artifact("php", version, "bin/php", TargetPlatform::DarwinArm64);
+    prepare_existing_release(home, track, &artifact)?;
+    let release = release_path(home, track, &artifact);
+    let mut database = Database::open(&pv_paths(home))?;
+    database.record_managed_resource_track_installed("php", track, version, &release)?;
+
+    Ok(release)
+}
+
+fn release_path(home: &Utf8Path, track: &str, artifact: &FixtureArtifact) -> Utf8PathBuf {
+    pv_paths(home)
+        .resources()
+        .join(&artifact.resource_name)
+        .join(track)
+        .join("releases")
+        .join(&artifact.version)
+}
+
+fn cache_manifest(home: &Utf8Path, manifest: &str) -> anyhow::Result<()> {
+    let paths = pv_paths(home);
+    let downloads = paths.downloads();
+    create_dir(downloads)?;
+    write_file(&downloads.join("manifest.json"), manifest)
 }
 
 struct ManifestResourceFixture<'a> {

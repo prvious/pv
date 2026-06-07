@@ -44,6 +44,14 @@ pub(crate) enum Command {
     #[command(name = "daemon:run", about = "Run the internal PV daemon", hide = true)]
     DaemonRun,
 
+    #[command(
+        name = "shim:php",
+        about = "Run the internal PV PHP shim",
+        hide = true,
+        trailing_var_arg = true
+    )]
+    ShimPhp(ShimArgs),
+
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
@@ -139,6 +147,16 @@ pub(crate) struct UninstallArgs {
 
     #[arg(long, help = "Skip prune confirmation")]
     pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ShimArgs {
+    #[arg(
+        value_name = "args",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    pub(crate) args: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

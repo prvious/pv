@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/php.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: PHP track 8.4 is not installed.\nRun `pv php:install 8.4` to install it.\n",
+}

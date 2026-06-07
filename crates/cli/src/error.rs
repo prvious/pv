@@ -36,6 +36,9 @@ pub enum CliError {
         "PHP track `{track}` has {usage_count} active Project/global default selection(s); use --force to remove it anyway"
     )]
     PhpTrackInUse { track: String, usage_count: i64 },
+
+    #[error("PHP track {track} is not installed.\nRun `pv php:install {track}` to install it.")]
+    MissingPhpTrack { track: String },
 }
 
 #[derive(Debug, Error)]
