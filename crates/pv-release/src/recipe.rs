@@ -57,10 +57,6 @@ pub struct PhpRecipe {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct RecipeHeader {
     resources: Vec<ResourceName>,
     default_track: TrackName,
@@ -83,10 +79,6 @@ pub struct PhpSettings {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct FrankenphpSettings {
     version: String,
     source_url: String,
@@ -94,10 +86,6 @@ pub struct FrankenphpSettings {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct PhpTrack {
     name: TrackName,
     php_version: String,
@@ -106,10 +94,6 @@ pub struct PhpTrack {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct ComposerRecipe {
     path: Utf8PathBuf,
     header: RecipeHeader,
@@ -118,10 +102,6 @@ pub struct ComposerRecipe {
 }
 
 #[derive(Clone, Debug)]
-#[expect(
-    dead_code,
-    reason = "recipe metadata exposes narrow getters only when later tasks need fields"
-)]
 pub struct ComposerTrack {
     name: TrackName,
     upstream_version: String,
@@ -202,8 +182,44 @@ impl PhpRecipe {
         &self.tracks
     }
 
+    pub fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    pub fn platforms(&self) -> &[ArtifactPlatform] {
+        &self.header.platforms
+    }
+
     pub fn default_track(&self) -> &TrackName {
         &self.header.default_track
+    }
+
+    pub fn minimum_pv_version(&self) -> &PvVersion {
+        &self.header.minimum_pv_version
+    }
+
+    pub fn pv_build_revision(&self) -> &str {
+        &self.header.pv_build_revision
+    }
+
+    pub fn license_files(&self) -> &[String] {
+        &self.header.license_files
+    }
+
+    pub fn notice_files(&self) -> &[String] {
+        &self.header.notice_files
+    }
+
+    pub fn frankenphp_version(&self) -> &str {
+        &self.frankenphp.version
+    }
+
+    pub fn frankenphp_source_url(&self) -> &str {
+        &self.frankenphp.source_url
+    }
+
+    pub fn frankenphp_source_sha256(&self) -> &Sha256Digest {
+        &self.frankenphp.source_sha256
     }
 
     fn from_raw(path: &Utf8Path, raw: RawPhpRecipe) -> crate::Result<Self> {
@@ -310,6 +326,10 @@ impl PhpTrack {
         &self.php_source_url
     }
 
+    pub fn php_source_sha256(&self) -> &Sha256Digest {
+        &self.php_source_sha256
+    }
+
     fn from_raw(path: &Utf8Path, name: TrackName, raw: RawPhpTrack) -> crate::Result<Self> {
         let php_version = require_non_empty(path, "php_version", &raw.php_version)?.to_string();
         validate_php_track_version(path, &name, &php_version)?;
@@ -342,12 +362,40 @@ impl ComposerRecipe {
         &self.track.name
     }
 
+    pub fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
     pub fn upstream_version(&self) -> &str {
         &self.track.upstream_version
     }
 
     pub fn platform(&self) -> ArtifactPlatform {
         self.platform
+    }
+
+    pub fn minimum_pv_version(&self) -> &PvVersion {
+        &self.header.minimum_pv_version
+    }
+
+    pub fn pv_build_revision(&self) -> &str {
+        &self.header.pv_build_revision
+    }
+
+    pub fn license_files(&self) -> &[String] {
+        &self.header.license_files
+    }
+
+    pub fn notice_files(&self) -> &[String] {
+        &self.header.notice_files
+    }
+
+    pub fn source_url(&self) -> &str {
+        &self.track.source_url
+    }
+
+    pub fn source_sha256(&self) -> &Sha256Digest {
+        &self.track.source_sha256
     }
 
     fn from_raw(path: &Utf8Path, raw: RawComposerRecipe) -> crate::Result<Self> {

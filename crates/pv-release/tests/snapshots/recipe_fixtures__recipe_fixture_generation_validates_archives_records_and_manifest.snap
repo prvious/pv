@@ -1,0 +1,284 @@
+---
+source: crates/pv-release/tests/recipe_fixtures.rs
+expression: manifest_json
+---
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "composer",
+      "default_track": "2",
+      "tracks": [
+        {
+          "name": "2",
+          "artifacts": [
+            {
+              "artifact_version": "2.10.1-pv1",
+              "upstream_version": "2.10.1",
+              "pv_build_revision": "pv1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/resources/composer/2/2.10.1-pv1/any/composer-2.10.1-pv1-any.tar.gz",
+              "sha256": "907bf97e98e5304ad5ecebb4fb5457e91497e567cba5b4e56f8dfdf1bafd6d9c",
+              "size": 197,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://getcomposer.org/download/2.10.1/composer.phar",
+                "source_sha256": "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06",
+                "recipe": "release/artifacts/recipes/composer/composer.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {
+          "name": "8.2",
+          "artifacts": [
+            {
+              "artifact_version": "8.2.31-frankenphp1.12.3-pv1",
+              "upstream_version": "8.2.31-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.2/8.2.31-frankenphp1.12.3-pv1/darwin-amd64/frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-amd64.tar.gz",
+              "sha256": "92d84b562886eb565789fa6b809040e15fd79ceee88b3f65b406f257a1c69a3e",
+              "size": 218,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.2.31-frankenphp1.12.3-pv1",
+              "upstream_version": "8.2.31-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.2/8.2.31-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+              "sha256": "5594bb0b94c31f89da1738eeb1cca23981a18b27c70b20b3c013add97b7974b8",
+              "size": 218,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.3",
+          "artifacts": [
+            {
+              "artifact_version": "8.3.31-frankenphp1.12.3-pv1",
+              "upstream_version": "8.3.31-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.3-pv1/darwin-amd64/frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-amd64.tar.gz",
+              "sha256": "e00934ce7ed053611198e0af7a3200f778c2079d10f808e2ae18824789fd9336",
+              "size": 219,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.3.31-frankenphp1.12.3-pv1",
+              "upstream_version": "8.3.31-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+              "sha256": "d376fc20c50fb3403e5e63a4c3bb69ad6111f6e340043063aec5f637bc87564b",
+              "size": 218,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.4",
+          "artifacts": [
+            {
+              "artifact_version": "8.4.20-frankenphp1.12.3-pv1",
+              "upstream_version": "8.4.20-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-amd64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-amd64.tar.gz",
+              "sha256": "7ed7a636405b7c0c0b233e7d5add73b46b53401c22849f05bb08f1540560c4b9",
+              "size": 219,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.20-frankenphp1.12.3-pv1",
+              "upstream_version": "8.4.20-frankenphp1.12.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+              "sha256": "f5f0618116539e0b497f9ac755c41c6f53b97800c0c7c6b85fdccaa91edc2c3a",
+              "size": 219,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                "source_sha256": "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {
+          "name": "8.2",
+          "artifacts": [
+            {
+              "artifact_version": "8.2.31-pv1",
+              "upstream_version": "8.2.31",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.2/8.2.31-pv1/darwin-amd64/php-8.2.31-pv1-darwin-amd64.tar.gz",
+              "sha256": "e68d204aef8700c8e5791383698a3b7b51c6a611672435cabfd44f10ab338d33",
+              "size": 203,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.2.31.tar.gz",
+                "source_sha256": "083c2f61cc5f527eb293c4c468a91af46a9678785957e023b2796a9db290d870",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.2.31-pv1",
+              "upstream_version": "8.2.31",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.2/8.2.31-pv1/darwin-arm64/php-8.2.31-pv1-darwin-arm64.tar.gz",
+              "sha256": "bf1c3a6de4bf77d96048135f81faf4789ff1361f2eeccfecd0544b317e15ad48",
+              "size": 205,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.2.31.tar.gz",
+                "source_sha256": "083c2f61cc5f527eb293c4c468a91af46a9678785957e023b2796a9db290d870",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.3",
+          "artifacts": [
+            {
+              "artifact_version": "8.3.31-pv1",
+              "upstream_version": "8.3.31",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv1/darwin-amd64/php-8.3.31-pv1-darwin-amd64.tar.gz",
+              "sha256": "634540425f939e80bd5628dc145fc42d10e4533f7ce3790a375f964601d9c8b4",
+              "size": 204,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.3.31-pv1",
+              "upstream_version": "8.3.31",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv1/darwin-arm64/php-8.3.31-pv1-darwin-arm64.tar.gz",
+              "sha256": "59bba713d024c3a96c0d7f76b5a2b11906d8480aed47d74b33bbc0d7a90b1e57",
+              "size": 204,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.4",
+          "artifacts": [
+            {
+              "artifact_version": "8.4.20-pv1",
+              "upstream_version": "8.4.20",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.20-pv1/darwin-amd64/php-8.4.20-pv1-darwin-amd64.tar.gz",
+              "sha256": "afd36133925857c1d52c34036f663248e14bc347da6a9877d774a44a1fccb47e",
+              "size": 203,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.20-pv1",
+              "upstream_version": "8.4.20",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+              "sha256": "fc04d16b3c6d9b47dc7e24b9512c68de4fa7d322e10737b42fdc064cdf9f84b8",
+              "size": 205,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
