@@ -452,6 +452,59 @@ fn php_use_install_failure_leaves_project_config_and_state_unchanged() -> anyhow
 }
 
 #[test]
+fn php_use_config_conflict_leaves_project_config_and_state_unchanged() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let preferred_config = "php: '8.3'\nhostnames:\n  - api.acme.test\n";
+    let alternate_config = "php: '8.2'\n";
+    write_file(&project.join("pv.yml"), preferred_config)?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.3")?;
+    write_file(&project.join("pv.yaml"), alternate_config)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &project_record.path,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    );
+
+    let output = run_pv(&["php:use", "8.4"], &environment)?;
+    let preferred_after = read_file(&project.join("pv.yml"))?;
+    let alternate_after = read_file(&project.join("pv.yaml"))?;
+    let database = Database::open(&pv_paths(&home))?;
+    let project_after = database
+        .project_by_id(&project_record.id)?
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_eq!(preferred_after, preferred_config);
+    assert_eq!(alternate_after, alternate_config);
+    assert_eq!(project_after.desired_php_track.as_deref(), Some("8.3"));
+    assert!(records.is_empty());
+    assert_eq!(environment.text_request_count(), 0);
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            preferred_after,
+            alternate_after,
+            project_snapshot(&project_after, tempdir.path())?,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

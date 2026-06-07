@@ -48,6 +48,7 @@ pub(crate) fn use_track(
 
     let mut database = Database::open(&paths)?;
     let project = resolve_current_project(&database, environment)?;
+    config::ProjectConfigFile::read_from_root(&project.path)?;
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair(selector, client)
     })?;
