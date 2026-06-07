@@ -31,6 +31,17 @@ pub trait Environment {
         ))
     }
 
+    fn exec_with_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+    ) -> io::Result<ExitCode> {
+        let _env = env;
+
+        self.exec(program, args)
+    }
+
     fn launch_agent_path(&self) -> PathBuf {
         self.home_dir()
             .unwrap_or_default()
@@ -177,7 +188,16 @@ impl Environment for ProcessEnvironment {
     }
 
     fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
-        platform::exec_replace(program, args)
+        self.exec_with_env(program, args, &[])
+    }
+
+    fn exec_with_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+    ) -> io::Result<ExitCode> {
+        platform::exec_replace_with_env(program, args, env)
     }
 }
 

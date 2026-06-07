@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io;
@@ -19,6 +20,7 @@ const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
+    vars: RefCell<BTreeMap<String, OsString>>,
     client: ScriptedClient,
     exec_calls: RefCell<Vec<ExecCall>>,
 }
@@ -28,9 +30,15 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
+            vars: RefCell::new(BTreeMap::new()),
             client,
             exec_calls: RefCell::new(Vec::new()),
         }
+    }
+
+    fn with_var(self, key: &str, value: impl Into<OsString>) -> Self {
+        self.vars.borrow_mut().insert(key.to_string(), value.into());
+        self
     }
 
     fn text_request_count(&self) -> usize {
@@ -50,11 +58,44 @@ impl TestEnvironment {
 struct ExecCall {
     program: PathBuf,
     args: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+fn exec_env_snapshot(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
+    env.iter()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
+fn composer_exec_env(home: &Utf8Path, php_release: &Utf8Path) -> Vec<(String, String)> {
+    let paths = pv_paths(home);
+
+    vec![
+        ("COMPOSER_HOME".to_string(), paths.composer().to_string()),
+        (
+            "COMPOSER_CACHE_DIR".to_string(),
+            paths.composer().join("cache").to_string(),
+        ),
+        (
+            "PATH".to_string(),
+            format!("{}:{}", paths.bin(), paths.composer().join("vendor/bin")),
+        ),
+        ("PHPRC".to_string(), php_release.join("etc").to_string()),
+        (
+            "PHP_INI_SCAN_DIR".to_string(),
+            php_release.join("etc/conf.d").to_string(),
+        ),
+    ]
 }
 
 impl Environment for TestEnvironment {
-    fn var_os(&self, _key: &str) -> Option<OsString> {
-        None
+    fn var_os(&self, key: &str) -> Option<OsString> {
+        self.vars.borrow().get(key).cloned()
     }
 
     fn home_dir(&self) -> Option<PathBuf> {
@@ -82,9 +123,19 @@ impl Environment for TestEnvironment {
     }
 
     fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        self.exec_with_env(program, args, &[])
+    }
+
+    fn exec_with_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+    ) -> io::Result<ExitCode> {
         self.exec_calls.borrow_mut().push(ExecCall {
             program: program.to_path_buf(),
             args: args.to_vec(),
+            env: exec_env_snapshot(env),
         });
 
         Ok(ExitCode::SUCCESS)
@@ -339,6 +390,7 @@ fn composer_shim_execs_installed_phar_through_php_shim() -> anyhow::Result<()> {
                 "install".to_string(),
                 "--dry-run".to_string(),
             ],
+            env: composer_exec_env(&home, &php_release),
         }]
     );
     assert_eq!(environment.text_request_count(), 0);
@@ -347,6 +399,62 @@ fn composer_shim_execs_installed_phar_through_php_shim() -> anyhow::Result<()> {
         assert_debug_snapshot!((output, exec_calls));
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_shim_sets_pv_owned_env_overlay() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let php_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
+    let composer_release = record_installed_composer(&home, "2", &composer_artifact)?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.4")?;
+    }
+    let pv_bin = pv_paths(&home).bin().to_string();
+    let composer_bin = pv_paths(&home).composer().join("vendor/bin").to_string();
+    let existing_path = format!("/usr/bin:{pv_bin}:/bin:{composer_bin}");
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new())
+        .with_var("PATH", existing_path);
+
+    let output = run_pv(&["shim:composer", "about"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: php_release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec![
+                composer_release.join("composer.phar").to_string(),
+                "about".to_string()
+            ],
+            env: vec![
+                (
+                    "COMPOSER_HOME".to_string(),
+                    pv_paths(&home).composer().to_string()
+                ),
+                (
+                    "COMPOSER_CACHE_DIR".to_string(),
+                    pv_paths(&home).composer().join("cache").to_string(),
+                ),
+                (
+                    "PATH".to_string(),
+                    format!("{pv_bin}:{composer_bin}:/usr/bin:/bin"),
+                ),
+                ("PHPRC".to_string(), php_release.join("etc").to_string()),
+                (
+                    "PHP_INI_SCAN_DIR".to_string(),
+                    php_release.join("etc/conf.d").to_string(),
+                ),
+            ],
+        }]
+    );
 
     Ok(())
 }
@@ -391,6 +499,7 @@ fn composer_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
                     composer_release.join("composer.phar").to_string(),
                     arg.to_string(),
                 ],
+                env: composer_exec_env(&home, &php_release),
             })
             .collect::<Vec<_>>()
     );
@@ -431,6 +540,7 @@ fn composer_shim_uses_cached_manifest_default_without_network() -> anyhow::Resul
                 composer_release.join("composer.phar").to_string(),
                 "about".to_string(),
             ],
+            env: composer_exec_env(&home, &php_release),
         }]
     );
     assert_eq!(environment.text_request_count(), 0);

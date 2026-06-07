@@ -25,7 +25,7 @@ pub use pf::{
     active_pf_redirect_config, inspect_pf_anchor_file, inspect_pf_conf_reference,
     install_pf_redirects, remove_pf_redirects,
 };
-pub use process::exec_replace;
+pub use process::{exec_replace, exec_replace_with_env};
 pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
     install_resolver_config, remove_resolver_config,

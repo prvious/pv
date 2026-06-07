@@ -19,6 +19,16 @@ expression: "(output, exec_calls)"
                 "-r",
                 "echo 1;",
             ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.3/releases/8.3.12-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.3/releases/8.3.12-pv1/etc/conf.d",
+                ),
+            ],
         },
     ],
 )

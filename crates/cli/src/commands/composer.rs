@@ -1,5 +1,7 @@
+use std::ffi::OsString;
 use std::io;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -96,8 +98,9 @@ pub(crate) fn shim(
     let mut shim_args = Vec::with_capacity(args.args.len() + 1);
     shim_args.push(phar.to_string());
     shim_args.extend(args.args);
+    let env = composer_env_overlay(&paths, environment)?;
 
-    super::php::shim_with_args(shim_args, environment)
+    super::php::shim_with_args_and_env(shim_args, env, environment)
 }
 
 fn php_selector(database: &Database) -> Result<TrackSelector, ExecuteError> {
@@ -136,6 +139,57 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
+}
+
+fn composer_env_overlay(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<Vec<(OsString, OsString)>, ExecuteError> {
+    Ok(vec![
+        (
+            OsString::from("COMPOSER_HOME"),
+            paths.composer().as_std_path().as_os_str().to_os_string(),
+        ),
+        (
+            OsString::from("COMPOSER_CACHE_DIR"),
+            paths
+                .composer()
+                .join("cache")
+                .as_std_path()
+                .as_os_str()
+                .to_os_string(),
+        ),
+        (
+            OsString::from("PATH"),
+            composer_path_overlay(paths, environment)?,
+        ),
+    ])
+}
+
+fn composer_path_overlay(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<OsString, ExecuteError> {
+    let pv_bin = paths.bin().as_std_path().to_path_buf();
+    let composer_bin = paths
+        .composer()
+        .join("vendor/bin")
+        .as_std_path()
+        .to_path_buf();
+    let mut entries = vec![pv_bin.clone(), composer_bin.clone()];
+
+    if let Some(path) = environment.var_os("PATH") {
+        entries.extend(
+            std::env::split_paths(&path).filter(|entry| entry != &pv_bin && entry != &composer_bin),
+        );
+    }
+
+    join_paths(entries)
+}
+
+fn join_paths(entries: Vec<PathBuf>) -> Result<OsString, ExecuteError> {
+    std::env::join_paths(entries)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error).into())
 }
 
 fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {

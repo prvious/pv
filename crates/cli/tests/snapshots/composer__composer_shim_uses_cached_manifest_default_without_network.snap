@@ -19,6 +19,28 @@ expression: "(output, exec_calls)"
                 "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
                 "about",
             ],
+            env: [
+                (
+                    "COMPOSER_HOME",
+                    "<tempdir>/home/.pv/composer",
+                ),
+                (
+                    "COMPOSER_CACHE_DIR",
+                    "<tempdir>/home/.pv/composer/cache",
+                ),
+                (
+                    "PATH",
+                    "<tempdir>/home/.pv/bin:<tempdir>/home/.pv/composer/vendor/bin",
+                ),
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
         },
     ],
 )

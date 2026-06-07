@@ -47,11 +47,31 @@ expression: "(outputs, exec_calls)"
             args: [
                 "--help",
             ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
         },
         ExecCall {
             program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
             args: [
                 "-h",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
             ],
         },
         ExecCall {
@@ -59,11 +79,31 @@ expression: "(outputs, exec_calls)"
             args: [
                 "--version",
             ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
         },
         ExecCall {
             program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
             args: [
                 "-V",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
             ],
         },
     ],

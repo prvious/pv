@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
 use std::io::Write;
 use std::process::ExitCode;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use resources::{
     ArtifactManifestCache, ManagedResourceCommands, ManagedResourceUninstallOptions,
     ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
@@ -204,13 +205,22 @@ pub(crate) fn shim_with_args(
     args: Vec<String>,
     environment: &impl Environment,
 ) -> Result<ExitCode, ExecuteError> {
+    shim_with_args_and_env(args, Vec::new(), environment)
+}
+
+pub(crate) fn shim_with_args_and_env(
+    args: Vec<String>,
+    mut env: Vec<(OsString, OsString)>,
+    environment: &impl Environment,
+) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let track = resolve_php_track_for_shim(&paths, &database, environment)?;
-    let executable = installed_php_executable(&database, &track)?;
+    let installed = installed_php(&database, &track)?;
+    env.extend(php_env_overlay(&installed.release));
 
     environment
-        .exec(executable.as_std_path(), &args)
+        .exec_with_env(installed.executable.as_std_path(), &args, &env)
         .map_err(ExecuteError::from)
 }
 
@@ -257,7 +267,12 @@ fn effective_global_php_default_track(
     Ok(Some(track.as_str().to_string()))
 }
 
-fn installed_php_executable(database: &Database, track: &str) -> Result<Utf8PathBuf, ExecuteError> {
+struct InstalledPhp {
+    release: Utf8PathBuf,
+    executable: Utf8PathBuf,
+}
+
+fn installed_php(database: &Database, track: &str) -> Result<InstalledPhp, ExecuteError> {
     let Some(record) = database
         .managed_resource_tracks()?
         .into_iter()
@@ -281,8 +296,29 @@ fn installed_php_executable(database: &Database, track: &str) -> Result<Utf8Path
         })?;
     let adapter = resources::php_adapter()?;
     adapter.validate_installation(&release)?;
+    let executable = adapter.executable_path(&release);
 
-    Ok(adapter.executable_path(&release))
+    Ok(InstalledPhp {
+        release,
+        executable,
+    })
+}
+
+fn php_env_overlay(release: &Utf8Path) -> Vec<(OsString, OsString)> {
+    vec![
+        (
+            OsString::from("PHPRC"),
+            release.join("etc").as_std_path().as_os_str().to_os_string(),
+        ),
+        (
+            OsString::from("PHP_INI_SCAN_DIR"),
+            release
+                .join("etc/conf.d")
+                .as_std_path()
+                .as_os_str()
+                .to_os_string(),
+        ),
+    ]
 }
 
 fn write_install_lines(
