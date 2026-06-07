@@ -522,16 +522,24 @@ fn php_summary(recipe: &PhpRecipe) -> Vec<(String, String, String)> {
 }
 
 const VALID_PHP_TOML: &str = r#"
-[php]
-deployment_target = "13.0"
+[recipe]
+resources = ["php", "frankenphp"]
+default_track = "8.4"
+platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
-default_track = "8.4"
-frankenphp_version = "1.12.3"
-frankenphp_source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
-frankenphp_source_sha256 = "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[php]
+deployment_target = "13.0"
 build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "redis", "zip"]
 expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+
+[frankenphp]
+version = "1.12.3"
+source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
+source_sha256 = "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
 
 [[tracks]]
 name = "8.3"
@@ -547,16 +555,20 @@ php_source_sha256 = "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e3
 "#;
 
 const VALID_COMPOSER_TOML: &str = r#"
-[composer]
-track = "2"
-upstream_version = "2.10.1"
+[recipe]
+resources = ["composer"]
+default_track = "2"
+platforms = ["any"]
 pv_build_revision = "pv1"
-platform = "any"
 minimum_pv_version = "0.1.0"
-source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
-source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
+
+[[tracks]]
+name = "2"
+upstream_version = "2.10.1"
+source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
+source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
 "#;
 ```
 
@@ -591,16 +603,35 @@ use url::Url;
 #[derive(Clone, Debug)]
 pub struct PhpRecipe {
     path: Utf8PathBuf,
-    deployment_target: String,
+    header: RecipeHeader,
+    php: PhpSettings,
+    frankenphp: FrankenphpSettings,
+    tracks: Vec<PhpTrack>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecipeHeader {
+    resources: Vec<ResourceName>,
+    default_track: TrackName,
+    platforms: Vec<ArtifactPlatform>,
     minimum_pv_version: PvVersion,
     pv_build_revision: String,
-    default_track: TrackName,
-    frankenphp_version: String,
-    frankenphp_source_url: String,
-    frankenphp_source_sha256: Sha256Digest,
+    license_files: Vec<String>,
+    notice_files: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PhpSettings {
+    deployment_target: String,
     build_extensions: Vec<String>,
     expected_extensions: Vec<String>,
-    tracks: Vec<PhpTrack>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FrankenphpSettings {
+    version: String,
+    source_url: String,
+    source_sha256: Sha256Digest,
 }
 
 #[derive(Clone, Debug)]
@@ -614,29 +645,35 @@ pub struct PhpTrack {
 #[derive(Clone, Debug)]
 pub struct ComposerRecipe {
     path: Utf8PathBuf,
-    track: TrackName,
-    upstream_version: String,
-    pv_build_revision: String,
+    header: RecipeHeader,
+    track: ComposerTrack,
     platform: ArtifactPlatform,
-    minimum_pv_version: PvVersion,
+}
+
+#[derive(Clone, Debug)]
+pub struct ComposerTrack {
+    name: TrackName,
+    upstream_version: String,
     source_url: String,
     source_sha256: Sha256Digest,
-    license_files: Vec<String>,
-    notice_files: Vec<String>,
 }
 ```
 
-Deserialize raw TOML into private `RawPhpRecipe`, `RawPhpSettings`, `RawPhpTrack`, `RawComposerRecipe`, and `RawComposerSettings` structs. In `from_toml`, validate:
+Deserialize raw TOML into private `RawRecipeHeader`, `RawPhpRecipe`, `RawPhpSettings`, `RawFrankenphpSettings`, `RawPhpTrack`, `RawComposerRecipe`, and `RawComposerTrack` structs. Both metadata files use the same outer TOML shape: `[recipe]` plus `[[tracks]]`. PHP/FrankenPHP adds resource-specific `[php]` and `[frankenphp]` sections because only native PHP builds need extension lists, deployment target, and FrankenPHP source metadata. In `from_toml`, validate:
 
 - URLs are HTTPS and have a host.
 - SHA-256 values use `Sha256Digest`.
 - track names use `TrackName`.
+- `recipe.resources` is not empty and contains valid `ResourceName` values.
 - PHP track name matches the major/minor prefix of `php_version`.
-- `default_track` exists in `tracks`.
+- `recipe.default_track` exists in `tracks`.
+- PHP recipe resources are exactly `php` and `frankenphp`.
+- PHP recipe platforms are exactly `darwin-arm64` and `darwin-amd64`.
 - `expected_extensions` contains every extension listed in `DESIGN.md`.
 - `build_extensions` is not empty and all values also appear in `expected_extensions`.
-- Composer platform is `any`.
-- Composer track is `2`.
+- Composer recipe resources are exactly `composer`.
+- Composer recipe platform is exactly `any`.
+- Composer has exactly one track, and that track is `2`.
 
 Add getters used by the tests:
 
@@ -657,7 +694,7 @@ impl PhpRecipe {
     }
 
     pub fn default_track(&self) -> &TrackName {
-        &self.default_track
+        &self.header.default_track
     }
 }
 
@@ -688,11 +725,11 @@ impl ComposerRecipe {
     }
 
     pub fn track(&self) -> &TrackName {
-        &self.track
+        &self.track.name
     }
 
     pub fn upstream_version(&self) -> &str {
-        &self.upstream_version
+        &self.track.upstream_version
     }
 
     pub fn platform(&self) -> ArtifactPlatform {
@@ -758,14 +795,17 @@ default_track = "2"
 Create `release/artifacts/recipes/php/tracks.toml`:
 
 ```toml
-[php]
-deployment_target = "13.0"
+[recipe]
+resources = ["php", "frankenphp"]
+default_track = "8.4"
+platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
-default_track = "8.4"
-frankenphp_version = "1.12.3"
-frankenphp_source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
-frankenphp_source_sha256 = "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[php]
+deployment_target = "13.0"
 build_extensions = [
   "bcmath",
   "curl",
@@ -815,6 +855,11 @@ expected_extensions = [
   "zlib",
 ]
 
+[frankenphp]
+version = "1.12.3"
+source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
+source_sha256 = "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+
 [[tracks]]
 name = "8.2"
 php_version = "8.2.31"
@@ -839,16 +884,20 @@ php_source_sha256 = "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e3
 Create `release/artifacts/recipes/composer/composer.toml`:
 
 ```toml
-[composer]
-track = "2"
-upstream_version = "2.10.1"
+[recipe]
+resources = ["composer"]
+default_track = "2"
+platforms = ["any"]
 pv_build_revision = "pv1"
-platform = "any"
 minimum_pv_version = "0.1.0"
-source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
-source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
+
+[[tracks]]
+name = "2"
+upstream_version = "2.10.1"
+source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
+source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
 ```
 
 - [ ] **Step 4: Add committed metadata coverage**
@@ -880,6 +929,8 @@ Append to `release/artifacts/README.md`:
 
 ```markdown
 ## Recipes
+
+Both recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
 
 `recipes/php/tracks.toml` is the data source for PHP and FrankenPHP artifact builds. It pins PHP tracks, source URLs, checksums, the expected extension set, the macOS deployment target, and the FrankenPHP source version used by the recipe.
 
@@ -1002,7 +1053,7 @@ composer-*/NOTICE
 composer-*/composer.phar
 ```
 
-For `frankenphp`, generate `upstream_version` as `"{php_version}-frankenphp{frankenphp_version}"`, for example `8.4.20-frankenphp1.12.3`. This keeps the manifest schema unchanged while preserving the PHP patch and FrankenPHP source version in the artifact version.
+For `frankenphp`, generate `upstream_version` as `"{php_version}-frankenphp{frankenphp.version}"`, for example `8.4.20-frankenphp1.12.3`. This keeps the manifest schema unchanged while preserving the PHP patch and FrankenPHP source version in the artifact version.
 
 - [ ] **Step 4: Add CLI command for cheap local validation**
 
@@ -1066,6 +1117,9 @@ git commit -m "feat(release): generate recipe validation fixtures"
 ## Task 5: Add Shell Recipe Helpers and Composer Recipe
 
 **Files:**
+- Modify: `crates/pv-release/src/cli.rs`
+- Modify: `crates/pv-release/src/recipe.rs`
+- Modify: `crates/pv-release/tests/recipe_metadata.rs`
 - Create: `release/artifacts/recipes/common.sh`
 - Create: `release/artifacts/recipes/composer/build.sh`
 - Create: `release/artifacts/recipes/composer/smoke.sh`
@@ -1150,7 +1204,44 @@ JSON
 }
 ```
 
-- [ ] **Step 2: Create Composer build script**
+- [ ] **Step 2: Add Composer recipe environment output**
+
+Add a `PrintRecipeEnv` CLI command to `crates/pv-release/src/cli.rs`. Task 5 only needs Composer support; Task 6 extends the same command for PHP and FrankenPHP:
+
+```rust
+PrintRecipeEnv {
+    #[arg(long)]
+    composer: Utf8PathBuf,
+    #[arg(long)]
+    resource: String,
+    #[arg(long)]
+    track: String,
+    #[arg(long)]
+    platform: String,
+},
+```
+
+Add a helper in `crates/pv-release/src/recipe.rs` that loads `ComposerRecipe`, validates `resource=composer`, `track=2`, and `platform=any`, then returns these shell assignments:
+
+```text
+PV_RESOURCE=composer
+PV_TRACK=2
+PV_PLATFORM=any
+PV_UPSTREAM_VERSION=2.10.1
+PV_ARTIFACT_VERSION=2.10.1-pv1
+PV_SOURCE_URL=https://getcomposer.org/download/2.10.1/composer.phar
+PV_SOURCE_SHA256=345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06
+PV_MINIMUM_PV_VERSION=0.1.0
+PV_PV_BUILD_REVISION=pv1
+```
+
+Add a snapshot test in `crates/pv-release/tests/recipe_metadata.rs` for the Composer environment output.
+
+Run: `cargo nextest run -p pv-release -E 'test(print_composer_recipe_env)'`
+
+Expected: PASS after accepting the intended snapshot.
+
+- [ ] **Step 3: Create Composer build script**
 
 Create executable `release/artifacts/recipes/composer/build.sh`:
 
@@ -1161,34 +1252,35 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
 . "$ROOT/release/artifacts/recipes/common.sh"
 
-TRACK=2
-VERSION=2.10.1
-PV_BUILD_REVISION=pv1
-PLATFORM=any
-SOURCE_URL=https://getcomposer.org/download/2.10.1/composer.phar
-SOURCE_SHA256=345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06
-MINIMUM_PV_VERSION=0.1.0
-
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-composer}
 
+need cargo
 need curl
 need shasum
 need tar
 
-artifact_version="${VERSION}-${PV_BUILD_REVISION}"
-work_dir="$OUT_DIR/work/composer-$artifact_version"
-root_dir="$work_dir/composer-$artifact_version"
-archive="$OUT_DIR/composer-$artifact_version.tar.gz"
-record="$RECORD_DIR/composer/$TRACK/$artifact_version/$PLATFORM/composer-$artifact_version-$PLATFORM.json"
-object_key="resources/composer/$TRACK/$artifact_version/$PLATFORM/composer-$artifact_version-$PLATFORM.tar.gz"
+env_file="$OUT_DIR/work/composer.env"
+mkdir -p "$(dirname "$env_file")"
+cargo run -p pv-release -- print-recipe-env \
+  --composer "$ROOT/release/artifacts/recipes/composer/composer.toml" \
+  --resource composer \
+  --track 2 \
+  --platform any >"$env_file"
+. "$env_file"
+
+work_dir="$OUT_DIR/work/composer-$PV_ARTIFACT_VERSION"
+root_dir="$work_dir/composer-$PV_ARTIFACT_VERSION"
+archive="$OUT_DIR/composer-$PV_ARTIFACT_VERSION.tar.gz"
+record="$RECORD_DIR/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/composer-$PV_ARTIFACT_VERSION-$PV_PLATFORM.json"
+object_key="resources/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/composer-$PV_ARTIFACT_VERSION-$PV_PLATFORM.tar.gz"
 
 rm -rf "$work_dir"
 mkdir -p "$root_dir"
-curl -L --fail --show-error --silent "$SOURCE_URL" -o "$root_dir/composer.phar"
-require_sha256 "$root_dir/composer.phar" "$SOURCE_SHA256"
+curl -L --fail --show-error --silent "$PV_SOURCE_URL" -o "$root_dir/composer.phar"
+require_sha256 "$root_dir/composer.phar" "$PV_SOURCE_SHA256"
 cat >"$root_dir/LICENSE" <<'TEXT'
 Composer PHAR license metadata is provided by the upstream Composer project.
 TEXT
@@ -1196,15 +1288,15 @@ cat >"$root_dir/NOTICE" <<'TEXT'
 Packaged by PV for Composer track 2.
 TEXT
 mkdir -p "$OUT_DIR"
-tar -czf "$archive" -C "$work_dir" "composer-$artifact_version"
+tar -czf "$archive" -C "$work_dir" "composer-$PV_ARTIFACT_VERSION"
 
-write_record "$record" composer "$TRACK" "$VERSION" "$PV_BUILD_REVISION" "$PLATFORM" "$object_key" "$archive" "$SOURCE_URL" "$SOURCE_SHA256" release/artifacts/recipes/composer/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$MINIMUM_PV_VERSION"
+write_record "$record" composer "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/composer/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
 
 cargo run -p pv-release -- validate-archive --archive "$archive" --record "$record" --smoke-hook "$ROOT/release/artifacts/recipes/composer/smoke.sh"
 printf '%s\n' "$archive"
 ```
 
-- [ ] **Step 3: Create Composer smoke script**
+- [ ] **Step 4: Create Composer smoke script**
 
 Create executable `release/artifacts/recipes/composer/smoke.sh`:
 
@@ -1228,7 +1320,7 @@ php_binary=${PV_COMPOSER_SMOKE_PHP:-}
 grep 'Composer version 2.10.1' /tmp/pv-composer-smoke.txt >/dev/null
 ```
 
-- [ ] **Step 4: Mark scripts executable and run shellcheck**
+- [ ] **Step 5: Mark scripts executable and run shellcheck**
 
 Run:
 
@@ -1239,7 +1331,7 @@ shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/compose
 
 Expected: shellcheck exits 0.
 
-- [ ] **Step 5: Run Composer package smoke locally**
+- [ ] **Step 6: Run Composer package smoke locally**
 
 Run:
 
@@ -1251,10 +1343,10 @@ release/artifacts/recipes/composer/build.sh
 
 Expected: prints `/tmp/pv-composer-artifacts/composer-2.10.1-pv1.tar.gz` and `pv-release validate-archive` exits 0.
 
-- [ ] **Step 6: Commit Task 5**
+- [ ] **Step 7: Commit Task 5**
 
 ```bash
-git add release/artifacts/recipes
+git add crates/pv-release/src crates/pv-release/tests/recipe_metadata.rs crates/pv-release/tests/snapshots release/artifacts/recipes
 git commit -m "feat(release): add Composer artifact recipe"
 ```
 
@@ -1263,17 +1355,21 @@ git commit -m "feat(release): add Composer artifact recipe"
 **Files:**
 - Modify: `crates/pv-release/src/cli.rs`
 - Modify: `crates/pv-release/src/recipe.rs`
+- Modify: `crates/pv-release/tests/recipe_metadata.rs`
+- Modify: `crates/pv-release/tests/snapshots`
 - Create: `release/artifacts/recipes/php/build.sh`
 - Create: `release/artifacts/recipes/php/smoke.sh`
 
-- [ ] **Step 1: Add shell environment output for PHP tracks**
+- [ ] **Step 1: Extend shell environment output for PHP tracks**
 
-Add a `PrintRecipeEnv` CLI command:
+Extend the `PrintRecipeEnv` CLI command from Task 5 so `--php` selects PHP/FrankenPHP metadata and `--composer` selects Composer metadata:
 
 ```rust
 PrintRecipeEnv {
     #[arg(long)]
-    php: Utf8PathBuf,
+    php: Option<Utf8PathBuf>,
+    #[arg(long)]
+    composer: Option<Utf8PathBuf>,
     #[arg(long)]
     resource: String,
     #[arg(long)]
@@ -1282,6 +1378,8 @@ PrintRecipeEnv {
     platform: String,
 },
 ```
+
+Reject calls that provide neither metadata path or both metadata paths.
 
 For `resource=php`, print shell assignments:
 
@@ -1294,6 +1392,7 @@ PV_UPSTREAM_VERSION=8.4.20
 PV_ARTIFACT_VERSION=8.4.20-pv1
 PV_SOURCE_URL=https://www.php.net/distributions/php-8.4.20.tar.gz
 PV_SOURCE_SHA256=a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d
+PV_DEPLOYMENT_TARGET=13.0
 PV_BUILD_EXTENSIONS=bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,redis,sodium,zip
 PV_EXPECTED_EXTENSIONS=bcmath,ctype,curl,dom,fileinfo,filter,hash,iconv,intl,json,libxml,mbstring,openssl,pcntl,pcre,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,phar,posix,redis,session,simplexml,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib
 PV_MINIMUM_PV_VERSION=0.1.0
@@ -1359,6 +1458,7 @@ cargo run -p pv-release -- print-recipe-env \
 export PV_EXPECTED_EXTENSIONS
 export PV_PHP_VERSION
 export PV_UPSTREAM_VERSION
+export PV_DEPLOYMENT_TARGET
 
 work_dir="$OUT_DIR/work/$RESOURCE-$PV_ARTIFACT_VERSION-$PV_PLATFORM"
 root_dir="$work_dir/$RESOURCE-$PV_ARTIFACT_VERSION"
@@ -1373,7 +1473,7 @@ source_archive="$OUT_DIR/sources/$RESOURCE-$PV_ARTIFACT_VERSION-source.tar.gz"
 curl -L --fail --show-error --silent "$PV_SOURCE_URL" -o "$source_archive"
 require_sha256 "$source_archive" "$PV_SOURCE_SHA256"
 
-export MACOSX_DEPLOYMENT_TARGET=13.0
+export MACOSX_DEPLOYMENT_TARGET="$PV_DEPLOYMENT_TARGET"
 
 case "$RESOURCE" in
   php)

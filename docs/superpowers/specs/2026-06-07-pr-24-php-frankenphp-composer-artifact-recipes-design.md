@@ -16,6 +16,8 @@ PHP and FrankenPHP use one shared recipe driven by committed TOML metadata. The 
 
 Composer uses a smaller committed metadata file for Composer track `2`.
 
+Both metadata files use the same outer TOML schema: a `[recipe]` section for resource-level defaults and `[[tracks]]` entries for selectable tracks. PHP/FrankenPHP adds `[php]` and `[frankenphp]` sections only for native-build metadata that Composer does not need.
+
 Default local and PR validation must not require developers to install PHP, FrankenPHP, Caddy, or heavy native build dependencies. Real PHP/FrankenPHP builds and real Composer PHP smoke tests run only in a manual native macOS CI workflow.
 
 Docker is not used for published macOS artifacts. PV needs native macOS validation for Mach-O linking, signing, rpaths, deployment target, and runtime behavior.
@@ -53,7 +55,7 @@ release/artifacts/recipes/
 - license and notice metadata
 - release-record provenance defaults that are stable across builds
 
-The scripts read metadata and build a requested resource, track, and platform. They emit normalized single-root `.tar.gz` archives and structured release records compatible with `pv-release`.
+The scripts read metadata through release-tooling helpers and build a requested resource, track, and platform. They emit normalized single-root `.tar.gz` archives and structured release records compatible with `pv-release`.
 
 ## Local Data Flow
 
