@@ -4,9 +4,11 @@ use std::process::ExitCode;
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
+use crate::output::Output;
 
 mod ca;
 mod completions;
+mod composer;
 mod daemon;
 mod dns;
 mod env;
@@ -30,6 +32,8 @@ pub(crate) fn execute(
         Command::DaemonDisable => daemon::disable(environment, stdout),
         Command::DaemonRestart => daemon::restart(environment, stdout),
         Command::DaemonRun => daemon::run(),
+        Command::ShimPhp(args) => php::shim(args, environment),
+        Command::ShimComposer(args) => composer::shim(args, environment),
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),
         Command::DnsUninstall => dns::uninstall(environment, stdout),
@@ -44,6 +48,44 @@ pub(crate) fn execute(
         Command::Open(args) => project::open(args, environment, stdout),
         Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),
         Command::List => project::list(environment, stdout),
-        Command::PhpInstall(args) => php::install(args),
+        Command::PhpUse(args) => php::use_track(args, environment, stdout),
+        Command::PhpInstall(args) => php::install(args, environment, stdout),
+        Command::PhpUpdate => php::update(environment, stdout),
+        Command::PhpUninstall(args) => php::uninstall(args, environment, stdout),
+        Command::PhpList => php::list(environment, stdout),
+        Command::ComposerInstall => composer::install(environment, stdout),
+        Command::ComposerUpdate => composer::update(environment, stdout),
+        Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
     }
+}
+
+fn write_revoked_latest_warnings(
+    installs: &[resources::ManagedResourceInstall],
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    for install in installs {
+        write_revoked_latest_warning(install, output)?;
+    }
+
+    Ok(())
+}
+
+fn write_revoked_latest_warning(
+    install: &resources::ManagedResourceInstall,
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    let Some(revoked_latest) = install.revoked_latest() else {
+        return Ok(());
+    };
+
+    output.line(&format!(
+        "warning: newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
+        install.resource_name(),
+        revoked_latest.artifact_version(),
+        install.track(),
+        revoked_latest.reason(),
+        install.artifact_version(),
+    ))?;
+
+    Ok(())
 }

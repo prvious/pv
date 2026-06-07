@@ -1,0 +1,44 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(result, state_before_uninstall, state_after_uninstall)"
+---
+(
+    Err(
+        TrackNotInstalled {
+            resource: "frankenphp",
+            track: "8.4",
+        },
+    ),
+    [
+        RawTrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    [
+        RawTrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+)

@@ -1,0 +1,27 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(output, config_after, project_snapshot(&project_after, tempdir.path())?,\nresource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted text response; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error 2)\n",
+    },
+    "php: '8.3'\nhostnames:\n  - api.acme.test\n",
+    ProjectSnapshot {
+        primary_hostname: "acme.test",
+        path: "acme",
+        config_path: "acme/pv.yml",
+        desired_php_track: Some(
+            "8.3",
+        ),
+    },
+    [],
+    1,
+    0,
+)

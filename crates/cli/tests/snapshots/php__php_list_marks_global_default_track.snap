@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/php.rs
+expression: list
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "Track  Default  Projects  Version  Path\n8.4  yes  2  8.4.8-pv1  <tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1\n",
+    stderr: "",
+}

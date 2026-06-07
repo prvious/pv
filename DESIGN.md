@@ -380,13 +380,15 @@ PHP version resolution: Project config `php` field → global default.
 
 PV does not infer PHP versions from `composer.json`. Composer constraints can be complex and are not always present, so Projects that need a specific PHP version should declare it in Project config.
 
-If Project config asks for a PHP version that is not installed, daemon reconciliation installs it automatically.
+If Project config asks for a PHP version that is not installed, daemon reconciliation installs it automatically for Project serving.
 
-`pv php:default <track>` sets the global default PHP track. The global default is used outside linked Projects and by linked Projects without `php` in Project config.
+`pv php:use <track>` sets the current linked Project's PHP track. It resolves and validates the current Project config, installs the standalone PHP and matching FrankenPHP artifacts for the resolved track, updates the preferred Project config file (`pv.yml` when present, otherwise `pv.yaml`, otherwise a new `pv.yml`), records the resolved concrete track in `pv.db`, and requests Project reconciliation.
 
-If `pv php:default <track>` targets a PHP track that is not installed, daemon reconciliation installs the missing standalone PHP and FrankenPHP artifacts for that track.
+`pv php:use <track> --global` sets the global default PHP track. It resolves the requested track, installs the standalone PHP and matching FrankenPHP artifacts, then records the resolved concrete track in `pv.db`. The global default is used outside linked Projects and by linked Projects without `php` in Project config.
 
-`pv php:default <track>` streams progress and waits when installation is required.
+Both Project and global `php:use` install the missing standalone PHP and FrankenPHP artifacts before recording the selection. If installation fails, the selection is not changed. `pv php:install [track]` installs the standalone PHP and FrankenPHP pair without changing any Project or global selection.
+
+The `php` shim does not auto-download missing tracks. If the resolved Project or global track is not installed, it exits non-zero with a repair command such as `pv php:install <track>`.
 
 ## Desired State and Daemon Availability
 
@@ -1214,21 +1216,21 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 
 ## PHP + Frankenphp
 
-| command                    | what it does                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------- |
-| pv php:install [version]   | Install a PHP track (e.g., pv php:install 8.4). Uses the manifest default track if omitted. |
-| pv php:default <version>   | Set the global default PHP track                                             |
-| pv php:update              | Update all installed PHP versions                                             |
-| pv php:uninstall <version> [--prune] | Uninstall a PHP track.                                                             |
-| pv php:list                | List installed PHP tracks                                                     |
+| command                                           | what it does                                                                  |
+| ------------------------------------------------- | ----------------------------------------------------------------------------- |
+| pv php:use <version> [--global]                   | Set the Project PHP track, or the global default with `--global`/`-g`. Installs matching PHP and FrankenPHP artifacts before recording the selection. |
+| pv php:install [version]                          | Install a PHP track (e.g., pv php:install 8.4). Uses the manifest default track if omitted. |
+| pv php:update                                     | Update all installed PHP tracks and matching FrankenPHP artifacts              |
+| pv php:uninstall <version> [--prune] [--force]    | Uninstall a PHP/FrankenPHP track pair. `--force` bypasses active selection guards. |
+| pv php:list                                       | List installed PHP tracks                                                     |
 
 ## Composer
 
-| command               | what it does                                    |
-| --------------------- | ----------------------------------------------- |
-| pv composer:install   | Install Composer track `2`                      |
-| pv composer:uninstall [--prune] | Remove Composer PHAR and shim. Preserve Composer home/cache unless `--prune` is provided. |
-| pv composer:update    | Update Composer track `2` to the latest non-revoked artifact |
+| command                                      | what it does                                    |
+| -------------------------------------------- | ----------------------------------------------- |
+| pv composer:install                          | Install Composer track `2` and ensure the resolved global/default PHP and FrankenPHP pair is installed |
+| pv composer:uninstall [--prune] [--force]    | Remove Composer track `2`. Preserve Composer home/cache unless `--prune` is provided; `--force` bypasses removal guards. |
+| pv composer:update                           | Update Composer track `2` to the latest non-revoked artifact |
 
 ## Postgres (Alias: pg)
 

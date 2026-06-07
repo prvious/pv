@@ -1,0 +1,5 @@
+---
+source: crates/config/tests/project_config.rs
+expression: read_file(&config_path)?
+---
+php: '8.4'

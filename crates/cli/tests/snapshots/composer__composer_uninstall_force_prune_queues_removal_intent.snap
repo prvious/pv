@@ -1,0 +1,31 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(output, resource_record_snapshots(&records, tempdir.path())?,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Queued removal for Composer track 2\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "composer",
+            track: "2",
+            desired_state: "Removed",
+            installed_version: Some(
+                "2.8.1-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: true,
+            removal_force: true,
+        },
+    ],
+)

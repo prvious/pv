@@ -1,0 +1,45 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(uninstall, resource_record_snapshots(&records, tempdir.path())?,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: PHP track `8.4` has 2 active Project/global default selection(s); use --force to remove it anyway\n",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+        ResourceRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+)

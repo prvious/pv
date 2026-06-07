@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::io;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use camino::Utf8Path;
 
@@ -19,6 +20,27 @@ pub trait Environment {
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
+
+    fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        let _program = program;
+        let _args = args;
+
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process replacement is not available in this environment",
+        ))
+    }
+
+    fn exec_with_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+    ) -> io::Result<ExitCode> {
+        let _env = env;
+
+        self.exec(program, args)
+    }
 
     fn launch_agent_path(&self) -> PathBuf {
         self.home_dir()
@@ -116,6 +138,18 @@ pub trait Environment {
     fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
         platform::untrust_system_ca(fingerprint)
     }
+
+    fn artifact_manifest_url(&self) -> Option<String> {
+        None
+    }
+
+    fn resource_http_client(&self) -> Option<&dyn resources::ResourceHttpClient> {
+        None
+    }
+
+    fn target_platform(&self) -> Option<resources::TargetPlatform> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +185,19 @@ impl Environment for ProcessEnvironment {
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         platform::open_url(url).map_err(io::Error::other)
+    }
+
+    fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+        self.exec_with_env(program, args, &[])
+    }
+
+    fn exec_with_env(
+        &self,
+        program: &Path,
+        args: &[String],
+        env: &[(OsString, OsString)],
+    ) -> io::Result<ExitCode> {
+        platform::exec_replace_with_env(program, args, env)
     }
 }
 

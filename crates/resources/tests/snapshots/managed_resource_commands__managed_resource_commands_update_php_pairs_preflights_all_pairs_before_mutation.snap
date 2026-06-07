@@ -1,0 +1,80 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(result, state_before_update, state_after_update, old_php_release_exists,\nnew_php_release_exists, php_current_target, byte_downloads_during_update,)"
+---
+(
+    Err(
+        Resources(
+            TrackNotFound {
+                resource: "frankenphp",
+                track: "8.4",
+            },
+        ),
+    ),
+    [
+        RawTrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+        RawTrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    [
+        RawTrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+        RawTrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    true,
+    false,
+    Some(
+        "releases/8.4.8-pv1",
+    ),
+    0,
+)

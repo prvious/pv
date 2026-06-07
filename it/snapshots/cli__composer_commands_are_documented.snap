@@ -1,0 +1,27 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Install Composer track 2\n\nUsage: pv composer:install [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Update Composer track 2\n\nUsage: pv composer:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Uninstall Composer\n\nUsage: pv composer:uninstall [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned Composer home/cache\n      --force     Remove Composer even if in use\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

@@ -1,0 +1,18 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: HTTP request failed for `https://artifacts.example.test/composer-2.8.1-pv1-any.tar.gz`: no scripted byte response\n",
+    },
+    [],
+    1,
+    2,
+)

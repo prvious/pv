@@ -1,0 +1,47 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Updated 2 PHP runtime artifact(s)\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+        ResourceRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    1,
+    0,
+)

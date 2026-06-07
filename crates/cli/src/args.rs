@@ -44,6 +44,26 @@ pub(crate) enum Command {
     #[command(name = "daemon:run", about = "Run the internal PV daemon", hide = true)]
     DaemonRun,
 
+    #[command(
+        name = "shim:php",
+        about = "Run the internal PV PHP shim",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true,
+        trailing_var_arg = true
+    )]
+    ShimPhp(ShimArgs),
+
+    #[command(
+        name = "shim:composer",
+        about = "Run the internal PV Composer shim",
+        hide = true,
+        disable_help_flag = true,
+        disable_version_flag = true,
+        trailing_var_arg = true
+    )]
+    ShimComposer(ShimArgs),
+
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
@@ -92,8 +112,29 @@ pub(crate) enum Command {
     #[command(name = "list", about = "List linked Projects")]
     List,
 
+    #[command(name = "php:use", about = "Set the PHP track")]
+    PhpUse(PhpUseArgs),
+
     #[command(name = "php:install", about = "Install a PHP track")]
     PhpInstall(PhpInstallArgs),
+
+    #[command(name = "php:update", about = "Update installed PHP tracks")]
+    PhpUpdate,
+
+    #[command(name = "php:uninstall", about = "Uninstall a PHP track")]
+    PhpUninstall(PhpUninstallArgs),
+
+    #[command(name = "php:list", about = "List installed PHP tracks")]
+    PhpList,
+
+    #[command(name = "composer:install", about = "Install Composer track 2")]
+    ComposerInstall,
+
+    #[command(name = "composer:update", about = "Update Composer track 2")]
+    ComposerUpdate,
+
+    #[command(name = "composer:uninstall", about = "Uninstall Composer")]
+    ComposerUninstall(ComposerUninstallArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -130,9 +171,49 @@ pub(crate) struct UninstallArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub(crate) struct ShimArgs {
+    #[arg(
+        value_name = "args",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    pub(crate) args: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
 pub(crate) struct PhpInstallArgs {
-    #[arg(value_name = "version", help = "PHP track to install")]
+    #[arg(value_name = "track", help = "PHP track to install")]
     pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PhpUseArgs {
+    #[arg(value_name = "track", help = "PHP track to use")]
+    pub(crate) track: String,
+
+    #[arg(short = 'g', long, help = "Set the global PHP default")]
+    pub(crate) global: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PhpUninstallArgs {
+    #[arg(value_name = "track", help = "PHP track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ComposerUninstallArgs {
+    #[arg(long, help = "Remove PV-owned Composer home/cache")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove Composer even if in use")]
+    pub(crate) force: bool,
 }
 
 #[derive(Debug, clap::Args)]

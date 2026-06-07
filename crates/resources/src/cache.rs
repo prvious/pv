@@ -66,7 +66,7 @@ impl ArtifactManifestCache {
     pub fn refresh(
         &self,
         manifest_url: &str,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> Result<ArtifactManifestRefresh> {
         validate_manifest_url(manifest_url)?;
 
@@ -94,7 +94,7 @@ impl ArtifactManifestCache {
     pub fn refresh_latest(
         &self,
         manifest_url: &str,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> Result<ArtifactManifestRefresh> {
         validate_manifest_url(manifest_url)?;
 

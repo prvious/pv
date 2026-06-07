@@ -53,3 +53,10 @@ pub fn frankenphp_adapter() -> Result<RuntimeArtifactAdapter> {
         "bin/frankenphp",
     ))
 }
+
+pub fn composer_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("composer")?,
+        "composer.phar",
+    ))
+}

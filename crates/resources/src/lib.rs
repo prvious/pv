@@ -20,7 +20,8 @@ pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifest
 pub use command::{
     ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
     ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceRevokedLatest,
-    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate, PhpPairInstall,
+    PhpPairRemovalIntent, PhpPairUpdate,
 };
 pub use download::{ArtifactDownload, ArtifactDownloader};
 pub use error::{ResourcesError, Result};
@@ -33,4 +34,4 @@ pub use install::{ArtifactInstall, ArtifactInstaller, ResourceAdapter};
 pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
-pub use runtime::{RuntimeArtifactAdapter, frankenphp_adapter, php_adapter};
+pub use runtime::{RuntimeArtifactAdapter, composer_adapter, frankenphp_adapter, php_adapter};
