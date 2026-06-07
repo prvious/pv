@@ -1,0 +1,223 @@
+name: Artifact Recipes
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource:
+        description: "Resource to build: all, php, frankenphp, composer"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - php
+          - frankenphp
+          - composer
+      track:
+        description: "Track to build: all, 8.2, 8.3, 8.4, 2"
+        required: true
+        default: "all"
+        type: string
+      platform:
+        description: "Artifact platform"
+        required: true
+        default: "darwin-arm64"
+        type: choice
+        options:
+          - darwin-arm64
+          - darwin-amd64
+
+jobs:
+  build:
+    runs-on: ${{ inputs.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate selected inputs
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -eu
+
+          case "$PV_RECIPE_PLATFORM" in
+            darwin-arm64 | darwin-amd64) ;;
+            *) printf '%s\n' "unsupported platform: $PV_RECIPE_PLATFORM" >&2; exit 1 ;;
+          esac
+
+          case "$PV_RECIPE_RESOURCE:$PV_RECIPE_TRACK" in
+            all:all | all:8.2 | all:8.3 | all:8.4) ;;
+            php:all | php:8.2 | php:8.3 | php:8.4) ;;
+            frankenphp:all | frankenphp:8.2 | frankenphp:8.3 | frankenphp:8.4) ;;
+            composer:all | composer:2) ;;
+            *)
+              printf '%s\n' "unsupported resource/track combination: $PV_RECIPE_RESOURCE/$PV_RECIPE_TRACK" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install release tooling dependencies
+        run: |
+          set -eu
+          runner_architecture=$(uname -m)
+          case "$runner_architecture" in
+            arm64) static_php_architecture=aarch64 ;;
+            x86_64) static_php_architecture=x86_64 ;;
+            *)
+              printf '%s\n' "unsupported StaticPHP CLI architecture: $runner_architecture" >&2
+              exit 1
+              ;;
+          esac
+
+          brew update
+          brew install shellcheck php
+          mkdir -p "${RUNNER_TEMP:?}/pv-tools"
+          curl -L --fail --show-error --silent "https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-macos-$static_php_architecture" -o "$RUNNER_TEMP/pv-tools/spc"
+          chmod +x "$RUNNER_TEMP/pv-tools/spc"
+          printf '%s\n' "$RUNNER_TEMP/pv-tools" >>"${GITHUB_PATH:?}"
+
+      - name: Validate recipe metadata
+        run: |
+          set -eu
+          fixtures_dir=/tmp/pv-recipe-fixtures
+          rm -rf "$fixtures_dir"
+          cargo run -p pv-release -- generate-recipe-fixtures \
+            --php release/artifacts/recipes/php/tracks.toml \
+            --composer release/artifacts/recipes/composer/composer.toml \
+            --archives "$fixtures_dir/archives" \
+            --records "$fixtures_dir/records" \
+            --pv-commit "$(git rev-parse HEAD)" \
+            --build-run-id "${{ github.run_id }}"
+          cargo run -p pv-release -- generate-manifest \
+            --records "$fixtures_dir/records" \
+            --revocations release/artifacts/revocations \
+            --defaults release/artifacts/default-tracks.toml \
+            --output "$fixtures_dir/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Build selected artifacts
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          case "$PV_RECIPE_RESOURCE" in
+            all)
+              resource_list='php
+          frankenphp
+          composer'
+              ;;
+            *)
+              resource_list=$PV_RECIPE_RESOURCE
+              ;;
+          esac
+
+          case "$PV_RECIPE_TRACK" in
+            all)
+              php_track_list='8.2
+          8.3
+          8.4'
+              ;;
+            *)
+              php_track_list=$PV_RECIPE_TRACK
+              ;;
+          esac
+
+          while IFS= read -r resource; do
+            [ -n "$resource" ] || continue
+
+            if [ "$resource" = composer ]; then
+              PV_RECIPE_RESOURCE=composer \
+                PV_RECIPE_TRACK=2 \
+                PV_RECIPE_PLATFORM=any \
+                PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
+                release/artifacts/recipes/composer/build.sh
+              continue
+            fi
+
+            while IFS= read -r track; do
+              [ -n "$track" ] || continue
+              PV_RECIPE_RESOURCE="$resource" \
+                PV_RECIPE_TRACK="$track" \
+                release/artifacts/recipes/php/build.sh
+            done <<PHP_TRACKS
+          $php_track_list
+          PHP_TRACKS
+          done <<RESOURCES
+          $resource_list
+          RESOURCES
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          php_default_track=$PV_RECIPE_TRACK
+          if [ "$php_default_track" = all ]; then
+            php_default_track=8.4
+          fi
+
+          write_default_track() {
+            resource=$1
+            track=$2
+            cat >>"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACK
+          [[resource]]
+          name = "$resource"
+          default_track = "$track"
+
+          DEFAULT_TRACK
+          }
+
+          : >"$PV_MANIFEST_DEFAULTS"
+          case "$PV_RECIPE_RESOURCE" in
+            all)
+              write_default_track php "$php_default_track"
+              write_default_track frankenphp "$php_default_track"
+              write_default_track composer 2
+              ;;
+            php | frankenphp)
+              write_default_track "$PV_RECIPE_RESOURCE" "$php_default_track"
+              ;;
+            composer)
+              write_default_track composer 2
+              ;;
+          esac
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
