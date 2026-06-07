@@ -14,6 +14,8 @@ PR 24 will add data-driven shell recipes plus lightweight local validation.
 
 PHP and FrankenPHP use one shared recipe driven by committed TOML metadata. The recipe supports the initial PHP tracks `8.2`, `8.3`, and `8.4` from day one. The track matrix is data, not duplicated shell logic.
 
+PHP and FrankenPHP native builds are paired by PHP track. Building PV PHP track `8.4` means building one StaticPHP v3 buildroot for PHP `8.4.x` plus the pinned FrankenPHP source version, then packaging both the standalone `php` binary and the matched `frankenphp` binary from that same buildroot. PV does not support independent PHP-only or FrankenPHP-only native builds in this workflow because the product contract requires CLI and browser execution to use the same PHP patch version and extension set.
+
 Composer uses a smaller committed metadata file for Composer track `2`.
 
 Both metadata files use the same outer TOML schema: a `[recipe]` section for resource-level defaults and `[[tracks]]` entries for selectable tracks. PHP/FrankenPHP adds `[php]` and `[frankenphp]` sections only for native-build metadata that Composer does not need.
@@ -55,7 +57,47 @@ release/artifacts/recipes/
 - license and notice metadata
 - release-record provenance defaults that are stable across builds
 
-The scripts read metadata through release-tooling helpers and build a requested resource, track, and platform. They emit normalized single-root `.tar.gz` archives and structured release records compatible with `pv-release`.
+The scripts read metadata through release-tooling helpers and build a requested resource, track, and platform. Composer remains a single-resource recipe. PHP/FrankenPHP builds are pair-oriented: one selected PHP track/platform produces both normalized single-root `.tar.gz` archives and both structured release records compatible with `pv-release`.
+
+## Paired StaticPHP Build Model
+
+The PHP recipe uses StaticPHP v3 as the native build system. The manual workflow installs or bootstraps a pinned StaticPHP v3 toolchain, then runs one build per selected PHP track/platform.
+
+For a track such as `8.4`, the build inputs are:
+
+- PV track: `8.4`
+- PHP source version: for example `8.4.20`
+- FrankenPHP source version: for example `1.12.3`
+- shared extension set from `tracks.toml`
+- macOS deployment target `13.0`
+
+The build command shape is the combined StaticPHP v3 command:
+
+```shell
+spc build:php "$PV_BUILD_EXTENSIONS" \
+  --build-cli \
+  --build-frankenphp \
+  --enable-zts \
+  --dl-with-php="$PV_PHP_VERSION" \
+  --dl-custom-local "php-src:$php_source_dir" \
+  --dl-custom-local "frankenphp:$frankenphp_source_dir"
+```
+
+The recipe may split the download phase from the build phase if that gives better checksum enforcement or caching, but it must keep the same effective inputs and must still force the verified local PHP and FrankenPHP source trees into the build.
+
+The paired buildroot produces at least:
+
+- `buildroot/bin/php`
+- `buildroot/bin/frankenphp`
+
+PV then packages two resources from the same buildroot:
+
+- `php`, track `8.4`, upstream version `8.4.20`
+- `frankenphp`, track `8.4`, upstream version `8.4.20-frankenphp1.12.3`
+
+Both release records share the same `pv_commit`, `build_run_id`, recipe path, StaticPHP toolchain provenance, and PHP source input. The FrankenPHP record also records the FrankenPHP source input. If StaticPHP exposes a stable version string, the recipe records it in build logs and, where the release-record schema permits, provenance metadata. If the schema cannot represent toolchain inputs yet, the workflow must at least upload the build log with the exact `spc --version` output.
+
+The standalone PHP binary is expected to be ZTS because FrankenPHP requires a thread-safe PHP build. This is acceptable for PV v1: parity between CLI PHP and the FrankenPHP worker is more important than matching a common NTS CLI distribution. Smoke tests must prove the ZTS CLI handles normal PHP CLI execution and Composer smoke usage before publication.
 
 ## Local Data Flow
 
@@ -77,14 +119,16 @@ The workflow uses `workflow_dispatch` and native macOS runners. It accepts selec
 
 For PHP/FrankenPHP, the workflow:
 
-1. Installs recipe-managed build-time dependencies on the runner.
-2. Builds standalone PHP and matched FrankenPHP for each selected track/platform.
+1. Installs recipe-managed build-time dependencies on the runner, including a pinned or checksum-verified StaticPHP v3 toolchain.
+2. Builds standalone PHP and matched FrankenPHP as a pair for each selected PHP track/platform.
 3. Enforces the macOS 13 deployment target.
 4. Ad-hoc signs binaries when required by the shared harness.
 5. Verifies PHP CLI version and expected extensions.
 6. Verifies standalone PHP and FrankenPHP use the same PHP patch version.
 7. Starts FrankenPHP on loopback with a tiny PHP site, checks the response, and stops it cleanly.
-8. Packages archives and release records.
+8. Packages separate PHP and FrankenPHP archives and release records from the same buildroot.
+
+Workflow resource selection treats PHP and FrankenPHP as a pair. A full matrix run builds every PHP track/platform pair and Composer. A PHP-family run builds both PHP and FrankenPHP for the selected PHP track/platform. Composer remains independently selectable because it is a portable PHAR artifact rather than a native PHP runtime.
 
 For Composer, the workflow:
 
@@ -109,6 +153,7 @@ Hard failures include:
 - checksum mismatch
 - unexpected PHP extension set
 - PHP/FrankenPHP patch-version mismatch
+- PHP/FrankenPHP pair build missing either output binary
 - macOS deployment target mismatch
 - unmanaged Homebrew runtime paths in native artifacts
 - failed loopback serving smoke
@@ -129,8 +174,10 @@ Default verification should cover:
 Manual CI verification should cover:
 
 - native PHP and FrankenPHP builds on macOS
+- paired artifact generation from one StaticPHP buildroot
 - exact PHP patch sync between standalone PHP and FrankenPHP
 - expected extension set for both CLI and FrankenPHP
+- ZTS standalone PHP CLI smoke behavior
 - macOS 13 deployment target
 - no unmanaged Homebrew runtime paths
 - loopback FrankenPHP serving smoke
