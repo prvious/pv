@@ -137,6 +137,51 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
 }
 
 #[test]
+fn php_use_latest_preserves_alias_in_config_and_records_resolved_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &project_record.path,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
+    );
+
+    let output = run_pv(&["php:use", "latest"], &environment)?;
+    let config_file = ProjectConfigFile::read_from_root(&project)?;
+    let config_after = read_file(&project.join("pv.yml"))?;
+    let database = Database::open(&pv_paths(&home))?;
+    let project_after = database
+        .project_by_id(&project_record.id)?
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_eq!(config_file.config.php.as_deref(), Some("latest"));
+    assert_eq!(project_after.desired_php_track.as_deref(), Some("8.4"));
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            config_after,
+            config_file.config,
+            project_snapshot(&project_after, tempdir.path())?,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

@@ -25,7 +25,8 @@ pub(crate) fn use_track(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let selector = TrackSelector::parse(args.track)?;
+    let requested_track = args.track;
+    let selector = TrackSelector::parse(requested_track.as_str())?;
     let commands = resource_commands(&paths, environment);
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -50,7 +51,7 @@ pub(crate) fn use_track(
         commands.install_php_pair(selector, client)
     })?;
     let track = installed.php().track().as_str().to_string();
-    let config_file = config::write_project_php_track(&project.path, &track)?;
+    let config_file = config::write_project_php_track(&project.path, &requested_track)?;
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
 
     output.line(&format!(
