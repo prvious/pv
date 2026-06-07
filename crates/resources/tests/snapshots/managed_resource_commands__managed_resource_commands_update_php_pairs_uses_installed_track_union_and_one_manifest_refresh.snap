@@ -1,0 +1,75 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summaries(updated.installs(), tempdir.path())?,\ntrack_records_summary(&listed_after_update, tempdir.path())?,\nmanifest_refreshes_during_update,)"
+---
+(
+    [
+        InstallSnapshot {
+            resource_name: "php",
+            track: "8.3",
+            artifact_version: "8.3.24-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.3/releases/8.3.24-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "frankenphp",
+            track: "8.3",
+            artifact_version: "8.3.24-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.3/releases/8.3.24-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            artifact_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.9-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            artifact_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.9-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+    ],
+    [
+        TrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.3",
+            installed_version: "8.3.24-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.3/releases/8.3.24-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            installed_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.9-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.3",
+            installed_version: "8.3.24-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.3/releases/8.3.24-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            installed_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.9-pv1",
+            usage_count: 0,
+        },
+    ],
+    1,
+)

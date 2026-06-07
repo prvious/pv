@@ -12,7 +12,7 @@ use resources::{
     ArtifactManifestSource, ManagedResourceCommands, ManagedResourceInstall,
     ManagedResourceRemovalIntent, ManagedResourceTrack, ManagedResourceUninstallOptions,
     ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError,
-    TargetPlatform, TrackName, TrackSelector,
+    TargetPlatform, TrackName, TrackSelector, frankenphp_adapter, php_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -169,6 +169,279 @@ fn managed_resource_commands_update_without_installed_tracks_does_not_refresh_ma
     let updated = commands.update(&adapter, &client)?;
 
     assert_debug_snapshot!(update_summary(&updated, tempdir.path())?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_php_pair_resolves_latest_once_for_both_resources() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_84_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_83_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.3.22-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.3",
+    )?;
+    let frankenphp_84_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_84_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.3",
+            vec![
+                manifest_track("8.3", vec![&frankenphp_83_artifact]),
+                manifest_track("8.4", vec![&frankenphp_84_artifact]),
+            ],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_84_artifact.bytes())
+        .with_bytes(frankenphp_84_artifact.bytes());
+
+    let installed = commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let listed_after_install = commands.list(None)?;
+    let manifest_request_count = client.text_request_count();
+
+    assert_debug_snapshot!((
+        install_summary(installed.php(), tempdir.path())?,
+        install_summary(installed.frankenphp(), tempdir.path())?,
+        track_records_summary(&listed_after_install, tempdir.path())?,
+        manifest_request_count,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one_manifest_refresh()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_adapter = php_adapter()?;
+    let frankenphp_adapter = frankenphp_adapter()?;
+    let php_83_artifact = runtime_fixture_artifact("php", "8.3.23-pv1", "bin/php", "php 8.3")?;
+    let php_84_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_83_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.3.23-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.3",
+    )?;
+    let frankenphp_84_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let php_83_update_artifact =
+        runtime_fixture_artifact("php", "8.3.24-pv1", "bin/php", "php 8.3 update")?;
+    let php_84_update_artifact =
+        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
+    let frankenphp_83_update_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.3.24-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.3 update",
+    )?;
+    let frankenphp_84_update_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.9-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4 update",
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![
+                manifest_track("8.3", vec![&php_83_artifact]),
+                manifest_track("8.4", vec![&php_84_artifact]),
+            ],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![
+                manifest_track("8.3", vec![&frankenphp_83_artifact]),
+                manifest_track("8.4", vec![&frankenphp_84_artifact]),
+            ],
+        ),
+    ]);
+    let updated_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![
+                manifest_track("8.3", vec![&php_83_artifact, &php_83_update_artifact]),
+                manifest_track("8.4", vec![&php_84_artifact, &php_84_update_artifact]),
+            ],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![
+                manifest_track(
+                    "8.3",
+                    vec![&frankenphp_83_artifact, &frankenphp_83_update_artifact],
+                ),
+                manifest_track(
+                    "8.4",
+                    vec![&frankenphp_84_artifact, &frankenphp_84_update_artifact],
+                ),
+            ],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(php_84_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(frankenphp_83_artifact.bytes())
+        .with_text(&updated_manifest)
+        .with_bytes(php_83_update_artifact.bytes())
+        .with_bytes(frankenphp_83_update_artifact.bytes())
+        .with_bytes(php_84_update_artifact.bytes())
+        .with_bytes(frankenphp_84_update_artifact.bytes());
+
+    commands.install(&php_adapter, TrackSelector::Latest, &client)?;
+    commands.install(
+        &frankenphp_adapter,
+        TrackSelector::Track(TrackName::new("8.3")?),
+        &client,
+    )?;
+    let manifest_requests_before_update = client.text_request_count();
+    let updated = commands.update_php_pairs(&client)?;
+    let listed_after_update = commands.list(None)?;
+    let manifest_refreshes_during_update =
+        client.text_request_count() - manifest_requests_before_update;
+
+    assert_debug_snapshot!((
+        install_summaries(updated.installs(), tempdir.path())?,
+        track_records_summary(&listed_after_update, tempdir.path())?,
+        manifest_refreshes_during_update,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_php_pairs_without_installed_tracks_does_not_refresh_manifest()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let client = ScriptedClient::new();
+
+    let updated = commands.update_php_pairs(&client)?;
+
+    assert_debug_snapshot!((
+        install_summaries(updated.installs(), tempdir.path())?,
+        client.text_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_uninstall_php_pair_records_both_removal_intents() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let intent = commands.uninstall_php_pair(
+        &TrackName::new("8.4")?,
+        ManagedResourceUninstallOptions::new()
+            .prune(true)
+            .force(true),
+    )?;
+    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((
+        removal_intent_summary(intent.php()),
+        removal_intent_summary(intent.frankenphp()),
+        state_after_uninstall,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_update_and_uninstall_composer_track_two() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let first_artifact = composer_fixture_artifact("2.8.0-pv1", "first")?;
+    let second_artifact = composer_fixture_artifact("2.8.1-pv1", "second")?;
+    let first_manifest = manifest_with_resources(&[manifest_resource(
+        "composer",
+        "2",
+        vec![manifest_track("2", vec![&first_artifact])],
+    )]);
+    let second_manifest = manifest_with_resources(&[manifest_resource(
+        "composer",
+        "2",
+        vec![manifest_track("2", vec![&first_artifact, &second_artifact])],
+    )]);
+    let client = ScriptedClient::new()
+        .with_text(&first_manifest)
+        .with_bytes(first_artifact.bytes())
+        .with_text(&second_manifest)
+        .with_bytes(second_artifact.bytes());
+
+    let installed = commands.install_composer(&client)?;
+    let updated = commands.update_composer(&client)?;
+    let intent = commands.uninstall_composer(ManagedResourceUninstallOptions::new().prune(true))?;
+    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+
+    assert_debug_snapshot!((
+        install_summary(&installed, tempdir.path())?,
+        update_summary(&updated, tempdir.path())?,
+        removal_intent_summary(&intent),
+        state_after_uninstall,
+    ));
 
     Ok(())
 }
@@ -424,7 +697,9 @@ impl ResourceAdapter for FakeAdapter {
 
 #[derive(Clone, Debug)]
 struct FixtureArtifact {
+    resource_name: String,
     version: String,
+    platform: String,
     bytes: Vec<u8>,
     sha256: String,
     revoked_reason: Option<String>,
@@ -434,6 +709,17 @@ impl FixtureArtifact {
     fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+}
+
+struct ManifestResourceFixture<'a> {
+    name: &'a str,
+    default_track: &'a str,
+    tracks: Vec<ManifestTrackFixture<'a>>,
+}
+
+struct ManifestTrackFixture<'a> {
+    name: &'a str,
+    artifacts: Vec<&'a FixtureArtifact>,
 }
 
 #[derive(Debug)]
@@ -719,16 +1005,50 @@ fn revoked_fixture_artifact(version: &str, marker: &str, reason: &str) -> Result
     Ok(artifact)
 }
 
+fn runtime_fixture_artifact(
+    resource_name: &str,
+    version: &str,
+    executable_path: &str,
+    marker: &str,
+) -> Result<FixtureArtifact> {
+    fixture_artifact_for(
+        resource_name,
+        version,
+        "darwin-arm64",
+        &[(executable_path, marker)],
+    )
+}
+
+fn composer_fixture_artifact(version: &str, marker: &str) -> Result<FixtureArtifact> {
+    fixture_artifact_for(
+        "composer",
+        version,
+        "any",
+        &[("composer.phar", &format!("composer {marker}"))],
+    )
+}
+
 fn fixture_artifact_with_entries(
     version: &str,
     entries: &[(&str, &str)],
 ) -> Result<FixtureArtifact> {
-    let root = format!("redis-{version}-darwin-arm64");
+    fixture_artifact_for("redis", version, "darwin-arm64", entries)
+}
+
+fn fixture_artifact_for(
+    resource_name: &str,
+    version: &str,
+    platform: &str,
+    entries: &[(&str, &str)],
+) -> Result<FixtureArtifact> {
+    let root = format!("{resource_name}-{version}-{platform}");
     let bytes = fixture_archive_bytes(&root, entries)?;
     let sha256 = sha256_hex(&bytes);
 
     Ok(FixtureArtifact {
+        resource_name: resource_name.to_string(),
         version: version.to_string(),
+        platform: platform.to_string(),
         bytes,
         sha256,
         revoked_reason: None,
@@ -772,51 +1092,51 @@ fn manifest_with_artifacts(artifacts: &[&FixtureArtifact]) -> String {
 fn manifest_with_tracks(tracks: &[(&str, &[&FixtureArtifact])]) -> String {
     let tracks = tracks
         .iter()
-        .map(|(track, artifacts)| {
-            let artifacts = artifacts
-                .iter()
-                .map(|artifact| {
-                    let revocation =
-                        artifact
-                            .revoked_reason
-                            .as_ref()
-                            .map_or_else(String::new, |reason| {
-                                format!(
-                                    r#",
-              "revoked": true,
-              "revocation_reason": "{reason}""#
-                                )
-                            });
+        .map(|(track, artifacts)| manifest_track(track, artifacts.to_vec()))
+        .collect::<Vec<_>>();
 
-                    format!(
-                        r#"{{
-              "artifact_version": "{}",
-              "upstream_version": "{}",
-              "pv_build_revision": "1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/redis-{}-darwin-arm64.tar.gz",
-              "sha256": "{}",
-              "size": {},
-              "published_at": "{}"{revocation}
-            }}"#,
-                        artifact.version,
-                        artifact.version.trim_end_matches("-pv1"),
-                        artifact.version,
-                        artifact.sha256,
-                        artifact.bytes.len(),
-                        published_at_for(&artifact.version),
-                    )
-                })
+    manifest_with_resources(&[manifest_resource("redis", "7.2", tracks)])
+}
+
+fn manifest_resource<'a>(
+    name: &'a str,
+    default_track: &'a str,
+    tracks: Vec<ManifestTrackFixture<'a>>,
+) -> ManifestResourceFixture<'a> {
+    ManifestResourceFixture {
+        name,
+        default_track,
+        tracks,
+    }
+}
+
+fn manifest_track<'a>(
+    name: &'a str,
+    artifacts: Vec<&'a FixtureArtifact>,
+) -> ManifestTrackFixture<'a> {
+    ManifestTrackFixture { name, artifacts }
+}
+
+fn manifest_with_resources(resources: &[ManifestResourceFixture<'_>]) -> String {
+    let resources = resources
+        .iter()
+        .map(|resource| {
+            let tracks = resource
+                .tracks
+                .iter()
+                .map(manifest_track_json)
                 .collect::<Vec<_>>()
                 .join(",");
 
             format!(
                 r#"{{
-          "name": "{track}",
-          "artifacts": [
-            {artifacts}
-          ]
-        }}"#
+      "name": "{}",
+      "default_track": "{}",
+      "tracks": [
+        {tracks}
+      ]
+    }}"#,
+                resource.name, resource.default_track,
             )
         })
         .collect::<Vec<_>>()
@@ -828,21 +1148,74 @@ fn manifest_with_tracks(tracks: &[(&str, &[&FixtureArtifact])]) -> String {
   "schema_version": 1,
   "minimum_pv_version": "0.1.0",
   "resources": [
-    {{
-      "name": "redis",
-      "default_track": "7.2",
-      "tracks": [
-        {tracks}
-      ]
-    }}
+    {resources}
   ]
 }}
 "#
     )
 }
 
+fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
+    let artifacts = track
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let revocation = artifact
+                .revoked_reason
+                .as_ref()
+                .map_or_else(String::new, |reason| {
+                    format!(
+                        r#",
+              "revoked": true,
+              "revocation_reason": "{reason}""#
+                    )
+                });
+
+            format!(
+                r#"{{
+              "artifact_version": "{}",
+              "upstream_version": "{}",
+              "pv_build_revision": "1",
+              "platform": "{}",
+              "url": "https://artifacts.example.test/{}-{}-{}.tar.gz",
+              "sha256": "{}",
+              "size": {},
+              "published_at": "{}"{revocation}
+            }}"#,
+                artifact.version,
+                artifact.version.trim_end_matches("-pv1"),
+                artifact.platform,
+                artifact.resource_name,
+                artifact.version,
+                artifact.platform,
+                artifact.sha256,
+                artifact.bytes.len(),
+                published_at_for(&artifact.version),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        r#"{{
+          "name": "{}",
+          "artifacts": [
+            {artifacts}
+          ]
+        }}"#,
+        track.name,
+    )
+}
+
 fn published_at_for(version: &str) -> &'static str {
     match version {
+        "2.8.0-pv1" => "2026-05-26T16:30:00Z",
+        "2.8.1-pv1" => "2026-05-27T16:30:00Z",
+        "8.3.22-pv1" => "2026-05-25T12:30:00Z",
+        "8.3.23-pv1" => "2026-05-26T12:30:00Z",
+        "8.3.24-pv1" => "2026-05-27T12:30:00Z",
+        "8.4.8-pv1" => "2026-05-26T13:30:00Z",
+        "8.4.9-pv1" => "2026-05-27T13:30:00Z",
         "7.2.5-pv1" => "2026-05-26T14:30:00Z",
         "7.2.6-pv1" => "2026-05-27T14:30:00Z",
         "7.2.7-pv1" => "2026-05-28T14:30:00Z",

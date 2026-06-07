@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PvPaths, StateError,
@@ -6,6 +8,7 @@ use thiserror::Error;
 
 use crate::http::ResourceHttpClient;
 use crate::registry;
+use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
     ArtifactDownloader, ArtifactInstaller, ArtifactManifest, ArtifactManifestCache,
     ArtifactManifestSource, ArtifactVersion, ManifestArtifact, ResourceAdapter, ResourceName,
@@ -65,6 +68,23 @@ pub struct ManagedResourceUpdate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairInstall {
+    php: ManagedResourceInstall,
+    frankenphp: ManagedResourceInstall,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairUpdate {
+    installs: Vec<ManagedResourceInstall>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairRemovalIntent {
+    php: ManagedResourceRemovalIntent,
+    frankenphp: ManagedResourceRemovalIntent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedResourceRemovalIntent {
     resource_name: ResourceName,
     track: TrackName,
@@ -116,6 +136,30 @@ impl ManagedResourceCommands {
             .clone();
 
         self.install_track(adapter, track, manifest, refresh.source(), client)
+    }
+
+    pub fn install_php_pair(
+        &self,
+        selector: TrackSelector,
+        client: &impl ResourceHttpClient,
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        registry::resolve_canonical(php.resource_name().as_str())?;
+        registry::resolve_canonical(frankenphp.resource_name().as_str())?;
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh(&self.manifest_url, client)?;
+        let manifest = refresh.manifest();
+        let track = manifest
+            .resolve_track(php.resource_name(), selector)?
+            .clone();
+
+        let php = self.install_track(&php, track.clone(), manifest, refresh.source(), client)?;
+        let frankenphp =
+            self.install_track(&frankenphp, track, manifest, refresh.source(), client)?;
+
+        Ok(PhpPairInstall { php, frankenphp })
     }
 
     fn install_track(
@@ -199,6 +243,67 @@ impl ManagedResourceCommands {
         Ok(ManagedResourceUpdate { installs })
     }
 
+    pub fn update_php_pairs(
+        &self,
+        client: &impl ResourceHttpClient,
+    ) -> ManagedResourceCommandResult<PhpPairUpdate> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let mut tracks = BTreeSet::new();
+
+        for record in self.list(Some(php.resource_name()))? {
+            tracks.insert(record.track().clone());
+        }
+        for record in self.list(Some(frankenphp.resource_name()))? {
+            tracks.insert(record.track().clone());
+        }
+
+        let mut installs = Vec::new();
+        if tracks.is_empty() {
+            return Ok(PhpPairUpdate { installs });
+        }
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client)?;
+
+        for track in tracks {
+            installs.push(self.install_track(
+                &php,
+                track.clone(),
+                refresh.manifest(),
+                refresh.source(),
+                client,
+            )?);
+            installs.push(self.install_track(
+                &frankenphp,
+                track,
+                refresh.manifest(),
+                refresh.source(),
+                client,
+            )?);
+        }
+
+        Ok(PhpPairUpdate { installs })
+    }
+
+    pub fn install_composer(
+        &self,
+        client: &impl ResourceHttpClient,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        self.install(
+            &composer_adapter()?,
+            TrackSelector::Track(composer_track()?),
+            client,
+        )
+    }
+
+    pub fn update_composer(
+        &self,
+        client: &impl ResourceHttpClient,
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        self.update(&composer_adapter()?, client)
+    }
+
     pub fn uninstall(
         &self,
         resource_name: &ResourceName,
@@ -252,6 +357,29 @@ impl ManagedResourceCommands {
             prune: options.prune,
             force: options.force,
         })
+    }
+
+    pub fn uninstall_php_pair(
+        &self,
+        track: &TrackName,
+        options: ManagedResourceUninstallOptions,
+    ) -> ManagedResourceCommandResult<PhpPairRemovalIntent> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let php = self.uninstall(php.resource_name(), track, options)?;
+        let frankenphp = self.uninstall(frankenphp.resource_name(), track, options)?;
+
+        Ok(PhpPairRemovalIntent { php, frankenphp })
+    }
+
+    pub fn uninstall_composer(
+        &self,
+        options: ManagedResourceUninstallOptions,
+    ) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
+        let composer = composer_adapter()?;
+        let track = composer_track()?;
+
+        self.uninstall(composer.resource_name(), &track, options)
     }
 
     pub fn list(
@@ -325,6 +453,32 @@ impl ManagedResourceRevokedLatest {
 impl ManagedResourceUpdate {
     pub fn installs(&self) -> &[ManagedResourceInstall] {
         &self.installs
+    }
+}
+
+impl PhpPairInstall {
+    pub fn php(&self) -> &ManagedResourceInstall {
+        &self.php
+    }
+
+    pub fn frankenphp(&self) -> &ManagedResourceInstall {
+        &self.frankenphp
+    }
+}
+
+impl PhpPairUpdate {
+    pub fn installs(&self) -> &[ManagedResourceInstall] {
+        &self.installs
+    }
+}
+
+impl PhpPairRemovalIntent {
+    pub fn php(&self) -> &ManagedResourceRemovalIntent {
+        &self.php
+    }
+
+    pub fn frankenphp(&self) -> &ManagedResourceRemovalIntent {
+        &self.frankenphp
     }
 }
 
@@ -422,4 +576,8 @@ fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourc
             .unwrap_or_default()
             .to_string(),
     }
+}
+
+fn composer_track() -> ManagedResourceCommandResult<TrackName> {
+    Ok(TrackName::new("2")?)
 }

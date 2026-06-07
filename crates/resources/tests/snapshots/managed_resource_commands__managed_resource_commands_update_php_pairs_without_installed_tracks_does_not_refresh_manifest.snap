@@ -1,0 +1,8 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summaries(updated.installs(), tempdir.path())?,\nclient.text_request_count(),)"
+---
+(
+    [],
+    0,
+)
