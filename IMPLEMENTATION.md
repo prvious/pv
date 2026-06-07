@@ -237,7 +237,7 @@ M6 can run partly in parallel with M5. Resource allocation implementation depend
 | PV-073 | Implement Gateway runtime                  | Story   | PV-072, M3             | Browser-ready Projects | Gateway starts, reloads, restarts on failure, terminates TLS, redirects HTTP to HTTPS, and proxies to workers. |
 | PV-074 | Implement per-Project worker config        | Story   | PV-071, M6             | Project serving        | Document root, front-controller routing, static files, host header forwarding, and per-track imports work.     |
 | PV-075 | Implement `php` shim                       | Story   | PV-070, M6             | CLI PHP UX             | Shim resolves Project-aware PHP track or global default and runs the selected PHP.                             |
-| PV-076 | Implement `pv php:*` commands              | Story   | PV-070, PV-075         | PHP management         | `php:install`, `php:default`, `php:update`, `php:uninstall`, and `php:list` follow track rules.                |
+| PV-076 | Implement `pv php:*` commands              | Story   | PV-070, PV-075         | PHP management         | `php:install`, `php:use`, `php:update`, `php:uninstall`, and `php:list` follow track rules.                    |
 | PV-077 | Implement Composer 2 install and shim      | Story   | M4, PV-075             | Composer UX            | Composer track `2` installs as a packaged PHAR artifact and runs through PV's PHP shim.                        |
 | PV-078 | First Project-serving end-to-end test      | Test    | PV-061, PV-073, PV-074 | MVP confidence         | A simple PHP Project links and responds through `https://<project>.test` on macOS test environment.            |
 

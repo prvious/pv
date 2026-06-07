@@ -3,7 +3,7 @@ source: crates/resources/tests/managed_resource_commands.rs
 expression: "(result, php_release_exists, php_current_is_directory,)"
 ---
 (
-    "Err(\n    RollbackFailed {\n        original_error: \"HTTP request failed for `https://artifacts.example.test/frankenphp-8.4.8-pv1-darwin-arm64.tar.gz`: no scripted byte response\",\n        rollback_error: Filesystem {\n            path: \"<tempdir>/home/.pv/resources/php/8.4/current\",\n            reason: \"<directory remove error>\",\n        },\n    },\n)",
-    false,
+    "Err(\n    RollbackFailed {\n        original_error: Resources(\n            HttpRequestFailed {\n                url: \"https://artifacts.example.test/frankenphp-8.4.8-pv1-darwin-arm64.tar.gz\",\n                reason: \"no scripted byte response\",\n            },\n        ),\n        rollback_error: Filesystem {\n            path: \"<tempdir>/home/.pv/resources/php/8.4/current\",\n            reason: \"<directory remove error>\",\n        },\n    },\n)",
+    true,
     true,
 )

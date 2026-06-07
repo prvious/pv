@@ -4,6 +4,7 @@ use std::process::ExitCode;
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
+use crate::output::Output;
 
 mod ca;
 mod completions;
@@ -56,4 +57,35 @@ pub(crate) fn execute(
         Command::ComposerUpdate => composer::update(environment, stdout),
         Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
     }
+}
+
+fn write_revoked_latest_warnings(
+    installs: &[resources::ManagedResourceInstall],
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    for install in installs {
+        write_revoked_latest_warning(install, output)?;
+    }
+
+    Ok(())
+}
+
+fn write_revoked_latest_warning(
+    install: &resources::ManagedResourceInstall,
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    let Some(revoked_latest) = install.revoked_latest() else {
+        return Ok(());
+    };
+
+    output.line(&format!(
+        "warning: newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
+        install.resource_name(),
+        revoked_latest.artifact_version(),
+        install.track(),
+        revoked_latest.reason(),
+        install.artifact_version(),
+    ))?;
+
+    Ok(())
 }

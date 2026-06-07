@@ -477,6 +477,49 @@ fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result
 }
 
 #[test]
+fn php_use_global_install_failure_leaves_default_and_state_unchanged() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let existing_artifacts = php_pair_artifacts("8.3.24-pv1")?;
+    let target_artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.3", &existing_artifacts)?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.3")?;
+    }
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &target_artifacts)),
+    );
+
+    let output = run_pv(&["php:use", "8.4", "--global"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let default_track = database.global_php_default_track()?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_eq!(default_track.as_deref(), Some("8.3"));
+    assert_eq!(environment.text_request_count(), 1);
+    assert_eq!(environment.byte_request_count(), 2);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            default_track,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn php_use_install_failure_leaves_project_config_and_state_unchanged() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -600,6 +643,73 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
 }
 
 #[test]
+fn php_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let fallback_artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    let revoked_artifacts = PhpPairArtifacts {
+        php: revoked_artifact(
+            runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", TargetPlatform::DarwinArm64),
+            "failed smoke test",
+        ),
+        frankenphp: revoked_artifact(
+            runtime_fixture_artifact(
+                "frankenphp",
+                "8.4.9-pv1",
+                "bin/frankenphp",
+                TargetPlatform::DarwinArm64,
+            ),
+            "failed smoke test",
+        ),
+    };
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&fallback_artifacts.php, &revoked_artifacts.php],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![
+                    &fallback_artifacts.frankenphp,
+                    &revoked_artifacts.frankenphp,
+                ],
+            )],
+        ),
+    ]);
+    prepare_existing_php_pair_releases(&home, "8.4", &fallback_artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    );
+
+    let output = run_pv(&["php:install", "8.4"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_eq!(environment.byte_request_count(), 0);
+    assert_debug_snapshot!((
+        output,
+        resource_record_snapshots(&records, tempdir.path())?,
+        environment.text_request_count(),
+        environment.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -621,6 +731,75 @@ fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<(
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert_debug_snapshot!((
+        output,
+        resource_record_snapshots(&records, tempdir.path())?,
+        environment.text_request_count(),
+        environment.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn php_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let old_artifacts = php_pair_artifacts("8.4.7-pv1")?;
+    let fallback_artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    let revoked_artifacts = PhpPairArtifacts {
+        php: revoked_artifact(
+            runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", TargetPlatform::DarwinArm64),
+            "failed smoke test",
+        ),
+        frankenphp: revoked_artifact(
+            runtime_fixture_artifact(
+                "frankenphp",
+                "8.4.9-pv1",
+                "bin/frankenphp",
+                TargetPlatform::DarwinArm64,
+            ),
+            "failed smoke test",
+        ),
+    };
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&fallback_artifacts.php, &revoked_artifacts.php],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![
+                    &fallback_artifacts.frankenphp,
+                    &revoked_artifacts.frankenphp,
+                ],
+            )],
+        ),
+    ]);
+    record_installed_php_pair(&home, "8.4", &old_artifacts)?;
+    prepare_existing_php_pair_releases(&home, "8.4", &fallback_artifacts)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    );
+
+    let output = run_pv(&["php:update"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_eq!(environment.byte_request_count(), 0);
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1110,6 +1289,7 @@ struct FixtureArtifact {
     platform: String,
     executable_path: String,
     sha256: String,
+    revoked_reason: Option<String>,
 }
 
 fn runtime_fixture_artifact(
@@ -1124,7 +1304,13 @@ fn runtime_fixture_artifact(
         platform: target_platform.as_str().to_string(),
         executable_path: executable_path.to_string(),
         sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        revoked_reason: None,
     }
+}
+
+fn revoked_artifact(mut artifact: FixtureArtifact, reason: &str) -> FixtureArtifact {
+    artifact.revoked_reason = Some(reason.to_string());
+    artifact
 }
 
 fn prepare_existing_php_pair_releases(
@@ -1285,6 +1471,17 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
         .artifacts
         .iter()
         .map(|artifact| {
+            let revocation = artifact
+                .revoked_reason
+                .as_ref()
+                .map_or_else(String::new, |reason| {
+                    format!(
+                        r#",
+              "revoked": true,
+              "revocation_reason": "{reason}""#
+                    )
+                });
+
             format!(
                 r#"{{
               "artifact_version": "{}",
@@ -1294,7 +1491,7 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
               "url": "https://artifacts.example.test/{}-{}-{}.tar.gz",
               "sha256": "{}",
               "size": {},
-              "published_at": "2026-05-26T13:30:00Z"
+              "published_at": "{}"{revocation}
             }}"#,
                 artifact.version,
                 artifact.version.trim_end_matches("-pv1"),
@@ -1304,6 +1501,7 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
                 artifact.platform,
                 artifact.sha256,
                 0,
+                published_at_for(&artifact.version),
             )
         })
         .collect::<Vec<_>>()
@@ -1318,6 +1516,16 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
         }}"#,
         track.name,
     )
+}
+
+fn published_at_for(version: &str) -> &'static str {
+    match version {
+        "8.3.24-pv1" => "2026-05-27T12:30:00Z",
+        "8.4.7-pv1" => "2026-05-25T13:30:00Z",
+        "8.4.8-pv1" => "2026-05-26T13:30:00Z",
+        "8.4.9-pv1" => "2026-05-27T13:30:00Z",
+        _ => "2026-05-26T13:30:00Z",
+    }
 }
 
 #[derive(Debug)]

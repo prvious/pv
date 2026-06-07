@@ -100,6 +100,7 @@ pub(crate) fn update(
         with_resource_http_client(environment, |client| commands.update_php_pairs(client))?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
+    super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
     output.line(&format!(
         "Updated {} PHP runtime artifact(s)",
         updated.installs().len()
@@ -325,6 +326,8 @@ fn write_install_lines(
     installed: &resources::PhpPairInstall,
     output: &mut Output<'_, impl Write>,
 ) -> Result<(), ExecuteError> {
+    super::write_revoked_latest_warning(installed.php(), output)?;
+    super::write_revoked_latest_warning(installed.frankenphp(), output)?;
     output.line(&format!("Installed PHP track {}", installed.php().track()))?;
     output.line(&format!(
         "Installed FrankenPHP track {}",

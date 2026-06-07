@@ -154,19 +154,19 @@ impl ArtifactInstaller {
                     reason: format!("current pointer `{}` has no parent", install.current_path),
                 })?;
 
-        if !install.release_existed_before {
-            fs::remove_dir_all_if_exists(&install.release_path)?;
-            if let Some(releases_dir) = install.release_path.parent() {
-                fs::sync_directory(releases_dir)?;
-            }
-        }
-
         if let Some(previous_release) = &install.previous_release {
             let previous_release = ArtifactVersion::new(previous_release.clone())?;
             update_current_pointer(track_dir, &previous_release)?;
         } else {
             fs::remove_file_if_exists(&install.current_path)?;
             fs::sync_directory(track_dir)?;
+        }
+
+        if !install.release_existed_before {
+            fs::remove_dir_all_if_exists(&install.release_path)?;
+            if let Some(releases_dir) = install.release_path.parent() {
+                fs::sync_directory(releases_dir)?;
+            }
         }
 
         Ok(())

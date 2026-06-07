@@ -36,6 +36,9 @@ pub(crate) fn install(
     let composer = installed.composer();
     let mut output = Output::new(stdout, OutputMode::plain());
 
+    super::write_revoked_latest_warning(php_pair.php(), &mut output)?;
+    super::write_revoked_latest_warning(php_pair.frankenphp(), &mut output)?;
+    super::write_revoked_latest_warning(composer, &mut output)?;
     output.line(&format!("Installed PHP track {}", php_pair.php().track()))?;
     output.line(&format!(
         "Installed FrankenPHP track {}",
@@ -57,6 +60,7 @@ pub(crate) fn update(
         with_resource_http_client(environment, |client| commands.update_composer(client))?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
+    super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
     output.line(&format!(
         "Updated {} Composer track(s)",
         updated.installs().len()

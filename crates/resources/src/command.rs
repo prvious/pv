@@ -42,7 +42,7 @@ pub enum ManagedResourceCommandError {
         "Managed Resource operation failed with `{original_error}`, and rollback also failed: {rollback_error}"
     )]
     RollbackFailed {
-        original_error: String,
+        original_error: Box<ManagedResourceCommandError>,
         rollback_error: ResourcesError,
     },
 }
@@ -363,7 +363,7 @@ impl ManagedResourceCommands {
             Ok(()) => original_error,
             Err(ManagedResourceCommandError::Resources(rollback_error)) => {
                 ManagedResourceCommandError::RollbackFailed {
-                    original_error: original_error.to_string(),
+                    original_error: Box::new(original_error),
                     rollback_error,
                 }
             }
@@ -380,7 +380,7 @@ impl ManagedResourceCommands {
             Ok(()) => original_error,
             Err(ManagedResourceCommandError::Resources(rollback_error)) => {
                 ManagedResourceCommandError::RollbackFailed {
-                    original_error: original_error.to_string(),
+                    original_error: Box::new(original_error),
                     rollback_error,
                 }
             }

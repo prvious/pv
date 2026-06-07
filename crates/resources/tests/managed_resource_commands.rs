@@ -9,10 +9,11 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use resources::{
-    ArtifactManifestSource, ManagedResourceCommands, ManagedResourceInstall,
-    ManagedResourceRemovalIntent, ManagedResourceTrack, ManagedResourceUninstallOptions,
-    ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError,
-    TargetPlatform, TrackName, TrackSelector, composer_adapter, frankenphp_adapter, php_adapter,
+    ArtifactManifestSource, ManagedResourceCommandError, ManagedResourceCommands,
+    ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceTrack,
+    ManagedResourceUninstallOptions, ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient,
+    ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter,
+    frankenphp_adapter, php_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -744,6 +745,134 @@ fn managed_resource_commands_update_php_pairs_second_artifact_failure_preserves_
         old_php_release_exists,
         new_php_release_exists,
         php_current_target,
+        byte_downloads_during_update,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_php_pairs_rollback_failure_preserves_failed_release()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let php_update_artifact =
+        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let frankenphp_update_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.9-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4 update",
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let update_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&php_artifact, &php_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&frankenphp_artifact, &frankenphp_update_artifact],
+            )],
+        ),
+    ]);
+    let install_client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+    let php_current_path = current_path(&paths, "php", "8.4");
+    let update_client = ScriptedClient::new()
+        .with_text(&update_manifest)
+        .with_bytes(php_update_artifact.bytes())
+        .with_byte_error_after(
+            ResourcesError::DownloadWriteFailed {
+                url: "https://artifacts.example.test/frankenphp-8.4.9-pv1-darwin-arm64.tar.gz"
+                    .to_string(),
+                reason: "scripted downstream failure".to_string(),
+            },
+            move || replace_current_pointer_with_directory(&php_current_path),
+        );
+
+    commands.install_php_pair(TrackSelector::Latest, &install_client)?;
+    let state_before_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let result = commands.update_php_pairs(&update_client);
+    let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
+    let byte_downloads_during_update = update_client.byte_request_count();
+    let old_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?;
+    let new_php_release_exists = path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_update_artifact.version.as_str(),
+    ))?;
+    let php_current_is_directory = path_is_directory(&current_path(&paths, "php", "8.4"))?;
+
+    let Err(ManagedResourceCommandError::RollbackFailed {
+        original_error,
+        rollback_error,
+    }) = &result
+    else {
+        bail!("unexpected rollback result: {result:#?}");
+    };
+    match original_error.as_ref() {
+        ManagedResourceCommandError::Resources(ResourcesError::DownloadWriteFailed {
+            reason,
+            ..
+        }) => assert_eq!(reason, "scripted downstream failure"),
+        other => bail!("unexpected original rollback error: {other:#?}"),
+    }
+    assert!(matches!(rollback_error, ResourcesError::Filesystem { .. }));
+    assert!(old_php_release_exists);
+    assert!(new_php_release_exists);
+    assert!(php_current_is_directory);
+
+    let result = format!("{result:#?}")
+        .replace(tempdir.path().as_str(), "<tempdir>")
+        .replace(
+            "Operation not permitted (os error 1)",
+            "<directory remove error>",
+        )
+        .replace("Is a directory (os error 21)", "<directory remove error>");
+
+    assert_debug_snapshot!((
+        result,
+        state_before_update,
+        state_after_update,
+        old_php_release_exists,
+        new_php_release_exists,
+        php_current_is_directory,
         byte_downloads_during_update,
     ));
 

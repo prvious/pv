@@ -193,6 +193,48 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
 }
 
 #[test]
+fn composer_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
+    let fallback_artifact = composer_fixture_artifact("2.8.0-pv1");
+    let revoked_artifact = revoked_artifact(composer_fixture_artifact("2.8.1-pv1"), "bad phar");
+    let manifest = composer_manifest(
+        "8.4",
+        &php_artifacts,
+        &[&fallback_artifact, &revoked_artifact],
+    );
+    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
+    prepare_existing_release(&home, "2", &fallback_artifact)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    );
+
+    let output = run_pv(&["composer:install"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn composer_install_prefers_global_php_default_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -285,6 +327,42 @@ fn composer_update_updates_track_two_only() -> anyhow::Result<()> {
     record_installed_composer(&home, "2", &old_artifact)?;
     prepare_existing_release(&home, "2", &new_artifact)?;
     let manifest = composer_only_manifest(&[&old_artifact, &new_artifact]);
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    );
+
+    let output = run_pv(&["composer:update"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_eq!(environment.byte_request_count(), 0);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((
+            output,
+            resource_record_snapshots(&records, tempdir.path())?,
+            environment.text_request_count(),
+            environment.byte_request_count(),
+        ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let fallback_artifact = composer_fixture_artifact("2.8.0-pv1");
+    let revoked_artifact = revoked_artifact(composer_fixture_artifact("2.8.1-pv1"), "bad phar");
+    record_installed_composer(&home, "2", &fallback_artifact)?;
+    let manifest = composer_only_manifest(&[&fallback_artifact, &revoked_artifact]);
     let environment = TestEnvironment::new(
         &home,
         &current_dir,
@@ -658,6 +736,7 @@ struct FixtureArtifact {
     platform: String,
     executable_path: String,
     sha256: String,
+    revoked_reason: Option<String>,
 }
 
 fn runtime_fixture_artifact(
@@ -672,6 +751,7 @@ fn runtime_fixture_artifact(
         platform: target_platform.as_str().to_string(),
         executable_path: executable_path.to_string(),
         sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        revoked_reason: None,
     }
 }
 
@@ -682,7 +762,13 @@ fn composer_fixture_artifact(version: &str) -> FixtureArtifact {
         platform: "any".to_string(),
         executable_path: "composer.phar".to_string(),
         sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        revoked_reason: None,
     }
+}
+
+fn revoked_artifact(mut artifact: FixtureArtifact, reason: &str) -> FixtureArtifact {
+    artifact.revoked_reason = Some(reason.to_string());
+    artifact
 }
 
 fn prepare_existing_php_pair_releases(
@@ -889,6 +975,17 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
         .artifacts
         .iter()
         .map(|artifact| {
+            let revocation = artifact
+                .revoked_reason
+                .as_ref()
+                .map_or_else(String::new, |reason| {
+                    format!(
+                        r#",
+              "revoked": true,
+              "revocation_reason": "{reason}""#
+                    )
+                });
+
             format!(
                 r#"{{
               "artifact_version": "{}",
@@ -898,7 +995,7 @@ fn manifest_track_json(track: &ManifestTrackFixture<'_>) -> String {
               "url": "https://artifacts.example.test/{}-{}-{}.tar.gz",
               "sha256": "{}",
               "size": {},
-              "published_at": "{}"
+              "published_at": "{}"{revocation}
             }}"#,
                 artifact.version,
                 artifact.version.trim_end_matches("-pv1"),
