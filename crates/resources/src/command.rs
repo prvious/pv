@@ -75,6 +75,12 @@ pub struct PhpPairInstall {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComposerWithPhpPairInstall {
+    php_pair: PhpPairInstall,
+    composer: ManagedResourceInstall,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpPairUpdate {
     installs: Vec<ManagedResourceInstall>,
 }
@@ -320,6 +326,36 @@ impl ManagedResourceCommands {
         Ok(())
     }
 
+    fn record_composer_with_php_pair_install(
+        &self,
+        php_pair: &PhpPairInstall,
+        composer: &ManagedResourceInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        let mut database = Database::open(&self.paths)?;
+        database.record_managed_resource_tracks_desired_and_installed(&[
+            ManagedResourceTrackInstallInput {
+                resource_name: php_pair.php.resource_name.as_str(),
+                track: php_pair.php.track.as_str(),
+                installed_version: php_pair.php.artifact_version.as_str(),
+                current_artifact_path: &php_pair.php.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: php_pair.frankenphp.resource_name.as_str(),
+                track: php_pair.frankenphp.track.as_str(),
+                installed_version: php_pair.frankenphp.artifact_version.as_str(),
+                current_artifact_path: &php_pair.frankenphp.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: composer.resource_name.as_str(),
+                track: composer.track.as_str(),
+                installed_version: composer.artifact_version.as_str(),
+                current_artifact_path: &composer.current_artifact_path,
+            },
+        ])?;
+
+        Ok(())
+    }
+
     pub fn update(
         &self,
         adapter: &impl ResourceAdapter,
@@ -403,6 +439,49 @@ impl ManagedResourceCommands {
             TrackSelector::Track(composer_track()?),
             client,
         )
+    }
+
+    pub fn install_composer_with_php_pair(
+        &self,
+        php_selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ComposerWithPhpPairInstall> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let composer = composer_adapter()?;
+        registry::resolve_canonical(php.resource_name().as_str())?;
+        registry::resolve_canonical(frankenphp.resource_name().as_str())?;
+        registry::resolve_canonical(composer.resource_name().as_str())?;
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh(&self.manifest_url, client)?;
+        let manifest = refresh.manifest();
+        let php_track = manifest
+            .resolve_track(php.resource_name(), php_selector)?
+            .clone();
+        let composer_track = composer_track()?;
+        self.validate_install_selection(&php, &php_track, manifest)?;
+        self.validate_install_selection(&frankenphp, &php_track, manifest)?;
+        self.validate_install_selection(&composer, &composer_track, manifest)?;
+
+        let php_pair = self.prepare_php_pair_install(
+            &php,
+            &frankenphp,
+            php_track,
+            manifest,
+            refresh.source(),
+            client,
+        )?;
+        let composer = self.prepare_track_install(
+            &composer,
+            composer_track,
+            manifest,
+            refresh.source(),
+            client,
+        )?;
+        self.record_composer_with_php_pair_install(&php_pair, &composer)?;
+
+        Ok(ComposerWithPhpPairInstall { php_pair, composer })
     }
 
     pub fn update_composer(
@@ -560,6 +639,16 @@ impl PhpPairInstall {
 
     pub fn frankenphp(&self) -> &ManagedResourceInstall {
         &self.frankenphp
+    }
+}
+
+impl ComposerWithPhpPairInstall {
+    pub fn php_pair(&self) -> &PhpPairInstall {
+        &self.php_pair
+    }
+
+    pub fn composer(&self) -> &ManagedResourceInstall {
+        &self.composer
     }
 }
 

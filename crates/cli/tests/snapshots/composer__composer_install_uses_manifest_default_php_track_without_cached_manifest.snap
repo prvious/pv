@@ -56,6 +56,6 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenv
             removal_force: false,
         },
     ],
-    2,
+    1,
     0,
 )

@@ -4,9 +4,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use resources::{
-    ArtifactManifestCache, ManagedResourceCommands, ManagedResourceUninstallOptions,
-    ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
-    UreqResourceHttpClient,
+    ManagedResourceCommands, ManagedResourceUninstallOptions, ResourceAdapter, ResourceHttpClient,
+    TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
@@ -27,13 +26,12 @@ pub(crate) fn install(
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment);
     let database = Database::open(&paths)?;
-    let php_track = resolved_global_php_track(&paths, &database)?;
-    let php_track = TrackName::new(php_track)?;
-    let php_pair = with_resource_http_client(environment, |client| {
-        commands.install_php_pair(TrackSelector::Track(php_track), client)
+    let selector = php_selector(&database)?;
+    let installed = with_resource_http_client(environment, |client| {
+        commands.install_composer_with_php_pair(selector, client)
     })?;
-    let composer =
-        with_resource_http_client(environment, |client| commands.install_composer(client))?;
+    let php_pair = installed.php_pair();
+    let composer = installed.composer();
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line(&format!("Installed PHP track {}", php_pair.php().track()))?;
@@ -100,18 +98,12 @@ pub(crate) fn shim(
     super::php::shim_with_args(shim_args, environment)
 }
 
-fn resolved_global_php_track(paths: &PvPaths, database: &Database) -> Result<String, ExecuteError> {
+fn php_selector(database: &Database) -> Result<TrackSelector, ExecuteError> {
     if let Some(track) = database.global_php_default_track()? {
-        return Ok(track);
+        return Ok(TrackSelector::Track(TrackName::new(track)?));
     }
 
-    let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
-    let php = ResourceName::new("php")?;
-
-    Ok(manifest
-        .resolve_track(&php, TrackSelector::Latest)?
-        .as_str()
-        .to_string())
+    Ok(TrackSelector::Latest)
 }
 
 fn installed_composer_phar(database: &Database) -> Result<Utf8PathBuf, ExecuteError> {
