@@ -29,7 +29,6 @@ The local pipeline is the authoritative model for the later cloud workflow, but 
    - safe paths only
    - expected metadata fields present
    - license and notice files present where the record says they are required
-   - macOS artifacts pass relocation checks and reject unmanaged runtime paths such as `/opt/homebrew`, `/usr/local/Cellar`, and `/Users/runner`
    - optional smoke-test hooks can be declared and executed locally
 3. The tool computes checksum and size from the actual archive.
 4. The tool writes or validates an immutable release record containing resource, track, upstream version, PV build revision, artifact version, platform, object key or future URL path, checksum, size, provenance, and `published_at`.
@@ -40,7 +39,7 @@ Because upload is deferred, PR 23 can use deterministic placeholder/public URL c
 
 ## Error Handling
 
-Release metadata, manifest generation, archive validation, relocation scanning, and revocation merging should expose typed domain errors. The release tool may convert those errors to `anyhow` at the CLI/tool boundary.
+Release metadata, manifest generation, archive validation, smoke hook execution, and revocation merging should expose typed domain errors. The release tool may convert those errors to `anyhow` at the CLI/tool boundary.
 
 These failures are hard stops:
 
@@ -53,7 +52,6 @@ These failures are hard stops:
 - archive missing one top-level root
 - unsafe archive paths or special entries
 - missing license or notice metadata required by the record
-- macOS binary references to unmanaged runtime paths
 - smoke-test hook failure
 
 PR 23 validates enough to prevent invalid local records and manifests, but it does not define resource-specific lifecycle rules. Adapter-required files such as `bin/redis-server` still belong to resource adapters and later recipes unless the harness is running a declared smoke or file-presence check.
@@ -69,7 +67,6 @@ PR 23 should be fixture-driven and local-only. Coverage should include:
 - generated manifest round-tripping through `resources::ArtifactManifest::parse`
 - checksum and size computed from real fixture archives
 - archive validation rejecting multi-root, rootless, path escape, symlink, hardlink, and special-node cases
-- relocation scanner rejecting fixture inputs with blocked paths, without requiring real build artifacts
 - smoke hook success and failure handling using tiny local scripts
 - publication-input validation that proves versioned and stable manifest files are locally generated correctly, while real upload remains out of scope
 

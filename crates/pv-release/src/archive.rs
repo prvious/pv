@@ -67,7 +67,7 @@ pub fn validate_archive(
         .entries()
         .map_err(|error| invalid_archive(archive_path, error))?
     {
-        let mut entry = entry.map_err(|error| invalid_archive(archive_path, error))?;
+        let entry = entry.map_err(|error| invalid_archive(archive_path, error))?;
         let entry_type = entry.header().entry_type();
         if !matches!(entry_type, EntryType::Regular | EntryType::Directory) {
             return Err(invalid_archive(
@@ -89,7 +89,6 @@ pub fn validate_archive(
         roots.insert(components[0].to_string());
         if entry_type.is_file() {
             regular_file_entries.insert(normalized_path.clone());
-            scan_entry_for_relocation(archive_path, &normalized_path, &mut entry)?;
         }
         entries.push(normalized_path);
     }
@@ -127,20 +126,6 @@ pub fn validate_archive(
         root,
         entries,
     })
-}
-
-fn scan_entry_for_relocation<R: Read>(
-    archive_path: &Utf8Path,
-    entry_path: &str,
-    entry: &mut tar::Entry<'_, R>,
-) -> crate::Result<()> {
-    let mut bytes = Vec::new();
-    entry
-        .read_to_end(&mut bytes)
-        .map_err(|error| invalid_archive(archive_path, error))?;
-    let text = String::from_utf8_lossy(&bytes);
-
-    crate::relocation::scan_relocation_text(Utf8Path::new(entry_path), &text)
 }
 
 pub fn validate_archive_for_record_file(

@@ -47,9 +47,6 @@ pub enum ReleaseError {
         actual: u64,
     },
 
-    #[error("relocation scan failed for `{path}`: {reason}")]
-    Relocation { path: String, reason: String },
-
     #[error("smoke hook `{hook}` failed with status {status}")]
     SmokeHookFailed { hook: String, status: String },
 

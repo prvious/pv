@@ -1,5 +1,5 @@
 ---
-source: crates/pv-release/tests/relocation_and_smoke.rs
+source: crates/pv-release/tests/smoke.rs
 expression: "(summarize_result(run_smoke_hook(&success, tempdir.path())),\nsummarize_result(run_smoke_hook(&failure, tempdir.path())),)"
 ---
 (

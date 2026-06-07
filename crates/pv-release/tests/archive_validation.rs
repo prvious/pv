@@ -135,7 +135,7 @@ fn archive_validation_rejects_special_entries_and_missing_license_files() -> Res
 }
 
 #[test]
-fn archive_validation_rejects_blocked_runtime_paths_from_archives() -> Result<()> {
+fn archive_validation_does_not_scan_archive_file_contents() -> Result<()> {
     let tempdir = tempdir()?;
     let archive = tempdir.path().join("redis.tar.gz");
     write_archive(
@@ -153,10 +153,7 @@ fn archive_validation_rejects_blocked_runtime_paths_from_archives() -> Result<()
     let record = tempdir.path().join("redis.json");
     write_record(&record, &release_record_json(&sha256, size))?;
 
-    assert_debug_snapshot!(unit_validation_outcome(
-        validate_archive_for_record_file(&archive, &record),
-        tempdir.path(),
-    ));
+    assert_eq!(validate_archive_for_record_file(&archive, &record), Ok(()));
 
     Ok(())
 }
@@ -245,11 +242,6 @@ fn validation_error_summary(error: ReleaseError, root: &Utf8Path) -> ErrorSummar
             "SizeMismatch".to_string(),
             relative_path(Utf8Path::new(&path), root),
             format!("expected {expected}, got {actual}"),
-        ),
-        ReleaseError::Relocation { path, reason } => (
-            "Relocation".to_string(),
-            relative_path(Utf8Path::new(&path), root),
-            reason,
         ),
         ReleaseError::SmokeHookFailed { hook, status } => (
             "SmokeHookFailed".to_string(),

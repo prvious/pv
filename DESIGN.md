@@ -598,11 +598,11 @@ The Managed Resource artifact manifest points only to PV-owned packaged artifact
 
 The PV artifact release pipeline may either wrap suitable upstream binaries or build missing binaries from source, but it always produces a normalized PV artifact archive before publishing. For example, if Redis does not publish the macOS binary shape PV needs, the release pipeline builds Redis ahead of time and publishes the resulting PV-owned Redis artifact. The release pipeline is expected to run in hosted automation such as GitHub Actions, not on user machines.
 
-Artifact recipes prefer wrapping official upstream binaries when those binaries pass PV's relocation, validation, and smoke-test requirements. Recipes build from source when upstream binaries are unavailable, do not match PV's required build matrix, cannot be made relocatable safely, or fail PV's smoke tests.
+Artifact recipes prefer wrapping official upstream binaries when those binaries pass PV's archive validation and smoke-test requirements. Recipes build from source when upstream binaries are unavailable, do not match PV's required build matrix, cannot be packaged to run from PV's installed resource layout, or fail PV's smoke tests.
 
 Managed Resource artifact build recipes, scripts, patches, and expected archive layouts live in the PV repository, such as under `release/artifacts/`, so artifact production changes are reviewed with PV adapter and manifest compatibility changes. Deployment secrets and storage credentials stay in CI/provider configuration, not in the repository.
 
-Artifact recipes may apply small versioned build or packaging patches when required for macOS portability, static-style PHP/FrankenPHP builds, relocatable artifacts, or reproducible packaging. PV avoids long-lived behavior-changing forks of upstream Managed Resources. Any patch that changes runtime behavior rather than build/packaging behavior requires an explicit design decision before publication.
+Artifact recipes may apply small versioned build or packaging patches when required for macOS portability, static-style PHP/FrankenPHP builds, PV-installed resource layout compatibility, or reproducible packaging. PV avoids long-lived behavior-changing forks of upstream Managed Resources. Any patch that changes runtime behavior rather than build/packaging behavior requires an explicit design decision before publication.
 
 PV v1 keeps Managed Resource artifact build/release automation in the same repository and CI system as the PV application. A separate artifact-build repository is deferred until coordination or security needs justify the split.
 
@@ -620,9 +620,9 @@ Each Managed Resource artifact archive includes upstream license and notice file
 
 License and notice validation happens in the artifact release pipeline, not in PV's client-side resource adapters. Runtime adapters validate files required to install and run the resource, while publication checks enforce licensing metadata before an artifact appears in the public manifest.
 
-Managed Resource artifacts must be relocatable before publishing. Any shebang, rpath, install-name, or embedded path fixes happen in the release pipeline before final signing and checksum generation. User machines do not patch Managed Resource binaries during install.
+Managed Resource artifacts must run from PV's installed resource layout before publishing. Any shebang, rpath, install-name, or embedded path fixes happen in the release pipeline before final signing and checksum generation. User machines do not patch Managed Resource binaries during install.
 
-Relocation validation scans every Mach-O executable and dynamic library in a candidate artifact before publication. The release pipeline fails artifacts that reference build-machine paths, absolute Homebrew paths such as `/opt/homebrew` or `/usr/local/Cellar`, `/Users/runner`, or non-system dynamic libraries outside the artifact root. macOS system libraries under `/usr/lib` and `/System/Library` are allowed.
+PV does not rely on whole-archive binary or string scanning as a v1 publication gate. Artifact recipes prove portability through archive layout validation, adapter-required file checks, and target-platform smoke tests. Resource-specific static checks may be added later if a resource's packaging risk justifies them.
 
 For v1, PV ad-hoc signs Managed Resource Mach-O binaries in the release pipeline after any binary path fixes. Paid Developer ID signing and notarization for Managed Resource artifacts are deferred unless macOS Gatekeeper or quarantine behavior requires them for a reliable v1 install experience. Checksums are computed only after final signing and packaging.
 
