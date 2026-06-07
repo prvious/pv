@@ -1,7 +1,9 @@
 use anyhow::Result;
 use camino::Utf8Path;
 use insta::assert_debug_snapshot;
+use pv_release::defaults::ManifestDefaults;
 use pv_release::recipe::{ComposerRecipe, PhpRecipe};
+use resources::ResourceName;
 
 #[test]
 fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
@@ -14,6 +16,27 @@ fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
         composer.upstream_version(),
         composer.platform().as_str(),
     ));
+    Ok(())
+}
+
+#[test]
+fn committed_recipe_metadata_parses() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let php = PhpRecipe::load(&workspace_root.join("release/artifacts/recipes/php/tracks.toml"))?;
+    let composer = ComposerRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/composer/composer.toml"),
+    )?;
+    let defaults =
+        ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
+
+    assert_eq!(php.default_track().as_str(), "8.4");
+    assert_eq!(php.tracks().len(), 3);
+    assert_eq!(composer.track().as_str(), "2");
+    assert_eq!(composer.platform().as_str(), "any");
+    assert_default_track(&defaults, "php", "8.4")?;
+    assert_default_track(&defaults, "frankenphp", "8.4")?;
+    assert_default_track(&defaults, "composer", "2")?;
+
     Ok(())
 }
 
@@ -96,6 +119,21 @@ fn php_summary(recipe: &PhpRecipe) -> Vec<(String, String, String)> {
             )
         })
         .collect()
+}
+
+fn assert_default_track(
+    defaults: &ManifestDefaults,
+    resource_name: &str,
+    expected_track: &str,
+) -> Result<()> {
+    let resource_name = ResourceName::new(resource_name)?;
+    assert_eq!(
+        defaults
+            .default_track_for(&resource_name)
+            .map(|track| track.as_str()),
+        Some(expected_track)
+    );
+    Ok(())
 }
 
 const VALID_PHP_TOML: &str = r#"

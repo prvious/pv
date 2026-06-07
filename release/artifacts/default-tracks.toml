@@ -1,0 +1,11 @@
+[[resource]]
+name = "php"
+default_track = "8.4"
+
+[[resource]]
+name = "frankenphp"
+default_track = "8.4"
+
+[[resource]]
+name = "composer"
+default_track = "2"

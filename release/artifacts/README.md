@@ -31,3 +31,13 @@ cargo run -p pv-release -- validate-archive \
   --archive path/to/artifact.tar.gz \
   --record release/artifacts/records/path/to/record.json
 ```
+
+## Recipes
+
+Both recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
+
+`recipes/php/tracks.toml` is the data source for PHP and FrankenPHP artifact builds. It pins PHP tracks, source URLs, checksums, the expected extension set, the macOS deployment target, and the FrankenPHP source version used by the recipe.
+
+`recipes/composer/composer.toml` is the data source for Composer track `2`. Composer is packaged as a `platform: "any"` artifact.
+
+`default-tracks.toml` gives the manifest generator explicit default tracks for generated resources, including Composer's single generated track.
