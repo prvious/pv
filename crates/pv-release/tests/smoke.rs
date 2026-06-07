@@ -10,6 +10,7 @@ use pv_release::smoke::run_smoke_hook;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
@@ -197,38 +198,16 @@ esac
 }
 
 #[test]
-fn php_build_smoke_uses_combined_staticphp_command_and_verified_source_for_cli() -> Result<()> {
-    let run = run_php_build_recipe_smoke("php")?;
-    let source_dir = format!("{}/sources/php-8.4.20-pv1-source/php-source", run.out_dir);
-    let expected_log = format!(
-        "pwd={}/work/php-8.4.20-pv1-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-cli][--dl-with-php=8.4.20][--dl-custom-local][php-src:{source_dir}]\n",
-        run.out_dir
-    );
-
-    assert!(
-        run.output.status.success(),
-        "build recipe failed: {}",
-        command_output_debug(&run.output)
-    );
-    let provenance = build_recipe_record_provenance(&run)?;
-    assert!(provenance.get("source_inputs").is_none());
-    assert_eq!(run.spc_log, expected_log);
-
-    Ok(())
-}
-
-#[test]
-fn frankenphp_build_smoke_uses_combined_staticphp_command_and_verified_source() -> Result<()> {
-    let run = run_php_build_recipe_smoke("frankenphp")?;
+fn php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot() -> Result<()> {
+    let run = run_php_build_recipe_smoke()?;
+    let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
     let frankenphp_source_dir = format!(
         "{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source/frankenphp-source",
         run.out_dir
     );
-    let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
     let expected_log = format!(
-        "pwd={}/work/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+        "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
+argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -237,9 +216,22 @@ argv=[build:php][json][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][-
         "build recipe failed: {}",
         command_output_debug(&run.output)
     );
-    assert_debug_snapshot!(build_recipe_record_provenance(&run)?);
-    assert_debug_snapshot!(build_recipe_notice_source_lines(&run)?);
     assert_eq!(run.spc_log, expected_log);
+    assert!(run.php_record_json.is_some(), "PHP record was not written");
+    assert!(run.php_notice.is_some(), "PHP NOTICE was not written");
+    assert!(
+        run.frankenphp_record_json.is_some(),
+        "FrankenPHP record was not written"
+    );
+    assert_debug_snapshot!(build_recipe_record_provenance(
+        run.php_record_json.as_deref()
+    )?);
+    assert_debug_snapshot!(build_recipe_record_provenance(
+        run.frankenphp_record_json.as_deref()
+    )?);
+    assert_debug_snapshot!(build_recipe_notice_source_lines(
+        run.frankenphp_notice.as_deref()
+    )?);
 
     Ok(())
 }
@@ -247,11 +239,8 @@ argv=[build:php][json][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][-
 #[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "php",
         lipo_archs: "x86_64",
-        macho_minos: "13.0",
-        macho_libraries: "",
-        macho_rpaths: "",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -267,11 +256,8 @@ fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
 #[test]
 fn php_build_smoke_rejects_newer_macho_minimum_os() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "php",
-        lipo_archs: "arm64",
         macho_minos: "14.0",
-        macho_libraries: "",
-        macho_rpaths: "",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -287,11 +273,8 @@ fn php_build_smoke_rejects_newer_macho_minimum_os() -> Result<()> {
 #[test]
 fn php_build_smoke_rejects_homebrew_linked_dylib() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "php",
-        lipo_archs: "arm64",
-        macho_minos: "13.0",
         macho_libraries: "\t/opt/homebrew/opt/icu4c/lib/libicuuc.74.dylib (compatibility version 74.0.0, current version 74.2.0)",
-        macho_rpaths: "",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -307,11 +290,8 @@ fn php_build_smoke_rejects_homebrew_linked_dylib() -> Result<()> {
 #[test]
 fn php_build_smoke_rejects_usr_local_linked_dylib() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "php",
-        lipo_archs: "arm64",
-        macho_minos: "13.0",
         macho_libraries: "\t/usr/local/lib/libfoo.dylib (compatibility version 1.0.0, current version 1.0.0)",
-        macho_rpaths: "",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -325,13 +305,11 @@ fn php_build_smoke_rejects_usr_local_linked_dylib() -> Result<()> {
 }
 
 #[test]
-fn frankenphp_build_smoke_rejects_homebrew_rpath() -> Result<()> {
+fn php_pair_build_smoke_rejects_homebrew_rpath_on_frankenphp_binary() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "frankenphp",
-        lipo_archs: "arm64",
-        macho_minos: "13.0",
-        macho_libraries: "\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)",
-        macho_rpaths: "/usr/local/opt/openssl@3/lib",
+        frankenphp_macho_libraries: "\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        frankenphp_macho_rpaths: "/usr/local/opt/openssl@3/lib",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -345,13 +323,11 @@ fn frankenphp_build_smoke_rejects_homebrew_rpath() -> Result<()> {
 }
 
 #[test]
-fn frankenphp_build_smoke_rejects_runner_rpath() -> Result<()> {
+fn php_pair_build_smoke_rejects_runner_rpath_on_frankenphp_binary() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "frankenphp",
-        lipo_archs: "arm64",
-        macho_minos: "13.0",
-        macho_libraries: "\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)",
-        macho_rpaths: "/Users/runner/hostedtoolcache/php/lib",
+        frankenphp_macho_libraries: "\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        frankenphp_macho_rpaths: "/Users/runner/hostedtoolcache/php/lib",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -367,11 +343,9 @@ fn frankenphp_build_smoke_rejects_runner_rpath() -> Result<()> {
 #[test]
 fn php_build_smoke_accepts_system_and_relative_macho_runtime_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource: "php",
-        lipo_archs: "arm64",
-        macho_minos: "13.0",
         macho_libraries: "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2503.1.0)\n\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@loader_path/../lib/libz.dylib (compatibility version 1.0.0, current version 1.3.1)",
         macho_rpaths: "@loader_path/../lib\n@executable_path/../lib",
+        ..default_build_recipe_options()
     })?;
 
     assert!(
@@ -390,31 +364,39 @@ fn summarize_result(result: pv_release::Result<()>) -> Result<(), ErrorSummary> 
 struct BuildRecipeRun {
     out_dir: String,
     output: Output,
-    record_json: Option<String>,
-    notice: Option<String>,
+    php_record_json: Option<String>,
+    frankenphp_record_json: Option<String>,
+    php_notice: Option<String>,
+    frankenphp_notice: Option<String>,
     spc_log: String,
 }
 
 struct BuildRecipeOptions<'a> {
-    resource: &'a str,
     lipo_archs: &'a str,
     macho_minos: &'a str,
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
+    frankenphp_macho_libraries: &'a str,
+    frankenphp_macho_rpaths: &'a str,
 }
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
 }
 
-fn run_php_build_recipe_smoke(resource: &str) -> Result<BuildRecipeRun> {
-    run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        resource,
+fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
+    run_php_build_recipe_smoke_with_options(default_build_recipe_options())
+}
+
+fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
+    BuildRecipeOptions {
         lipo_archs: "arm64",
         macho_minos: "13.0",
         macho_libraries: "",
         macho_rpaths: "",
-    })
+        frankenphp_macho_libraries: "",
+        frankenphp_macho_rpaths: "",
+    }
 }
 
 fn run_php_build_recipe_smoke_with_options(
@@ -429,14 +411,7 @@ fn run_php_build_recipe_smoke_with_options(
     let spc_log = tempdir.path().join("spc.log");
 
     create_dir_all(&fake_bin)?;
-    write_source_archive(
-        &source_archive,
-        match options.resource {
-            "php" => "php-source",
-            "frankenphp" => "frankenphp-source",
-            _ => options.resource,
-        },
-    )?;
+    write_source_archive(&source_archive, "frankenphp-source")?;
     write_source_archive(&php_source_archive, "php-source")?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
@@ -447,15 +422,23 @@ fn run_php_build_recipe_smoke_with_options(
 
     let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/php/build.sh");
-    let output = StdCommand::new(build_script)
+    let mut command = StdCommand::new(build_script);
+    command
         .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
         .env("PV_ARTIFACT_OUT_DIR", &out_dir)
         .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
         .env("PV_RECIPE_PLATFORM", "darwin-arm64")
-        .env("PV_RECIPE_RESOURCE", options.resource)
         .env("PV_RECIPE_TRACK", "8.4")
+        .env(
+            "PV_TEST_FRANKENPHP_MACHO_LIBRARIES",
+            options.frankenphp_macho_libraries,
+        )
+        .env(
+            "PV_TEST_FRANKENPHP_MACHO_RPATHS",
+            options.frankenphp_macho_rpaths,
+        )
         .env("PV_TEST_LIPO_ARCHS", options.lipo_archs)
         .env("PV_TEST_MACHO_LIBRARIES", options.macho_libraries)
         .env("PV_TEST_MACHO_MINOS", options.macho_minos)
@@ -467,36 +450,56 @@ fn run_php_build_recipe_smoke_with_options(
         )
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
-        .env("PV_TEST_SPC_LOG", &spc_log)
-        .output()?;
-    let artifact_version = match options.resource {
-        "php" => "8.4.20-pv1",
-        "frankenphp" => "8.4.20-frankenphp1.12.3-pv1",
-        resource => anyhow::bail!("unsupported PHP build recipe smoke resource `{resource}`"),
-    };
-    let artifact_basename = format!("{}-{}-darwin-arm64", options.resource, artifact_version);
-    let record = record_dir
-        .join(options.resource)
+        .env("PV_TEST_SPC_LOG", &spc_log);
+    let output = command.output()?;
+
+    let php_artifact_version = "8.4.20-pv1";
+    let php_artifact_basename = "php-8.4.20-pv1-darwin-arm64";
+    let php_record = record_dir
+        .join("php")
         .join("8.4")
-        .join(artifact_version)
+        .join(php_artifact_version)
         .join("darwin-arm64")
-        .join(format!("{artifact_basename}.json"));
-    let notice = out_dir
+        .join(format!("{php_artifact_basename}.json"));
+    let php_notice = out_dir
         .join("work")
-        .join(&artifact_basename)
-        .join(&artifact_basename)
+        .join("php-pair-8.4-darwin-arm64")
+        .join(php_artifact_basename)
         .join("NOTICE");
-    let (record_json, notice) = if output.status.success() {
-        (Some(read_file(&record)?), Some(read_file(&notice)?))
-    } else {
-        (None, None)
-    };
+
+    let frankenphp_artifact_version = "8.4.20-frankenphp1.12.3-pv1";
+    let frankenphp_artifact_basename = "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64";
+    let frankenphp_record = record_dir
+        .join("frankenphp")
+        .join("8.4")
+        .join(frankenphp_artifact_version)
+        .join("darwin-arm64")
+        .join(format!("{frankenphp_artifact_basename}.json"));
+    let frankenphp_notice = out_dir
+        .join("work")
+        .join("php-pair-8.4-darwin-arm64")
+        .join(frankenphp_artifact_basename)
+        .join("NOTICE");
+
+    let (php_record_json, frankenphp_record_json, php_notice, frankenphp_notice) =
+        if output.status.success() {
+            (
+                read_optional_file(&php_record)?,
+                read_optional_file(&frankenphp_record)?,
+                read_optional_file(&php_notice)?,
+                read_optional_file(&frankenphp_notice)?,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
     Ok(BuildRecipeRun {
         out_dir: out_dir.to_string(),
         output,
-        record_json,
-        notice,
+        php_record_json,
+        frankenphp_record_json,
+        php_notice,
+        frankenphp_notice,
         spc_log: read_file(&spc_log)?,
     })
 }
@@ -520,11 +523,9 @@ fn build_recipe_output_summary(run: &BuildRecipeRun) -> (bool, Option<i32>, Stri
     )
 }
 
-fn build_recipe_record_provenance(run: &BuildRecipeRun) -> Result<Value> {
-    let record_json = run
-        .record_json
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("build recipe did not produce a record"))?;
+fn build_recipe_record_provenance(record_json: Option<&str>) -> Result<Value> {
+    let record_json =
+        record_json.ok_or_else(|| anyhow::anyhow!("build recipe did not produce a record"))?;
     let record: Value = serde_json::from_str(record_json)?;
     record
         .get("provenance")
@@ -532,11 +533,8 @@ fn build_recipe_record_provenance(run: &BuildRecipeRun) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("build recipe record did not contain provenance"))
 }
 
-fn build_recipe_notice_source_lines(run: &BuildRecipeRun) -> Result<Vec<&str>> {
-    let notice = run
-        .notice
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("build recipe did not produce NOTICE"))?;
+fn build_recipe_notice_source_lines(notice: Option<&str>) -> Result<Vec<&str>> {
+    let notice = notice.ok_or_else(|| anyhow::anyhow!("build recipe did not produce NOTICE"))?;
     Ok(notice
         .lines()
         .filter(|line| line.contains("source"))
@@ -556,33 +554,43 @@ set -eu
 if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
   case "$5" in
     print-recipe-env)
-      case "$PV_RECIPE_RESOURCE" in
+      resource=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --resource)
+            shift
+            resource=${1:-}
+            ;;
+        esac
+        shift
+      done
+      case "$resource" in
         php)
           upstream_version=8.4.20
           artifact_version=8.4.20-pv1
           source_url=https://sources.example.test/php.tar.gz
+          source_sha256=$PV_TEST_PHP_SOURCE_SHA256
+          php_source_env=
           ;;
         frankenphp)
           upstream_version=8.4.20-frankenphp1.12.3
           artifact_version=8.4.20-frankenphp1.12.3-pv1
           source_url=https://sources.example.test/frankenphp.tar.gz
+          source_sha256=$PV_TEST_SOURCE_SHA256
+          php_source_env="PV_PHP_SOURCE_URL=https://sources.example.test/php.tar.gz
+PV_PHP_SOURCE_SHA256=$PV_TEST_PHP_SOURCE_SHA256"
           ;;
         *) exit 77 ;;
       esac
-      php_source_env=
-      if [ "$PV_RECIPE_RESOURCE" = "frankenphp" ]; then
-        php_source_env="PV_PHP_SOURCE_URL=https://sources.example.test/php.tar.gz
-PV_PHP_SOURCE_SHA256=$PV_TEST_PHP_SOURCE_SHA256"
-      fi
       cat <<EOF
-PV_RESOURCE=$PV_RECIPE_RESOURCE
+PV_RESOURCE=$resource
 PV_TRACK=$PV_RECIPE_TRACK
 PV_PLATFORM=$PV_RECIPE_PLATFORM
 PV_PHP_VERSION=8.4.20
 PV_UPSTREAM_VERSION=$upstream_version
 PV_ARTIFACT_VERSION=$artifact_version
 PV_SOURCE_URL=$source_url
-PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
+PV_SOURCE_SHA256=$source_sha256
 $php_source_env
 PV_EXPECTED_EXTENSIONS=json
 PV_BUILD_EXTENSIONS=json
@@ -657,11 +665,21 @@ fn write_fake_otool(path: &Utf8Path) -> Result<()> {
         r#"#!/bin/sh
 set -eu
 
+binary=${2:-}
+macho_libraries=${PV_TEST_MACHO_LIBRARIES:-}
+macho_rpaths=${PV_TEST_MACHO_RPATHS:-}
+case "$binary" in
+  */bin/frankenphp)
+    macho_libraries=${PV_TEST_FRANKENPHP_MACHO_LIBRARIES:-$macho_libraries}
+    macho_rpaths=${PV_TEST_FRANKENPHP_MACHO_RPATHS:-$macho_rpaths}
+    ;;
+esac
+
 case "${1:-}" in
   -L)
-    printf '%s:\n' "${2:-}"
-    if [ -n "${PV_TEST_MACHO_LIBRARIES:-}" ]; then
-      printf '%s\n' "$PV_TEST_MACHO_LIBRARIES"
+    printf '%s:\n' "$binary"
+    if [ -n "$macho_libraries" ]; then
+      printf '%s\n' "$macho_libraries"
     fi
     ;;
   -l)
@@ -673,9 +691,9 @@ Load command 1
     minos $PV_TEST_MACHO_MINOS
       sdk 15.0
 EOF
-    if [ -n "${PV_TEST_MACHO_RPATHS:-}" ]; then
+    if [ -n "$macho_rpaths" ]; then
       load_command=2
-      printf '%s\n' "$PV_TEST_MACHO_RPATHS" | while IFS= read -r macho_rpath; do
+      printf '%s\n' "$macho_rpaths" | while IFS= read -r macho_rpath; do
         cat <<EOF
 Load command $load_command
           cmd LC_RPATH
@@ -713,18 +731,23 @@ printf '\n' >>"$PV_TEST_SPC_LOG"
 }
 
 mkdir -p buildroot/bin
+built_target=
 case " $* " in
   *" --build-cli "*)
     printf '%s\n' '#!/bin/sh' >buildroot/bin/php
-    ;;
-  *" --build-frankenphp "*)
-    printf '%s\n' '#!/bin/sh' >buildroot/bin/frankenphp
-    ;;
-  *)
-    printf '%s\n' 'missing StaticPHP build target flag' >&2
-    exit 78
+    built_target=1
     ;;
 esac
+case " $* " in
+  *" --build-frankenphp "*)
+    printf '%s\n' '#!/bin/sh' >buildroot/bin/frankenphp
+    built_target=1
+    ;;
+esac
+[ -n "$built_target" ] || {
+  printf '%s\n' 'missing StaticPHP build target flag' >&2
+  exit 78
+}
 "#,
     )
 }
@@ -840,4 +863,16 @@ fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
 )]
 fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests inspect optional smoke hook outputs"
+)]
+fn read_optional_file(path: &Utf8Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
