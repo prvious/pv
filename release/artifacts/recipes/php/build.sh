@@ -159,7 +159,7 @@ validate_macho_binary() {
 
   binary_minos=$(macho_minimum_os "$binary")
   [ -n "$binary_minos" ] || die "$binary Mach-O minimum macOS version not found"
-  version_lte "$binary_minos" "$PV_DEPLOYMENT_TARGET" || die "$binary Mach-O minimum macOS $binary_minos is newer than deployment target $PV_DEPLOYMENT_TARGET"
+  version_lte "$binary_minos" "$PHP_DEPLOYMENT_TARGET" || die "$binary Mach-O minimum macOS $binary_minos is newer than deployment target $PHP_DEPLOYMENT_TARGET"
 
   validate_macho_runtime_paths "$binary"
 }
@@ -186,31 +186,42 @@ mkdir -p "$spc_work_dir" "$OUT_DIR/sources"
 print_php_env php "$php_env_file"
 # shellcheck source=/dev/null
 . "$php_env_file"
-PHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
-PHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
-PHP_SOURCE_URL=$PV_SOURCE_URL
-PHP_SOURCE_SHA256=$PV_SOURCE_SHA256
-PHP_PHP_VERSION=$PV_PHP_VERSION
-PHP_BUILD_EXTENSIONS=$PV_BUILD_EXTENSIONS
-PHP_EXPECTED_EXTENSIONS=$PV_EXPECTED_EXTENSIONS
-PHP_DEPLOYMENT_TARGET=$PV_DEPLOYMENT_TARGET
-PHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
-PHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
+# print-recipe-env writes these PV_* assignments; ShellCheck cannot infer generated env files.
+# shellcheck disable=SC2153
+{
+  PHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
+  PHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
+  PHP_SOURCE_URL=$PV_SOURCE_URL
+  PHP_SOURCE_SHA256=$PV_SOURCE_SHA256
+  PHP_PHP_VERSION=$PV_PHP_VERSION
+  PHP_BUILD_EXTENSIONS=$PV_BUILD_EXTENSIONS
+  PHP_EXPECTED_EXTENSIONS=$PV_EXPECTED_EXTENSIONS
+  PHP_DEPLOYMENT_TARGET=$PV_DEPLOYMENT_TARGET
+  PHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
+  PHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
+}
 
 print_php_env frankenphp "$frankenphp_env_file"
 # shellcheck source=/dev/null
 . "$frankenphp_env_file"
-FRANKENPHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
-FRANKENPHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
-FRANKENPHP_SOURCE_URL=$PV_SOURCE_URL
-FRANKENPHP_SOURCE_SHA256=$PV_SOURCE_SHA256
-FRANKENPHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
-FRANKENPHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
+# print-recipe-env writes these PV_* assignments; ShellCheck cannot infer generated env files.
+# shellcheck disable=SC2153
+{
+  FRANKENPHP_UPSTREAM_VERSION=$PV_UPSTREAM_VERSION
+  FRANKENPHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
+  FRANKENPHP_SOURCE_URL=$PV_SOURCE_URL
+  FRANKENPHP_SOURCE_SHA256=$PV_SOURCE_SHA256
+  FRANKENPHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
+  FRANKENPHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
+}
 
-[ "$PV_PHP_VERSION" = "$PHP_PHP_VERSION" ] || die "PHP pair metadata mismatch: php env has $PHP_PHP_VERSION but frankenphp env has $PV_PHP_VERSION"
-[ "$PV_BUILD_EXTENSIONS" = "$PHP_BUILD_EXTENSIONS" ] || die "PHP pair metadata mismatch: extension build sets differ"
-[ "$PV_EXPECTED_EXTENSIONS" = "$PHP_EXPECTED_EXTENSIONS" ] || die "PHP pair metadata mismatch: expected extension sets differ"
-[ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
+# shellcheck disable=SC2153
+{
+  [ "$PV_PHP_VERSION" = "$PHP_PHP_VERSION" ] || die "PHP pair metadata mismatch: php env has $PHP_PHP_VERSION but frankenphp env has $PV_PHP_VERSION"
+  [ "$PV_BUILD_EXTENSIONS" = "$PHP_BUILD_EXTENSIONS" ] || die "PHP pair metadata mismatch: extension build sets differ"
+  [ "$PV_EXPECTED_EXTENSIONS" = "$PHP_EXPECTED_EXTENSIONS" ] || die "PHP pair metadata mismatch: expected extension sets differ"
+  [ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
+}
 
 export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
 
