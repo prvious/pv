@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." && pwd)
-# shellcheck source=../common.sh
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
+# shellcheck source=/dev/null
 . "$ROOT/release/artifacts/recipes/common.sh"
 
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
