@@ -81,21 +81,13 @@ fn reconcile_loaded_project(
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
-    let resolved_php_track = config_file
-        .config
-        .php
-        .as_deref()
-        .map(|selector| {
-            resolve_project_php_track(paths, Some(selector), project.desired_php_track.as_deref())
-        })
-        .transpose()?;
+    let resolved_php_track =
+        resolved_project_php_track_for_state(paths, project, config_file.config.php.as_deref())?;
     let has_env_mappings = config_file.config.has_env_mappings();
 
     apply_project_resource_plan(database, &project.id, &plan)?;
-    if config_file.config.php.is_some() {
+    if project.desired_php_track.as_deref() != resolved_php_track.as_deref() {
         database.replace_project_desired_php_track(&project.id, resolved_php_track.as_deref())?;
-    } else if project.desired_php_track.is_some() {
-        database.replace_project_desired_php_track(&project.id, None)?;
     }
     database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
@@ -140,6 +132,23 @@ fn reconcile_loaded_project(
     };
 
     Ok(summary)
+}
+
+fn resolved_project_php_track_for_state(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    config_selector: Option<&str>,
+) -> Result<Option<String>, DaemonError> {
+    match config_selector {
+        Some(selector) => {
+            resolve_project_php_track(paths, Some(selector), project.desired_php_track.as_deref())
+                .map(Some)
+        }
+        None if paths.downloads().join("manifest.json").exists() => {
+            resolve_project_php_track(paths, None, None).map(Some)
+        }
+        None => Ok(project.desired_php_track.clone()),
+    }
 }
 
 fn validate_project_config_and_plan(

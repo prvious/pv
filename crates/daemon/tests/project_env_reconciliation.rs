@@ -118,7 +118,7 @@ async fn project_env_reconciliation_reuses_concrete_track_for_latest_php() -> Re
 }
 
 #[tokio::test]
-async fn project_env_reconciliation_clears_persisted_php_track_when_config_omits_php() -> Result<()>
+async fn project_env_reconciliation_persists_default_php_track_when_config_omits_php() -> Result<()>
 {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -130,6 +130,7 @@ async fn project_env_reconciliation_clears_persisted_php_track_when_config_omits
     )?;
 
     run_project_reconciliation(&paths, &project).await?;
+    seed_manifest(&paths, "8.0")?;
     write_project_config(&project, "hostnames: []\n")?;
     run_project_reconciliation(&paths, &project).await?;
 
@@ -138,7 +139,7 @@ async fn project_env_reconciliation_clears_persisted_php_track_when_config_omits
         .project_by_id(&project.id)?
         .ok_or_else(|| anyhow!("expected linked project"))?;
 
-    assert_eq!(project.desired_php_track, None);
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.0"));
 
     Ok(())
 }
