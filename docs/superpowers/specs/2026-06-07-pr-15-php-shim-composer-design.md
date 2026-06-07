@@ -59,7 +59,7 @@ pv composer:uninstall [--prune] [--force]
 
 `pv php:list` lists installed PHP tracks, marks the global default, and may show Project usage counts for each track.
 
-Composer v1 behavior is intentionally simpler. `pv composer:install` installs Composer track `2`, ensures the global default PHP/FrankenPHP pair is installed because the Composer shim runs through the PHP shim, and creates or refreshes the Composer shim. `pv composer:update` updates Composer track `2` to the latest non-revoked artifact and refreshes the shim. `pv composer:uninstall [--prune] [--force]` removes the Composer artifact and shim. Without `--prune`, it preserves `~/.pv/composer` home/cache. With `--prune`, it removes PV-owned Composer home/cache.
+Composer v1 behavior is intentionally simpler. `pv composer:install` installs Composer track `2` and ensures the resolved global/default PHP/FrankenPHP pair is installed because the Composer shim runs through the PHP shim. `pv composer:update` updates Composer track `2` to the latest non-revoked artifact. `pv composer:uninstall [--prune] [--force]` removes the Composer artifact. Without `--prune`, it preserves `~/.pv/composer` home/cache. With `--prune`, it removes PV-owned Composer home/cache.
 
 ## Architecture
 
@@ -101,7 +101,7 @@ Run `pv php:install 8.4` to install it.
 
 If the `composer` shim cannot find Composer track `2`, it exits non-zero with a repair command such as `pv composer:install`. If Composer is installed but the required PHP track is missing, the error should point to the PHP repair command.
 
-If Project config parsing or mutation fails, `php:use` fails before installing artifacts or requesting reconciliation. If Project config mutation succeeds and artifact installation later fails, the config change remains. PV reports the installation failure and rerunning the same `pv php:use <track>` should repair the missing artifacts.
+If Project config parsing fails, `php:use` fails before installing artifacts or requesting reconciliation. `php:use` installs the PHP/FrankenPHP pair before mutating Project config or global selection state. If artifact installation fails, the selection remains unchanged and PV reports the installation failure.
 
 If `php:update` updates some tracks and one pair fails, PV reports the partial failure, keeps the last valid installed artifacts for the failed pair, and exits non-zero.
 
