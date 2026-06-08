@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::time::Duration;
 use std::{future::Future, io};
@@ -28,6 +29,7 @@ pub struct ProcessSpec {
     pub name: String,
     pub command: Utf8PathBuf,
     pub arguments: Vec<String>,
+    pub private_environment: BTreeMap<String, String>,
     pub config_path: Utf8PathBuf,
     pub log_path: Utf8PathBuf,
     pub pid_path: Utf8PathBuf,
@@ -481,6 +483,7 @@ async fn wait_for_process_group_exit(
 fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(&spec.command);
     command.args(&spec.arguments);
+    command.envs(&spec.private_environment);
     #[cfg(unix)]
     command.process_group(0);
 
@@ -688,6 +691,7 @@ impl RuntimeMetadata {
             name: self.name.clone(),
             command: self.command.as_str().into(),
             arguments: self.arguments.clone(),
+            private_environment: BTreeMap::new(),
             config_path: self.config_path.as_str().into(),
             log_path: self.log_path.as_str().into(),
             pid_path,

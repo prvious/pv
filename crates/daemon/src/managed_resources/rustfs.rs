@@ -80,6 +80,7 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
                 format!("{RESOURCE_HOST}:{console_port}"),
                 context.data_dir.to_string(),
             ],
+            private_environment: process_environment(&context.env)?,
             config_path,
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
@@ -193,6 +194,21 @@ fn allocation_env(
             required_env_value(resource_env, "port")?,
         ),
         ("url".to_string(), required_env_value(resource_env, "url")?),
+    ]))
+}
+
+fn process_environment(
+    resource_env: &EnvContextValues,
+) -> Result<BTreeMap<String, String>, DaemonError> {
+    Ok(BTreeMap::from([
+        (
+            "RUSTFS_ACCESS_KEY".to_string(),
+            required_env_value(resource_env, "access_key")?,
+        ),
+        (
+            "RUSTFS_SECRET_KEY".to_string(),
+            required_env_value(resource_env, "secret_key")?,
+        ),
     ]))
 }
 

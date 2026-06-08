@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use serde::Deserialize;
 use state::{
     Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
     ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
@@ -49,6 +50,27 @@ struct RuntimeFilePresence {
     pid: bool,
     metadata: bool,
     config: bool,
+}
+
+#[derive(Debug, PartialEq)]
+struct RustfsRuntimeCredentialSnapshot {
+    process_env: BTreeMap<String, String>,
+    recorded_access_key: String,
+    recorded_secret_key: String,
+    allocation_access_key: String,
+    allocation_secret_key: String,
+    runtime_metadata: RustfsRuntimeMetadataSnapshot,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct RustfsRuntimeMetadataSnapshot {
+    name: String,
+    command: String,
+    arguments: Vec<String>,
+    config_path: String,
+    resource_name: String,
+    track: String,
+    log_path: String,
 }
 
 #[tokio::test]
@@ -679,6 +701,77 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
         tempdir.path(),
         "rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_preserves_env",
         snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+    reserve_available_rustfs_ports(&paths)?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
+    assert_process_credentials_match_recorded_env(&first_snapshot)?;
+    assert_runtime_metadata_omits_credentials(&first_snapshot)?;
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    delete_optional_file(&rustfs_process_env_path(&paths, RUSTFS_TRACK))?;
+
+    write_project_config(
+        &project,
+        r#"rustfs:
+  version: "1.0"
+  env:
+    S3_ENDPOINT: "${endpoint}"
+    S3_ACCESS_KEY: "${access_key}"
+    S3_SECRET_KEY: "${secret_key}"
+  allocations:
+    uploads:
+      env:
+        AWS_BUCKET: "${bucket}"
+        AWS_ENDPOINT: "${endpoint}"
+        AWS_ACCESS_KEY_ID: "${access_key}"
+        AWS_SECRET_ACCESS_KEY: "${secret_key}"
+        AWS_URL: "${url}"
+"#,
+    )?;
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let restarted_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
+    assert_process_credentials_match_recorded_env(&restarted_snapshot)?;
+    assert_runtime_metadata_omits_credentials(&restarted_snapshot)?;
+    assert_eq!(
+        first_snapshot.recorded_access_key, restarted_snapshot.recorded_access_key,
+        "RustFS access key should remain stable from recorded context"
+    );
+    assert_eq!(
+        first_snapshot.recorded_secret_key, restarted_snapshot.recorded_secret_key,
+        "RustFS secret key should remain stable from recorded context"
+    );
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _cleanup_result =
+        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_runtime_receives_private_credentials_without_persisting_them",
+        (first_snapshot, restarted_snapshot),
     )?;
 
     Ok(())
@@ -1664,6 +1757,17 @@ fn reserve_rustfs_ports(paths: &PvPaths, api_port: u16, console_port: u16) -> Re
     Ok(())
 }
 
+fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
+    let api_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let console_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let api_port = api_listener.local_addr()?.port();
+    let console_port = console_listener.local_addr()?.port();
+    drop(api_listener);
+    drop(console_listener);
+
+    reserve_rustfs_ports(paths, api_port, console_port)
+}
+
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
     database.assign_port(
         PortRequest::resource_port("rustfs", RUSTFS_TRACK, port_name, port, port, port),
@@ -1686,6 +1790,10 @@ fn rustfs_bucket_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf
 
 fn rustfs_probe_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {
     rustfs_bucket_path(paths, track, bucket).join("__pv_rustfs_probe")
+}
+
+fn rustfs_process_env_path(paths: &PvPaths, track: &str) -> camino::Utf8PathBuf {
+    paths.resource_data_dir("rustfs", track).join("process-env")
 }
 
 fn rustfs_bucket_exists(paths: &PvPaths, track: &str, bucket: &str) -> Result<bool> {
@@ -1723,6 +1831,107 @@ fn redis_project_config() -> &'static str {
         CACHE_REDIS_PREFIX: "${prefix}"
         CACHE_REDIS_URL: "${url}"
 "#
+}
+
+fn rustfs_runtime_credential_snapshot(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<RustfsRuntimeCredentialSnapshot> {
+    let database = Database::open(paths)?;
+    let track = database.managed_resource_track("rustfs", RUSTFS_TRACK)?;
+    let allocations = database.resource_allocations(project_id, "rustfs")?;
+    let Some(allocation) = allocations.first() else {
+        bail!("RustFS reconciliation did not record an allocation");
+    };
+    let process_env = read_rustfs_process_env(paths, RUSTFS_TRACK)?;
+    let runtime_metadata_source =
+        state::fs::read_to_string(&paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK))?;
+    let runtime_metadata = serde_json::from_str(&runtime_metadata_source)?;
+
+    Ok(RustfsRuntimeCredentialSnapshot {
+        process_env,
+        recorded_access_key: required_env_value(&track.env, "access_key")?,
+        recorded_secret_key: required_env_value(&track.env, "secret_key")?,
+        allocation_access_key: required_env_value(&allocation.env, "access_key")?,
+        allocation_secret_key: required_env_value(&allocation.env, "secret_key")?,
+        runtime_metadata,
+    })
+}
+
+fn read_rustfs_process_env(paths: &PvPaths, track: &str) -> Result<BTreeMap<String, String>> {
+    let content = state::fs::read_to_string(&rustfs_process_env_path(paths, track))?;
+    let mut env = BTreeMap::new();
+
+    for line in content.lines().filter(|line| !line.is_empty()) {
+        let Some((key, value)) = line.split_once('=') else {
+            bail!("invalid RustFS process env probe line `{line}`");
+        };
+        env.insert(key.to_string(), value.to_string());
+    }
+
+    Ok(env)
+}
+
+fn required_env_value(env: &BTreeMap<String, String>, key: &str) -> Result<String> {
+    let Some(value) = env.get(key).filter(|value| !value.is_empty()) else {
+        bail!("missing env value `{key}`");
+    };
+
+    Ok(value.clone())
+}
+
+fn assert_process_credentials_match_recorded_env(
+    snapshot: &RustfsRuntimeCredentialSnapshot,
+) -> Result<()> {
+    assert_eq!(
+        required_env_value(&snapshot.process_env, "RUSTFS_ACCESS_KEY")?,
+        snapshot.recorded_access_key,
+        "RustFS child process access key should match recorded resource env"
+    );
+    assert_eq!(
+        required_env_value(&snapshot.process_env, "RUSTFS_SECRET_KEY")?,
+        snapshot.recorded_secret_key,
+        "RustFS child process secret key should match recorded resource env"
+    );
+    assert_eq!(
+        snapshot.allocation_access_key, snapshot.recorded_access_key,
+        "RustFS allocation access key should reuse resource env credentials"
+    );
+    assert_eq!(
+        snapshot.allocation_secret_key, snapshot.recorded_secret_key,
+        "RustFS allocation secret key should reuse resource env credentials"
+    );
+
+    Ok(())
+}
+
+fn assert_runtime_metadata_omits_credentials(
+    snapshot: &RustfsRuntimeCredentialSnapshot,
+) -> Result<()> {
+    let runtime_metadata = format!("{:#?}", snapshot.runtime_metadata);
+
+    assert!(
+        !runtime_metadata.contains(&snapshot.recorded_access_key),
+        "RustFS runtime metadata should not contain the access key"
+    );
+    assert!(
+        !runtime_metadata.contains(&snapshot.recorded_secret_key),
+        "RustFS runtime metadata should not contain the secret key"
+    );
+
+    Ok(())
+}
+
+fn delete_optional_file(path: &Utf8Path) -> Result<()> {
+    match state::fs::delete_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
@@ -2786,6 +2995,9 @@ console_address = sys.argv[2]
 data_dir = sys.argv[3]
 buckets_dir = os.path.join(data_dir, "buckets")
 os.makedirs(buckets_dir, exist_ok=True)
+with open(os.path.join(data_dir, "process-env"), "w", encoding="utf-8") as file:
+    file.write(f"RUSTFS_ACCESS_KEY={os.environ.get('RUSTFS_ACCESS_KEY', '')}\n")
+    file.write(f"RUSTFS_SECRET_KEY={os.environ.get('RUSTFS_SECRET_KEY', '')}\n")
 
 def split_address(value):
     host, port = value.rsplit(":", 1)
@@ -2934,6 +3146,18 @@ fn assert_with_normalized_runtime(
         "CACHE_REDIS_URL=redis://127.0.0.1:<redis_port>/0",
     );
     settings.add_filter(
+        r#""RUSTFS_SECRET_KEY": "[0-9a-f]{32}""#,
+        r#""RUSTFS_SECRET_KEY": "<secret_key>""#,
+    );
+    settings.add_filter(
+        r#"recorded_secret_key: "[0-9a-f]{32}""#,
+        r#"recorded_secret_key: "<secret_key>""#,
+    );
+    settings.add_filter(
+        r#"allocation_secret_key: "[0-9a-f]{32}""#,
+        r#"allocation_secret_key: "<secret_key>""#,
+    );
+    settings.add_filter(
         r#""dashboard_url": "http://127\.0\.0\.1:\d+""#,
         r#""dashboard_url": "http://127.0.0.1:<dashboard_port>""#,
     );
@@ -2981,6 +3205,7 @@ fn assert_with_normalized_runtime(
     );
     settings.add_filter(r"http:127\.0\.0\.1:\d+/", "http:127.0.0.1:<api_port>/");
     settings.add_filter(r"http://127\.0\.0\.1:\d+/", "http://127.0.0.1:<api_port>/");
+    settings.add_filter(r"127\.0\.0\.1:\d+", "127.0.0.1:<port>");
     settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
     settings.add_filter(r"os error \d+", "os error <code>");
     settings.add_filter(

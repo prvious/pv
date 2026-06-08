@@ -399,13 +399,17 @@ struct ResourceRuntimeAttempt<'a> {
 
 impl ResourceRuntimeAttempt<'_> {
     async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
-        let spec = self.adapter.build_process_spec(self.paths, context)?;
-        let readiness = self.adapter.readiness(context)?;
+        let env = self.adapter.resource_env(context)?;
+        let context = ManagedResourceRuntimeContext {
+            env: env.clone(),
+            ..context.clone()
+        };
+        let spec = self.adapter.build_process_spec(self.paths, &context)?;
+        let readiness = self.adapter.readiness(&context)?;
         let readiness_timeout = adapter_readiness_timeout(self.adapter);
 
         start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
-        let env = self.adapter.resource_env(context)?;
         self.database.record_managed_resource_track_env_context(
             &self.resource.resource_name,
             &self.resource.track,
@@ -414,7 +418,7 @@ impl ResourceRuntimeAttempt<'_> {
         let allocations =
             desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
-            .reconcile_allocations(self.paths, self.database, context, &env, &allocations)
+            .reconcile_allocations(self.paths, self.database, &context, &env, &allocations)
             .await?;
         self.database.record_runtime_observed_snapshot(
             self.subject.clone(),

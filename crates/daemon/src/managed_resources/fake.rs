@@ -104,6 +104,7 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
                 .artifact_adapter
                 .executable_path(&context.artifact_path),
             arguments: vec![smtp_port.to_string(), dashboard_port.to_string()],
+            private_environment: BTreeMap::new(),
             config_path,
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
