@@ -1469,7 +1469,7 @@ fn assert_with_normalized_runtime(
     settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
     settings.add_filter(r"os error \d+", "os error <code>");
     settings.add_filter(
-        r"I/O error: Connection refused \(os error <code>\)|I/O error: HTTP readiness returned non-success status",
+        r"I/O error: Connection refused \(os error <code>\)|I/O error: HTTP readiness returned non-success status|deadline has elapsed",
         "I/O error: readiness unavailable",
     );
     settings.add_filter(r"port: \d+", "port: <port>");
