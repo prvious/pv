@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod fake;
 mod mailpit;
+mod redis;
 pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
@@ -131,13 +132,6 @@ impl ResourceAdapter for ManagedResourceArtifactAdapter {
 }
 
 pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production adapter catalog registration uses resource names in follow-up PRs"
-        )
-    )]
     fn resource_name(&self) -> &'static str;
 
     fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError>;
@@ -195,6 +189,8 @@ impl ManagedResourceRuntimeCatalog {
             mailpit::MailpitRuntimeAdapter::NAME,
             Box::new(mailpit::MailpitRuntimeAdapter::new()),
         );
+        let redis = redis::RedisRuntimeAdapter::new();
+        adapters.insert(redis.resource_name(), Box::new(redis));
 
         Self {
             adapters,

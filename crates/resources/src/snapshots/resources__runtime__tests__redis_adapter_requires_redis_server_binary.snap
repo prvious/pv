@@ -1,0 +1,15 @@
+---
+source: crates/resources/src/runtime.rs
+expression: "(missing, present)"
+---
+(
+    Err(
+        InvalidArtifactLayout {
+            resource: "redis",
+            reason: "missing executable `bin/redis-server`",
+        },
+    ),
+    Ok(
+        (),
+    ),
+)

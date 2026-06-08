@@ -146,6 +146,20 @@ fn mailpit_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn redis_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["redis:install", "--help"])?,
+        run_pv(&["redis:update", "--help"])?,
+        run_pv(&["redis:uninstall", "--help"])?,
+        run_pv(&["redis:list", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 

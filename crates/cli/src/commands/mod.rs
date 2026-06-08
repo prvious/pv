@@ -17,6 +17,7 @@ mod mailpit;
 mod php;
 mod ports;
 mod project;
+mod redis;
 mod setup;
 
 pub(crate) fn execute(
@@ -67,6 +68,10 @@ pub(crate) fn execute(
         }
         Command::MailpitList | Command::MailList => mailpit::list(environment, stdout),
         Command::MailpitOpen | Command::MailOpen => mailpit::open(environment, stdout),
+        Command::RedisInstall(args) => redis::install(args, environment, stdout),
+        Command::RedisUpdate => redis::update(environment, stdout),
+        Command::RedisUninstall(args) => redis::uninstall(args, environment, stdout),
+        Command::RedisList => redis::list(environment, stdout),
     }
 }
 

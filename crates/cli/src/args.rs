@@ -165,6 +165,18 @@ pub(crate) enum Command {
 
     #[command(name = "mail:open", about = "Open the running Mailpit dashboard")]
     MailOpen,
+
+    #[command(name = "redis:install", about = "Install a Redis track")]
+    RedisInstall(RedisInstallArgs),
+
+    #[command(name = "redis:update", about = "Update installed Redis tracks")]
+    RedisUpdate,
+
+    #[command(name = "redis:uninstall", about = "Uninstall a Redis track")]
+    RedisUninstall(RedisUninstallArgs),
+
+    #[command(name = "redis:list", about = "List installed Redis tracks")]
+    RedisList,
 }
 
 #[derive(Debug, clap::Args)]
@@ -255,6 +267,24 @@ pub(crate) struct MailpitInstallArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct MailpitUninstallArgs {
     #[arg(value_name = "track", help = "Mailpit track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RedisInstallArgs {
+    #[arg(value_name = "track", help = "Redis track to install")]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RedisUninstallArgs {
+    #[arg(value_name = "track", help = "Redis track to uninstall")]
     pub(crate) track: String,
 
     #[arg(long, help = "Remove PV-owned runtime data for the track")]

@@ -67,3 +67,33 @@ pub fn mailpit_adapter() -> Result<RuntimeArtifactAdapter> {
         "bin/mailpit",
     ))
 }
+
+pub fn redis_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("redis")?,
+        "bin/redis-server",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use camino_tempfile::tempdir;
+    use insta::assert_debug_snapshot;
+
+    use crate::ResourceAdapter;
+
+    #[test]
+    fn redis_adapter_requires_redis_server_binary() -> Result<()> {
+        let tempdir = tempdir()?;
+        let adapter = super::redis_adapter()?;
+
+        let missing = adapter.validate_installation(tempdir.path());
+        state::fs::write_sensitive_file(&tempdir.path().join("bin/redis-server"), "")?;
+        let present = adapter.validate_installation(tempdir.path());
+
+        assert_debug_snapshot!((missing, present));
+
+        Ok(())
+    }
+}
