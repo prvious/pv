@@ -234,9 +234,10 @@ fn recipe_fixture_generation_validates_committed_mailpit_and_rustfs_recipes() ->
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
     let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
-    let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
+    let defaults = tempdir.path().join("default-tracks.toml");
 
     create_dir_all(&revocations)?;
+    write_file(&defaults, MAILPIT_RUSTFS_FIXTURE_DEFAULTS)?;
     generate_recipe_fixtures_with_backing(
         &php,
         &composer,
@@ -418,4 +419,26 @@ name = "8.2"
 upstream_version = "8.2.1"
 source_url = "https://download.redis.io/releases/redis-8.2.1.tar.gz"
 source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#;
+
+const MAILPIT_RUSTFS_FIXTURE_DEFAULTS: &str = r#"
+[[resource]]
+name = "php"
+default_track = "8.4"
+
+[[resource]]
+name = "frankenphp"
+default_track = "8.4"
+
+[[resource]]
+name = "composer"
+default_track = "2"
+
+[[resource]]
+name = "mailpit"
+default_track = "1"
+
+[[resource]]
+name = "rustfs"
+default_track = "1"
 "#;
