@@ -212,6 +212,64 @@ esac
 }
 
 #[test]
+fn composer_smoke_requires_php_binary() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+
+    create_dir_all(&artifact_root)?;
+    write_file(&artifact_root.join("composer.phar"), "composer fixture\n")?;
+
+    let output = StdCommand::new(composer_smoke_hook())
+        .arg(&artifact_root)
+        .env_remove("PV_COMPOSER_SMOKE_PHP")
+        .env("PV_UPSTREAM_VERSION", "2.10.1")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Composer smoke should fail without a PHP binary: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(42));
+
+    Ok(())
+}
+
+#[test]
+fn composer_smoke_rejects_prefix_version_match() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let command_bin = tempdir.path().join("commands");
+    let php = command_bin.join("php");
+
+    create_dir_all(&artifact_root)?;
+    create_dir_all(&command_bin)?;
+    write_file(&artifact_root.join("composer.phar"), "composer fixture\n")?;
+    write_executable(
+        &php,
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' 'Composer version 2.10.10 2026-01-01 00:00:00'
+"#,
+    )?;
+
+    let output = StdCommand::new(composer_smoke_hook())
+        .arg(&artifact_root)
+        .env("PV_COMPOSER_SMOKE_PHP", &php)
+        .env("PV_UPSTREAM_VERSION", "2.10.1")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Composer smoke should reject prefix version matches: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(43));
+
+    Ok(())
+}
+
+#[test]
 fn php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot() -> Result<()> {
     let run = run_php_build_recipe_smoke()?;
     let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
@@ -524,6 +582,11 @@ struct BuildRecipeOptions<'a> {
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
+}
+
+fn composer_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/composer/smoke.sh")
 }
 
 fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
