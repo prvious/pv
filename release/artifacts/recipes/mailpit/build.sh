@@ -62,7 +62,7 @@ tar -xzf "$source_archive" -C "$extract_dir"
 cp "$extract_dir/mailpit" "$root_dir/bin/mailpit"
 chmod 755 "$root_dir/bin/mailpit"
 validate_macho_binary "$root_dir/bin/mailpit" "$PV_PLATFORM" "$MAILPIT_DEPLOYMENT_TARGET"
-sign_macho_binary "$root_dir/bin/mailpit"
+pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
 cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
 {
   cat "$recipe_dir/NOTICE"

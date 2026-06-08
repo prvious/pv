@@ -4,6 +4,6 @@ expression: "publication_error_summary(error, fixture.root())"
 ---
 (
     "InvalidPublicationInput",
-    "manifest.json",
-    "publication object key collides between `versioned manifest` and `stable manifest`",
+    "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+    "stable manifest key must be `manifest.json`",
 )

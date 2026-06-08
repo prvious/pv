@@ -102,6 +102,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         });
     }
 
+    validate_publication_object_keys(request, &candidates)?;
     validate_publication_local_paths(request, &candidates)?;
     stage_immutable_uploads(request, &candidates)?;
     let tempdir = Utf8TempDir::new().map_err(|error| filesystem_error(&request.stage, error))?;
@@ -143,6 +144,49 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &request.stage.join("publication-plan.json"),
         &format!("{plan_json}\n"),
     )
+}
+
+fn validate_publication_object_keys(
+    request: &PublicationRequest,
+    candidates: &[CandidatePublication],
+) -> crate::Result<()> {
+    let mut seen = BTreeMap::new();
+    record_publication_object_key(
+        &mut seen,
+        &request.versioned_manifest_key,
+        "versioned manifest",
+    )?;
+    record_publication_object_key(&mut seen, &request.stable_manifest_key, "stable manifest")?;
+
+    for candidate in candidates {
+        record_publication_object_key(
+            &mut seen,
+            &candidate.archive_object_key,
+            "candidate archive",
+        )?;
+        record_publication_object_key(
+            &mut seen,
+            &candidate.record_object_key,
+            "candidate release record",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn record_publication_object_key(
+    seen: &mut BTreeMap<String, String>,
+    object_key: &str,
+    purpose: &str,
+) -> crate::Result<()> {
+    if let Some(existing) = seen.insert(object_key.to_string(), purpose.to_string()) {
+        Err(crate::ReleaseError::InvalidPublicationInput {
+            path: object_key.to_string(),
+            reason: format!("publication object key collides between `{existing}` and `{purpose}`"),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_publication_local_paths(

@@ -404,14 +404,8 @@ fn redis_build_recipe_signs_binaries_and_requires_third_party_notices() -> Resul
         "archive=redis-8.2.7-pv1-darwin-arm64.tar.gz record=redis-8.2.7-pv1-darwin-arm64.json smoke=smoke.sh\n"
     );
     assert_eq!(
-        run.codesign_log,
-        format!(
-            "argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
-argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
-argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n\
-argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n",
-            run.out_dir, run.out_dir, run.out_dir, run.out_dir
-        )
+        codesigned_file_names(&run.codesign_log),
+        ["redis-cli".to_string(), "redis-server".to_string()]
     );
 
     assert!(
@@ -1054,6 +1048,49 @@ fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
 }
 
 #[test]
+fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
+    let mut summaries = Vec::new();
+    for recipe in BackingBuildRecipe::all() {
+        let run = run_backing_build_recipe_signing_smoke(recipe)?;
+        assert!(
+            run.output.status.success(),
+            "{} build recipe failed: {}",
+            recipe.resource,
+            command_output_debug(&run.output)
+        );
+        assert!(
+            run.archive_exists,
+            "{} build recipe did not write an archive",
+            recipe.resource
+        );
+        assert!(
+            run.record_json.is_some(),
+            "{} build recipe did not write a record",
+            recipe.resource
+        );
+        let expected_signed_files = recipe
+            .signed_files
+            .iter()
+            .map(|file_name| (*file_name).to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run.signed_files, expected_signed_files,
+            "{} build recipe did not ad-hoc sign the expected payloads",
+            recipe.resource
+        );
+        summaries.push((
+            recipe.resource,
+            run.signed_files,
+            run.validate_log.replace(&run.out_dir, "<out>"),
+        ));
+    }
+
+    assert_debug_snapshot!(summaries);
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         lipo_archs: "x86_64",
@@ -1272,7 +1309,6 @@ struct ComposerBuildRecipeRun {
 }
 
 struct RedisBuildRecipeRun {
-    out_dir: String,
     output: Output,
     record_json: Option<String>,
     validate_log: String,
@@ -1281,9 +1317,29 @@ struct RedisBuildRecipeRun {
     archive_exists: bool,
 }
 
+#[derive(Clone, Copy)]
+struct BackingBuildRecipe {
+    resource: &'static str,
+    track: &'static str,
+    upstream_version: &'static str,
+    artifact_version: &'static str,
+    platform: &'static str,
+    source_kind: BackingSourceKind,
+    signed_files: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+enum BackingSourceKind {
+    Redis,
+    TarGzBinary,
+    ZipBinary,
+}
+
 struct BackingBuildRecipeRun {
+    out_dir: String,
     output: Output,
     record_json: Option<String>,
+    signed_files: Vec<String>,
     validate_log: String,
     archive_exists: bool,
 }
@@ -1307,6 +1363,47 @@ struct BackingBuildRecipeOptions<'a> {
     macho_minos: &'a str,
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
+}
+
+impl BackingBuildRecipe {
+    fn all() -> [Self; 3] {
+        [
+            Self {
+                resource: "redis",
+                track: "8.2",
+                upstream_version: "8.2.1",
+                artifact_version: "8.2.1-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::Redis,
+                signed_files: &["redis-cli", "redis-server"],
+            },
+            Self {
+                resource: "mailpit",
+                track: "1",
+                upstream_version: "1.30.1",
+                artifact_version: "1.30.1-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::TarGzBinary,
+                signed_files: &["mailpit"],
+            },
+            Self {
+                resource: "rustfs",
+                track: "1",
+                upstream_version: "1.0.0-beta.7",
+                artifact_version: "1.0.0-beta.7-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::ZipBinary,
+                signed_files: &["rustfs"],
+            },
+        ]
+    }
+
+    fn artifact_basename(self) -> String {
+        format!(
+            "{}-{}-{}",
+            self.resource, self.artifact_version, self.platform
+        )
+    }
 }
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
@@ -1416,7 +1513,6 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
         .join(format!("{artifact_basename}.json"));
 
     Ok(RedisBuildRecipeRun {
-        out_dir: out_dir.to_string(),
         output,
         record_json: read_optional_file(&record)?,
         validate_log: read_file(&validate_log)?,
@@ -1517,8 +1613,10 @@ fn run_backing_build_recipe_smoke(
         .join(format!("{artifact_basename}.json"));
 
     Ok(BackingBuildRecipeRun {
+        out_dir: out_dir.to_string(),
         output,
         record_json: read_optional_file(&record)?,
+        signed_files: codesigned_file_names(&read_file(&codesign_log)?),
         validate_log: read_file(&validate_log)?,
         archive_exists: path_exists(&archive),
     })
@@ -1575,6 +1673,78 @@ fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
             &out_dir.join(format!("{platform_artifact_basename}.tar.gz")),
         ),
         legacy_archive_exists: path_exists(&out_dir.join("composer-2.10.1-pv1.tar.gz")),
+    })
+}
+
+fn run_backing_build_recipe_signing_smoke(
+    recipe: BackingBuildRecipe,
+) -> Result<BackingBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join(format!("{}-source", recipe.resource));
+    let curl_log = tempdir.path().join("curl.log");
+    let sign_log = tempdir.path().join("codesign.log");
+    let validate_log = tempdir.path().join("validate.log");
+
+    create_dir_all(&fake_bin)?;
+    write_backing_source_archive(&source_archive, recipe)?;
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_make(&fake_bin.join("make"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_uname(&fake_bin.join("uname"))?;
+    write_fake_unzip(&fake_bin.join("unzip"))?;
+    write_file(&curl_log, "")?;
+    write_file(&sign_log, "")?;
+    write_file(&validate_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes")
+        .join(recipe.resource)
+        .join("build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", recipe.platform)
+        .env("PV_RECIPE_TRACK", recipe.track)
+        .env("PV_TEST_ARTIFACT_VERSION", recipe.artifact_version)
+        .env("PV_TEST_CODESIGN_LOG", &sign_log)
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "")
+        .env("PV_TEST_RESOURCE", recipe.resource)
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env("PV_TEST_UPSTREAM_VERSION", recipe.upstream_version)
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .output()?;
+
+    let artifact_basename = recipe.artifact_basename();
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join(recipe.resource)
+        .join(recipe.track)
+        .join(recipe.artifact_version)
+        .join(recipe.platform)
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(BackingBuildRecipeRun {
+        out_dir: out_dir.to_string(),
+        output,
+        record_json: read_optional_file(&record)?,
+        signed_files: codesigned_file_names(&read_file(&sign_log)?),
+        validate_log: read_file(&validate_log)?,
+        archive_exists: path_exists(&archive),
     })
 }
 
@@ -2629,6 +2799,91 @@ esac
     )
 }
 
+fn write_fake_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+build_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      shift
+      build_dir=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$build_dir" ] || exit 78
+mkdir -p "$build_dir/src"
+cat >"$build_dir/src/redis-server" <<'EOF'
+redis-server fixture
+EOF
+cat >"$build_dir/src/redis-cli" <<'EOF'
+redis-cli fixture
+EOF
+chmod 755 "$build_dir/src/redis-server" "$build_dir/src/redis-cli"
+"#,
+    )
+}
+
+fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+[ "${1:-}" = "-n" ] || exit 78
+[ "${2:-}" = "hw.ncpu" ] || exit 78
+printf '%s\n' 1
+"#,
+    )
+}
+
+fn write_fake_uname(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  -s) printf '%s\n' Darwin ;;
+  -m) printf '%s\n' arm64 ;;
+  *) exit 78 ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_unzip(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+extract_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d)
+      shift
+      extract_dir=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$extract_dir" ] || exit 78
+mkdir -p "$extract_dir"
+cat >"$extract_dir/rustfs" <<'EOF'
+rustfs fixture
+EOF
+chmod 755 "$extract_dir/rustfs"
+"#,
+    )
+}
+
 fn write_fake_signing_otool(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2780,27 +3035,6 @@ esac
     )
 }
 
-fn write_fake_make(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -C)
-      shift
-      cd "$1"
-      ;;
-  esac
-  shift
-done
-mkdir -p src
-printf '%s\n' '#!/bin/sh' >src/redis-server
-printf '%s\n' '#!/bin/sh' >src/redis-cli
-"#,
-    )
-}
-
 fn write_fake_codesign(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2830,56 +3064,6 @@ exit 0
     )
 }
 
-fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-[ "${1:-}" = "-n" ] || exit 78
-[ "${2:-}" = "hw.ncpu" ] || exit 78
-printf '%s\n' 4
-"#,
-    )
-}
-
-fn write_fake_uname(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-case "${1:-}" in
-  -s) printf '%s\n' Darwin ;;
-  -m) printf '%s\n' arm64 ;;
-  *) exit 78 ;;
-esac
-"#,
-    )
-}
-
-fn write_fake_unzip(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-
-destination=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -d)
-      shift
-      destination=${1:-}
-      ;;
-  esac
-  shift
-done
-
-[ -n "$destination" ] || exit 78
-mkdir -p "$destination"
-printf '%s\n' '#!/bin/sh' >"$destination/$PV_TEST_BINARY_NAME"
-"#,
-    )
-}
-
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -2895,6 +3079,36 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     header.set_mode(0o644);
     header.set_cksum();
     builder.append(&header, content as &[u8])?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+fn write_backing_source_archive(path: &Utf8Path, recipe: BackingBuildRecipe) -> Result<()> {
+    match recipe.source_kind {
+        BackingSourceKind::Redis => write_redis_source_archive(path),
+        BackingSourceKind::TarGzBinary => {
+            write_single_file_archive(path, recipe.resource, b"binary fixture")
+        }
+        BackingSourceKind::ZipBinary => write_file(path, "zip fixture\n"),
+    }
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_single_file_archive(path: &Utf8Path, entry_path: &str, content: &[u8]) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_path(entry_path)?;
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder.append(&header, content)?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
@@ -3019,6 +3233,20 @@ fn file_sha256(path: &Utf8Path) -> Result<String> {
     hasher.update(&bytes);
 
     Ok(HEXLOWER.encode(&hasher.finalize()))
+}
+
+fn codesigned_file_names(sign_log: &str) -> Vec<String> {
+    let mut file_names = Vec::new();
+    for line in sign_log.lines() {
+        if let Some((_prefix, path)) = line.rsplit_once('[') {
+            let path = path.trim_end_matches(']');
+            if let Some(file_name) = Utf8Path::new(path).file_name() {
+                file_names.push(file_name.to_string());
+            }
+        }
+    }
+    file_names.sort();
+    file_names
 }
 
 #[derive(Debug, PartialEq, Eq)]

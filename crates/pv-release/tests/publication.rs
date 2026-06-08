@@ -236,6 +236,43 @@ fn publication_stage_rejects_stable_and_versioned_manifest_key_collision_before_
     Ok(())
 }
 
+#[test]
+fn publication_stage_rejects_versioned_manifest_object_key_collision_with_candidate_archive()
+-> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_valid_candidate()?;
+
+    let archive_key =
+        "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz";
+    let error = publication_error(prepare_publication(
+        &fixture.request_with_keys(archive_key, "manifest.json"),
+    ))?;
+
+    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
+    assert!(!path_exists(&fixture.stage().join(archive_key)));
+    assert!(!path_exists(&fixture.stage().join("publication-plan.json")));
+
+    Ok(())
+}
+
+#[test]
+fn publication_stage_rejects_stable_manifest_key_outside_manifest_entrypoint() -> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_valid_candidate()?;
+
+    let archive_key =
+        "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz";
+    let error = publication_error(prepare_publication(
+        &fixture.request_with_keys("manifests/runs/123456789/manifest.json", archive_key),
+    ))?;
+
+    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
+    assert!(!path_exists(&fixture.stage().join(archive_key)));
+    assert!(!path_exists(&fixture.stage().join("publication-plan.json")));
+
+    Ok(())
+}
+
 struct PublicationFixture {
     tempdir: camino_tempfile::Utf8TempDir,
     source_archives: camino::Utf8PathBuf,

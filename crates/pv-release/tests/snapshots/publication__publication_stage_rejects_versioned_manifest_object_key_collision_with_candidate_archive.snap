@@ -1,0 +1,9 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: "publication_error_summary(error, fixture.root())"
+---
+(
+    "InvalidPublicationInput",
+    "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+    "publication object key collides between `versioned manifest` and `candidate archive`",
+)
