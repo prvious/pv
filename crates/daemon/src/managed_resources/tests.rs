@@ -1206,6 +1206,37 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let adapter = super::redis::RedisRuntimeAdapter::new();
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "redis".to_string(),
+        track: REDIS_TRACK.to_string(),
+        artifact_path: tempdir.path().join("redis-artifact"),
+        data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
+        ports: BTreeMap::from([("redis".to_string(), 6380)]),
+    };
+
+    let spec =
+        super::ManagedResourceRuntimeAdapter::build_process_spec(&adapter, &paths, &context)?;
+
+    assert!(
+        !spec.arguments.iter().any(String::is_empty),
+        "Redis process arguments must not contain empty argv tokens: {:#?}",
+        spec.arguments
+    );
+    let config = state::fs::read_to_string(&spec.config_path)?;
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_process_arguments_disable_snapshots_without_empty_argv",
+        (spec.arguments, config),
+    )?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn redis_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
     let tempdir = tempdir()?;
@@ -2223,33 +2254,34 @@ fn redis_server_script() -> &'static str {
     r#"#!/bin/sh
 set -eu
 
-port=""
-data_dir=""
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --port)
-      port="$2"
-      shift 2
-      ;;
-    --dir)
-      data_dir="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-
-if [ -n "$data_dir" ]; then
-  mkdir -p "$data_dir"
-fi
-
-python3 - "$port" <<'PY'
+python3 - "$@" <<'PY'
+import os
 import signal
+import shlex
 import socketserver
 import sys
+
+def redis_config(argv):
+    port = None
+    data_dir = None
+    args = list(argv)
+    while args:
+        arg = args.pop(0)
+        if arg == "--port" and args:
+            port = int(args.pop(0))
+        elif arg == "--dir" and args:
+            data_dir = args.pop(0)
+        elif os.path.isfile(arg):
+            with open(arg, "r", encoding="utf-8") as config:
+                for line in config:
+                    parts = shlex.split(line)
+                    if len(parts) == 2 and parts[0] == "port":
+                        port = int(parts[1])
+                    elif len(parts) == 2 and parts[0] == "dir":
+                        data_dir = parts[1]
+    if port is None:
+        raise RuntimeError("missing Redis port")
+    return port, data_dir
 
 class RedisPingHandler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -2273,7 +2305,11 @@ class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 def stop(_signum, _frame):
     server.shutdown()
 
-server = RedisServer(("127.0.0.1", int(sys.argv[1])), RedisPingHandler)
+port, data_dir = redis_config(sys.argv[1:])
+if data_dir:
+    os.makedirs(data_dir, exist_ok=True)
+
+server = RedisServer(("127.0.0.1", port), RedisPingHandler)
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 server.serve_forever()
@@ -2321,6 +2357,7 @@ fn assert_with_normalized_runtime(
         r"redis-ping:127\.0\.0\.1:\d+",
         "redis-ping:127.0.0.1:<redis_port>",
     );
+    settings.add_filter(r"port \d+", "port <redis_port>");
     settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
     settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
     settings.add_filter(

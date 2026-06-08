@@ -45,28 +45,20 @@ impl ManagedResourceRuntimeAdapter for RedisRuntimeAdapter {
     ) -> Result<ProcessSpec, DaemonError> {
         let port = required_port(context, "redis")?;
         let config_path = paths.resource_runtime_config(&context.resource_name, &context.track);
-        let arguments = vec![
-            "--bind".to_string(),
-            RESOURCE_HOST.to_string(),
-            "--port".to_string(),
-            port.to_string(),
-            "--dir".to_string(),
-            context.data_dir.as_str().to_string(),
-            "--save".to_string(),
-            String::new(),
-            "--appendonly".to_string(),
-            "no".to_string(),
-        ];
-        let config = serde_json::json!({
-            "resource": context.resource_name,
-            "track": context.track,
-            "port": port,
-            "data_dir": context.data_dir.as_str(),
-            "arguments": arguments.clone(),
-        });
+        let data_dir = serde_json::to_string(context.data_dir.as_str())?;
+        let config = format!(
+            "\
+bind {RESOURCE_HOST}
+port {port}
+dir {data_dir}
+save \"\"
+appendonly no
+"
+        );
+        let arguments = vec![config_path.as_str().to_string()];
 
         create_dir_all(&context.data_dir)?;
-        state::fs::write_sensitive_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
+        state::fs::write_sensitive_file(&config_path, &config)?;
 
         Ok(ProcessSpec {
             name: format!("{}-{}", context.resource_name, context.track),
