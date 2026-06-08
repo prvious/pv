@@ -271,11 +271,13 @@ pub fn run() -> anyhow::Result<()> {
             platform,
         } => {
             let env = print_recipe_env(
-                php.as_deref(),
-                composer.as_deref(),
-                redis.as_deref(),
-                mailpit.as_deref(),
-                rustfs.as_deref(),
+                RecipeEnvPaths {
+                    php: php.as_deref(),
+                    composer: composer.as_deref(),
+                    redis: redis.as_deref(),
+                    mailpit: mailpit.as_deref(),
+                    rustfs: rustfs.as_deref(),
+                },
                 &resource,
                 &track,
                 &platform,
@@ -286,6 +288,15 @@ pub fn run() -> anyhow::Result<()> {
                 .context("failed to write recipe environment to stdout")
         }
     }
+}
+
+#[derive(Default)]
+struct RecipeEnvPaths<'a> {
+    php: Option<&'a Utf8Path>,
+    composer: Option<&'a Utf8Path>,
+    redis: Option<&'a Utf8Path>,
+    mailpit: Option<&'a Utf8Path>,
+    rustfs: Option<&'a Utf8Path>,
 }
 
 fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
@@ -341,16 +352,18 @@ fn backing_recipe_paths(
 }
 
 fn print_recipe_env(
-    php: Option<&Utf8Path>,
-    composer: Option<&Utf8Path>,
-    redis: Option<&Utf8Path>,
-    mailpit: Option<&Utf8Path>,
-    rustfs: Option<&Utf8Path>,
+    paths: RecipeEnvPaths<'_>,
     resource: &str,
     track: &str,
     platform: &str,
 ) -> anyhow::Result<String> {
-    match (php, composer, redis, mailpit, rustfs) {
+    match (
+        paths.php,
+        paths.composer,
+        paths.redis,
+        paths.mailpit,
+        paths.rustfs,
+    ) {
         (Some(php), None, None, None, None) => {
             let context = format!("failed to print PHP recipe environment for `{php}`");
             crate::recipe::php_recipe_env(php, resource, track, platform).context(context)
@@ -1085,16 +1098,16 @@ mod tests {
         let mailpit = Utf8Path::new("release/artifacts/recipes/mailpit/recipe.toml");
 
         assert!(
-            print_recipe_env(None, None, None, None, None, "php", "8.4", "darwin-arm64").is_err(),
+            print_recipe_env(RecipeEnvPaths::default(), "php", "8.4", "darwin-arm64").is_err(),
             "missing metadata path must be rejected"
         );
         assert!(
             print_recipe_env(
-                Some(php),
-                Some(composer),
-                None,
-                None,
-                None,
+                RecipeEnvPaths {
+                    php: Some(php),
+                    composer: Some(composer),
+                    ..RecipeEnvPaths::default()
+                },
                 "php",
                 "8.4",
                 "darwin-arm64"
@@ -1104,11 +1117,11 @@ mod tests {
         );
         assert!(
             print_recipe_env(
-                Some(php),
-                None,
-                Some(redis),
-                None,
-                None,
+                RecipeEnvPaths {
+                    php: Some(php),
+                    redis: Some(redis),
+                    ..RecipeEnvPaths::default()
+                },
                 "redis",
                 "8.2",
                 "darwin-arm64"
@@ -1118,11 +1131,11 @@ mod tests {
         );
         assert!(
             print_recipe_env(
-                None,
-                None,
-                Some(redis),
-                Some(mailpit),
-                None,
+                RecipeEnvPaths {
+                    redis: Some(redis),
+                    mailpit: Some(mailpit),
+                    ..RecipeEnvPaths::default()
+                },
                 "redis",
                 "8.2",
                 "darwin-arm64"
