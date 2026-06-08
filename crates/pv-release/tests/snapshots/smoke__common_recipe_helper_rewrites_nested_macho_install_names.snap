@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: rewrites
+---
+[
+    "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/../lib/libmysqlclient.dylib][<tmp>/artifact/bin/mysql]",
+    "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/../libmysqlclient.dylib][<tmp>/artifact/lib/plugin/auth.so]",
+    "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/../libmysqlclient.dylib][<tmp>/artifact/lib/postgresql/extension.so]",
+    "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/libmysqlclient.dylib][<tmp>/artifact/lib/libmysqlclient.dylib]",
+    "argv=[-id][@loader_path/libmysqlclient.dylib][<tmp>/artifact/lib/libmysqlclient.dylib]",
+]
