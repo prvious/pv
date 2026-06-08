@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "adapter command modules reuse this private helper in follow-up PRs"
-)]
-
 use std::collections::BTreeMap;
 use std::io;
 use std::io::Write;

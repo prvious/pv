@@ -22,6 +22,7 @@ const FAKE_MAILPIT_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const FAKE_SQL_TRACK: &str = "8.0";
 const FAKE_SQL_ARTIFACT_VERSION: &str = "8.0.0-pv1";
+const MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
@@ -39,6 +40,124 @@ struct RuntimeFilePresence {
     pid: bool,
     metadata: bool,
     config: bool,
+}
+
+#[tokio::test]
+async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        assert_runtime_status(
+            &runtime_states,
+            FAKE_MAILPIT_TRACK,
+            RuntimeObservedStatus::Running,
+        );
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            runtime_states,
+        )
+    };
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "mailpit_reconciliation_records_smtp_and_dashboard_env",
+        snapshot,
+    )?;
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn mailpit_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_mailpit_cached_fixture(&paths, tempdir.path())?;
+
+    reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        assert_runtime_status(
+            &runtime_states,
+            FAKE_MAILPIT_TRACK,
+            RuntimeObservedStatus::Running,
+        );
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            runtime_states,
+        )
+    };
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "mailpit_project_demand_installs_missing_fixture_track_before_start",
+        snapshot,
+    )?;
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -903,6 +1022,25 @@ async fn reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
     Ok(())
 }
 
+async fn reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
+    paths: &PvPaths,
+    project_id: &str,
+    manifest_url: &str,
+) -> Result<()> {
+    let catalog = super::mailpit_runtime_catalog(manifest_url)?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
 async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -1009,6 +1147,27 @@ fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     seed_fake_mailpit_artifact_with_script(paths, track, fake_mailpit_script())
 }
 
+fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("mailpit")
+        .join(track)
+        .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}"));
+    let executable = release_path.join("bin/mailpit");
+
+    state::fs::write_sensitive_file(&executable, mailpit_script())?;
+    set_executable(&executable)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "mailpit",
+        track,
+        FAKE_MAILPIT_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
+}
+
 fn seed_fake_mailpit_artifact_with_script(
     paths: &PvPaths,
     track: &str,
@@ -1105,6 +1264,24 @@ fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Resu
     Ok(())
 }
 
+fn seed_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    let archive_path = tempdir.join(MAILPIT_ARCHIVE_FILE_NAME);
+
+    create_mailpit_archive(tempdir, &archive_path)?;
+    let sha256 = sha256_file(&archive_path)?;
+    let cache_path = paths
+        .downloads()
+        .join(format!("{sha256}-{MAILPIT_ARCHIVE_FILE_NAME}"));
+
+    copy_file(&archive_path, &cache_path)?;
+    let size = file_size(&cache_path)?;
+    let manifest = mailpit_manifest(&sha256, size);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
 fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
@@ -1112,6 +1289,28 @@ fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> R
     let executable = root.join("bin/pv-fake-mailpit");
 
     state::fs::write_sensitive_file(&executable, fake_mailpit_script())?;
+    set_executable(&executable)?;
+    run_fixture_command(
+        "/usr/bin/tar",
+        &[
+            "-czf",
+            archive_path.as_str(),
+            "-C",
+            archive_parent.as_str(),
+            &root_name,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
+    let archive_parent = tempdir.join("archive-root");
+    let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+    let executable = root.join("bin/mailpit");
+
+    state::fs::write_sensitive_file(&executable, mailpit_script())?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -1148,6 +1347,83 @@ fn fake_mailpit_manifest(sha256: &str, size: u64) -> String {
               "pv_build_revision": "1",
               "platform": "any",
               "url": "https://artifacts.example.test/{FAKE_MAILPIT_ARCHIVE_FILE_NAME}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
+fn mailpit_manifest(sha256: &str, size: u64) -> String {
+    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {{
+      "name": "mailpit",
+      "default_track": "{FAKE_MAILPIT_TRACK}",
+      "tracks": [
+        {{
+          "name": "{FAKE_MAILPIT_TRACK}",
+          "artifacts": [
+            {{
+              "artifact_version": "{FAKE_MAILPIT_ARTIFACT_VERSION}",
+              "upstream_version": "1.0.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{MAILPIT_ARCHIVE_FILE_NAME}",
               "sha256": "{sha256}",
               "size": {size},
               "published_at": "2026-06-08T00:00:00Z"
@@ -1428,6 +1704,66 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             Ok(())
         })
     }
+}
+
+fn mailpit_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+smtp=""
+listen=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --smtp)
+      smtp="$2"
+      shift 2
+      ;;
+    --listen)
+      listen="$2"
+      shift 2
+      ;;
+    *)
+      echo "unexpected argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+python3 - "$smtp" "$listen" <<'PY'
+import http.server
+import signal
+import socketserver
+import sys
+import threading
+
+def host_port(value):
+    host, port = value.rsplit(":", 1)
+    return host, int(port)
+
+class SmtpHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.sendall(b"220 mailpit fixture\r\n")
+
+class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+smtp = TcpServer(host_port(sys.argv[1]), SmtpHandler)
+dashboard = http.server.ThreadingHTTPServer(
+    host_port(sys.argv[2]),
+    http.server.SimpleHTTPRequestHandler,
+)
+
+def stop(_signum, _frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+threading.Thread(target=smtp.serve_forever, daemon=True).start()
+dashboard.serve_forever()
+PY
+"#
 }
 
 fn assert_with_normalized_runtime(

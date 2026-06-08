@@ -130,6 +130,22 @@ fn composer_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn mailpit_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["mailpit:install", "--help"])?,
+        run_pv(&["mailpit:update", "--help"])?,
+        run_pv(&["mailpit:uninstall", "--help"])?,
+        run_pv(&["mailpit:list", "--help"])?,
+        run_pv(&["mailpit:open", "--help"])?,
+        run_pv(&["mail:open", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 
