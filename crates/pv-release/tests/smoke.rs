@@ -262,6 +262,41 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
 }
 
 #[test]
+fn composer_build_smoke_uses_platform_suffixed_archive_name() -> Result<()> {
+    let run = run_composer_build_recipe_smoke()?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.platform_archive_exists,
+        "Composer archive should include the platform in its basename"
+    );
+    assert!(
+        !run.legacy_archive_exists,
+        "Composer archive should not use the old platformless basename"
+    );
+    assert_eq!(
+        run.validate_log,
+        "archive=composer-2.10.1-pv1-any.tar.gz record=composer-2.10.1-pv1-any.json smoke=smoke.sh\n"
+    );
+
+    let record_json = run
+        .record_json
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Composer build recipe did not write a record"))?;
+    let record: Value = serde_json::from_str(record_json)?;
+    assert_eq!(
+        record["object_key"],
+        "resources/composer/2/2.10.1-pv1/any/composer-2.10.1-pv1-any.tar.gz"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         lipo_archs: "x86_64",
@@ -469,6 +504,14 @@ struct BuildRecipeRun {
     frankenphp_archive_exists: bool,
 }
 
+struct ComposerBuildRecipeRun {
+    output: Output,
+    record_json: Option<String>,
+    validate_log: String,
+    platform_archive_exists: bool,
+    legacy_archive_exists: bool,
+}
+
 struct BuildRecipeOptions<'a> {
     lipo_archs: &'a str,
     macho_minos: &'a str,
@@ -485,6 +528,58 @@ fn php_smoke_hook() -> camino::Utf8PathBuf {
 
 fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
     run_php_build_recipe_smoke_with_options(default_build_recipe_options())
+}
+
+fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_file = tempdir.path().join("composer.phar");
+    let curl_log = tempdir.path().join("curl.log");
+    let validate_log = tempdir.path().join("validate.log");
+
+    create_dir_all(&fake_bin)?;
+    write_file(&source_file, "composer fixture\n")?;
+    write_fake_composer_cargo(&fake_bin.join("cargo"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_file(&curl_log, "")?;
+    write_file(&validate_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/composer/build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", "any")
+        .env("PV_RECIPE_TRACK", "2")
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_file)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_file)?)
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .output()?;
+
+    let artifact_version = "2.10.1-pv1";
+    let platform_artifact_basename = "composer-2.10.1-pv1-any";
+    let record = record_dir
+        .join("composer")
+        .join("2")
+        .join(artifact_version)
+        .join("any")
+        .join(format!("{platform_artifact_basename}.json"));
+
+    Ok(ComposerBuildRecipeRun {
+        output,
+        record_json: read_optional_file(&record)?,
+        validate_log: read_file(&validate_log)?,
+        platform_archive_exists: path_exists(
+            &out_dir.join(format!("{platform_artifact_basename}.tar.gz")),
+        ),
+        legacy_archive_exists: path_exists(&out_dir.join("composer-2.10.1-pv1.tar.gz")),
+    })
 }
 
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
@@ -740,6 +835,62 @@ EOF
           ;;
       esac
       exit 0
+      ;;
+    *) exit 77 ;;
+  esac
+else
+  exit 77
+fi
+"#,
+    )
+}
+
+fn write_fake_composer_cargo(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
+  case "$5" in
+    print-recipe-env)
+      cat <<EOF
+PV_RESOURCE=composer
+PV_TRACK=2
+PV_PLATFORM=any
+PV_UPSTREAM_VERSION=2.10.1
+PV_ARTIFACT_VERSION=2.10.1-pv1
+PV_SOURCE_URL=https://sources.example.test/composer.phar
+PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
+PV_MINIMUM_PV_VERSION=0.1.0
+PV_PV_BUILD_REVISION=pv1
+EOF
+      ;;
+    validate-archive)
+      archive=
+      record=
+      smoke_hook=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --archive)
+            shift
+            archive=${1:-}
+            ;;
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --smoke-hook)
+            shift
+            smoke_hook=${1:-}
+            ;;
+        esac
+        shift
+      done
+      printf 'archive=%s record=%s smoke=%s\n' \
+        "${archive##*/}" \
+        "${record##*/}" \
+        "${smoke_hook##*/}" >>"$PV_TEST_VALIDATE_LOG"
       ;;
     *) exit 77 ;;
   esac

@@ -33,11 +33,12 @@ cargo run -p pv-release -- print-recipe-env \
 . "$env_file"
 export PV_UPSTREAM_VERSION
 
-work_dir="$OUT_DIR/work/composer-$PV_ARTIFACT_VERSION"
-root_dir="$work_dir/composer-$PV_ARTIFACT_VERSION"
-archive="$OUT_DIR/composer-$PV_ARTIFACT_VERSION.tar.gz"
-record="$RECORD_DIR/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/composer-$PV_ARTIFACT_VERSION-$PV_PLATFORM.json"
-object_key="resources/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/composer-$PV_ARTIFACT_VERSION-$PV_PLATFORM.tar.gz"
+artifact_basename="composer-$PV_ARTIFACT_VERSION-$PV_PLATFORM"
+work_dir="$OUT_DIR/work/$artifact_basename"
+root_dir="$work_dir/$artifact_basename"
+archive="$OUT_DIR/$artifact_basename.tar.gz"
+record="$RECORD_DIR/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/$artifact_basename.json"
+object_key="resources/composer/$PV_TRACK/$PV_ARTIFACT_VERSION/$PV_PLATFORM/$artifact_basename.tar.gz"
 
 rm -rf "$work_dir"
 mkdir -p "$root_dir"
@@ -49,7 +50,7 @@ require_sha256 "$root_dir/composer.phar" "$PV_SOURCE_SHA256"
 cp "$ROOT/release/artifacts/recipes/composer/LICENSE" "$root_dir/LICENSE"
 cp "$ROOT/release/artifacts/recipes/composer/NOTICE" "$root_dir/NOTICE"
 mkdir -p "$OUT_DIR"
-COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "composer-$PV_ARTIFACT_VERSION"
+COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
 
 write_record "$record" composer "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/composer/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
 
