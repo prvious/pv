@@ -13,6 +13,7 @@ DatabaseInspection {
         "004:project_original_path",
         "005:project_resource_requirements",
         "006:global_php_default",
+        "007:resource_port_roles",
     ],
     tables: [
         "global_php_default_track",
@@ -26,5 +27,6 @@ DatabaseInspection {
         "projects",
         "pv_migrations",
         "resource_allocations",
+        "resource_ports",
     ],
 }

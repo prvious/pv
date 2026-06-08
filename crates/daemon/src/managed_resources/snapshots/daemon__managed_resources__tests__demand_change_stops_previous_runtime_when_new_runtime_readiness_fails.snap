@@ -3,7 +3,7 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "Err(\n    ReadinessTimedOut {\n        check: \"tcp:127.0.0.1:<readiness_port>\",\n        timeout_ms: <timeout_ms>,\n        last_error: Some(\n            \"I/O error: Connection refused (os error <code>)\",\n        ),\n    },\n)",
+    "Err(\n    ReadinessTimedOut {\n        check: \"http:127.0.0.1:<readiness_port>/__pv_unready_fixture__\",\n        timeout_ms: <timeout_ms>,\n        last_error: Some(\n            \"I/O error: readiness unavailable\",\n        ),\n    },\n)",
     "# >>> PV MANAGED\nMAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>\nMAIL_HOST=127.0.0.1\nMAIL_PORT=<smtp_port>\n# <<< PV MANAGED\n",
     ManagedResourceTrackRecord {
         resource_name: "mailpit",
@@ -80,7 +80,7 @@ expression: snapshot
             },
             status: Failed,
             message: Some(
-                "readiness check `tcp:127.0.0.1:<readiness_port>` timed out after 100ms; last error: Some(\"I/O error: Connection refused (os error <code>)\")",
+                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
             ),
             observed_at: "<timestamp>",
         },

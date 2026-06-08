@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, bail};
@@ -8,6 +9,8 @@ use state::{
     Database, LinkProjectInput, ProjectRecord, PvPaths, RuntimeObservedStatus, RuntimeSubject,
     StateError,
 };
+
+use crate::{ReadinessCheck, managed_resources::ManagedResourceRuntimeAdapter};
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
@@ -81,6 +84,32 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
         "fake_multi_port_runtime_stops_when_project_demand_is_removed",
         stopped_snapshot,
     )?;
+
+    Ok(())
+}
+
+#[test]
+fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -> Result<()> {
+    let adapter = super::fake::FakeMailpitRuntimeAdapter::unready()?;
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "mailpit".to_string(),
+        track: FAKE_MAILPIT_TRACK.to_string(),
+        artifact_path: "/pv/fake/mailpit".into(),
+        data_dir: "/pv/fake/data".into(),
+        ports: BTreeMap::from([
+            ("smtp".to_string(), 18025),
+            ("dashboard".to_string(), 18026),
+        ]),
+    };
+
+    assert_eq!(
+        adapter.readiness(&context)?,
+        ReadinessCheck::Http {
+            host: super::RESOURCE_HOST.to_string(),
+            port: 18026,
+            path: "/__pv_unready_fixture__".to_string(),
+        }
+    );
 
     Ok(())
 }
@@ -676,8 +705,16 @@ fn assert_with_normalized_runtime(
     );
     settings.add_filter(r#""smtp_port": "\d+""#, r#""smtp_port": "<smtp_port>""#);
     settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
+    settings.add_filter(
+        r"http:127\.0\.0\.1:\d+/__pv_unready_fixture__",
+        "http:127.0.0.1:<readiness_port>/__pv_unready_fixture__",
+    );
     settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
     settings.add_filter(r"os error \d+", "os error <code>");
+    settings.add_filter(
+        r"I/O error: Connection refused \(os error <code>\)|I/O error: HTTP readiness returned non-success status",
+        "I/O error: readiness unavailable",
+    );
     settings.add_filter(r"port: \d+", "port: <port>");
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);

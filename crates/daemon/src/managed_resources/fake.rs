@@ -108,15 +108,17 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
         &self,
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ReadinessCheck, DaemonError> {
-        let port_name = match self.readiness {
-            FakeMailpitReadiness::Smtp => "smtp",
-            FakeMailpitReadiness::UnservedDashboardPort { .. } => "dashboard",
-        };
-
-        Ok(ReadinessCheck::Tcp {
-            host: RESOURCE_HOST.to_string(),
-            port: required_port(context, port_name)?,
-        })
+        match self.readiness {
+            FakeMailpitReadiness::Smtp => Ok(ReadinessCheck::Tcp {
+                host: RESOURCE_HOST.to_string(),
+                port: required_port(context, "smtp")?,
+            }),
+            FakeMailpitReadiness::UnservedDashboardPort { .. } => Ok(ReadinessCheck::Http {
+                host: RESOURCE_HOST.to_string(),
+                port: required_port(context, "dashboard")?,
+                path: "/__pv_unready_fixture__".to_string(),
+            }),
+        }
     }
 
     fn readiness_timeout(&self) -> Duration {
