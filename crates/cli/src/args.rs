@@ -222,6 +222,30 @@ pub(crate) enum Command {
 
     #[command(name = "mysql:list", about = "List installed MySQL tracks")]
     MysqlList,
+
+    #[command(name = "postgres:install", about = "Install a Postgres track")]
+    PostgresInstall(PostgresInstallArgs),
+
+    #[command(name = "postgres:update", about = "Update installed Postgres tracks")]
+    PostgresUpdate,
+
+    #[command(name = "postgres:uninstall", about = "Uninstall a Postgres track")]
+    PostgresUninstall(PostgresUninstallArgs),
+
+    #[command(name = "postgres:list", about = "List installed Postgres tracks")]
+    PostgresList,
+
+    #[command(name = "pg:install", about = "Install a Postgres track")]
+    PgInstall(PostgresInstallArgs),
+
+    #[command(name = "pg:update", about = "Update installed Postgres tracks")]
+    PgUpdate,
+
+    #[command(name = "pg:uninstall", about = "Uninstall a Postgres track")]
+    PgUninstall(PostgresUninstallArgs),
+
+    #[command(name = "pg:list", about = "List installed Postgres tracks")]
+    PgList,
 }
 
 #[derive(Debug, clap::Args)]
@@ -366,6 +390,24 @@ pub(crate) struct MysqlInstallArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct MysqlUninstallArgs {
     #[arg(value_name = "track", help = "MySQL track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PostgresInstallArgs {
+    #[arg(value_name = "track", help = "Postgres track to install")]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct PostgresUninstallArgs {
+    #[arg(value_name = "track", help = "Postgres track to uninstall")]
     pub(crate) track: String,
 
     #[arg(long, help = "Remove PV-owned runtime data for the track")]

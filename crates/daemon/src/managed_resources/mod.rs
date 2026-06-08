@@ -4,6 +4,7 @@ mod mailpit;
 pub(crate) mod mysql;
 #[cfg(test)]
 mod mysql_tests;
+mod postgres;
 mod redis;
 mod rustfs;
 pub(crate) mod sql;
@@ -161,6 +162,8 @@ impl ManagedResourceRuntimeCatalog {
             mysql::RESOURCE_NAME,
             Box::new(mysql::MysqlRuntimeAdapter::new()),
         );
+        let postgres = postgres::PostgresRuntimeAdapter::new();
+        adapters.insert(postgres.resource_name(), Box::new(postgres));
 
         Self {
             adapters,
@@ -892,5 +895,34 @@ pub(crate) fn rustfs_runtime_catalog(
             target_platform: current_target_platform(),
         },
         rustfs::RustfsRuntimeAdapter,
+    ))
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn postgres_runtime_catalog(
+    manifest_url: &str,
+) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
+    Ok(ManagedResourceRuntimeCatalog::with_adapter(
+        ManagedResourceInstallOptions {
+            manifest_url: manifest_url.to_string(),
+            target_platform: current_target_platform(),
+        },
+        postgres::PostgresRuntimeAdapter::new(),
+    ))
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn postgres_runtime_catalog_with_readiness_timeout(
+    manifest_url: &str,
+    readiness_timeout: Duration,
+) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
+    Ok(ManagedResourceRuntimeCatalog::with_adapter(
+        ManagedResourceInstallOptions {
+            manifest_url: manifest_url.to_string(),
+            target_platform: current_target_platform(),
+        },
+        postgres::PostgresRuntimeAdapter::with_readiness_timeout(readiness_timeout),
     ))
 }

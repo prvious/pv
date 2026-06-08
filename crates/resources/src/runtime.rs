@@ -7,6 +7,7 @@ use crate::{ResourceAdapter, ResourceName, ResourcesError, Result};
 pub struct RuntimeArtifactAdapter {
     resource_name: ResourceName,
     executable_relative_path: Utf8PathBuf,
+    required_file_relative_paths: Vec<Utf8PathBuf>,
 }
 
 impl RuntimeArtifactAdapter {
@@ -17,11 +18,17 @@ impl RuntimeArtifactAdapter {
         Self {
             resource_name,
             executable_relative_path: executable_relative_path.into(),
+            required_file_relative_paths: Vec::new(),
         }
     }
 
     pub fn executable_path(&self, release: &Utf8Path) -> Utf8PathBuf {
         release.join(&self.executable_relative_path)
+    }
+
+    fn required_file(mut self, relative_path: impl Into<Utf8PathBuf>) -> Self {
+        self.required_file_relative_paths.push(relative_path.into());
+        self
     }
 }
 
@@ -33,6 +40,15 @@ impl ResourceAdapter for RuntimeArtifactAdapter {
     fn validate_installation(&self, root: &Utf8Path) -> Result<()> {
         let executable_path = self.executable_path(root);
         if fs::path_is_file(&executable_path)? {
+            for required_file in &self.required_file_relative_paths {
+                if !fs::path_is_file(&root.join(required_file))? {
+                    return Err(ResourcesError::InvalidArtifactLayout {
+                        resource: self.resource_name.as_str().to_string(),
+                        reason: format!("missing required file `{required_file}`"),
+                    });
+                }
+            }
+
             return Ok(());
         }
 
@@ -90,6 +106,13 @@ pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
         ResourceName::new("mysql")?,
         "bin/mysqld",
     ))
+}
+
+pub fn postgres_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(
+        RuntimeArtifactAdapter::new(ResourceName::new("postgres")?, "bin/postgres")
+            .required_file("bin/initdb"),
+    )
 }
 
 #[cfg(test)]

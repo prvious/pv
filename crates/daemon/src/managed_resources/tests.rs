@@ -35,6 +35,9 @@ const REDIS_ARCHIVE_FILE_NAME: &str = "redis-7.2.0-pv1-any.tar.gz";
 const RUSTFS_TRACK: &str = "1.0";
 const RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const RUSTFS_ARCHIVE_FILE_NAME: &str = "rustfs-1.0.0-pv1-any.tar.gz";
+const POSTGRES_TRACK: &str = "16";
+const POSTGRES_ARTIFACT_VERSION: &str = "16.0-pv1";
+const POSTGRES_ARCHIVE_FILE_NAME: &str = "postgres-16.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
@@ -71,6 +74,195 @@ struct RustfsRuntimeMetadataSnapshot {
     resource_name: String,
     track: String,
     log_path: String,
+}
+
+#[tokio::test]
+async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_030)?;
+
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
+            database.assigned_ports()?,
+            database.resource_allocations(&project.id, "postgres")?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_reconciliation_creates_database_allocation_and_renders_env",
+        snapshot,
+    )?;
+    stop_postgres_runtime(&paths, &project).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_cached_fixture(&paths, tempdir.path())?;
+    reserve_postgres_port(&paths, 19_031)?;
+
+    reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
+            database.assigned_ports()?,
+            database.resource_allocations(&project.id, "postgres")?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_project_demand_installs_missing_fixture_track_before_start",
+        snapshot,
+    )?;
+    stop_postgres_runtime_with_manifest_url(&paths, &project, OFFLINE_TEST_MANIFEST_URL).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_032)?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_env_context(
+            "postgres",
+            POSTGRES_TRACK,
+            &BTreeMap::from([
+                ("host".to_string(), "127.0.0.1".to_string()),
+                (
+                    "password".to_string(),
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                ),
+                ("port".to_string(), "19032".to_string()),
+                (
+                    "url".to_string(),
+                    "postgres://pv_postgres:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@127.0.0.1:19032"
+                        .to_string(),
+                ),
+                ("username".to_string(), "pv_postgres".to_string()),
+            ]),
+        )?;
+    }
+
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
+            database.resource_allocations(&project.id, "postgres")?,
+            database.runtime_observed_states()?,
+        )
+    };
+    stop_postgres_runtime(&paths, &project).await?;
+
+    assert_eq!(
+        snapshot.1.env.get("username").map(String::as_str),
+        Some("pv_root"),
+        "expected reconciliation to replace stale Postgres admin username"
+    );
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_reconciliation_replaces_stale_admin_username_from_track_env",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_reconciliation_records_generated_env_when_readiness_fails_after_initdb()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_unready_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_033)?;
+
+    let result =
+        reconcile_project_env_with_unready_postgres_runtime_catalog(&paths, &project.id).await;
+    let initdb_password = state::fs::read_to_string(
+        &paths
+            .resource_data_dir("postgres", POSTGRES_TRACK)
+            .join("initdb.password"),
+    )?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
+            database.runtime_observed_states()?,
+            runtime_files_exist_for_resource(&paths, "postgres", POSTGRES_TRACK)?,
+        )
+    };
+
+    assert!(
+        result.is_err(),
+        "expected readiness failure, got {result:#?}"
+    );
+    assert_eq!(
+        snapshot.2.env.get("username").map(String::as_str),
+        Some("pv_root"),
+        "expected readiness failure to preserve generated Postgres admin username"
+    );
+    assert_eq!(
+        snapshot.2.env.get("password").map(String::as_str),
+        Some(initdb_password.as_str()),
+        "expected readiness failure to persist the initdb password for retry"
+    );
+    assert_runtime_status_for_resource(
+        &snapshot.3,
+        "postgres",
+        POSTGRES_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+    assert_eq!(
+        snapshot.4,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "expected readiness failure cleanup to remove runtime files"
+    );
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_reconciliation_records_generated_env_when_readiness_fails_after_initdb",
+        snapshot,
+    )?;
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -1847,6 +2039,25 @@ async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
     Ok(())
 }
 
+async fn reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
+    paths: &PvPaths,
+    project_id: &str,
+    manifest_url: &str,
+) -> Result<()> {
+    let catalog = super::postgres_runtime_catalog(manifest_url)?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
 fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntimeCatalog> {
     Ok(super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
@@ -1860,6 +2071,27 @@ fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntim
             ),
         },
     ))
+}
+
+async fn reconcile_project_env_with_unready_postgres_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<()> {
+    let catalog = super::postgres_runtime_catalog_with_readiness_timeout(
+        super::DEFAULT_MANIFEST_URL,
+        Duration::from_millis(100),
+    )?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
 }
 
 fn link_project(
@@ -1911,8 +2143,69 @@ fn link_project_with_rustfs_bucket_env(
     )
 }
 
+fn link_project_with_postgres_database_env(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+) -> Result<ProjectRecord> {
+    link_project(
+        paths,
+        project_path,
+        "acme.test",
+        r#"postgres:
+  version: "16"
+  env:
+    PGHOST: "${host}"
+    PGPASSWORD: "${password}"
+    PGPORT: "${port}"
+    PGUSER: "${username}"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+        DB_DATABASE: "${database}"
+        DB_HOST: "${host}"
+        DB_PASSWORD: "${password}"
+        DB_PORT: "${port}"
+        DB_USERNAME: "${username}"
+"#,
+    )
+}
+
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
     state::fs::write_sensitive_file(&project.config_path, config_source)?;
+
+    Ok(())
+}
+
+async fn stop_postgres_runtime(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
+    write_project_config(
+        project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _summary = crate::project_env::reconcile_project_env(paths, &project.id).await?;
+
+    Ok(())
+}
+
+async fn stop_postgres_runtime_with_manifest_url(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    manifest_url: &str,
+) -> Result<()> {
+    write_project_config(
+        project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
+        paths,
+        &project.id,
+        manifest_url,
+    )
+    .await?;
 
     Ok(())
 }
@@ -1956,6 +2249,16 @@ fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
     database.assign_port(
         PortRequest::resource_port("rustfs", RUSTFS_TRACK, port_name, port, port, port),
+        local_loopback_port_available,
+    )?;
+
+    Ok(())
+}
+
+fn reserve_postgres_port(paths: &PvPaths, port: u16) -> Result<()> {
+    let mut database = Database::open(paths)?;
+    database.assign_port(
+        PortRequest::resource_port("postgres", POSTGRES_TRACK, "postgres", port, port, port),
         local_loopback_port_available,
     )?;
 
@@ -2224,6 +2527,55 @@ fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Resul
     Ok(())
 }
 
+fn seed_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_postgres_fixture_artifact_with_script(paths, track, fake_postgres_script())
+}
+
+fn seed_unready_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_postgres_fixture_artifact_with_script(paths, track, unready_fake_postgres_script())
+}
+
+fn seed_postgres_fixture_artifact_with_script(
+    paths: &PvPaths,
+    track: &str,
+    postgres_script: &str,
+) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("postgres")
+        .join(track)
+        .join(format!("releases/{POSTGRES_ARTIFACT_VERSION}"));
+
+    write_postgres_fixture_binaries_with_script(&release_path, postgres_script)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "postgres",
+        track,
+        POSTGRES_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
+}
+
+fn seed_postgres_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    let archive_path = tempdir.join(POSTGRES_ARCHIVE_FILE_NAME);
+
+    create_postgres_archive(tempdir, &archive_path)?;
+    let sha256 = sha256_file(&archive_path)?;
+    let cache_path = paths
+        .downloads()
+        .join(format!("{sha256}-{POSTGRES_ARCHIVE_FILE_NAME}"));
+
+    copy_file(&archive_path, &cache_path)?;
+    let size = file_size(&cache_path)?;
+    let manifest = postgres_fixture_manifest(&sha256, size);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
 fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     let release_path = paths
         .resources()
@@ -2373,6 +2725,26 @@ fn seed_redis_runtime_port(paths: &PvPaths) -> Result<TcpListener> {
     Ok(listener)
 }
 
+fn create_postgres_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
+    let archive_parent = tempdir.join("postgres-archive-root");
+    let root_name = format!("postgres-{POSTGRES_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+
+    write_postgres_fixture_binaries(&root)?;
+    run_fixture_command(
+        "/usr/bin/tar",
+        &[
+            "-czf",
+            archive_path.as_str(),
+            "-C",
+            archive_parent.as_str(),
+            &root_name,
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
@@ -2457,6 +2829,25 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
             &root_name,
         ],
     )?;
+
+    Ok(())
+}
+
+fn write_postgres_fixture_binaries(release_path: &Utf8Path) -> Result<()> {
+    write_postgres_fixture_binaries_with_script(release_path, fake_postgres_script())
+}
+
+fn write_postgres_fixture_binaries_with_script(
+    release_path: &Utf8Path,
+    postgres_script: &str,
+) -> Result<()> {
+    let initdb = release_path.join("bin/initdb");
+    let postgres = release_path.join("bin/postgres");
+
+    state::fs::write_sensitive_file(&initdb, fake_postgres_initdb_script())?;
+    state::fs::write_sensitive_file(&postgres, postgres_script)?;
+    set_executable(&initdb)?;
+    set_executable(&postgres)?;
 
     Ok(())
 }
@@ -2769,6 +3160,83 @@ fn rustfs_manifest(sha256: &str, size: u64) -> String {
     )
 }
 
+fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
+    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {{
+      "name": "postgres",
+      "default_track": "{POSTGRES_TRACK}",
+      "tracks": [
+        {{
+          "name": "{POSTGRES_TRACK}",
+          "artifacts": [
+            {{
+              "artifact_version": "{POSTGRES_ARTIFACT_VERSION}",
+              "upstream_version": "16.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{POSTGRES_ARCHIVE_FILE_NAME}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
 fn fake_mailpit_script() -> &'static str {
     r#"#!/bin/sh
 set -eu
@@ -2802,6 +3270,367 @@ signal.signal(signal.SIGINT, stop)
 threading.Thread(target=smtp.serve_forever, daemon=True).start()
 dashboard.serve_forever()
 PY
+"#
+}
+
+fn fake_postgres_initdb_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+data_dir=""
+username=""
+password_file=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D)
+      data_dir="$2"
+      shift 2
+      ;;
+    -U)
+      username="$2"
+      shift 2
+      ;;
+    --username)
+      username="$2"
+      shift 2
+      ;;
+    --pwfile)
+      password_file="$2"
+      shift 2
+      ;;
+    --auth-host|--auth-local)
+      shift 2
+      ;;
+    *)
+      echo "unexpected initdb argument: $1" >&2
+      exit 64
+      ;;
+  esac
+done
+
+if [ -z "$data_dir" ] || [ -z "$username" ] || [ -z "$password_file" ]; then
+  echo "missing initdb inputs" >&2
+  exit 64
+fi
+
+mkdir -p "$data_dir/databases"
+printf '16\n' > "$data_dir/PG_VERSION"
+printf '%s\n' "$username" > "$data_dir/initdb.username"
+cat "$password_file" > "$data_dir/initdb.password"
+"#
+}
+
+fn fake_postgres_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+data_dir=""
+argument_host=""
+argument_port=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D)
+      data_dir="$2"
+      shift 2
+      ;;
+    -h)
+      argument_host="$2"
+      shift 2
+      ;;
+    -p)
+      argument_port="$2"
+      shift 2
+      ;;
+    *)
+      echo "unexpected postgres argument: $1" >&2
+      exit 64
+      ;;
+  esac
+done
+
+if [ -z "$data_dir" ] || [ -z "$argument_host" ] || [ -z "$argument_port" ] || [ ! -f "$data_dir/PG_VERSION" ]; then
+  echo "postgres data dir is not initialized" >&2
+  exit 64
+fi
+
+python3 - "$data_dir" "$argument_host" "$argument_port" <<'PY'
+import os
+import signal
+import socketserver
+import struct
+import sys
+import threading
+
+data_dir = sys.argv[1]
+argument_host = sys.argv[2]
+argument_port = int(sys.argv[3])
+config_path = os.path.join(data_dir, "postgresql.conf")
+database_dir = os.path.join(data_dir, "databases")
+
+host = "127.0.0.1"
+port = None
+
+with open(config_path, "r", encoding="utf-8") as config:
+    for line in config:
+        line = line.strip()
+        if line.startswith("listen_addresses"):
+            host = line.split("=", 1)[1].strip().strip("'\"")
+        if line.startswith("port"):
+            port = int(line.split("=", 1)[1].strip())
+
+if host != "127.0.0.1" or port is None:
+    raise SystemExit("postgresql.conf did not set loopback host and port")
+if argument_host != host or argument_port != port:
+    raise SystemExit("postgres arguments did not match generated config")
+
+os.makedirs(database_dir, exist_ok=True)
+with open(os.path.join(data_dir, "postgres.started"), "w", encoding="utf-8") as started:
+    started.write(f"{host}:{port}\n")
+
+def packet(message_type, payload=b""):
+    return message_type + struct.pack("!I", len(payload) + 4) + payload
+
+def auth_ok():
+    return packet(b"R", struct.pack("!I", 0))
+
+def parameter_status(key, value):
+    return packet(b"S", key.encode() + b"\0" + value.encode() + b"\0")
+
+def backend_key_data():
+    return packet(b"K", struct.pack("!II", os.getpid() & 0x7fffffff, 1))
+
+def ready():
+    return packet(b"Z", b"I")
+
+def parameter_description(query):
+    if "$1" in query:
+        return packet(b"t", struct.pack("!H", 1) + struct.pack("!I", 25))
+    return packet(b"t", struct.pack("!H", 0))
+
+def command_complete(tag):
+    return packet(b"C", tag.encode() + b"\0")
+
+def parse_complete():
+    return packet(b"1")
+
+def bind_complete():
+    return packet(b"2")
+
+def close_complete():
+    return packet(b"3")
+
+def no_data():
+    return packet(b"n")
+
+def row_description():
+    field = b"?column?\0" + struct.pack("!IhIhih", 0, 0, 23, 4, -1, 0)
+    return packet(b"T", struct.pack("!H", 1) + field)
+
+def data_row(value):
+    data = str(value).encode()
+    return packet(b"D", struct.pack("!H", 1) + struct.pack("!I", len(data)) + data)
+
+def error_response(message):
+    return packet(b"E", b"SERROR\0CXX000\0M" + message.encode() + b"\0\0")
+
+def cstring(payload, start):
+    end = payload.index(b"\0", start)
+    return payload[start:end].decode(), end + 1
+
+def read_exact(stream, length):
+    data = b""
+    while len(data) < length:
+        chunk = stream.recv(length - len(data))
+        if not chunk:
+            raise EOFError
+        data += chunk
+    return data
+
+def read_startup(stream):
+    length = struct.unpack("!I", read_exact(stream, 4))[0]
+    payload = read_exact(stream, length - 4)
+    code = struct.unpack("!I", payload[:4])[0]
+    if code == 80877103:
+        stream.sendall(b"N")
+        return read_startup(stream)
+    return payload
+
+def startup_response():
+    return b"".join([
+        auth_ok(),
+        parameter_status("server_version", "16.0"),
+        parameter_status("server_encoding", "UTF8"),
+        parameter_status("client_encoding", "UTF8"),
+        parameter_status("DateStyle", "ISO, MDY"),
+        parameter_status("integer_datetimes", "on"),
+        parameter_status("standard_conforming_strings", "on"),
+        backend_key_data(),
+        ready(),
+    ])
+
+def database_file(database):
+    safe = "".join(ch for ch in database if ch.isalnum() or ch == "_")
+    if safe != database:
+        raise ValueError("unsafe database name")
+    return os.path.join(database_dir, database)
+
+def database_exists(database):
+    return os.path.exists(database_file(database))
+
+def create_database(database):
+    with open(database_file(database), "w", encoding="utf-8") as marker:
+        marker.write(database + "\n")
+
+def database_from_create(query):
+    quoted = query.split("CREATE DATABASE", 1)[1].strip()
+    if quoted.startswith('"') and quoted.endswith('"'):
+        return quoted[1:-1]
+    return quoted
+
+def query_response(query, params):
+    normalized = " ".join(query.strip().split())
+    if normalized.upper() in {"SELECT 1", "SELECT $1"}:
+        return row_description() + data_row(1) + command_complete("SELECT 1")
+    if "FROM pg_database WHERE datname" in normalized:
+        database = params[0] if params else ""
+        if database_exists(database):
+            return row_description() + data_row(1) + command_complete("SELECT 1")
+        return row_description() + command_complete("SELECT 0")
+    if normalized.upper().startswith("CREATE DATABASE"):
+        create_database(database_from_create(normalized))
+        return command_complete("CREATE DATABASE")
+    if normalized.upper().startswith("SET "):
+        return command_complete("SET")
+    return error_response("unsupported fixture query: " + normalized)
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        statements = {}
+        portals = {}
+        try:
+            read_startup(self.request)
+            self.request.sendall(startup_response())
+            while True:
+                message_type = read_exact(self.request, 1)
+                length = struct.unpack("!I", read_exact(self.request, 4))[0]
+                payload = read_exact(self.request, length - 4)
+                if message_type == b"X":
+                    return
+                if message_type == b"Q":
+                    query = payload[:-1].decode()
+                    self.request.sendall(query_response(query, []) + ready())
+                    continue
+                if message_type == b"P":
+                    statement, offset = cstring(payload, 0)
+                    query, _offset = cstring(payload, offset)
+                    statements[statement] = query
+                    self.request.sendall(parse_complete())
+                    continue
+                if message_type == b"B":
+                    portal, offset = cstring(payload, 0)
+                    statement, offset = cstring(payload, offset)
+                    format_count = struct.unpack("!H", payload[offset:offset + 2])[0]
+                    offset += 2 + (format_count * 2)
+                    param_count = struct.unpack("!H", payload[offset:offset + 2])[0]
+                    offset += 2
+                    params = []
+                    for _index in range(param_count):
+                        size = struct.unpack("!i", payload[offset:offset + 4])[0]
+                        offset += 4
+                        if size == -1:
+                            params.append(None)
+                        else:
+                            params.append(payload[offset:offset + size].decode())
+                            offset += size
+                    portals[portal] = (statements.get(statement, ""), params)
+                    self.request.sendall(bind_complete())
+                    continue
+                if message_type == b"D":
+                    describe_kind = payload[:1]
+                    name = payload[1:-1].decode()
+                    query, _params = portals.get(name, (statements.get(name, ""), []))
+                    response = b""
+                    if describe_kind == b"S":
+                        response += parameter_description(query)
+                    if query.strip().upper().startswith("CREATE DATABASE"):
+                        response += no_data()
+                    else:
+                        response += row_description()
+                    self.request.sendall(response)
+                    continue
+                if message_type == b"E":
+                    portal, offset = cstring(payload, 0)
+                    _max_rows = struct.unpack("!I", payload[offset:offset + 4])[0]
+                    query, params = portals.get(portal, ("", []))
+                    self.request.sendall(query_response(query, params))
+                    continue
+                if message_type == b"S":
+                    self.request.sendall(ready())
+                    continue
+                if message_type == b"H":
+                    continue
+                if message_type == b"C":
+                    self.request.sendall(close_complete())
+                    continue
+                self.request.sendall(error_response("unsupported message type"))
+        except (EOFError, ConnectionResetError, BrokenPipeError):
+            return
+
+class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+server = Server((host, port), Handler)
+
+def stop(_signum, _frame):
+    server.shutdown()
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+threading.Thread(target=server.serve_forever, daemon=True).start()
+signal.pause()
+PY
+"#
+}
+
+fn unready_fake_postgres_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+data_dir=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D)
+      data_dir="$2"
+      shift 2
+      ;;
+    -h|-p)
+      shift 2
+      ;;
+    *)
+      echo "unexpected postgres argument: $1" >&2
+      exit 64
+      ;;
+  esac
+done
+
+if [ -z "$data_dir" ] || [ ! -f "$data_dir/PG_VERSION" ]; then
+  echo "postgres data dir is not initialized" >&2
+  exit 64
+fi
+
+stop() {
+  exit 0
+}
+
+trap stop TERM INT
+
+while true; do
+  sleep 1
+done
 "#
 }
 
@@ -3335,6 +4164,35 @@ PY
     .replace("__PV_REJECT_S3__", reject_s3)
 }
 
+fn assert_with_normalized_postgres_runtime(
+    tempdir: &Utf8Path,
+    name: &'static str,
+    snapshot: impl std::fmt::Debug,
+) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(&regex_literal(tempdir.as_str()), "<tempdir>");
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
+    settings.add_filter(r"[0-9a-f]{32}", "<postgres_password>");
+    settings.add_filter(
+        r"postgres://pv_root:<postgres_password>@127\.0\.0\.1:\d+",
+        "postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>",
+    );
+    settings.add_filter(r"DB_PORT=\d+", "DB_PORT=<postgres_port>");
+    settings.add_filter(r"PGPORT=\d+", "PGPORT=<postgres_port>");
+    settings.add_filter(r#""port": "\d+""#, r#""port": "<postgres_port>""#);
+    settings.add_filter(r"port: \d+", "port: <postgres_port>");
+    settings.bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
 fn assert_with_normalized_runtime(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -3510,10 +4368,19 @@ fn assert_runtime_status(
     track: &str,
     status: RuntimeObservedStatus,
 ) {
-    let found = runtime_has_status(states, track, status);
+    assert_runtime_status_for_resource(states, "mailpit", track, status);
+}
+
+fn assert_runtime_status_for_resource(
+    states: &[state::RuntimeObservedStateRecord],
+    resource_name: &str,
+    track: &str,
+    status: RuntimeObservedStatus,
+) {
+    let found = runtime_has_status_for_resource(states, resource_name, track, status);
     assert!(
         found,
-        "expected mailpit track {track:?} runtime status {status:?}, got {states:#?}"
+        "expected {resource_name} track {track:?} runtime status {status:?}, got {states:#?}"
     );
 }
 
@@ -3522,8 +4389,17 @@ fn runtime_has_status(
     track: &str,
     status: RuntimeObservedStatus,
 ) -> bool {
+    runtime_has_status_for_resource(states, "mailpit", track, status)
+}
+
+fn runtime_has_status_for_resource(
+    states: &[state::RuntimeObservedStateRecord],
+    resource_name: &str,
+    track: &str,
+    status: RuntimeObservedStatus,
+) -> bool {
     let expected_subject = RuntimeSubject::Resource {
-        name: "mailpit".to_string(),
+        name: resource_name.to_string(),
         track: track.to_string(),
     };
 
@@ -3533,10 +4409,18 @@ fn runtime_has_status(
 }
 
 fn runtime_files_exist(paths: &PvPaths, track: &str) -> Result<RuntimeFilePresence> {
+    runtime_files_exist_for_resource(paths, "mailpit", track)
+}
+
+fn runtime_files_exist_for_resource(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+) -> Result<RuntimeFilePresence> {
     Ok(RuntimeFilePresence {
-        pid: path_exists(&paths.resource_pid("mailpit", track))?,
-        metadata: path_exists(&paths.resource_runtime_metadata("mailpit", track))?,
-        config: path_exists(&paths.resource_runtime_config("mailpit", track))?,
+        pid: path_exists(&paths.resource_pid(resource_name, track))?,
+        metadata: path_exists(&paths.resource_runtime_metadata(resource_name, track))?,
+        config: path_exists(&paths.resource_runtime_config(resource_name, track))?,
     })
 }
 
