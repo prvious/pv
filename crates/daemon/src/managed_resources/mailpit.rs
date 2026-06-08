@@ -77,6 +77,7 @@ impl ManagedResourceRuntimeAdapter for MailpitRuntimeAdapter {
                 database_path.to_string(),
                 "--disable-version-check".to_string(),
             ],
+            private_environment: BTreeMap::new(),
             config_path,
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
