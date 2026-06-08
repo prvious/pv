@@ -6,7 +6,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use pv_release::ReleaseError;
-use pv_release::smoke::run_smoke_hook;
+use pv_release::smoke::{run_smoke_hook, run_smoke_hook_with_timeout};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +14,7 @@ use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
+use std::time::{Duration, Instant};
 use tar::{Builder, Header};
 
 #[expect(
@@ -35,6 +36,30 @@ fn smoke_hook_reports_success_and_failure() -> Result<()> {
         summarize_result(run_smoke_hook(&failure, tempdir.path())),
     ));
 
+    Ok(())
+}
+
+#[test]
+fn smoke_hook_times_out_and_kills_child() -> Result<()> {
+    let tempdir = tempdir()?;
+    let hook = tempdir.path().join("timeout.sh");
+    write_executable(
+        &hook,
+        r#"#!/bin/sh
+while :; do
+  :
+done
+"#,
+    )?;
+
+    let started = Instant::now();
+    let result = run_smoke_hook_with_timeout(&hook, tempdir.path(), Duration::from_millis(100));
+
+    assert_debug_snapshot!(summarize_result(result));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "timeout smoke hook should not wait for the script forever"
+    );
     Ok(())
 }
 
@@ -340,6 +365,11 @@ fn composer_build_smoke_uses_platform_suffixed_archive_name() -> Result<()> {
         run.validate_log,
         "archive=composer-2.10.1-pv1-any.tar.gz record=composer-2.10.1-pv1-any.json smoke=smoke.sh\n"
     );
+    let expected_curl_log = format!(
+        "argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][300][https://sources.example.test/composer.phar][-o][{}/work/composer-2.10.1-pv1-any/composer-2.10.1-pv1-any/composer.phar]\n",
+        run.out_dir
+    );
+    assert_eq!(run.curl_log, expected_curl_log);
 
     let record_json = run
         .record_json
@@ -563,8 +593,10 @@ struct BuildRecipeRun {
 }
 
 struct ComposerBuildRecipeRun {
+    out_dir: String,
     output: Output,
     record_json: Option<String>,
+    curl_log: String,
     validate_log: String,
     platform_archive_exists: bool,
     legacy_archive_exists: bool,
@@ -635,8 +667,10 @@ fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
         .join(format!("{platform_artifact_basename}.json"));
 
     Ok(ComposerBuildRecipeRun {
+        out_dir: out_dir.to_string(),
         output,
         record_json: read_optional_file(&record)?,
+        curl_log: read_file(&curl_log)?,
         validate_log: read_file(&validate_log)?,
         platform_archive_exists: path_exists(
             &out_dir.join(format!("{platform_artifact_basename}.tar.gz")),
@@ -1285,6 +1319,11 @@ impl From<ReleaseError> for ErrorSummary {
                 kind: "SmokeHookFailed",
                 path: file_name(&hook),
                 reason: status,
+            },
+            ReleaseError::SmokeHookTimedOut { hook, timeout } => Self {
+                kind: "SmokeHookTimedOut",
+                path: file_name(&hook),
+                reason: timeout,
             },
             error => Self {
                 kind: "Other",

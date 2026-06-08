@@ -56,6 +56,9 @@ pub enum ReleaseError {
     #[error("smoke hook `{hook}` failed with status {status}")]
     SmokeHookFailed { hook: String, status: String },
 
+    #[error("smoke hook `{hook}` timed out after {timeout}")]
+    SmokeHookTimedOut { hook: String, timeout: String },
+
     #[error("generated manifest is invalid: {reason}")]
     GeneratedManifestInvalid { reason: String },
 
