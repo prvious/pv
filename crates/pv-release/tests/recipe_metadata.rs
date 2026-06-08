@@ -58,6 +58,24 @@ fn backing_recipe_metadata_parses_common_shape() -> Result<()> {
 }
 
 #[test]
+fn backing_recipe_metadata_accepts_additional_legal_files() -> Result<()> {
+    let redis_with_third_party_notices = VALID_REDIS_TOML.replace(
+        "notice_files = [\"NOTICE\"]",
+        "notice_files = [\"NOTICE\", \"THIRD-PARTY-NOTICES\"]",
+    );
+
+    let recipe = BackingRecipe::from_toml(
+        Utf8Path::new("redis/recipe.toml"),
+        BackingRecipeKind::Redis,
+        &redis_with_third_party_notices,
+    )?;
+
+    assert_eq!(recipe.license_files(), ["LICENSE"]);
+    assert_eq!(recipe.notice_files(), ["NOTICE", "THIRD-PARTY-NOTICES"]);
+    Ok(())
+}
+
+#[test]
 fn committed_recipe_metadata_parses() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let php = PhpRecipe::load(&workspace_root.join("release/artifacts/recipes/php/tracks.toml"))?;

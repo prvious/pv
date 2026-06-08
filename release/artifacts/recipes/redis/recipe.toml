@@ -5,7 +5,7 @@ platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
-notice_files = ["NOTICE"]
+notice_files = ["NOTICE", "THIRD-PARTY-NOTICES"]
 
 [artifact]
 payload_paths = ["bin/redis-server", "bin/redis-cli"]

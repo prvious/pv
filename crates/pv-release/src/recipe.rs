@@ -173,6 +173,12 @@ struct RawRecipeHeader {
     notice_files: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+enum LegalFilePolicy {
+    ExactStandard,
+    StandardPlusAdditional,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPhpSettings {
@@ -309,7 +315,8 @@ impl BackingRecipe {
         kind: BackingRecipeKind,
         raw: RawBackingRecipe,
     ) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header =
+            RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::StandardPlusAdditional)?;
         let resource = ResourceName::new(kind.resource_name())
             .map_err(|error| invalid_identity(path, "resource", error))?;
         validate_exact_resources(
@@ -458,7 +465,7 @@ impl PhpRecipe {
     }
 
     fn from_raw(path: &Utf8Path, raw: RawPhpRecipe) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header = RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::ExactStandard)?;
         validate_exact_resources(
             path,
             "PHP recipe",
@@ -492,7 +499,11 @@ impl PhpRecipe {
 }
 
 impl RecipeHeader {
-    fn from_raw(path: &Utf8Path, raw: RawRecipeHeader) -> crate::Result<Self> {
+    fn from_raw(
+        path: &Utf8Path,
+        raw: RawRecipeHeader,
+        legal_file_policy: LegalFilePolicy,
+    ) -> crate::Result<Self> {
         let resources = parse_resource_list(path, raw.resources)?;
         let default_track = TrackName::new(raw.default_track)
             .map_err(|error| invalid_identity(path, "default_track", error))?;
@@ -503,8 +514,16 @@ impl RecipeHeader {
             require_non_empty(path, "pv_build_revision", &raw.pv_build_revision)?.to_string();
         validate_relative_file_list(path, "license_files", &raw.license_files)?;
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
-        validate_exact_file_list(path, "license_files", &raw.license_files, &["LICENSE"])?;
-        validate_exact_file_list(path, "notice_files", &raw.notice_files, &["NOTICE"])?;
+        match legal_file_policy {
+            LegalFilePolicy::ExactStandard => {
+                validate_exact_file_list(path, "license_files", &raw.license_files, &["LICENSE"])?;
+                validate_exact_file_list(path, "notice_files", &raw.notice_files, &["NOTICE"])?;
+            }
+            LegalFilePolicy::StandardPlusAdditional => {
+                validate_required_file(path, "license_files", &raw.license_files, "LICENSE")?;
+                validate_required_file(path, "notice_files", &raw.notice_files, "NOTICE")?;
+            }
+        }
 
         Ok(Self {
             resources,
@@ -633,7 +652,7 @@ impl ComposerRecipe {
     }
 
     fn from_raw(path: &Utf8Path, raw: RawComposerRecipe) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header = RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::ExactStandard)?;
         validate_exact_resources(path, "Composer recipe", &header.resources, &["composer"])?;
         validate_exact_platforms(path, "Composer recipe", &header.platforms, &["any"])?;
 
@@ -1404,6 +1423,19 @@ fn validate_exact_file_list(
                 .join(", ")
         ),
     ))
+}
+
+fn validate_required_file(
+    path: &Utf8Path,
+    field: &str,
+    values: &[String],
+    required: &str,
+) -> crate::Result<()> {
+    if values.iter().any(|value| value == required) {
+        return Ok(());
+    }
+
+    Err(invalid(path, format!("{field} must include `{required}`")))
 }
 
 fn relative_path_is_valid(value: &str) -> bool {

@@ -365,8 +365,8 @@ expression: manifest_json
               "pv_build_revision": "pv1",
               "platform": "darwin-amd64",
               "url": "https://artifacts.example.test/resources/redis/8.2/8.2.7-pv1/darwin-amd64/redis-8.2.7-pv1-darwin-amd64.tar.gz",
-              "sha256": "8a45f67e0e2839e3b5c2cc0f47a35580dae765356cf6f1f1ccc3df7ad0b069bd",
-              "size": 227,
+              "sha256": "8fc757b6ee863e1a1c069aa9187b14e7d773dba2c88e03f85ff4ba1bf2282704",
+              "size": 257,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://download.redis.io/releases/redis-8.2.7.tar.gz",
@@ -382,8 +382,8 @@ expression: manifest_json
               "pv_build_revision": "pv1",
               "platform": "darwin-arm64",
               "url": "https://artifacts.example.test/resources/redis/8.2/8.2.7-pv1/darwin-arm64/redis-8.2.7-pv1-darwin-arm64.tar.gz",
-              "sha256": "62dd0ea0dc1415536837946b7d98dd06cee3df80c185e011446b6d2ea9080718",
-              "size": 228,
+              "sha256": "e83cc8c46b28c11f2f993505f74335257d80d49e6e267548c40039b772c58a08",
+              "size": 257,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://download.redis.io/releases/redis-8.2.7.tar.gz",

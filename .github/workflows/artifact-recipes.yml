@@ -62,7 +62,15 @@ jobs:
               ;;
           esac
 
-      - name: Install release tooling dependencies
+      - name: Install PHP runtime dependency
+        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' || inputs.resource == 'composer' }}
+        run: |
+          set -eu
+          brew update
+          brew install php
+
+      - name: Install StaticPHP CLI
+        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
         run: |
           set -eu
           runner_architecture=$(uname -m)
@@ -75,8 +83,6 @@ jobs:
               ;;
           esac
 
-          brew update
-          brew install shellcheck php
           mkdir -p "${RUNNER_TEMP:?}/pv-tools"
           curl -L --fail --show-error --silent \
             --retry 3 --retry-delay 2 --retry-all-errors \

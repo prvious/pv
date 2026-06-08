@@ -16,6 +16,10 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "pv-release parses CLI subcommands once at process startup"
+)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -112,6 +116,10 @@ enum Command {
         minimum_pv_version: String,
         #[arg(long)]
         published_at: String,
+        #[arg(long = "license-file")]
+        license_files: Vec<String>,
+        #[arg(long = "notice-file")]
+        notice_files: Vec<String>,
         #[arg(long = "source-input", num_args = 3, value_names = ["NAME", "URL", "SHA256"])]
         source_inputs: Vec<String>,
     },
@@ -218,10 +226,14 @@ pub fn run() -> anyhow::Result<()> {
             build_run_id,
             minimum_pv_version,
             published_at,
+            license_files,
+            notice_files,
             source_inputs,
         } => {
             let context = format!("failed to write release record `{record}`");
             let source_inputs = parse_source_inputs(&source_inputs)?;
+            let license_files = default_legal_files(license_files, "LICENSE");
+            let notice_files = default_legal_files(notice_files, "NOTICE");
             crate::record_writer::write_release_record(&WriteReleaseRecordRequest {
                 record,
                 archive,
@@ -238,6 +250,8 @@ pub fn run() -> anyhow::Result<()> {
                 build_run_id,
                 minimum_pv_version,
                 published_at,
+                license_files,
+                notice_files,
                 source_inputs,
             })
             .context(context)
@@ -282,6 +296,14 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
     }
 
     Ok(source_inputs)
+}
+
+fn default_legal_files(values: Vec<String>, default: &str) -> Vec<String> {
+    if values.is_empty() {
+        vec![default.to_string()]
+    } else {
+        values
+    }
 }
 
 fn backing_recipe_paths(
@@ -720,6 +742,12 @@ mod tests {
             "0.1.0",
             "--published-at",
             "2026-06-08T12:00:00Z",
+            "--license-file",
+            "LICENSE",
+            "--notice-file",
+            "NOTICE",
+            "--notice-file",
+            "THIRD-PARTY-NOTICES",
             "--source-input",
             "frankenphp",
             "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
@@ -747,6 +775,8 @@ mod tests {
                 build_run_id,
                 minimum_pv_version,
                 published_at,
+                license_files,
+                notice_files,
                 source_inputs,
             } => {
                 assert_eq!(record, Utf8PathBuf::from("record.json"));
@@ -773,6 +803,8 @@ mod tests {
                 assert_eq!(build_run_id, "local-test");
                 assert_eq!(minimum_pv_version, "0.1.0");
                 assert_eq!(published_at, "2026-06-08T12:00:00Z");
+                assert_eq!(license_files, vec!["LICENSE"]);
+                assert_eq!(notice_files, vec!["NOTICE", "THIRD-PARTY-NOTICES"]);
                 assert_eq!(
                     source_inputs,
                     vec![
