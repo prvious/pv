@@ -443,10 +443,6 @@ fn read_to_string(path: &Utf8Path) -> crate::Result<String> {
     std::fs::read_to_string(path).map_err(|error| filesystem_error(path, error))
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "PV release tooling checks immutable publication staging targets"
-)]
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }

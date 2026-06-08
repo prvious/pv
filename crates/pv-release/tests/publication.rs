@@ -341,10 +341,6 @@ fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "release tooling tests check generated publication outputs"
-)]
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }

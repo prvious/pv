@@ -16,10 +16,6 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "pv-release parses one short-lived CLI command and immediately dispatches it"
-)]
 enum Command {
     GenerateManifest {
         #[arg(long)]

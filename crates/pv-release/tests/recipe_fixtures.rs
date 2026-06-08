@@ -284,16 +284,11 @@ fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "release tooling tests check generated record paths"
-)]
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
 }
 
 #[expect(
-    clippy::disallowed_methods,
     clippy::disallowed_types,
     reason = "release tooling tests read generated tar archives"
 )]
