@@ -1066,7 +1066,9 @@ async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() ->
         redis_project_config(),
     )?;
     seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
+    let redis_port_guard = seed_redis_runtime_port(&paths)?;
 
+    drop(redis_port_guard);
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
@@ -1248,7 +1250,9 @@ async fn redis_project_demand_installs_missing_fixture_track_before_start() -> R
         redis_project_config(),
     )?;
     seed_redis_cached_fixture(&paths, tempdir.path())?;
+    let redis_port_guard = seed_redis_runtime_port(&paths)?;
 
+    drop(redis_port_guard);
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
@@ -1630,6 +1634,19 @@ fn seed_redis_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> 
     state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
 
     Ok(())
+}
+
+fn seed_redis_runtime_port(paths: &PvPaths) -> Result<TcpListener> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+
+    let mut database = Database::open(paths)?;
+    database.assign_port(
+        PortRequest::resource_port("redis", REDIS_TRACK, "redis", port, port, port),
+        |candidate| candidate == port,
+    )?;
+
+    Ok(listener)
 }
 
 fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
