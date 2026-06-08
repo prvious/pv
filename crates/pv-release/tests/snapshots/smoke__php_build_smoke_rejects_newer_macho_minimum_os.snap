@@ -1,0 +1,12 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: build_recipe_output_summary(&run)
+---
+(
+    false,
+    Some(
+        1,
+    ),
+    "",
+    "error: <out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/bin/php Mach-O minimum macOS 14.0 is newer than deployment target 13.0\n",
+)

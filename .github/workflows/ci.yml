@@ -27,6 +27,9 @@ jobs:
         with:
           tool: cargo-shear
 
+      - name: Install shellcheck
+        run: brew install shellcheck
+
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -35,6 +38,26 @@ jobs:
 
       - name: Check unused dependencies
         run: cargo shear
+
+      - name: Check artifact recipe scripts
+        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh
+
+      - name: Validate artifact recipe metadata and fixtures
+        run: |
+          rm -rf /tmp/pv-recipe-fixtures
+          cargo run -p pv-release -- generate-recipe-fixtures \
+            --php release/artifacts/recipes/php/tracks.toml \
+            --composer release/artifacts/recipes/composer/composer.toml \
+            --archives /tmp/pv-recipe-fixtures/archives \
+            --records /tmp/pv-recipe-fixtures/records \
+            --pv-commit "$(git rev-parse HEAD)" \
+            --build-run-id ci
+          cargo run -p pv-release -- generate-manifest \
+            --records /tmp/pv-recipe-fixtures/records \
+            --revocations release/artifacts/revocations \
+            --defaults release/artifacts/default-tracks.toml \
+            --output /tmp/pv-recipe-fixtures/manifest.json \
+            --base-url https://artifacts.example.test
 
       - name: Run tests
         run: cargo nextest run --workspace --all-features --locked

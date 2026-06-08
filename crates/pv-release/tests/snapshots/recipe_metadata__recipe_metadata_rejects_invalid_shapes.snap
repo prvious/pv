@@ -1,0 +1,24 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(PhpRecipe::from_toml(Utf8Path::new(\"duplicate.toml\"), &duplicate_track),\nPhpRecipe::from_toml(Utf8Path::new(\"missing-extension.toml\"),\n&missing_extension),\nComposerRecipe::from_toml(Utf8Path::new(\"bad-composer.toml\"), &bad_checksum),)"
+---
+(
+    Err(
+        InvalidRecipeMetadata {
+            path: "duplicate.toml",
+            reason: "duplicate track `8.4`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "missing-extension.toml",
+            reason: "expected_extensions missing required extensions: phar",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "bad-composer.toml",
+            reason: "invalid source_sha256: invalid sha256 `bad`",
+        },
+    ),
+)

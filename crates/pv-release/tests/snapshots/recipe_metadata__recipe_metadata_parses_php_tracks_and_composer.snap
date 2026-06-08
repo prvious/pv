@@ -1,0 +1,21 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(php_summary(&php), composer.track().as_str(), composer.upstream_version(),\ncomposer.platform().as_str(),)"
+---
+(
+    [
+        (
+            "8.3",
+            "8.3.31",
+            "https://www.php.net/distributions/php-8.3.31.tar.gz",
+        ),
+        (
+            "8.4",
+            "8.4.20",
+            "https://www.php.net/distributions/php-8.4.20.tar.gz",
+        ),
+    ],
+    "2",
+    "2.10.1",
+    "any",
+)

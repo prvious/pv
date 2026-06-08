@@ -1,0 +1,12 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: build_recipe_output_summary(&run)
+---
+(
+    false,
+    Some(
+        1,
+    ),
+    "",
+    "error: <out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/bin/php Mach-O architecture x86_64 does not match expected arm64 for darwin-arm64\n",
+)

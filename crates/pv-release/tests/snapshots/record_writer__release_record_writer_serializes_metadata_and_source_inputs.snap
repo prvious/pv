@@ -1,0 +1,37 @@
+---
+source: crates/pv-release/tests/record_writer.rs
+expression: json
+---
+{
+  "resource": "composer",
+  "track": "2",
+  "upstream_version": "2.10.1",
+  "pv_build_revision": "pv1",
+  "artifact_version": "2.10.1-pv1",
+  "platform": "any",
+  "object_key": "resources/composer/2/2.10.1-pv1/any/composer-2.10.1-pv1-any.tar.gz",
+  "sha256": "4659fc0570122b0e0aa14f4ff7c261b1fe51795a01ba79963f462ebf40d7520d",
+  "size": 14,
+  "published_at": "2026-06-08T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": [
+    "LICENSE"
+  ],
+  "notice_files": [
+    "NOTICE"
+  ],
+  "provenance": {
+    "source_url": "https://getcomposer.org/download/2.10.1/composer.phar?mirror=primary&fallback=1",
+    "source_sha256": "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06",
+    "source_inputs": [
+      {
+        "name": "composer",
+        "source_url": "https://getcomposer.org/download/2.10.1/composer.phar?mirror=primary&fallback=1",
+        "source_sha256": "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
+      }
+    ],
+    "recipe": "release/artifacts/recipes/composer/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "run\"with\\escaping"
+  }
+}

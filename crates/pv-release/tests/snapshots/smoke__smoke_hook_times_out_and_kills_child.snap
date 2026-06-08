@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: summarize_result(result)
+---
+Err(
+    ErrorSummary {
+        kind: "SmokeHookTimedOut",
+        path: "timeout.sh",
+        reason: "100ms",
+    },
+)

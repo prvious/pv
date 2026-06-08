@@ -8,6 +8,12 @@ pub enum ReleaseError {
     #[error("invalid revocation record `{path}`: {reason}")]
     InvalidRevocationRecord { path: String, reason: String },
 
+    #[error("invalid manifest default tracks `{path}`: {reason}")]
+    InvalidDefaultTracks { path: String, reason: String },
+
+    #[error("invalid recipe metadata `{path}`: {reason}")]
+    InvalidRecipeMetadata { path: String, reason: String },
+
     #[error("duplicate artifact identity `{identity}`")]
     DuplicateArtifactIdentity { identity: String },
 
@@ -49,6 +55,9 @@ pub enum ReleaseError {
 
     #[error("smoke hook `{hook}` failed with status {status}")]
     SmokeHookFailed { hook: String, status: String },
+
+    #[error("smoke hook `{hook}` timed out after {timeout}")]
+    SmokeHookTimedOut { hook: String, timeout: String },
 
     #[error("generated manifest is invalid: {reason}")]
     GeneratedManifestInvalid { reason: String },

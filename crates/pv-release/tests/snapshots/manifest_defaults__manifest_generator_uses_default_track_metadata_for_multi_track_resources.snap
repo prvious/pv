@@ -1,0 +1,60 @@
+---
+source: crates/pv-release/tests/manifest_defaults.rs
+expression: manifest_json
+---
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {
+          "name": "8.3",
+          "artifacts": [
+            {
+              "artifact_version": "8.3.31-pv1",
+              "upstream_version": "8.3.31",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv1/darwin-arm64/php-8.3.31-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 42,
+              "published_at": "2026-06-07T12:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/php/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        },
+        {
+          "name": "8.4",
+          "artifacts": [
+            {
+              "artifact_version": "8.4.20-pv1",
+              "upstream_version": "8.4.20",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "size": 42,
+              "published_at": "2026-06-07T12:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "recipe": "release/artifacts/recipes/php/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

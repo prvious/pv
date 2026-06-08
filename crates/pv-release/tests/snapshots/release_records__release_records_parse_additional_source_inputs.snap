@@ -1,0 +1,16 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: record.provenance().source_inputs()
+---
+[
+    SourceInput {
+        name: "frankenphp",
+        source_url: "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+        source_sha256: "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+    },
+    SourceInput {
+        name: "php",
+        source_url: "https://www.php.net/distributions/php-8.4.20.tar.gz",
+        source_sha256: "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+    },
+]

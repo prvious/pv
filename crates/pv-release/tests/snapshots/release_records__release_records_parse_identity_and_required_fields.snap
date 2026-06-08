@@ -42,6 +42,7 @@ ReleaseRecord {
     provenance: Provenance {
         source_url: "https://download.redis.io/releases/redis-7.2.5.tar.gz",
         source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        source_inputs: [],
         recipe: "release/artifacts/recipes/redis/build.sh",
         pv_commit: "0123456789abcdef0123456789abcdef01234567",
         build_run_id: "local-test",

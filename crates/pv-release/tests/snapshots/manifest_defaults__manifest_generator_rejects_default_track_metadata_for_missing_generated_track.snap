@@ -1,0 +1,7 @@
+---
+source: crates/pv-release/tests/manifest_defaults.rs
+expression: error
+---
+GeneratedManifestInvalid {
+    reason: "resource `php` has explicit default_track `8.5` but generated tracks are (`8.3, 8.4`)",
+}

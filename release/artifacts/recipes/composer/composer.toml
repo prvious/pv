@@ -1,0 +1,14 @@
+[recipe]
+resources = ["composer"]
+default_track = "2"
+platforms = ["any"]
+pv_build_revision = "pv1"
+minimum_pv_version = "0.1.0"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[[tracks]]
+name = "2"
+upstream_version = "2.10.1"
+source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
+source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"

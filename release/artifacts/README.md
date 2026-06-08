@@ -31,3 +31,42 @@ cargo run -p pv-release -- validate-archive \
   --archive path/to/artifact.tar.gz \
   --record release/artifacts/records/path/to/record.json
 ```
+
+## Recipes
+
+Both recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
+
+`recipes/php/tracks.toml` is the data source for paired PHP and FrankenPHP artifact builds. Each selected PHP track/platform is built once with StaticPHP v3, producing both the standalone `php` binary and the matched `frankenphp` binary from the same buildroot. The recipe pins PHP tracks, source URLs, checksums, the expected extension set, the macOS deployment target, and the FrankenPHP source version used by the pair.
+
+`recipes/composer/composer.toml` is the data source for Composer track `2`. Composer is packaged as a `platform: "any"` artifact.
+
+`default-tracks.toml` gives the manifest generator explicit default tracks for generated resources, including Composer's single generated track.
+
+## Local Validation
+
+Run the cheap recipe checks from the repository root:
+
+```shell
+shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh
+```
+
+```shell
+rm -rf /tmp/pv-recipe-fixtures
+cargo run -p pv-release -- generate-recipe-fixtures \
+  --php release/artifacts/recipes/php/tracks.toml \
+  --composer release/artifacts/recipes/composer/composer.toml \
+  --archives /tmp/pv-recipe-fixtures/archives \
+  --records /tmp/pv-recipe-fixtures/records \
+  --pv-commit "$(git rev-parse HEAD)" \
+  --build-run-id local
+cargo run -p pv-release -- generate-manifest \
+  --records /tmp/pv-recipe-fixtures/records \
+  --revocations release/artifacts/revocations \
+  --defaults release/artifacts/default-tracks.toml \
+  --output /tmp/pv-recipe-fixtures/manifest.json \
+  --base-url https://artifacts.example.test
+```
+
+These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real PHP or FrankenPHP artifacts. Real PHP and FrankenPHP artifacts are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
+
+The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. Composer remains independently selectable as `resource=composer`.

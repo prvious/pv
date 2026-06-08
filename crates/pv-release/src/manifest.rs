@@ -1,10 +1,12 @@
 use camino::Utf8Path;
-use resources::ArtifactManifest;
+use resources::{ArtifactManifest, ResourceName, TrackName};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::defaults::ManifestDefaults;
 use crate::record::{
-    Provenance, ReleaseRecord, RevocationRecord, load_release_records, load_revocation_records,
+    Provenance, ReleaseRecord, RevocationRecord, SourceInput, load_release_records,
+    load_revocation_records,
 };
 
 pub fn generate_manifest_file(
@@ -13,9 +15,24 @@ pub fn generate_manifest_file(
     output: &Utf8Path,
     base_url: &str,
 ) -> crate::Result<()> {
+    generate_manifest_file_with_defaults(records, revocations, None, output, base_url)
+}
+
+pub fn generate_manifest_file_with_defaults(
+    records: &Utf8Path,
+    revocations: &Utf8Path,
+    defaults: Option<&Utf8Path>,
+    output: &Utf8Path,
+    base_url: &str,
+) -> crate::Result<()> {
     let records = load_release_records(records)?;
     let revocations = load_revocation_records(revocations)?;
-    let manifest = generate_manifest_json(&records, &revocations, base_url)?;
+    let defaults = match defaults {
+        Some(path) => ManifestDefaults::load(path)?,
+        None => ManifestDefaults::empty(),
+    };
+    let manifest =
+        generate_manifest_json_with_defaults(&records, &revocations, &defaults, base_url)?;
 
     if let Some(parent) = output.parent() {
         create_dir_all(parent)?;
@@ -26,6 +43,25 @@ pub fn generate_manifest_file(
 pub fn generate_manifest_json(
     records: &[ReleaseRecord],
     revocations: &[RevocationRecord],
+    base_url: &str,
+) -> crate::Result<String> {
+    let defaults = ManifestDefaults::empty();
+    generate_manifest_json_inner(records, revocations, &defaults, base_url)
+}
+
+pub fn generate_manifest_json_with_defaults(
+    records: &[ReleaseRecord],
+    revocations: &[RevocationRecord],
+    defaults: &ManifestDefaults,
+    base_url: &str,
+) -> crate::Result<String> {
+    generate_manifest_json_inner(records, revocations, defaults, base_url)
+}
+
+fn generate_manifest_json_inner(
+    records: &[ReleaseRecord],
+    revocations: &[RevocationRecord],
+    defaults: &ManifestDefaults,
     base_url: &str,
 ) -> crate::Result<String> {
     let Some((first_record, remaining_records)) = records.split_first() else {
@@ -61,7 +97,8 @@ pub fn generate_manifest_json(
         .iter()
         .map(|revocation| (revocation.target_key(), revocation))
         .collect::<BTreeMap<_, _>>();
-    let mut grouped = BTreeMap::<String, BTreeMap<String, Vec<ManifestArtifactJson>>>::new();
+    let mut grouped =
+        BTreeMap::<ResourceName, BTreeMap<TrackName, Vec<ManifestArtifactJson>>>::new();
 
     for record in records {
         let artifact = ManifestArtifactJson::from_record(
@@ -70,16 +107,17 @@ pub fn generate_manifest_json(
             base_url,
         );
         grouped
-            .entry(record.resource().as_str().to_string())
+            .entry(record.resource().clone())
             .or_default()
-            .entry(record.track().as_str().to_string())
+            .entry(record.track().clone())
             .or_default()
             .push(artifact);
     }
+    validate_manifest_defaults(defaults, &grouped)?;
 
     let resources = grouped
         .into_iter()
-        .map(|(name, tracks)| ManifestResourceJson::from_tracks(name, tracks))
+        .map(|(name, tracks)| ManifestResourceJson::from_tracks(name, tracks, defaults))
         .collect::<crate::Result<Vec<_>>>()?;
     let manifest = ManifestJson {
         schema_version: 1,
@@ -146,40 +184,39 @@ struct ManifestArtifactJson {
 struct ManifestProvenanceJson {
     source_url: String,
     source_sha256: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_inputs: Vec<ManifestSourceInputJson>,
     recipe: String,
     pv_commit: String,
     build_run_id: String,
 }
 
+#[derive(Serialize)]
+struct ManifestSourceInputJson {
+    name: String,
+    source_url: String,
+    source_sha256: String,
+}
+
 impl ManifestResourceJson {
     fn from_tracks(
-        name: String,
-        tracks: BTreeMap<String, Vec<ManifestArtifactJson>>,
+        name: ResourceName,
+        tracks: BTreeMap<TrackName, Vec<ManifestArtifactJson>>,
+        defaults: &ManifestDefaults,
     ) -> crate::Result<Self> {
-        if tracks.len() > 1 {
-            let track_names = tracks.keys().cloned().collect::<Vec<_>>().join(", ");
-            return Err(crate::ReleaseError::GeneratedManifestInvalid {
-                reason: format!(
-                    "resource `{name}` has multiple tracks (`{track_names}`) but no explicit default_track metadata"
-                ),
-            });
-        }
+        let default_track = default_track_for_resource(&name, &tracks, defaults)?;
 
         let tracks = tracks
             .into_iter()
-            .map(|(name, artifacts)| ManifestTrackJson { name, artifacts })
+            .map(|(name, artifacts)| ManifestTrackJson {
+                name: name.as_str().to_string(),
+                artifacts,
+            })
             .collect::<Vec<_>>();
 
-        let Some(track) = tracks.first() else {
-            return Err(crate::ReleaseError::GeneratedManifestInvalid {
-                reason: format!("resource `{name}` has no tracks"),
-            });
-        };
-        let default_track = track.name.clone();
-
         Ok(Self {
-            name,
-            default_track,
+            name: name.as_str().to_string(),
+            default_track: default_track.as_str().to_string(),
             tracks,
         })
     }
@@ -216,9 +253,24 @@ impl ManifestProvenanceJson {
         Self {
             source_url: provenance.source_url().to_string(),
             source_sha256: provenance.source_sha256().to_string(),
+            source_inputs: provenance
+                .source_inputs()
+                .iter()
+                .map(ManifestSourceInputJson::from_source_input)
+                .collect(),
             recipe: provenance.recipe().to_string(),
             pv_commit: provenance.pv_commit().to_string(),
             build_run_id: provenance.build_run_id().to_string(),
+        }
+    }
+}
+
+impl ManifestSourceInputJson {
+    fn from_source_input(source_input: &SourceInput) -> Self {
+        Self {
+            name: source_input.name().to_string(),
+            source_url: source_input.source_url().to_string(),
+            source_sha256: source_input.source_sha256().to_string(),
         }
     }
 }
@@ -270,6 +322,76 @@ fn artifact_url(base_url: &str, object_key: &str) -> String {
         base_url.trim_end_matches('/'),
         object_key.trim_start_matches('/')
     )
+}
+
+fn default_track_for_resource(
+    resource: &ResourceName,
+    tracks: &BTreeMap<TrackName, Vec<ManifestArtifactJson>>,
+    defaults: &ManifestDefaults,
+) -> crate::Result<TrackName> {
+    if let Some(default_track) = defaults.default_track_for(resource) {
+        if tracks.contains_key(default_track) {
+            return Ok(default_track.clone());
+        }
+
+        return Err(crate::ReleaseError::GeneratedManifestInvalid {
+            reason: format!(
+                "resource `{resource}` has explicit default_track `{default_track}` but generated tracks are (`{}`)",
+                track_names(tracks)
+            ),
+        });
+    }
+
+    if tracks.len() > 1 {
+        return Err(crate::ReleaseError::GeneratedManifestInvalid {
+            reason: format!(
+                "resource `{resource}` has multiple tracks (`{}`) but no explicit default_track metadata",
+                track_names(tracks)
+            ),
+        });
+    }
+
+    let Some(track) = tracks.keys().next() else {
+        return Err(crate::ReleaseError::GeneratedManifestInvalid {
+            reason: format!("resource `{resource}` has no tracks"),
+        });
+    };
+
+    Ok(track.clone())
+}
+
+fn validate_manifest_defaults(
+    defaults: &ManifestDefaults,
+    grouped: &BTreeMap<ResourceName, BTreeMap<TrackName, Vec<ManifestArtifactJson>>>,
+) -> crate::Result<()> {
+    for (resource, default_track) in defaults.entries() {
+        let Some(tracks) = grouped.get(resource) else {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "manifest default metadata includes resource `{resource}` but no release records generated that resource"
+                ),
+            });
+        };
+
+        if !tracks.contains_key(default_track) {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "resource `{resource}` has explicit default_track `{default_track}` but generated tracks are (`{}`)",
+                    track_names(tracks)
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn track_names(tracks: &BTreeMap<TrackName, Vec<ManifestArtifactJson>>) -> String {
+    tracks
+        .keys()
+        .map(|track| track.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn is_false(value: &bool) -> bool {

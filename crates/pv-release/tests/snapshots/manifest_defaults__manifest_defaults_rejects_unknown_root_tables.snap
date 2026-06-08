@@ -1,0 +1,8 @@
+---
+source: crates/pv-release/tests/manifest_defaults.rs
+expression: error
+---
+InvalidDefaultTracks {
+    path: "release/artifacts/default-tracks.toml",
+    reason: "TOML parse error at line 2, column 3\n  |\n2 | [[resources]]\n  |   ^^^^^^^^^\nunknown field `resources`, expected `resource`\n",
+}

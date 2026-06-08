@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: build_recipe_record_provenance(run.php_record_json.as_deref())?
+---
+Object {
+    "build_run_id": String("local-test"),
+    "pv_commit": String("0123456789abcdef0123456789abcdef01234567"),
+    "recipe": String("release/artifacts/recipes/php/build.sh"),
+    "source_sha256": String("bdb89561cd7fc76f85811f972deb34bde88e335be6e19bcc6983fb364195b36d"),
+    "source_url": String("https://sources.example.test/php.tar.gz"),
+}
