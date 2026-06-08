@@ -62,7 +62,7 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ProcessSpec, DaemonError> {
         let admin = admin_context(context)?;
-        initialize_data_dir_if_missing(context, &admin)?;
+        initialize_data_dir_if_missing(paths, context, &admin)?;
         write_postgres_config(paths, context, admin.port)?;
 
         Ok(ProcessSpec {
@@ -151,6 +151,7 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
 }
 
 fn initialize_data_dir_if_missing(
+    paths: &PvPaths,
     context: &ManagedResourceRuntimeContext,
     admin: &SqlAdminContext,
 ) -> Result<(), DaemonError> {
@@ -158,7 +159,7 @@ fn initialize_data_dir_if_missing(
         return Ok(());
     }
 
-    let password_file = context.data_dir.join("pv-initdb-password");
+    let password_file = postgres_initdb_password_file(paths, context);
     state::fs::write_sensitive_file(&password_file, &admin.password)?;
     let init_result = run_initdb(context, admin, &password_file);
     let cleanup_result = delete_optional_file(&password_file);
@@ -168,6 +169,16 @@ fn initialize_data_dir_if_missing(
         (Ok(()), Err(error)) => Err(error),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+fn postgres_initdb_password_file(
+    paths: &PvPaths,
+    context: &ManagedResourceRuntimeContext,
+) -> camino::Utf8PathBuf {
+    paths.run().join(format!(
+        "resources/{}-{}.initdb-password",
+        context.resource_name, context.track
+    ))
 }
 
 fn data_dir_is_initialized(context: &ManagedResourceRuntimeContext) -> Result<bool, DaemonError> {

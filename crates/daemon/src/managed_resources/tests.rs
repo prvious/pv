@@ -3314,6 +3314,11 @@ if [ -z "$data_dir" ] || [ -z "$username" ] || [ -z "$password_file" ]; then
   exit 64
 fi
 
+if [ -d "$data_dir" ] && [ "$(find "$data_dir" -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
+  echo "PGDATA is not empty before initdb" >&2
+  exit 65
+fi
+
 mkdir -p "$data_dir/databases"
 printf '16\n' > "$data_dir/PG_VERSION"
 printf '%s\n' "$username" > "$data_dir/initdb.username"
