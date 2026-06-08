@@ -70,3 +70,17 @@ cargo run -p pv-release -- generate-manifest \
 These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real PHP or FrankenPHP artifacts. Real PHP and FrankenPHP artifacts are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
 
 The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. Composer remains independently selectable as `resource=composer`.
+
+## Cloudflare R2 Publication
+
+`Artifact Publication` is a manual workflow. It publishes outputs from a prior `Artifact Recipes` workflow run by run ID.
+
+Required configuration:
+
+- Secret `CLOUDFLARE_ACCOUNT_ID`
+- Secret `R2_ACCESS_KEY_ID`
+- Secret `R2_SECRET_ACCESS_KEY`
+- Variable `R2_BUCKET`
+- Variable `R2_PUBLIC_BASE_URL`
+
+Publication downloads the selected workflow run artifacts, downloads existing release records and revocations from R2 when present, validates archives and release records again, stages immutable archive and record uploads, writes a versioned manifest under `manifests/runs/$SOURCE_RUN_ID/manifest.json`, and overwrites stable `manifest.json` last. Failed validation or immutable object collision stops before the stable manifest update.
