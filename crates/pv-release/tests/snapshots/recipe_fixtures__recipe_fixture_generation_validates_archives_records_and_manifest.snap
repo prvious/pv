@@ -275,6 +275,51 @@ expression: manifest_json
       ]
     },
     {
+      "name": "mysql",
+      "default_track": "8.4",
+      "tracks": [
+        {
+          "name": "8.4",
+          "artifacts": [
+            {
+              "artifact_version": "8.4.9-pv1",
+              "upstream_version": "8.4.9",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/mysql/8.4/8.4.9-pv1/darwin-amd64/mysql-8.4.9-pv1-darwin-amd64.tar.gz",
+              "sha256": "140e3b8bf6b1027b876dea2442a9de3c255d46807f3b188ae059f4cd8c8add9c",
+              "size": 242,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz",
+                "source_sha256": "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.9-pv1",
+              "upstream_version": "8.4.9",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/mysql/8.4/8.4.9-pv1/darwin-arm64/mysql-8.4.9-pv1-darwin-arm64.tar.gz",
+              "sha256": "cd4c719eff4500b9029df3d4fe818e454d3f697fcf2dc1a28339935693d9abe6",
+              "size": 241,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz",
+                "source_sha256": "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "php",
       "default_track": "8.4",
       "tracks": [
@@ -389,6 +434,51 @@ expression: manifest_json
                 "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
                 "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
                 "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "postgres",
+      "default_track": "18",
+      "tracks": [
+        {
+          "name": "18",
+          "artifacts": [
+            {
+              "artifact_version": "18.3-pv1",
+              "upstream_version": "18.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/postgres/18/18.3-pv1/darwin-amd64/postgres-18.3-pv1-darwin-amd64.tar.gz",
+              "sha256": "7ba0ea5e85a170ffd53fd5a457892fe75bed6a3b4786500b1dac29598169d931",
+              "size": 264,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz",
+                "source_sha256": "9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "18.3-pv1",
+              "upstream_version": "18.3",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/postgres/18/18.3-pv1/darwin-arm64/postgres-18.3-pv1-darwin-arm64.tar.gz",
+              "sha256": "6c76187ba10776de7e60c4c024057f3739d2296a9cace78341dca4c03371f33a",
+              "size": 263,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz",
+                "source_sha256": "9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }

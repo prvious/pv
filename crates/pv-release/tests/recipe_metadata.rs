@@ -93,6 +93,14 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         &workspace_root.join("release/artifacts/recipes/redis/recipe.toml"),
         BackingRecipeKind::Redis,
     )?;
+    let mysql = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/mysql/recipe.toml"),
+        BackingRecipeKind::Mysql,
+    )?;
+    let postgres = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/postgres/recipe.toml"),
+        BackingRecipeKind::Postgres,
+    )?;
     let mailpit = BackingRecipe::load(
         &workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml"),
         BackingRecipeKind::Mailpit,
@@ -111,6 +119,24 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_eq!(redis.default_track().as_str(), "8.2");
     assert_eq!(redis.tracks().len(), 1);
     assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
+    assert_eq!(mysql.default_track().as_str(), "8.4");
+    assert_eq!(
+        mysql
+            .tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.upstream_version()))
+            .collect::<Vec<_>>(),
+        vec![("8.4", "8.4.9")]
+    );
+    assert_eq!(postgres.default_track().as_str(), "18");
+    assert_eq!(
+        postgres
+            .tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.upstream_version()))
+            .collect::<Vec<_>>(),
+        vec![("18", "18.3")]
+    );
     assert_eq!(mailpit.default_track().as_str(), "1");
     assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);
     assert_eq!(rustfs.default_track().as_str(), "1");
@@ -119,6 +145,8 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_default_track(&defaults, "frankenphp", "8.4")?;
     assert_default_track(&defaults, "composer", "2")?;
     assert_default_track(&defaults, "redis", "8.2")?;
+    assert_default_track(&defaults, "mysql", "8.4")?;
+    assert_default_track(&defaults, "postgres", "18")?;
     assert_default_track(&defaults, "mailpit", "1")?;
     assert_default_track(&defaults, "rustfs", "1")?;
 
@@ -428,6 +456,42 @@ fn print_recipe_env_redis() -> Result<()> {
 }
 
 #[test]
+fn print_recipe_env_mysql() -> Result<()> {
+    let tempdir = tempdir()?;
+    let mysql = tempdir.path().join("recipe.toml");
+    write_file(&mysql, VALID_MYSQL_TOML)?;
+
+    let env = backing_recipe_env(
+        &mysql,
+        BackingRecipeKind::Mysql,
+        "mysql",
+        "8.4",
+        "darwin-arm64",
+    )?;
+
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
+fn print_recipe_env_postgres() -> Result<()> {
+    let tempdir = tempdir()?;
+    let postgres = tempdir.path().join("recipe.toml");
+    write_file(&postgres, VALID_POSTGRES_TOML)?;
+
+    let env = backing_recipe_env(
+        &postgres,
+        BackingRecipeKind::Postgres,
+        "postgres",
+        "18",
+        "darwin-arm64",
+    )?;
+
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
 fn print_backing_recipe_env_mailpit() -> Result<()> {
     let tempdir = tempdir()?;
     let mailpit = tempdir.path().join("recipe.toml");
@@ -619,4 +683,44 @@ source_sha256 = "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be
 platform = "darwin-amd64"
 source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
 source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"
+"#;
+
+const VALID_MYSQL_TOML: &str = r#"
+[recipe]
+resources = ["mysql"]
+default_track = "8.4"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/mysqld", "bin/mysql", "bin/mysqladmin"]
+
+[[tracks]]
+name = "8.4"
+upstream_version = "8.4.9"
+source_url = "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz"
+source_sha256 = "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b"
+"#;
+
+const VALID_POSTGRES_TOML: &str = r#"
+[recipe]
+resources = ["postgres"]
+default_track = "18"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
+
+[[tracks]]
+name = "18"
+upstream_version = "18.3"
+source_url = "https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz"
+source_sha256 = "9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59"
 "#;

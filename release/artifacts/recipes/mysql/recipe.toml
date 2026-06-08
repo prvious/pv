@@ -1,0 +1,17 @@
+[recipe]
+resources = ["mysql"]
+default_track = "8.4"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/mysqld", "bin/mysql", "bin/mysqladmin"]
+
+[[tracks]]
+name = "8.4"
+upstream_version = "8.4.9"
+source_url = "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz"
+source_sha256 = "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b"

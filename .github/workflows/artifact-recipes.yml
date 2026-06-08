@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       resource:
-        description: "Resource to build: all, php, composer, redis, mailpit, rustfs"
+        description: "Resource to build: all, php, composer, redis, mysql, postgres, mailpit, rustfs"
         required: true
         default: "all"
         type: choice
@@ -13,10 +13,12 @@ on:
           - php
           - composer
           - redis
+          - mysql
+          - postgres
           - mailpit
           - rustfs
       track:
-        description: "Track to build: all, 8.2, 8.3, 8.4, 2, 1"
+        description: "Track to build: all, 8.2, 8.3, 8.4, 18, 2, 1"
         required: true
         default: "all"
         type: string
@@ -58,6 +60,8 @@ jobs:
             php:all | php:8.2 | php:8.3 | php:8.4) ;;
             composer:all | composer:2) ;;
             redis:all | redis:8.2) ;;
+            mysql:all | mysql:8.4) ;;
+            postgres:all | postgres:18) ;;
             mailpit:all | mailpit:1) ;;
             rustfs:all | rustfs:1) ;;
             *)
@@ -108,6 +112,8 @@ jobs:
             --php release/artifacts/recipes/php/tracks.toml \
             --composer release/artifacts/recipes/composer/composer.toml \
             --redis release/artifacts/recipes/redis/recipe.toml \
+            --mysql release/artifacts/recipes/mysql/recipe.toml \
+            --postgres release/artifacts/recipes/postgres/recipe.toml \
             --mailpit release/artifacts/recipes/mailpit/recipe.toml \
             --rustfs release/artifacts/recipes/rustfs/recipe.toml \
             --archives "$fixtures_dir/archives" \
@@ -139,6 +145,8 @@ jobs:
           build_php_family=false
           build_composer=false
           build_redis=false
+          build_mysql=false
+          build_postgres=false
           build_mailpit=false
           build_rustfs=false
           case "$PV_RECIPE_RESOURCE" in
@@ -146,6 +154,8 @@ jobs:
               build_php_family=true
               build_composer=true
               build_redis=true
+              build_mysql=true
+              build_postgres=true
               build_mailpit=true
               build_rustfs=true
               ;;
@@ -157,6 +167,12 @@ jobs:
               ;;
             redis)
               build_redis=true
+              ;;
+            mysql)
+              build_mysql=true
+              ;;
+            postgres)
+              build_postgres=true
               ;;
             mailpit)
               build_mailpit=true
@@ -197,6 +213,16 @@ jobs:
           if [ "$build_redis" = true ]; then
             PV_RECIPE_TRACK=8.2 \
               release/artifacts/recipes/redis/build.sh
+          fi
+
+          if [ "$build_mysql" = true ]; then
+            PV_RECIPE_TRACK=8.4 \
+              release/artifacts/recipes/mysql/build.sh
+          fi
+
+          if [ "$build_postgres" = true ]; then
+            PV_RECIPE_TRACK=18 \
+              release/artifacts/recipes/postgres/build.sh
           fi
 
           if [ "$build_mailpit" = true ]; then
@@ -244,6 +270,8 @@ jobs:
               write_default_track frankenphp "$php_default_track"
               write_default_track composer 2
               write_default_track redis 8.2
+              write_default_track mysql 8.4
+              write_default_track postgres 18
               write_default_track mailpit 1
               write_default_track rustfs 1
               ;;
@@ -256,6 +284,12 @@ jobs:
               ;;
             redis)
               write_default_track redis 8.2
+              ;;
+            mysql)
+              write_default_track mysql 8.4
+              ;;
+            postgres)
+              write_default_track postgres 18
               ;;
             mailpit)
               write_default_track mailpit 1

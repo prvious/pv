@@ -781,6 +781,130 @@ fn rustfs_build_recipe_rejects_newer_macho_minimum_os() -> Result<()> {
 }
 
 #[test]
+fn common_recipe_helper_ad_hoc_signs_macho_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let artifact_lib = artifact_root.join("lib");
+    let sign_log = tempdir.path().join("codesign.log");
+    let harness = tempdir.path().join("sign-harness.sh");
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&artifact_lib)?;
+    write_file(&artifact_bin.join("mysql"), "mach-o fixture\n")?;
+    write_file(&artifact_bin.join("mysqladmin"), "mach-o fixture\n")?;
+    write_file(&artifact_bin.join("README"), "plain text\n")?;
+    write_file(
+        &artifact_lib.join("libmysqlclient.dylib"),
+        "mach-o fixture\n",
+    )?;
+    write_file(&sign_log, "")?;
+    write_fake_signing_otool(&fake_bin.join("otool"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
+"#,
+    )?;
+
+    let output = StdCommand::new(&harness)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_CODESIGN_LOG", &sign_log)
+        .env("PV_TEST_COMMON_SH", &common)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "signing helper failed: {}",
+        command_output_debug(&output)
+    );
+    assert_debug_snapshot!(read_file(&sign_log)?.replace(tempdir.path().as_str(), "<tmp>"));
+
+    Ok(())
+}
+
+#[test]
+fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let artifact_lib = artifact_root.join("lib");
+    let artifact_plugin = artifact_lib.join("plugin");
+    let artifact_postgresql = artifact_lib.join("postgresql");
+    let install_name_log = tempdir.path().join("install-name.log");
+    let harness = tempdir.path().join("rewrite-harness.sh");
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&artifact_lib)?;
+    create_dir_all(&artifact_plugin)?;
+    create_dir_all(&artifact_postgresql)?;
+    write_file(&artifact_bin.join("mysql"), "mach-o fixture\n")?;
+    write_file(
+        &artifact_lib.join("libmysqlclient.dylib"),
+        "mach-o fixture\n",
+    )?;
+    write_file(&artifact_plugin.join("auth.so"), "mach-o fixture\n")?;
+    write_file(
+        &artifact_postgresql.join("extension.so"),
+        "mach-o fixture\n",
+    )?;
+    write_file(&install_name_log, "")?;
+    write_fake_install_name_otool(&fake_bin.join("otool"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
+"#,
+    )?;
+
+    let install_dir = "/opt/pv-mysql";
+    let output = StdCommand::new(&harness)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_COMMON_SH", &common)
+        .env("PV_TEST_INSTALL_DIR", install_dir)
+        .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "rewrite helper failed: {}",
+        command_output_debug(&output)
+    );
+
+    let mut rewrites = read_file(&install_name_log)?
+        .lines()
+        .map(|line| {
+            line.replace(tempdir.path().as_str(), "<tmp>")
+                .replace(install_dir, "<install>")
+        })
+        .collect::<Vec<_>>();
+    rewrites.sort();
+    assert_debug_snapshot!(rewrites);
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         lipo_archs: "x86_64",
@@ -2270,6 +2394,77 @@ EOF
     exit 78
     ;;
 esac
+"#,
+    )
+}
+
+fn write_fake_signing_otool(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+[ "${1:-}" = "-L" ] || exit 78
+case "${2##*/}" in
+  mysql | mysqladmin | libmysqlclient.dylib)
+    printf '%s:\n' "$2"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_install_name_otool(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+mode=${1:-}
+binary=${2:-}
+
+case "$mode" in
+  -D)
+    printf '%s:\n' "$binary"
+    case "$binary" in
+      */lib/libmysqlclient.dylib)
+        printf '%s/lib/libmysqlclient.dylib\n' "$PV_TEST_INSTALL_DIR"
+        ;;
+    esac
+    ;;
+  -L)
+    case "$binary" in
+      */bin/mysql | */lib/libmysqlclient.dylib | */lib/plugin/auth.so | */lib/postgresql/extension.so)
+        printf '%s:\n' "$binary"
+        printf '\t%s/lib/libmysqlclient.dylib (compatibility version 1.0.0, current version 1.0.0)\n' "$PV_TEST_INSTALL_DIR"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_install_name_tool(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'argv=' >>"$PV_TEST_INSTALL_NAME_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_INSTALL_NAME_LOG"
+done
+printf '\n' >>"$PV_TEST_INSTALL_NAME_LOG"
 "#,
     )
 }

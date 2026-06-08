@@ -44,6 +44,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
     let redis = workspace_root.join("release/artifacts/recipes/redis/recipe.toml");
+    let mysql = workspace_root.join("release/artifacts/recipes/mysql/recipe.toml");
+    let postgres = workspace_root.join("release/artifacts/recipes/postgres/recipe.toml");
     let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
@@ -59,6 +61,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
         &composer,
         &[
             (BackingRecipeKind::Redis, redis.clone()),
+            (BackingRecipeKind::Mysql, mysql),
+            (BackingRecipeKind::Postgres, postgres),
             (BackingRecipeKind::Mailpit, mailpit),
             (BackingRecipeKind::Rustfs, rustfs),
         ],
@@ -120,12 +124,36 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
                 "darwin-arm64",
                 "mailpit-1.30.1-pv1-darwin-arm64",
             ),
+            ArchiveRoot::new(
+                "mysql",
+                "8.4",
+                "darwin-amd64",
+                "mysql-8.4.9-pv1-darwin-amd64"
+            ),
+            ArchiveRoot::new(
+                "mysql",
+                "8.4",
+                "darwin-arm64",
+                "mysql-8.4.9-pv1-darwin-arm64"
+            ),
             ArchiveRoot::new("php", "8.2", "darwin-amd64", "php-8.2.31-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.2", "darwin-arm64", "php-8.2.31-pv1-darwin-arm64"),
             ArchiveRoot::new("php", "8.3", "darwin-amd64", "php-8.3.31-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.3", "darwin-arm64", "php-8.3.31-pv1-darwin-arm64"),
             ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.20-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.20-pv1-darwin-arm64"),
+            ArchiveRoot::new(
+                "postgres",
+                "18",
+                "darwin-amd64",
+                "postgres-18.3-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "postgres",
+                "18",
+                "darwin-arm64",
+                "postgres-18.3-pv1-darwin-arm64",
+            ),
             ArchiveRoot::new(
                 "redis",
                 "8.2",
@@ -181,6 +209,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
     let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
+    let mysql = workspace_root.join("release/artifacts/recipes/mysql/recipe.toml");
+    let postgres = workspace_root.join("release/artifacts/recipes/postgres/recipe.toml");
     let redis = tempdir
         .path()
         .join("release/artifacts/recipes/redis/recipe.toml");
@@ -192,6 +222,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
         &composer,
         &[
             (BackingRecipeKind::Redis, redis.clone()),
+            (BackingRecipeKind::Mysql, mysql),
+            (BackingRecipeKind::Postgres, postgres),
             (BackingRecipeKind::Mailpit, mailpit),
             (BackingRecipeKind::Rustfs, rustfs),
         ],
