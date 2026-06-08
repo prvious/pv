@@ -1,0 +1,36 @@
+---
+source: crates/daemon/tests/sql_foundation.rs
+expression: snapshot
+---
+(
+    {
+        "host": "127.0.0.1",
+        "password": "pa:ss/wo@rd%#",
+        "port": "15432",
+        "url": "mysql://admin%40local%3Adev%2F%25%23:pa%3Ass%2Fwo%40rd%25%23@127.0.0.1:15432",
+        "username": "admin@local:dev/%#",
+    },
+    {
+        "database": "acme_test_app_db",
+        "host": "127.0.0.1",
+        "password": "pa:ss/wo@rd%#",
+        "port": "15432",
+        "url": "mysql://admin%40local%3Adev%2F%25%23:pa%3Ass%2Fwo%40rd%25%23@127.0.0.1:15432/acme_test_app_db",
+        "username": "admin@local:dev/%#",
+    },
+    {
+        "host": "127.0.0.1",
+        "password": "pa:ss/wo@rd%#",
+        "port": "15432",
+        "url": "postgres://admin%40local%3Adev%2F%25%23:pa%3Ass%2Fwo%40rd%25%23@127.0.0.1:15432",
+        "username": "admin@local:dev/%#",
+    },
+    {
+        "database": "acme_test_app_db",
+        "host": "127.0.0.1",
+        "password": "pa:ss/wo@rd%#",
+        "port": "15432",
+        "url": "postgres://admin%40local%3Adev%2F%25%23:pa%3Ass%2Fwo%40rd%25%23@127.0.0.1:15432/acme_test_app_db",
+        "username": "admin@local:dev/%#",
+    },
+)

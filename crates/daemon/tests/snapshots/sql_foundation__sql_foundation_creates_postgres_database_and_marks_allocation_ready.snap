@@ -1,0 +1,41 @@
+---
+source: crates/daemon/tests/sql_foundation.rs
+expression: snapshot
+---
+(
+    {
+        "host": "127.0.0.1",
+        "password": "pg-secret",
+        "port": "5432",
+        "url": "postgres://postgres:pg-secret@127.0.0.1:5432",
+        "username": "postgres",
+    },
+    [
+        RecordedSqlAdminOperation {
+            engine: Postgres,
+            database: "api_acme_test_analytics",
+            statement: "CREATE DATABASE \"api_acme_test_analytics\"",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "postgres",
+            track: "16",
+            allocation_name: "analytics",
+            generated_name: "api_acme_test_analytics",
+            env: {
+                "database": "api_acme_test_analytics",
+                "host": "127.0.0.1",
+                "password": "pg-secret",
+                "port": "5432",
+                "url": "postgres://postgres:pg-secret@127.0.0.1:5432/api_acme_test_analytics",
+                "username": "postgres",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+)
