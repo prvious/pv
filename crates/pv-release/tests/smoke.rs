@@ -866,6 +866,79 @@ PV_PV_BUILD_REVISION=pv1
 PV_MINIMUM_PV_VERSION=0.1.0
 EOF
       ;;
+    write-release-record)
+      record=
+      object_key=
+      source_url=
+      source_sha256=
+      recipe=
+      pv_commit=
+      build_run_id=
+      source_inputs_json=
+      source_input_count=0
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --object-key)
+            shift
+            object_key=${1:-}
+            ;;
+          --source-url)
+            shift
+            source_url=${1:-}
+            ;;
+          --source-sha256)
+            shift
+            source_sha256=${1:-}
+            ;;
+          --recipe)
+            shift
+            recipe=${1:-}
+            ;;
+          --pv-commit)
+            shift
+            pv_commit=${1:-}
+            ;;
+          --build-run-id)
+            shift
+            build_run_id=${1:-}
+            ;;
+          --source-input)
+            shift
+            input_name=${1:-}
+            shift
+            input_url=${1:-}
+            shift
+            input_sha256=${1:-}
+            input_json="      {\"name\": \"$input_name\", \"source_url\": \"$input_url\", \"source_sha256\": \"$input_sha256\"}"
+            if [ "$source_input_count" -eq 0 ]; then
+              source_inputs_json=$input_json
+            else
+              source_inputs_json="$source_inputs_json,
+$input_json"
+            fi
+            source_input_count=$((source_input_count + 1))
+            ;;
+        esac
+        shift
+      done
+      mkdir -p "$(dirname "$record")"
+      {
+        printf '{\n  "object_key": "%s",\n  "provenance": {\n' "$object_key"
+        printf '    "source_url": "%s",\n' "$source_url"
+        printf '    "source_sha256": "%s",\n' "$source_sha256"
+        if [ "$source_input_count" -gt 0 ]; then
+          printf '    "source_inputs": [\n%s\n    ],\n' "$source_inputs_json"
+        fi
+        printf '    "recipe": "%s",\n' "$recipe"
+        printf '    "pv_commit": "%s",\n' "$pv_commit"
+        printf '    "build_run_id": "%s"\n' "$build_run_id"
+        printf '  }\n}\n'
+      } >"$record"
+      ;;
     validate-archive)
       archive=
       record=
@@ -927,6 +1000,61 @@ PV_SOURCE_URL=https://sources.example.test/composer.phar
 PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
 PV_MINIMUM_PV_VERSION=0.1.0
 PV_PV_BUILD_REVISION=pv1
+EOF
+      ;;
+    write-release-record)
+      record=
+      object_key=
+      source_url=
+      source_sha256=
+      recipe=
+      pv_commit=
+      build_run_id=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --object-key)
+            shift
+            object_key=${1:-}
+            ;;
+          --source-url)
+            shift
+            source_url=${1:-}
+            ;;
+          --source-sha256)
+            shift
+            source_sha256=${1:-}
+            ;;
+          --recipe)
+            shift
+            recipe=${1:-}
+            ;;
+          --pv-commit)
+            shift
+            pv_commit=${1:-}
+            ;;
+          --build-run-id)
+            shift
+            build_run_id=${1:-}
+            ;;
+        esac
+        shift
+      done
+      mkdir -p "$(dirname "$record")"
+      cat >"$record" <<EOF
+{
+  "object_key": "$object_key",
+  "provenance": {
+    "source_url": "$source_url",
+    "source_sha256": "$source_sha256",
+    "recipe": "$recipe",
+    "pv_commit": "$pv_commit",
+    "build_run_id": "$build_run_id"
+  }
+}
 EOF
       ;;
     validate-archive)

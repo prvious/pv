@@ -3,6 +3,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
+use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
+
 #[derive(Debug, Parser)]
 #[command(name = "pv-release")]
 #[command(about = "PV internal artifact release tooling")]
@@ -12,6 +14,10 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "pv-release parses one short-lived CLI command and immediately dispatches it"
+)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -46,6 +52,40 @@ enum Command {
         record: Utf8PathBuf,
         #[arg(long)]
         smoke_hook: Option<Utf8PathBuf>,
+    },
+    WriteReleaseRecord {
+        #[arg(long)]
+        record: Utf8PathBuf,
+        #[arg(long)]
+        archive: Utf8PathBuf,
+        #[arg(long)]
+        resource: String,
+        #[arg(long)]
+        track: String,
+        #[arg(long)]
+        upstream_version: String,
+        #[arg(long)]
+        pv_build_revision: String,
+        #[arg(long)]
+        platform: String,
+        #[arg(long)]
+        object_key: String,
+        #[arg(long)]
+        source_url: String,
+        #[arg(long)]
+        source_sha256: String,
+        #[arg(long)]
+        recipe: String,
+        #[arg(long)]
+        pv_commit: String,
+        #[arg(long)]
+        build_run_id: String,
+        #[arg(long)]
+        minimum_pv_version: String,
+        #[arg(long)]
+        published_at: String,
+        #[arg(long = "source-input", num_args = 3, value_names = ["NAME", "URL", "SHA256"])]
+        source_inputs: Vec<String>,
     },
     PrintRecipeEnv {
         #[arg(long)]
@@ -104,6 +144,46 @@ pub fn run() -> anyhow::Result<()> {
             smoke_hook.as_deref(),
         )
         .with_context(|| format!("failed to validate archive `{archive}`")),
+        Command::WriteReleaseRecord {
+            record,
+            archive,
+            resource,
+            track,
+            upstream_version,
+            pv_build_revision,
+            platform,
+            object_key,
+            source_url,
+            source_sha256,
+            recipe,
+            pv_commit,
+            build_run_id,
+            minimum_pv_version,
+            published_at,
+            source_inputs,
+        } => {
+            let context = format!("failed to write release record `{record}`");
+            let source_inputs = parse_source_inputs(&source_inputs)?;
+            crate::record_writer::write_release_record(&WriteReleaseRecordRequest {
+                record,
+                archive,
+                resource,
+                track,
+                upstream_version,
+                pv_build_revision,
+                platform,
+                object_key,
+                source_url,
+                source_sha256,
+                recipe,
+                pv_commit,
+                build_run_id,
+                minimum_pv_version,
+                published_at,
+                source_inputs,
+            })
+            .context(context)
+        }
         Command::PrintRecipeEnv {
             php,
             composer,
@@ -124,6 +204,24 @@ pub fn run() -> anyhow::Result<()> {
                 .context("failed to write recipe environment to stdout")
         }
     }
+}
+
+fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
+    let mut chunks = values.chunks_exact(3);
+    let source_inputs = chunks
+        .by_ref()
+        .map(|chunk| SourceInputRequest {
+            name: chunk[0].clone(),
+            source_url: chunk[1].clone(),
+            source_sha256: chunk[2].clone(),
+        })
+        .collect::<Vec<_>>();
+
+    if !chunks.remainder().is_empty() {
+        anyhow::bail!("each --source-input requires NAME URL SHA256");
+    }
+
+    Ok(source_inputs)
 }
 
 fn print_recipe_env(
@@ -321,6 +419,111 @@ mod tests {
                 assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
                 assert_eq!(record, Utf8PathBuf::from("release.json"));
                 assert_eq!(smoke_hook, Some(Utf8PathBuf::from("smoke.sh")));
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_write_release_record_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "write-release-record",
+            "--record",
+            "record.json",
+            "--archive",
+            "artifact.tar.gz",
+            "--resource",
+            "frankenphp",
+            "--track",
+            "8.4",
+            "--upstream-version",
+            "8.4.20-frankenphp1.12.3",
+            "--pv-build-revision",
+            "pv1",
+            "--platform",
+            "darwin-arm64",
+            "--object-key",
+            "resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+            "--source-url",
+            "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+            "--source-sha256",
+            "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+            "--recipe",
+            "release/artifacts/recipes/php/build.sh",
+            "--pv-commit",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--build-run-id",
+            "local-test",
+            "--minimum-pv-version",
+            "0.1.0",
+            "--published-at",
+            "2026-06-08T12:00:00Z",
+            "--source-input",
+            "frankenphp",
+            "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+            "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+            "--source-input",
+            "php",
+            "https://www.php.net/distributions/php-8.4.20.tar.gz",
+            "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+        ])?;
+
+        match args.command {
+            Command::WriteReleaseRecord {
+                record,
+                archive,
+                resource,
+                track,
+                upstream_version,
+                pv_build_revision,
+                platform,
+                object_key,
+                source_url,
+                source_sha256,
+                recipe,
+                pv_commit,
+                build_run_id,
+                minimum_pv_version,
+                published_at,
+                source_inputs,
+            } => {
+                assert_eq!(record, Utf8PathBuf::from("record.json"));
+                assert_eq!(archive, Utf8PathBuf::from("artifact.tar.gz"));
+                assert_eq!(resource, "frankenphp");
+                assert_eq!(track, "8.4");
+                assert_eq!(upstream_version, "8.4.20-frankenphp1.12.3");
+                assert_eq!(pv_build_revision, "pv1");
+                assert_eq!(platform, "darwin-arm64");
+                assert_eq!(
+                    object_key,
+                    "resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz"
+                );
+                assert_eq!(
+                    source_url,
+                    "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
+                );
+                assert_eq!(
+                    source_sha256,
+                    "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
+                );
+                assert_eq!(recipe, "release/artifacts/recipes/php/build.sh");
+                assert_eq!(pv_commit, "0123456789abcdef0123456789abcdef01234567");
+                assert_eq!(build_run_id, "local-test");
+                assert_eq!(minimum_pv_version, "0.1.0");
+                assert_eq!(published_at, "2026-06-08T12:00:00Z");
+                assert_eq!(
+                    source_inputs,
+                    vec![
+                        "frankenphp",
+                        "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                        "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+                        "php",
+                        "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                        "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+                    ]
+                );
                 Ok(())
             }
             command => bail!("parsed unexpected command: {command:?}"),

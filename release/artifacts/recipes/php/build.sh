@@ -291,7 +291,7 @@ write_staged_artifact() {
   minimum_pv_version=$6
   pv_build_revision=$7
   expected_extensions=$8
-  source_inputs_json=${9:-}
+  shift 8
 
   artifact_basename="$resource-$artifact_version-$PLATFORM"
   archive="$work_dir/staged-archives/$artifact_basename.tar.gz"
@@ -300,7 +300,7 @@ write_staged_artifact() {
 
   mkdir -p "$(dirname "$archive")"
   COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
-  write_record "$record" "$resource" "$TRACK" "$upstream_version" "$pv_build_revision" "$PLATFORM" "$object_key" "$archive" "$source_url" "$source_sha256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$minimum_pv_version" "$source_inputs_json"
+  write_record "$record" "$resource" "$TRACK" "$upstream_version" "$pv_build_revision" "$PLATFORM" "$object_key" "$archive" "$source_url" "$source_sha256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$minimum_pv_version" "$@"
 
   PV_EXPECTED_EXTENSIONS="$expected_extensions" \
     PV_PHP_VERSION="$PHP_PHP_VERSION" \
@@ -338,22 +338,6 @@ stage_artifact frankenphp \
   "$FRANKENPHP_SOURCE_SHA256" \
   frankenphp
 
-frankenphp_source_inputs_json=$(cat <<JSON
-[
-      {
-        "name": "frankenphp",
-        "source_url": "$FRANKENPHP_SOURCE_URL",
-        "source_sha256": "$FRANKENPHP_SOURCE_SHA256"
-      },
-      {
-        "name": "php",
-        "source_url": "$PHP_SOURCE_URL",
-        "source_sha256": "$PHP_SOURCE_SHA256"
-      }
-    ]
-JSON
-)
-
 write_staged_artifact php \
   "$PHP_UPSTREAM_VERSION" \
   "$PHP_ARTIFACT_VERSION" \
@@ -371,7 +355,8 @@ write_staged_artifact frankenphp \
   "$FRANKENPHP_MINIMUM_PV_VERSION" \
   "$FRANKENPHP_PV_BUILD_REVISION" \
   "$PHP_EXPECTED_EXTENSIONS" \
-  "$frankenphp_source_inputs_json"
+  --source-input frankenphp "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256" \
+  --source-input php "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256"
 
 publish_artifact php "$PHP_ARTIFACT_VERSION"
 publish_artifact frankenphp "$FRANKENPHP_ARTIFACT_VERSION"
