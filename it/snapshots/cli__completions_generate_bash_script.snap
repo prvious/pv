@@ -131,6 +131,18 @@ _pv() {
             pv,project:env)
                 cmd="pv__subcmd__project:env"
                 ;;
+            pv,redis:install)
+                cmd="pv__subcmd__redis:install"
+                ;;
+            pv,redis:list)
+                cmd="pv__subcmd__redis:list"
+                ;;
+            pv,redis:uninstall)
+                cmd="pv__subcmd__redis:uninstall"
+                ;;
+            pv,redis:update)
+                cmd="pv__subcmd__redis:update"
+                ;;
             pv,setup)
                 cmd="pv__subcmd__setup"
                 ;;
@@ -153,7 +165,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open"
+            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open redis:install redis:update redis:uninstall redis:list"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -680,6 +692,62 @@ _pv() {
             ;;
         pv__subcmd__project:env)
             opts="-h --json --no-color --help [hostname]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__redis:install)
+            opts="-h --no-color --help [track]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__redis:list)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__redis:uninstall)
+            opts="-h --prune --force --no-color --help <track>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__redis:update)
+            opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
