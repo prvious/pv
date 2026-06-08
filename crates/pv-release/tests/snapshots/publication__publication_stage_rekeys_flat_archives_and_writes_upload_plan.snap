@@ -5,6 +5,14 @@ expression: "read_file(&stage.join(\"publication-plan.json\"))?"
 {
   "immutable_uploads": [
     {
+      "local_path": "archives/resources/redis/8.2/8.2.1-pv1/darwin-amd64/redis-8.2.1-pv1-darwin-amd64.tar.gz",
+      "object_key": "resources/redis/8.2/8.2.1-pv1/darwin-amd64/redis-8.2.1-pv1-darwin-amd64.tar.gz"
+    },
+    {
+      "local_path": "records/resources/redis/8.2/8.2.1-pv1/darwin-amd64/redis-8.2.1-pv1-darwin-amd64.json",
+      "object_key": "records/resources/redis/8.2/8.2.1-pv1/darwin-amd64/redis-8.2.1-pv1-darwin-amd64.json"
+    },
+    {
       "local_path": "archives/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
       "object_key": "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz"
     },

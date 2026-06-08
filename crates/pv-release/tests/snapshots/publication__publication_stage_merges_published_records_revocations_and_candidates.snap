@@ -17,6 +17,23 @@ expression: stable_manifest
               "artifact_version": "8.2.2-pv1",
               "upstream_version": "8.2.2",
               "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.2-pv1/darwin-amd64/redis-8.2.2-pv1-darwin-amd64.tar.gz",
+              "sha256": "8b5ece5b07b5b53b0923c47ad446058dbf0591ed635931961ab4d31e6827c1cd",
+              "size": 186,
+              "published_at": "2026-06-08T13:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.2.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "123456789"
+              }
+            },
+            {
+              "artifact_version": "8.2.2-pv1",
+              "upstream_version": "8.2.2",
+              "pv_build_revision": "pv1",
               "platform": "darwin-arm64",
               "url": "https://artifacts.example.test/resources/redis/8.2/8.2.2-pv1/darwin-arm64/redis-8.2.2-pv1-darwin-arm64.tar.gz",
               "sha256": "da4fd14815b677b0c35d837bff87c204993a92a298601fe638d96a0572f09870",

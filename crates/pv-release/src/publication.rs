@@ -1,6 +1,6 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
-use resources::ArtifactManifest;
+use resources::{ArtifactManifest, ArtifactPlatform};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,7 +66,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         }
     }
 
-    ManifestDefaults::load(&request.defaults)?;
+    let defaults = ManifestDefaults::load(&request.defaults)?;
     let mut candidates = Vec::new();
     for candidate in &candidate_records {
         let archive_name = archive_name(candidate.record.object_key())?;
@@ -104,6 +104,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
 
     validate_publication_object_keys(request, &candidates)?;
     validate_publication_local_paths(request, &candidates)?;
+    validate_public_manifest_platform_matrix(&defaults, &published_records, &candidate_records)?;
     stage_immutable_uploads(request, &candidates)?;
     let tempdir = Utf8TempDir::new().map_err(|error| filesystem_error(&request.stage, error))?;
     let combined_records = tempdir.path().join("records");
@@ -144,6 +145,68 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &request.stage.join("publication-plan.json"),
         &format!("{plan_json}\n"),
     )
+}
+
+fn validate_public_manifest_platform_matrix(
+    defaults: &ManifestDefaults,
+    published_records: &[ReleaseRecordFile],
+    candidate_records: &[ReleaseRecordFile],
+) -> crate::Result<()> {
+    let mut platforms_by_default = BTreeMap::<(String, String), BTreeSet<ArtifactPlatform>>::new();
+    for record_file in published_records.iter().chain(candidate_records) {
+        let record = &record_file.record;
+        if let Some(default_track) = defaults.default_track_for(record.resource())
+            && record.track() == default_track
+        {
+            platforms_by_default
+                .entry((
+                    record.resource().as_str().to_string(),
+                    record.track().as_str().to_string(),
+                ))
+                .or_default()
+                .insert(record.platform());
+        }
+    }
+
+    for (resource, track) in defaults.entries() {
+        let key = (resource.as_str().to_string(), track.as_str().to_string());
+        let platforms = platforms_by_default.get(&key);
+        if resource.as_str() == "composer" {
+            if platforms
+                .map(|platforms| platforms.contains(&ArtifactPlatform::Any))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest default resource `{resource}` track `{track}` is missing required portable platform: any",
+                ),
+            });
+        }
+
+        let missing = [ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64]
+            .into_iter()
+            .filter(|platform| {
+                !platforms
+                    .map(|platforms| platforms.contains(platform))
+                    .unwrap_or(false)
+            })
+            .map(ArtifactPlatform::as_str)
+            .collect::<Vec<_>>();
+
+        if !missing.is_empty() {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest default resource `{resource}` track `{track}` is missing required platform(s): {}",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_publication_object_keys(

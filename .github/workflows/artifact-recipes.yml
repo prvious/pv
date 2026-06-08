@@ -23,17 +23,23 @@ on:
         default: "all"
         type: string
       platform:
-        description: "Artifact platform"
+        description: "Artifact platform: all, darwin-arm64, darwin-amd64"
         required: true
-        default: "darwin-arm64"
+        default: "all"
         type: choice
         options:
+          - all
           - darwin-arm64
           - darwin-amd64
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64","darwin-amd64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
       - name: Checkout
@@ -46,7 +52,7 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
         run: |
           set -eu
 
@@ -131,7 +137,7 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_COMMIT: ${{ github.sha }}
@@ -309,7 +315,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ inputs.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
