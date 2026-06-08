@@ -1,0 +1,9 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: "publication_error_summary(error, fixture.root())"
+---
+(
+    "InvalidPublicationInput",
+    "manifests/runs/123456789/manifest.json",
+    "publication local path collides between `versioned manifest` and `stable manifest`",
+)

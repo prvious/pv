@@ -39,6 +39,12 @@ pub enum ReleaseError {
     #[error("invalid artifact archive `{path}`: {reason}")]
     InvalidArchive { path: String, reason: String },
 
+    #[error("invalid publication input `{path}`: {reason}")]
+    InvalidPublicationInput { path: String, reason: String },
+
+    #[error("publication would overwrite immutable object `{key}`")]
+    ImmutablePublicationObjectExists { key: String },
+
     #[error("artifact archive `{path}` checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,

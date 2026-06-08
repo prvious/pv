@@ -3,6 +3,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
+use crate::publication::PublicationRequest;
 use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
 
 #[derive(Debug, Parser)]
@@ -30,6 +31,26 @@ enum Command {
         output: Utf8PathBuf,
         #[arg(long)]
         base_url: String,
+    },
+    StagePublication {
+        #[arg(long)]
+        source_archives: Utf8PathBuf,
+        #[arg(long)]
+        candidate_records: Utf8PathBuf,
+        #[arg(long)]
+        published_records: Utf8PathBuf,
+        #[arg(long)]
+        published_revocations: Utf8PathBuf,
+        #[arg(long)]
+        defaults: Utf8PathBuf,
+        #[arg(long)]
+        stage: Utf8PathBuf,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long)]
+        versioned_manifest_key: String,
+        #[arg(long)]
+        stable_manifest_key: String,
     },
     GenerateRecipeFixtures {
         #[arg(long)]
@@ -118,6 +139,28 @@ pub fn run() -> anyhow::Result<()> {
             &base_url,
         )
         .with_context(|| format!("failed to generate manifest at `{output}`")),
+        Command::StagePublication {
+            source_archives,
+            candidate_records,
+            published_records,
+            published_revocations,
+            defaults,
+            stage,
+            base_url,
+            versioned_manifest_key,
+            stable_manifest_key,
+        } => crate::publication::prepare_publication(&PublicationRequest {
+            source_archives,
+            candidate_records,
+            published_records,
+            published_revocations,
+            defaults,
+            stage,
+            base_url,
+            versioned_manifest_key,
+            stable_manifest_key,
+        })
+        .context("failed to stage publication"),
         Command::GenerateRecipeFixtures {
             php,
             composer,
@@ -292,6 +335,67 @@ mod tests {
                 assert_eq!(records, Utf8PathBuf::from("records"));
                 assert_eq!(pv_commit, "0123456789abcdef0123456789abcdef01234567");
                 assert_eq!(build_run_id, "local-test");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_stage_publication_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "stage-publication",
+            "--source-archives",
+            "source-archives",
+            "--candidate-records",
+            "candidate-records",
+            "--published-records",
+            "published-records",
+            "--published-revocations",
+            "published-revocations",
+            "--defaults",
+            "release/artifacts/default-tracks.toml",
+            "--stage",
+            "stage",
+            "--base-url",
+            "https://artifacts.example.test",
+            "--versioned-manifest-key",
+            "manifests/runs/123456789/manifest.json",
+            "--stable-manifest-key",
+            "manifest.json",
+        ])?;
+
+        match args.command {
+            Command::StagePublication {
+                source_archives,
+                candidate_records,
+                published_records,
+                published_revocations,
+                defaults,
+                stage,
+                base_url,
+                versioned_manifest_key,
+                stable_manifest_key,
+            } => {
+                assert_eq!(source_archives, Utf8PathBuf::from("source-archives"));
+                assert_eq!(candidate_records, Utf8PathBuf::from("candidate-records"));
+                assert_eq!(published_records, Utf8PathBuf::from("published-records"));
+                assert_eq!(
+                    published_revocations,
+                    Utf8PathBuf::from("published-revocations")
+                );
+                assert_eq!(
+                    defaults,
+                    Utf8PathBuf::from("release/artifacts/default-tracks.toml")
+                );
+                assert_eq!(stage, Utf8PathBuf::from("stage"));
+                assert_eq!(base_url, "https://artifacts.example.test");
+                assert_eq!(
+                    versioned_manifest_key,
+                    "manifests/runs/123456789/manifest.json"
+                );
+                assert_eq!(stable_manifest_key, "manifest.json");
                 Ok(())
             }
             command => bail!("parsed unexpected command: {command:?}"),
