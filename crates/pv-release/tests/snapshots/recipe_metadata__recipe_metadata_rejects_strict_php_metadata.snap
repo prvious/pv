@@ -24,7 +24,7 @@ expression: "(PhpRecipe::from_toml(Utf8Path::new(\"invalid-deployment-target.tom
     Err(
         InvalidRecipeMetadata {
             path: "empty-license-files.toml",
-            reason: "license_files must not be empty",
+            reason: "license_files must be exactly `LICENSE`",
         },
     ),
     Err(

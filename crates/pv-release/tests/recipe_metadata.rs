@@ -116,11 +116,8 @@ fn recipe_metadata_rejects_unknown_fields() -> Result<()> {
         "unknown_recipe_metadata = \"ignored\"\n\n[recipe]",
         1,
     );
-    let unknown_php_settings = VALID_PHP_TOML.replacen(
-        "[php]",
-        "[php]\nunknown_php_metadata = \"ignored\"",
-        1,
-    );
+    let unknown_php_settings =
+        VALID_PHP_TOML.replacen("[php]", "[php]\nunknown_php_metadata = \"ignored\"", 1);
     let unknown_composer_track = VALID_COMPOSER_TOML.replacen(
         "source_sha256 = \"345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06\"",
         "source_sha256 = \"345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06\"\nunknown_track_metadata = \"ignored\"",
@@ -138,6 +135,29 @@ fn recipe_metadata_rejects_unknown_fields() -> Result<()> {
     assert_invalid_recipe_metadata(ComposerRecipe::from_toml(
         Utf8Path::new("unknown-composer-track.toml"),
         &unknown_composer_track,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn recipe_metadata_rejects_unsupported_license_notice_files() -> Result<()> {
+    let extra_license_file = VALID_PHP_TOML.replace(
+        "license_files = [\"LICENSE\"]",
+        "license_files = [\"LICENSE\", \"COPYING\"]",
+    );
+    let alternate_notice_file = VALID_COMPOSER_TOML.replace(
+        "notice_files = [\"NOTICE\"]",
+        "notice_files = [\"THIRD_PARTY_NOTICES\"]",
+    );
+
+    assert_invalid_recipe_metadata(PhpRecipe::from_toml(
+        Utf8Path::new("extra-license.toml"),
+        &extra_license_file,
+    ));
+    assert_invalid_recipe_metadata(ComposerRecipe::from_toml(
+        Utf8Path::new("alternate-notice.toml"),
+        &alternate_notice_file,
     ));
 
     Ok(())
@@ -211,7 +231,7 @@ fn print_composer_recipe_env_rejects_shell_unsafe_source_url() -> Result<()> {
 fn assert_invalid_recipe_metadata(result: pv_release::Result<impl std::fmt::Debug>) {
     assert!(
         matches!(result, Err(ReleaseError::InvalidRecipeMetadata { .. })),
-        "unknown recipe metadata should be rejected, got {result:?}"
+        "recipe metadata should be rejected, got {result:?}"
     );
 }
 

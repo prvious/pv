@@ -277,11 +277,10 @@ impl RecipeHeader {
             .map_err(|error| invalid_identity(path, "minimum_pv_version", error))?;
         let pv_build_revision =
             require_non_empty(path, "pv_build_revision", &raw.pv_build_revision)?.to_string();
-        if raw.license_files.is_empty() {
-            return Err(invalid(path, "license_files must not be empty"));
-        }
         validate_relative_file_list(path, "license_files", &raw.license_files)?;
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
+        validate_exact_file_list(path, "license_files", &raw.license_files, &["LICENSE"])?;
+        validate_exact_file_list(path, "notice_files", &raw.notice_files, &["NOTICE"])?;
 
         Ok(Self {
             resources,
@@ -1002,6 +1001,33 @@ fn validate_relative_file_list(
     }
 
     Ok(())
+}
+
+fn validate_exact_file_list(
+    path: &Utf8Path,
+    field: &str,
+    values: &[String],
+    expected: &[&str],
+) -> crate::Result<()> {
+    if values
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied())
+    {
+        return Ok(());
+    }
+
+    Err(invalid(
+        path,
+        format!(
+            "{field} must be exactly {}",
+            expected
+                .iter()
+                .map(|value| format!("`{value}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ))
 }
 
 fn relative_path_is_valid(value: &str) -> bool {
