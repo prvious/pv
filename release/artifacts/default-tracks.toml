@@ -9,3 +9,7 @@ default_track = "8.4"
 [[resource]]
 name = "composer"
 default_track = "2"
+
+[[resource]]
+name = "redis"
+default_track = "8.2"

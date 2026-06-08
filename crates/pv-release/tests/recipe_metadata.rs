@@ -5,8 +5,8 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::defaults::ManifestDefaults;
 use pv_release::recipe::{
-    BackingRecipe, BackingRecipeKind, ComposerRecipe, PhpRecipe, composer_recipe_env,
-    php_recipe_env,
+    BackingRecipe, BackingRecipeKind, ComposerRecipe, PhpRecipe, backing_recipe_env,
+    composer_recipe_env, php_recipe_env,
 };
 use resources::ResourceName;
 
@@ -64,6 +64,10 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     let composer = ComposerRecipe::load(
         &workspace_root.join("release/artifacts/recipes/composer/composer.toml"),
     )?;
+    let redis = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/redis/recipe.toml"),
+        BackingRecipeKind::Redis,
+    )?;
     let defaults =
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
@@ -71,9 +75,13 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_eq!(php.tracks().len(), 3);
     assert_eq!(composer.track().as_str(), "2");
     assert_eq!(composer.platform().as_str(), "any");
+    assert_eq!(redis.default_track().as_str(), "8.2");
+    assert_eq!(redis.tracks().len(), 1);
+    assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
     assert_default_track(&defaults, "php", "8.4")?;
     assert_default_track(&defaults, "frankenphp", "8.4")?;
     assert_default_track(&defaults, "composer", "2")?;
+    assert_default_track(&defaults, "redis", "8.2")?;
 
     Ok(())
 }
@@ -321,6 +329,24 @@ fn print_recipe_env_frankenphp() -> Result<()> {
             "PV_PHP_SOURCE_SHA256='a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d'",
         ]
     );
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
+fn print_recipe_env_redis() -> Result<()> {
+    let tempdir = tempdir()?;
+    let redis = tempdir.path().join("recipe.toml");
+    write_file(&redis, VALID_REDIS_TOML)?;
+
+    let env = backing_recipe_env(
+        &redis,
+        BackingRecipeKind::Redis,
+        "redis",
+        "8.2",
+        "darwin-arm64",
+    )?;
+
     assert_snapshot!(env);
     Ok(())
 }

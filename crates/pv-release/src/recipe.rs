@@ -727,6 +727,53 @@ pub fn composer_recipe_env(
     )
 }
 
+pub fn backing_recipe_env(
+    backing: &Utf8Path,
+    kind: BackingRecipeKind,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> crate::Result<String> {
+    let recipe = BackingRecipe::load(backing, kind)?;
+    validate_backing_recipe_resource(&recipe, resource)?;
+    let track = validate_backing_recipe_track(&recipe, track)?;
+    let platform = validate_backing_recipe_platform(&recipe, platform)?;
+
+    let upstream_version = track.upstream_version();
+    let pv_build_revision = recipe.pv_build_revision();
+    let artifact_version = format!("{upstream_version}-{pv_build_revision}");
+    let source_url = track.source_url();
+    let source_sha256 = track.source_sha256().as_str();
+    let minimum_pv_version = recipe.minimum_pv_version().as_str();
+
+    shell_assignments(
+        recipe.path(),
+        &[
+            ("PV_RESOURCE", "resource", recipe.resource().as_str()),
+            ("PV_TRACK", "track", track.name().as_str()),
+            ("PV_PLATFORM", "platform", platform.as_str()),
+            ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
+            (
+                "PV_ARTIFACT_VERSION",
+                "artifact_version",
+                artifact_version.as_str(),
+            ),
+            ("PV_SOURCE_URL", "source_url", source_url),
+            ("PV_SOURCE_SHA256", "source_sha256", source_sha256),
+            (
+                "PV_MINIMUM_PV_VERSION",
+                "minimum_pv_version",
+                minimum_pv_version,
+            ),
+            (
+                "PV_PV_BUILD_REVISION",
+                "pv_build_revision",
+                pv_build_revision,
+            ),
+        ],
+    )
+}
+
 pub fn php_recipe_env(
     php: &Utf8Path,
     resource: &str,
@@ -934,18 +981,93 @@ fn validate_composer_recipe_request(
     track: &str,
     platform: &str,
 ) -> crate::Result<()> {
-    validate_request_value(recipe.path(), "resource", resource, "composer")?;
-    validate_request_value(recipe.path(), "track", track, recipe.track().as_str())?;
     validate_request_value(
         recipe.path(),
+        "Composer recipe",
+        "resource",
+        resource,
+        "composer",
+    )?;
+    validate_request_value(
+        recipe.path(),
+        "Composer recipe",
+        "track",
+        track,
+        recipe.track().as_str(),
+    )?;
+    validate_request_value(
+        recipe.path(),
+        "Composer recipe",
         "platform",
         platform,
         recipe.platform().as_str(),
     )
 }
 
+fn validate_backing_recipe_resource(recipe: &BackingRecipe, resource: &str) -> crate::Result<()> {
+    validate_request_value(
+        recipe.path(),
+        recipe.kind().recipe_kind(),
+        "resource",
+        resource,
+        recipe.resource().as_str(),
+    )
+}
+
+fn validate_backing_recipe_track<'a>(
+    recipe: &'a BackingRecipe,
+    track: &str,
+) -> crate::Result<&'a BackingTrack> {
+    recipe
+        .tracks()
+        .iter()
+        .find(|candidate| candidate.name().as_str() == track)
+        .ok_or_else(|| {
+            let expected = recipe
+                .tracks()
+                .iter()
+                .map(|track| track.name().as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "{} track must be one of {}, got `{track}`",
+                    recipe.kind().recipe_kind(),
+                    format_expected_values(&expected)
+                ),
+            )
+        })
+}
+
+fn validate_backing_recipe_platform(
+    recipe: &BackingRecipe,
+    platform: &str,
+) -> crate::Result<ArtifactPlatform> {
+    recipe
+        .platforms()
+        .iter()
+        .copied()
+        .find(|candidate| candidate.as_str() == platform)
+        .ok_or_else(|| {
+            let expected = recipe
+                .platforms()
+                .iter()
+                .map(|platform| platform.as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "{} platform must be one of {}, got `{platform}`",
+                    recipe.kind().recipe_kind(),
+                    format_expected_values(&expected)
+                ),
+            )
+        })
+}
+
 fn validate_request_value(
     path: &Utf8Path,
+    recipe_kind: &str,
     field: &str,
     actual: &str,
     expected: &str,
@@ -955,7 +1077,7 @@ fn validate_request_value(
     } else {
         Err(invalid(
             path,
-            format!("Composer recipe {field} must be `{expected}`, got `{actual}`"),
+            format!("{recipe_kind} {field} must be `{expected}`, got `{actual}`"),
         ))
     }
 }

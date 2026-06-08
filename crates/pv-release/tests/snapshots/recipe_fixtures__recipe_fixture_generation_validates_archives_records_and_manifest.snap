@@ -351,6 +351,51 @@ expression: manifest_json
           ]
         }
       ]
+    },
+    {
+      "name": "redis",
+      "default_track": "8.2",
+      "tracks": [
+        {
+          "name": "8.2",
+          "artifacts": [
+            {
+              "artifact_version": "8.2.7-pv1",
+              "upstream_version": "8.2.7",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.7-pv1/darwin-amd64/redis-8.2.7-pv1-darwin-amd64.tar.gz",
+              "sha256": "8a45f67e0e2839e3b5c2cc0f47a35580dae765356cf6f1f1ccc3df7ad0b069bd",
+              "size": 227,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.7.tar.gz",
+                "source_sha256": "afaae66030c193b06720a714ba7a558136b82689027536e0e24f53908c18cbe9",
+                "recipe": "release/artifacts/recipes/redis/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.2.7-pv1",
+              "upstream_version": "8.2.7",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.7-pv1/darwin-arm64/redis-8.2.7-pv1-darwin-arm64.tar.gz",
+              "sha256": "62dd0ea0dc1415536837946b7d98dd06cee3df80c185e011446b6d2ea9080718",
+              "size": 228,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.7.tar.gz",
+                "source_sha256": "afaae66030c193b06720a714ba7a558136b82689027536e0e24f53908c18cbe9",
+                "recipe": "release/artifacts/recipes/redis/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

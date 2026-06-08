@@ -1,0 +1,17 @@
+[recipe]
+resources = ["redis"]
+default_track = "8.2"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/redis-server", "bin/redis-cli"]
+
+[[tracks]]
+name = "8.2"
+upstream_version = "8.2.7"
+source_url = "https://download.redis.io/releases/redis-8.2.7.tar.gz"
+source_sha256 = "afaae66030c193b06720a714ba7a558136b82689027536e0e24f53908c18cbe9"
