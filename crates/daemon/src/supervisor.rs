@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::time::Duration;
-use std::{future::Future, io};
+use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use rustix::process::{
@@ -17,6 +17,7 @@ use tokio::time::{Instant, sleep, timeout};
 use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 
 #[expect(
     clippy::disallowed_types,
@@ -24,7 +25,7 @@ const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 )]
 type StdCommand = std::process::Command;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProcessSpec {
     pub name: String,
     pub command: Utf8PathBuf,
@@ -36,6 +37,43 @@ pub struct ProcessSpec {
     pub metadata_path: Utf8PathBuf,
     pub resource_name: String,
     pub track: String,
+}
+
+impl fmt::Debug for ProcessSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("ProcessSpec");
+        debug.field("name", &self.name);
+        debug.field("command", &self.command);
+        debug.field("arguments", &self.arguments);
+        if !self.private_environment.is_empty() {
+            debug.field(
+                "private_environment",
+                &PrivateEnvironmentDebug(&self.private_environment),
+            );
+        }
+        debug.field("config_path", &self.config_path);
+        debug.field("log_path", &self.log_path);
+        debug.field("pid_path", &self.pid_path);
+        debug.field("metadata_path", &self.metadata_path);
+        debug.field("resource_name", &self.resource_name);
+        debug.field("track", &self.track);
+        debug.finish()
+    }
+}
+
+struct PrivateEnvironmentDebug<'a>(&'a BTreeMap<String, String>);
+
+impl fmt::Debug for PrivateEnvironmentDebug<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(
+                self.0
+                    .keys()
+                    .map(|name| (name, PRIVATE_ENVIRONMENT_REDACTION)),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]

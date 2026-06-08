@@ -1,0 +1,38 @@
+---
+source: crates/daemon/tests/supervisor_foundation.rs
+expression: (empty_private_env, private_env)
+---
+(
+    ProcessSpec {
+        name: "empty-private-env",
+        command: "/bin/sh",
+        arguments: [
+            "-c",
+            "sleep 30",
+        ],
+        config_path: "<tempdir>/home/.pv/config/empty-private-env.json",
+        log_path: "<tempdir>/home/.pv/logs/empty-private-env.log",
+        pid_path: "<tempdir>/home/.pv/run/empty-private-env.pid",
+        metadata_path: "<tempdir>/home/.pv/run/empty-private-env.json",
+        resource_name: "empty-private-env",
+        track: "test",
+    },
+    ProcessSpec {
+        name: "private-env",
+        command: "/bin/sh",
+        arguments: [
+            "-c",
+            "sleep 30",
+        ],
+        private_environment: {
+            "RUSTFS_ACCESS_KEY": "<redacted>",
+            "RUSTFS_SECRET_KEY": "<redacted>",
+        },
+        config_path: "<tempdir>/home/.pv/config/private-env.json",
+        log_path: "<tempdir>/home/.pv/logs/private-env.log",
+        pid_path: "<tempdir>/home/.pv/run/private-env.pid",
+        metadata_path: "<tempdir>/home/.pv/run/private-env.json",
+        resource_name: "private-env",
+        track: "test",
+    },
+)

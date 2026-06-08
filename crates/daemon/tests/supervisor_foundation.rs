@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -212,6 +213,43 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
         assert_debug_snapshot!(("<pid>", log, metadata));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn process_spec_debug_omits_empty_private_environment_and_redacts_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let empty_private_env = process_spec(
+        &paths,
+        "empty-private-env",
+        "/bin/sh",
+        vec!["-c".to_string(), "sleep 30".to_string()],
+    );
+    let mut private_env = process_spec(
+        &paths,
+        "private-env",
+        "/bin/sh",
+        vec!["-c".to_string(), "sleep 30".to_string()],
+    );
+    private_env.private_environment = BTreeMap::from([
+        ("RUSTFS_ACCESS_KEY".to_string(), "pv-rustfs".to_string()),
+        (
+            "RUSTFS_SECRET_KEY".to_string(),
+            "raw-secret-value".to_string(),
+        ),
+    ]);
+
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(
+            "process_spec_debug_omits_empty_private_environment_and_redacts_values",
+            (empty_private_env, private_env)
+        );
+    });
 
     Ok(())
 }
