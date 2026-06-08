@@ -160,6 +160,26 @@ fn redis_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn rustfs_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["rustfs:install", "--help"])?,
+        run_pv(&["rustfs:update", "--help"])?,
+        run_pv(&["rustfs:uninstall", "--help"])?,
+        run_pv(&["rustfs:list", "--help"])?,
+        run_pv(&["rustfs:open", "--help"])?,
+        run_pv(&["s3:install", "--help"])?,
+        run_pv(&["s3:update", "--help"])?,
+        run_pv(&["s3:uninstall", "--help"])?,
+        run_pv(&["s3:list", "--help"])?,
+        run_pv(&["s3:open", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 

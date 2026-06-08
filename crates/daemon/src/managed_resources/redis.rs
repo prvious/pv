@@ -100,6 +100,7 @@ appendonly no
         _paths: &'a PvPaths,
         database: &'a mut Database,
         context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
         allocations: &'a [ResourceAllocationRecord],
     ) -> super::ManagedResourceAllocationFuture<'a> {
         Box::pin(async move {

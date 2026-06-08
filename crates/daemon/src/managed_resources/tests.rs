@@ -29,6 +29,9 @@ const MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const REDIS_TRACK: &str = "7.2";
 const REDIS_ARTIFACT_VERSION: &str = "7.2.0-pv1";
 const REDIS_ARCHIVE_FILE_NAME: &str = "redis-7.2.0-pv1-any.tar.gz";
+const RUSTFS_TRACK: &str = "1.0";
+const RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
+const RUSTFS_ARCHIVE_FILE_NAME: &str = "rustfs-1.0.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
@@ -186,6 +189,7 @@ fn mailpit_process_spec_uses_persistent_database_and_disables_version_check() ->
             .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}")),
         data_dir,
         ports: BTreeMap::from([("smtp".to_string(), 1025), ("dashboard".to_string(), 8025)]),
+        env: BTreeMap::new(),
     };
     let adapter = super::mailpit::MailpitRuntimeAdapter::new();
 
@@ -294,6 +298,7 @@ fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -
             ("smtp".to_string(), 18025),
             ("dashboard".to_string(), 18026),
         ]),
+        env: BTreeMap::new(),
     };
 
     let readiness = adapter.readiness(&context)?;
@@ -521,6 +526,159 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
         tempdir.path(),
         "cached_fake_multi_port_runtime_stops_when_project_demand_is_removed",
         stopped_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+    reserve_rustfs_ports(&paths, 19_000, 19_001)?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("rustfs", RUSTFS_TRACK)?,
+            database.resource_allocations(&project.id, "rustfs")?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _cleanup_result =
+        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_reconciliation_creates_bucket_and_renders_env",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    seed_rustfs_cached_fixture(&paths, tempdir.path())?;
+    reserve_rustfs_ports(&paths, 19_010, 19_011)?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("rustfs", RUSTFS_TRACK)?,
+            database.resource_allocations(&project.id, "rustfs")?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _cleanup_result = reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_project_demand_installs_missing_fixture_track_before_start",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_preserves_env()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+    reserve_rustfs_ports(&paths, 19_020, 19_021)?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let (bucket, allocation_env_before) = {
+        let database = Database::open(&paths)?;
+        let allocations = database.resource_allocations(&project.id, "rustfs")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("RustFS reconciliation did not record an allocation");
+        };
+
+        (allocation.generated_name.clone(), allocation.env.clone())
+    };
+    state::fs::delete_dir_all(&rustfs_bucket_path(&paths, RUSTFS_TRACK, &bucket))?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let repaired_probe = read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &bucket)?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+        let allocations = database.resource_allocations(&project.id, "rustfs")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("RustFS reconciliation did not preserve an allocation");
+        };
+
+        assert_eq!(
+            allocation.env, allocation_env_before,
+            "Ready RustFS allocation env should not change during drift repair"
+        );
+        assert_eq!(
+            repaired_probe,
+            Some("pv rustfs probe".to_string()),
+            "Ready RustFS allocation reconciliation should verify object access"
+        );
+
+        (
+            read_dotenv(&project)?,
+            allocations,
+            rustfs_bucket_exists(&paths, RUSTFS_TRACK, &bucket)?,
+            repaired_probe,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _cleanup_result =
+        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_preserves_env",
+        snapshot,
     )?;
 
     Ok(())
@@ -1146,7 +1304,9 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
             .join(format!("releases/{REDIS_ARTIFACT_VERSION}")),
         data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
         ports: BTreeMap::from([("redis".to_string(), 6379)]),
+        env: BTreeMap::new(),
     };
+    let resource_env = BTreeMap::new();
 
     let desired_allocations = database.resource_allocations(&project.id, "redis")?;
     super::ManagedResourceRuntimeAdapter::reconcile_allocations(
@@ -1154,6 +1314,7 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
         &paths,
         &mut database,
         &context,
+        &resource_env,
         &desired_allocations,
     )
     .await?;
@@ -1168,6 +1329,7 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
         &paths,
         &mut database,
         &context,
+        &resource_env,
         &ready_allocations,
     )
     .await?;
@@ -1219,6 +1381,7 @@ fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> 
         artifact_path: tempdir.path().join("redis-artifact"),
         data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
         ports: BTreeMap::from([("redis".to_string(), 6380)]),
+        env: BTreeMap::new(),
     };
 
     let spec =
@@ -1333,6 +1496,37 @@ async fn reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
     Ok(())
 }
 
+async fn reconcile_project_env_with_rustfs_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<()> {
+    reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
+        paths,
+        project_id,
+        super::DEFAULT_MANIFEST_URL,
+    )
+    .await
+}
+
+async fn reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
+    paths: &PvPaths,
+    project_id: &str,
+    manifest_url: &str,
+) -> Result<()> {
+    let catalog = super::rustfs_runtime_catalog(manifest_url)?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
 async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -1413,6 +1607,32 @@ fn link_project(
     Ok(result.project)
 }
 
+fn link_project_with_rustfs_bucket_env(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+) -> Result<ProjectRecord> {
+    link_project(
+        paths,
+        project_path,
+        "acme.test",
+        r#"rustfs:
+  version: "1.0"
+  env:
+    S3_ENDPOINT: "${endpoint}"
+    S3_ACCESS_KEY: "${access_key}"
+    S3_SECRET_KEY: "${secret_key}"
+  allocations:
+    uploads:
+      env:
+        AWS_BUCKET: "${bucket}"
+        AWS_ENDPOINT: "${endpoint}"
+        AWS_ACCESS_KEY_ID: "${access_key}"
+        AWS_SECRET_ACCESS_KEY: "${secret_key}"
+        AWS_URL: "${url}"
+"#,
+    )
+}
+
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
     state::fs::write_sensitive_file(&project.config_path, config_source)?;
 
@@ -1425,6 +1645,59 @@ fn read_dotenv(project: &ProjectRecord) -> Result<String> {
 
 fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>> {
     match state::fs::read_to_string(&project.path.join(".env")) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn reserve_rustfs_ports(paths: &PvPaths, api_port: u16, console_port: u16) -> Result<()> {
+    let mut database = Database::open(paths)?;
+
+    reserve_rustfs_port(&mut database, "api", api_port)?;
+    reserve_rustfs_port(&mut database, "console", console_port)?;
+
+    Ok(())
+}
+
+fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
+    database.assign_port(
+        PortRequest::resource_port("rustfs", RUSTFS_TRACK, port_name, port, port, port),
+        local_loopback_port_available,
+    )?;
+
+    Ok(())
+}
+
+fn local_loopback_port_available(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn rustfs_bucket_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {
+    paths
+        .resource_data_dir("rustfs", track)
+        .join("buckets")
+        .join(bucket)
+}
+
+fn rustfs_probe_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {
+    rustfs_bucket_path(paths, track, bucket).join("__pv_rustfs_probe")
+}
+
+fn rustfs_bucket_exists(paths: &PvPaths, track: &str, bucket: &str) -> Result<bool> {
+    path_exists(&rustfs_bucket_path(paths, track, bucket))
+}
+
+fn read_optional_rustfs_probe(
+    paths: &PvPaths,
+    track: &str,
+    bucket: &str,
+) -> Result<Option<String>> {
+    match state::fs::read_to_string(&rustfs_probe_path(paths, track, bucket)) {
         Ok(content) => Ok(Some(content)),
         Err(StateError::Filesystem { source, .. })
             if source.kind() == std::io::ErrorKind::NotFound =>
@@ -1572,6 +1845,27 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     Ok(())
 }
 
+fn seed_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("rustfs")
+        .join(track)
+        .join(format!("releases/{RUSTFS_ARTIFACT_VERSION}"));
+    let executable = release_path.join("bin/rustfs");
+
+    state::fs::write_sensitive_file(&executable, rustfs_script())?;
+    set_executable(&executable)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "rustfs",
+        track,
+        RUSTFS_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
+}
+
 fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
     super::ManagedResourceRuntimeCatalog {
         adapters: BTreeMap::new(),
@@ -1630,6 +1924,24 @@ fn seed_redis_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> 
     copy_file(&archive_path, &cache_path)?;
     let size = file_size(&cache_path)?;
     let manifest = redis_manifest(&sha256, size);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
+fn seed_rustfs_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    let archive_path = tempdir.join(RUSTFS_ARCHIVE_FILE_NAME);
+
+    create_rustfs_archive(tempdir, &archive_path)?;
+    let sha256 = sha256_file(&archive_path)?;
+    let cache_path = paths
+        .downloads()
+        .join(format!("{sha256}-{RUSTFS_ARCHIVE_FILE_NAME}"));
+
+    copy_file(&archive_path, &cache_path)?;
+    let size = file_size(&cache_path)?;
+    let manifest = rustfs_manifest(&sha256, size);
 
     state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
 
@@ -1700,6 +2012,28 @@ fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     let executable = root.join("bin/redis-server");
 
     state::fs::write_sensitive_file(&executable, redis_server_script())?;
+    set_executable(&executable)?;
+    run_fixture_command(
+        "/usr/bin/tar",
+        &[
+            "-czf",
+            archive_path.as_str(),
+            "-C",
+            archive_parent.as_str(),
+            &root_name,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
+    let archive_parent = tempdir.join("rustfs-archive-root");
+    let root_name = format!("rustfs-{RUSTFS_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+    let executable = root.join("bin/rustfs");
+
+    state::fs::write_sensitive_file(&executable, rustfs_script())?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -1946,6 +2280,83 @@ fn redis_manifest(sha256: &str, size: u64) -> String {
     )
 }
 
+fn rustfs_manifest(sha256: &str, size: u64) -> String {
+    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {{
+      "name": "rustfs",
+      "default_track": "{RUSTFS_TRACK}",
+      "tracks": [
+        {{
+          "name": "{RUSTFS_TRACK}",
+          "artifacts": [
+            {{
+              "artifact_version": "{RUSTFS_ARTIFACT_VERSION}",
+              "upstream_version": "1.0.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{RUSTFS_ARCHIVE_FILE_NAME}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
 fn fake_mailpit_script() -> &'static str {
     r#"#!/bin/sh
 set -eu
@@ -2136,6 +2547,7 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
         _paths: &'a PvPaths,
         database: &'a mut Database,
         context: &'a super::ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
         allocations: &'a [ResourceAllocationRecord],
     ) -> super::ManagedResourceAllocationFuture<'a> {
         let hook_events = Arc::clone(&self.hook_events);
@@ -2334,6 +2746,150 @@ PY
 "#
 }
 
+fn rustfs_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+address=""
+console_address=""
+data_dir=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --address)
+      address="$2"
+      shift 2
+      ;;
+    --console-address)
+      console_address="$2"
+      shift 2
+      ;;
+    *)
+      data_dir="$1"
+      shift
+      ;;
+  esac
+done
+
+python3 - "$address" "$console_address" "$data_dir" <<'PY'
+import hashlib
+import http.server
+import os
+import posixpath
+import signal
+import sys
+import threading
+import urllib.parse
+
+api_address = sys.argv[1]
+console_address = sys.argv[2]
+data_dir = sys.argv[3]
+buckets_dir = os.path.join(data_dir, "buckets")
+os.makedirs(buckets_dir, exist_ok=True)
+
+def split_address(value):
+    host, port = value.rsplit(":", 1)
+    return host, int(port)
+
+def bucket_path(bucket):
+    return os.path.join(buckets_dir, bucket)
+
+def object_path(bucket, key):
+    clean_key = posixpath.normpath("/" + key).lstrip("/")
+    return os.path.join(bucket_path(bucket), clean_key)
+
+class RustfsHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"rustfs")
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_PUT(self):
+        path = urllib.parse.urlparse(self.path).path.strip("/")
+        parts = path.split("/", 1)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        if not parts or not parts[0]:
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        bucket = parts[0]
+        if len(parts) == 1:
+            os.makedirs(bucket_path(bucket), exist_ok=True)
+            self.send_response(200)
+            self.end_headers()
+            return
+
+        target = object_path(bucket, parts[1])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as file:
+            file.write(body)
+        self.send_response(200)
+        self.send_header("ETag", hashlib.md5(body).hexdigest())
+        self.end_headers()
+
+    def do_HEAD(self):
+        path = urllib.parse.urlparse(self.path).path.strip("/")
+        parts = path.split("/", 1)
+        if len(parts) != 2:
+            exists = bool(parts and parts[0] and os.path.isdir(bucket_path(parts[0])))
+            self.send_response(200 if exists else 404)
+            self.end_headers()
+            return
+
+        target = object_path(parts[0], parts[1])
+        if not os.path.exists(target):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        size = os.path.getsize(target)
+        with open(target, "rb") as file:
+            digest = hashlib.md5(file.read()).hexdigest()
+        self.send_response(200)
+        self.send_header("Content-Length", str(size))
+        self.send_header("ETag", digest)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        return
+
+class ConsoleHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"rustfs console")
+
+    def log_message(self, _format, *_args):
+        return
+
+class Server(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+
+api = Server(split_address(api_address), RustfsHandler)
+console = Server(split_address(console_address), ConsoleHandler)
+
+def stop(_signum, _frame):
+    api.shutdown()
+    console.shutdown()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+threading.Thread(target=console.serve_forever, daemon=True).start()
+api.serve_forever()
+PY
+"#
+}
+
 fn assert_with_normalized_runtime(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -2351,6 +2907,22 @@ fn assert_with_normalized_runtime(
         "MAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>",
     );
     settings.add_filter(r"MAIL_PORT=\d+", "MAIL_PORT=<smtp_port>");
+    settings.add_filter(
+        r"S3_ENDPOINT=http://127\.0\.0\.1:\d+",
+        "S3_ENDPOINT=http://127.0.0.1:<api_port>",
+    );
+    settings.add_filter(
+        r"AWS_ENDPOINT=http://127\.0\.0\.1:\d+",
+        "AWS_ENDPOINT=http://127.0.0.1:<api_port>",
+    );
+    settings.add_filter(
+        r"AWS_URL=http://127\.0\.0\.1:\d+",
+        "AWS_URL=http://127.0.0.1:<api_port>",
+    );
+    settings.add_filter(
+        r"(S3_SECRET_KEY|AWS_SECRET_ACCESS_KEY)=[0-9a-f]{32}",
+        "$1=<secret_key>",
+    );
     settings.add_filter(r"REDIS_PORT=\d+", "REDIS_PORT=<redis_port>");
     settings.add_filter(
         r"REDIS_URL=redis://127\.0\.0\.1:\d+/0",
@@ -2365,6 +2937,18 @@ fn assert_with_normalized_runtime(
         r#""dashboard_url": "http://127\.0\.0\.1:\d+""#,
         r#""dashboard_url": "http://127.0.0.1:<dashboard_port>""#,
     );
+    settings.add_filter(
+        r#""endpoint": "http://127\.0\.0\.1:\d+""#,
+        r#""endpoint": "http://127.0.0.1:<api_port>""#,
+    );
+    settings.add_filter(
+        r#""url": "http://127\.0\.0\.1:\d+""#,
+        r#""url": "http://127.0.0.1:<api_port>""#,
+    );
+    settings.add_filter(
+        r#""secret_key": "[0-9a-f]{32}""#,
+        r#""secret_key": "<secret_key>""#,
+    );
     settings.add_filter(r#""smtp_port": "\d+""#, r#""smtp_port": "<smtp_port>""#);
     settings.add_filter(
         r#""url": "redis://127\.0\.0\.1:\d+/0""#,
@@ -2377,6 +2961,8 @@ fn assert_with_normalized_runtime(
     settings.add_filter(r"port \d+", "port <redis_port>");
     if name.starts_with("redis_") {
         settings.add_filter(r#""port": "\d+""#, r#""port": "<redis_port>""#);
+    } else if name.starts_with("rustfs_") {
+        settings.add_filter(r#""port": "\d+""#, r#""port": "<api_port>""#);
     } else {
         settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
     }
@@ -2393,6 +2979,8 @@ fn assert_with_normalized_runtime(
         r#"mysql://root:secret@127\.0\.0\.1:\d+/acme_test_app_db"#,
         "mysql://root:secret@127.0.0.1:<mysql_port>/acme_test_app_db",
     );
+    settings.add_filter(r"http:127\.0\.0\.1:\d+/", "http:127.0.0.1:<api_port>/");
+    settings.add_filter(r"http://127\.0\.0\.1:\d+/", "http://127.0.0.1:<api_port>/");
     settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
     settings.add_filter(r"os error \d+", "os error <code>");
     settings.add_filter(

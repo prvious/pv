@@ -18,6 +18,7 @@ mod php;
 mod ports;
 mod project;
 mod redis;
+mod rustfs;
 mod setup;
 
 pub(crate) fn execute(
@@ -72,6 +73,15 @@ pub(crate) fn execute(
         Command::RedisUpdate => redis::update(environment, stdout),
         Command::RedisUninstall(args) => redis::uninstall(args, environment, stdout),
         Command::RedisList => redis::list(environment, stdout),
+        Command::RustfsInstall(args) | Command::S3Install(args) => {
+            rustfs::install(args, environment, stdout)
+        }
+        Command::RustfsUpdate | Command::S3Update => rustfs::update(environment, stdout),
+        Command::RustfsUninstall(args) | Command::S3Uninstall(args) => {
+            rustfs::uninstall(args, environment, stdout)
+        }
+        Command::RustfsList | Command::S3List => rustfs::list(environment, stdout),
+        Command::RustfsOpen | Command::S3Open => rustfs::open(environment, stdout),
     }
 }
 
