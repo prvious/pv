@@ -51,6 +51,7 @@ struct CandidatePublication {
 pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
     validate_publication_key(&request.versioned_manifest_key)?;
     validate_publication_key(&request.stable_manifest_key)?;
+    validate_stable_manifest_key(&request.stable_manifest_key)?;
 
     let candidate_records = load_release_record_files(&request.candidate_records)?;
     let published_records = load_release_record_files(&request.published_records)?;
@@ -390,6 +391,17 @@ fn validate_publication_key(value: &str) -> crate::Result<()> {
         Err(crate::ReleaseError::InvalidPublicationInput {
             path: value.to_string(),
             reason: "object key must be a safe relative path".to_string(),
+        })
+    }
+}
+
+fn validate_stable_manifest_key(value: &str) -> crate::Result<()> {
+    if value == "manifest.json" {
+        Ok(())
+    } else {
+        Err(crate::ReleaseError::InvalidPublicationInput {
+            path: value.to_string(),
+            reason: "stable manifest key must be `manifest.json`".to_string(),
         })
     }
 }

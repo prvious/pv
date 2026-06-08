@@ -48,7 +48,7 @@ default_track = "8.2"
         ],
     )?;
     let (sha256, size) = archive_digest_and_size(&archive)?;
-    let record_json = redis_record_json(&sha256, size);
+    let record_json = redis_record_json("8.2.1", "pv1", "2026-06-08T12:00:00Z", &sha256, size);
     let record = candidate_records.join("redis-8.2.1-pv1-darwin-arm64.json");
     write_file(&record, &record_json)?;
 
@@ -88,6 +88,32 @@ default_track = "8.2"
 }
 
 #[test]
+fn publication_stage_merges_published_records_revocations_and_candidates() -> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_candidate("8.2.2", "pv1", "2026-06-08T13:00:00Z", b"redis-new")?;
+    fixture.write_published_record("8.2.1", "pv1", "2026-06-08T12:00:00Z")?;
+    fixture.write_published_revocation("8.2.1-pv1", "8.2.2-pv1")?;
+
+    prepare_publication(
+        &fixture.request_with_keys("manifests/runs/123456789/manifest.json", "manifest.json"),
+    )?;
+
+    let versioned_manifest = read_file(
+        &fixture
+            .stage()
+            .join("manifests/runs/123456789/manifest.json"),
+    )?;
+    let stable_manifest = read_file(&fixture.stage().join("manifest.json"))?;
+    ArtifactManifest::parse(&versioned_manifest)?;
+    ArtifactManifest::parse(&stable_manifest)?;
+    assert_eq!(versioned_manifest, stable_manifest);
+
+    assert_snapshot!(stable_manifest);
+
+    Ok(())
+}
+
+#[test]
 fn publication_stage_rejects_missing_archive_before_manifest_write() -> Result<()> {
     let tempdir = tempdir()?;
     let source_archives = tempdir.path().join("source-archives");
@@ -112,6 +138,9 @@ default_track = "8.2"
     write_file(
         &candidate_records.join("redis-8.2.1-pv1-darwin-arm64.json"),
         &redis_record_json(
+            "8.2.1",
+            "pv1",
+            "2026-06-08T12:00:00Z",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             42,
         ),
@@ -136,6 +165,24 @@ default_track = "8.2"
 }
 
 #[test]
+fn publication_stage_rejects_reserved_stable_manifest_key_before_write() -> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_valid_candidate()?;
+
+    let reserved_stable_key = "records/manifest.json";
+    let error = publication_error(prepare_publication(&fixture.request_with_keys(
+        "manifests/runs/123456789/manifest.json",
+        reserved_stable_key,
+    )))?;
+
+    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+    assert!(!path_exists(&fixture.stage().join(reserved_stable_key)));
+
+    Ok(())
+}
+
+#[test]
 fn publication_stage_rejects_manifest_key_collision_with_candidate_record_before_write()
 -> Result<()> {
     let fixture = PublicationFixture::new()?;
@@ -144,7 +191,7 @@ fn publication_stage_rejects_manifest_key_collision_with_candidate_record_before
     let colliding_key =
         "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json";
     let error = publication_error(prepare_publication(
-        &fixture.request_with_keys("manifests/runs/123456789/manifest.json", colliding_key),
+        &fixture.request_with_keys(colliding_key, "manifest.json"),
     ))?;
 
     assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
@@ -160,10 +207,9 @@ fn publication_stage_rejects_manifest_key_collision_with_publication_plan_before
     let fixture = PublicationFixture::new()?;
     fixture.write_valid_candidate()?;
 
-    let error = publication_error(prepare_publication(&fixture.request_with_keys(
-        "manifests/runs/123456789/manifest.json",
-        "publication-plan.json",
-    )))?;
+    let error = publication_error(prepare_publication(
+        &fixture.request_with_keys("publication-plan.json", "manifest.json"),
+    ))?;
 
     assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
     assert!(!path_exists(fixture.stage()));
@@ -178,7 +224,7 @@ fn publication_stage_rejects_stable_and_versioned_manifest_key_collision_before_
     let fixture = PublicationFixture::new()?;
     fixture.write_valid_candidate()?;
 
-    let colliding_key = "manifests/runs/123456789/manifest.json";
+    let colliding_key = "manifest.json";
     let error = publication_error(prepare_publication(
         &fixture.request_with_keys(colliding_key, colliding_key),
     ))?;
@@ -261,24 +307,97 @@ default_track = "8.2"
     }
 
     fn write_valid_candidate(&self) -> Result<()> {
+        self.write_candidate("8.2.1", "pv1", "2026-06-08T12:00:00Z", b"redis")
+    }
+
+    fn write_candidate(
+        &self,
+        upstream_version: &str,
+        pv_build_revision: &str,
+        published_at: &str,
+        payload: &[u8],
+    ) -> Result<()> {
+        let artifact_version = artifact_version(upstream_version, pv_build_revision);
+        let artifact_basename = redis_artifact_basename(&artifact_version);
         let archive = self
             .source_archives
             .join("downloaded-artifact")
-            .join("redis-8.2.1-pv1-darwin-arm64.tar.gz");
+            .join(format!("{artifact_basename}.tar.gz"));
         write_archive(
             &archive,
             &[
-                ("redis-8.2.1-pv1-darwin-arm64/LICENSE", b"license" as &[u8]),
-                ("redis-8.2.1-pv1-darwin-arm64/NOTICE", b"notice" as &[u8]),
-                ("redis-8.2.1-pv1-darwin-arm64/bin/redis-server", b"redis"),
+                (&format!("{artifact_basename}/LICENSE"), b"license" as &[u8]),
+                (&format!("{artifact_basename}/NOTICE"), b"notice" as &[u8]),
+                (&format!("{artifact_basename}/bin/redis-server"), payload),
             ],
         )?;
         let (sha256, size) = archive_digest_and_size(&archive)?;
         write_file(
             &self
                 .candidate_records
-                .join("redis-8.2.1-pv1-darwin-arm64.json"),
-            &redis_record_json(&sha256, size),
+                .join(format!("{artifact_basename}.json")),
+            &redis_record_json(
+                upstream_version,
+                pv_build_revision,
+                published_at,
+                &sha256,
+                size,
+            ),
+        )
+    }
+
+    fn write_published_record(
+        &self,
+        upstream_version: &str,
+        pv_build_revision: &str,
+        published_at: &str,
+    ) -> Result<()> {
+        let artifact_version = artifact_version(upstream_version, pv_build_revision);
+        let artifact_basename = redis_artifact_basename(&artifact_version);
+        let record = self
+            .published_records
+            .join("resources/redis/8.2")
+            .join(&artifact_version)
+            .join("darwin-arm64")
+            .join(format!("{artifact_basename}.json"));
+        let archive = self
+            .source_archives
+            .join("downloaded-artifact")
+            .join(format!("{artifact_basename}.tar.gz"));
+        write_archive(
+            &archive,
+            &[
+                (&format!("{artifact_basename}/LICENSE"), b"license" as &[u8]),
+                (&format!("{artifact_basename}/NOTICE"), b"notice" as &[u8]),
+                (
+                    &format!("{artifact_basename}/bin/redis-server"),
+                    b"redis-old",
+                ),
+            ],
+        )?;
+        let (sha256, size) = archive_digest_and_size(&archive)?;
+        write_file(
+            &record,
+            &redis_record_json(
+                upstream_version,
+                pv_build_revision,
+                published_at,
+                &sha256,
+                size,
+            ),
+        )
+    }
+
+    fn write_published_revocation(
+        &self,
+        revoked_artifact_version: &str,
+        replacement_artifact_version: &str,
+    ) -> Result<()> {
+        write_file(
+            &self.published_revocations.join(format!(
+                "redis-{revoked_artifact_version}-darwin-arm64.json"
+            )),
+            &redis_revocation_json(revoked_artifact_version, replacement_artifact_version),
         )
     }
 }
@@ -329,6 +448,9 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
     reason = "release tooling tests write local publication fixtures"
 )]
 fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(path, content)?;
     Ok(())
 }
@@ -379,29 +501,62 @@ fn archive_digest_and_size(path: &Utf8Path) -> Result<(String, u64)> {
     Ok((HEXLOWER.encode(&hasher.finalize()), bytes.len() as u64))
 }
 
-fn redis_record_json(sha256: &str, size: u64) -> String {
+fn artifact_version(upstream_version: &str, pv_build_revision: &str) -> String {
+    format!("{upstream_version}-{pv_build_revision}")
+}
+
+fn redis_artifact_basename(artifact_version: &str) -> String {
+    format!("redis-{artifact_version}-darwin-arm64")
+}
+
+fn redis_record_json(
+    upstream_version: &str,
+    pv_build_revision: &str,
+    published_at: &str,
+    sha256: &str,
+    size: u64,
+) -> String {
+    let artifact_version = artifact_version(upstream_version, pv_build_revision);
+    let artifact_basename = redis_artifact_basename(&artifact_version);
     format!(
         r#"{{
   "resource": "redis",
   "track": "8.2",
-  "upstream_version": "8.2.1",
-  "pv_build_revision": "pv1",
-  "artifact_version": "8.2.1-pv1",
+  "upstream_version": "{upstream_version}",
+  "pv_build_revision": "{pv_build_revision}",
+  "artifact_version": "{artifact_version}",
   "platform": "darwin-arm64",
-  "object_key": "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+  "object_key": "resources/redis/8.2/{artifact_version}/darwin-arm64/{artifact_basename}.tar.gz",
   "sha256": "{sha256}",
   "size": {size},
-  "published_at": "2026-06-08T12:00:00Z",
+  "published_at": "{published_at}",
   "minimum_pv_version": "0.1.0",
   "license_files": ["LICENSE"],
   "notice_files": ["NOTICE"],
   "provenance": {{
-    "source_url": "https://download.redis.io/releases/redis-8.2.1.tar.gz",
+    "source_url": "https://download.redis.io/releases/redis-{upstream_version}.tar.gz",
     "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "recipe": "release/artifacts/recipes/redis/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "123456789"
   }}
+}}"#,
+    )
+}
+
+fn redis_revocation_json(
+    revoked_artifact_version: &str,
+    replacement_artifact_version: &str,
+) -> String {
+    format!(
+        r#"{{
+  "resource": "redis",
+  "track": "8.2",
+  "artifact_version": "{revoked_artifact_version}",
+  "platform": "darwin-arm64",
+  "reason": "bad package",
+  "revoked_at": "2026-06-08T14:00:00Z",
+  "replacement_artifact_version": "{replacement_artifact_version}"
 }}"#,
     )
 }

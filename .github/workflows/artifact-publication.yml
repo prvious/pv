@@ -7,11 +7,6 @@ on:
         description: "Artifact Recipes workflow run ID to publish"
         required: true
         type: string
-      stable_manifest_key:
-        description: "Stable manifest key"
-        required: true
-        default: "manifest.json"
-        type: string
       versioned_manifest_prefix:
         description: "Versioned manifest key prefix"
         required: true
@@ -21,6 +16,10 @@ on:
 permissions:
   actions: read
   contents: read
+
+concurrency:
+  group: artifact-publication-stable-manifest
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -34,6 +33,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
+      STABLE_MANIFEST_KEY: manifest.json
 
     steps:
       - name: Checkout
@@ -58,7 +58,6 @@ jobs:
       - name: Validate publication configuration
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          STABLE_MANIFEST_KEY: ${{ inputs.stable_manifest_key }}
           VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
         run: |
           set -eu
@@ -104,7 +103,6 @@ jobs:
       - name: Stage publication
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          STABLE_MANIFEST_KEY: ${{ inputs.stable_manifest_key }}
           VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
         run: |
           set -eu
@@ -140,9 +138,10 @@ jobs:
             --versioned-manifest-key "$versioned_manifest_key" \
             --stable-manifest-key "$STABLE_MANIFEST_KEY"
 
-      - name: Upload immutable artifacts and records
+      - name: Upload immutable artifacts, records, and versioned manifest
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
           cd "$RUNNER_TEMP/pv-publication-stage"
 
           ensure_object_absent() {
@@ -160,40 +159,37 @@ jobs:
             exit 1
           }
 
-          jq -r '.immutable_uploads[] | [.local_path, .object_key] | @tsv' publication-plan.json | while IFS="$(printf '\t')" read -r local_path object_key; do
+          upload_immutable_object() {
+            local_path=$1
+            object_key=$2
             ensure_object_absent "$object_key"
             aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"
-          done
-
-      - name: Upload versioned manifest
-        run: |
-          set -eu
-          cd "$RUNNER_TEMP/pv-publication-stage"
-
-          ensure_object_absent() {
-            object_key=$1
-            error_file="$RUNNER_TEMP/pv-head-object.err"
-            if aws s3api head-object --bucket "$R2_BUCKET" --key "$object_key" --endpoint-url "$R2_ENDPOINT" > /dev/null 2>"$error_file"; then
-              printf '%s\n' "immutable object already exists: $object_key" >&2
-              exit 1
-            fi
-            if grep -Eq '\(404\)|Not Found|NotFound|NoSuchKey' "$error_file"; then
-              return 0
-            fi
-            printf '%s\n' "failed to confirm immutable object absence: $object_key" >&2
-            cat "$error_file" >&2
-            exit 1
           }
 
-          local_path=$(jq -r '.versioned_manifest.local_path' publication-plan.json)
-          object_key=$(jq -r '.versioned_manifest.object_key' publication-plan.json)
-          ensure_object_absent "$object_key"
-          aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"
+          upload_rows="$RUNNER_TEMP/pv-immutable-uploads.tsv"
+          jq -r '.immutable_uploads[] | [.local_path, .object_key] | @tsv' publication-plan.json > "$upload_rows"
+          if [ ! -s "$upload_rows" ]; then
+            printf '%s\n' "publication plan did not contain immutable uploads" >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r local_path object_key; do
+            upload_immutable_object "$local_path" "$object_key"
+          done < "$upload_rows"
+
+          local_path=$(jq -e -r '.versioned_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.versioned_manifest.object_key' publication-plan.json)
+          upload_immutable_object "$local_path" "$object_key"
 
       - name: Publish stable manifest
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
           cd "$RUNNER_TEMP/pv-publication-stage"
-          local_path=$(jq -r '.stable_manifest.local_path' publication-plan.json)
-          object_key=$(jq -r '.stable_manifest.object_key' publication-plan.json)
+          local_path=$(jq -e -r '.stable_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_manifest.object_key' publication-plan.json)
+          if [ "$object_key" != "manifest.json" ]; then
+            printf '%s\n' "stable manifest object key must be manifest.json" >&2
+            exit 1
+          fi
           aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"

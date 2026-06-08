@@ -4,6 +4,6 @@ expression: "publication_error_summary(error, fixture.root())"
 ---
 (
     "InvalidPublicationInput",
-    "publication-plan.json",
-    "publication local path collides between `versioned manifest` and `publication plan`",
+    "records/manifest.json",
+    "stable manifest key must be `manifest.json`",
 )

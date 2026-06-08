@@ -1,0 +1,59 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: stable_manifest
+---
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "redis",
+      "default_track": "8.2",
+      "tracks": [
+        {
+          "name": "8.2",
+          "artifacts": [
+            {
+              "artifact_version": "8.2.2-pv1",
+              "upstream_version": "8.2.2",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.2-pv1/darwin-arm64/redis-8.2.2-pv1-darwin-arm64.tar.gz",
+              "sha256": "da4fd14815b677b0c35d837bff87c204993a92a298601fe638d96a0572f09870",
+              "size": 186,
+              "published_at": "2026-06-08T13:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.2.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "123456789"
+              }
+            },
+            {
+              "artifact_version": "8.2.1-pv1",
+              "upstream_version": "8.2.1",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+              "sha256": "08c6024e302862dfd24934559fdf5c44a03f00260a27513cd34a98acd5a9a7da",
+              "size": 185,
+              "published_at": "2026-06-08T12:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.1.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "123456789"
+              },
+              "revoked": true,
+              "revocation_reason": "bad package",
+              "revoked_at": "2026-06-08T14:00:00Z",
+              "replacement_artifact_version": "8.2.2-pv1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

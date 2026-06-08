@@ -5,5 +5,5 @@ expression: "publication_error_summary(error, fixture.root())"
 (
     "InvalidPublicationInput",
     "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json",
-    "publication local path collides between `stable manifest` and `candidate release record`",
+    "publication local path collides between `versioned manifest` and `candidate release record`",
 )

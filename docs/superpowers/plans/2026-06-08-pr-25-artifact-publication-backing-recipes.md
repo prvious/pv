@@ -340,11 +340,6 @@ on:
         description: "Artifact Recipes workflow run ID to publish"
         required: true
         type: string
-      stable_manifest_key:
-        description: "Stable manifest key"
-        required: true
-        default: "manifest.json"
-        type: string
       versioned_manifest_prefix:
         description: "Versioned manifest key prefix"
         required: true
@@ -354,6 +349,10 @@ on:
 permissions:
   actions: read
   contents: read
+
+concurrency:
+  group: artifact-publication-stable-manifest
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -366,6 +365,7 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
+      STABLE_MANIFEST_KEY: manifest.json
 
     steps:
       - name: Checkout
@@ -421,7 +421,6 @@ jobs:
       - name: Stage publication
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          STABLE_MANIFEST_KEY: ${{ inputs.stable_manifest_key }}
           VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
         run: |
           set -eu
