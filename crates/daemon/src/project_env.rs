@@ -16,6 +16,7 @@ use state::{
 };
 
 use crate::DaemonError;
+use crate::managed_resources::ManagedResourceRuntimeCatalog;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectEnvReconciliationSummary {
@@ -23,15 +24,15 @@ pub(crate) struct ProjectEnvReconciliationSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProjectResourcePlan {
-    resources: Vec<ProjectManagedResourceInput>,
-    allocations: BTreeMap<String, ProjectResourceAllocationPlan>,
+pub(crate) struct ProjectResourcePlan {
+    pub(crate) resources: Vec<ProjectManagedResourceInput>,
+    pub(crate) allocations: BTreeMap<String, ProjectResourceAllocationPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProjectResourceAllocationPlan {
-    track: String,
-    allocations: Vec<ResourceAllocationInput>,
+pub(crate) struct ProjectResourceAllocationPlan {
+    pub(crate) track: String,
+    pub(crate) allocations: Vec<ResourceAllocationInput>,
 }
 
 impl ProjectEnvReconciliationSummary {
@@ -40,7 +41,7 @@ impl ProjectEnvReconciliationSummary {
     }
 }
 
-pub(crate) fn reconcile_project_env(
+pub(crate) async fn reconcile_project_env(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
@@ -52,11 +53,36 @@ pub(crate) fn reconcile_project_env(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(paths, &mut database, &project) {
+    match reconcile_loaded_project(paths, &mut database, &project, None).await {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();
             record_project_env_failure(&mut database, &project.id, &message)?;
+
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn reconcile_project_env_with_catalog(
+    paths: &PvPaths,
+    database: &mut Database,
+    project_id: &str,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
+    let project =
+        database
+            .project_by_id(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            })?;
+
+    match reconcile_loaded_project(paths, database, &project, Some(catalog)).await {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            let message = error.to_string();
+            record_project_env_failure(database, &project.id, &message)?;
 
             Err(error)
         }
@@ -74,10 +100,11 @@ pub(crate) fn validate_project_config_for_gateway(
     Ok(())
 }
 
-fn reconcile_loaded_project(
+async fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
@@ -86,6 +113,15 @@ fn reconcile_loaded_project(
     let has_env_mappings = config_file.config.has_env_mappings();
 
     apply_project_resource_plan(database, &project.id, &plan)?;
+    if let Some(catalog) = catalog {
+        crate::managed_resources::reconcile_project_resources_with_catalog(
+            paths, database, project, &plan, catalog,
+        )
+        .await?;
+    } else {
+        crate::managed_resources::reconcile_project_resources(paths, database, project, &plan)
+            .await?;
+    }
     if project.desired_php_track.as_deref() != resolved_php_track.as_deref() {
         database.replace_project_desired_php_track(&project.id, resolved_php_track.as_deref())?;
     }

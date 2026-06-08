@@ -1,0 +1,45 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(assigned_smtp, assigned_dashboard, reused_smtp, released_dashboard,\ndatabase.assigned_ports()?,)"
+---
+(
+    PortAssignment {
+        owner: Resource {
+            name: "mailpit",
+            track: "1.0",
+            port: "smtp",
+        },
+        port: 1025,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Resource {
+            name: "mailpit",
+            track: "1.0",
+            port: "dashboard",
+        },
+        port: 8025,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Resource {
+            name: "mailpit",
+            track: "1.0",
+            port: "smtp",
+        },
+        port: 1025,
+        updated_at: "<timestamp>",
+    },
+    true,
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: 1025,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

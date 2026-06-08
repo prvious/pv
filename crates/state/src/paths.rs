@@ -124,6 +124,11 @@ impl PvPaths {
             .join(format!("workers/php-{php_track}/projects"))
     }
 
+    pub fn resource_runtime_config(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
+        self.config()
+            .join(format!("resources/{resource_name}-{track}.json"))
+    }
+
     pub fn certificates(&self) -> &Utf8Path {
         &self.certificates
     }
@@ -144,6 +149,11 @@ impl PvPaths {
         self.logs().join(format!("workers/php-{php_track}.log"))
     }
 
+    pub fn resource_log(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
+        self.logs()
+            .join(format!("resources/{resource_name}-{track}.log"))
+    }
+
     pub fn gateway_pid(&self) -> Utf8PathBuf {
         self.run().join("gateway.pid")
     }
@@ -160,12 +170,29 @@ impl PvPaths {
         self.run().join(format!("workers/php-{php_track}.json"))
     }
 
+    pub fn resource_pid(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
+        self.run()
+            .join(format!("resources/{resource_name}-{track}.pid"))
+    }
+
+    pub fn resource_runtime_metadata(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
+        self.run()
+            .join(format!("resources/{resource_name}-{track}.json"))
+    }
+
     pub fn composer(&self) -> &Utf8Path {
         &self.composer
     }
 
     pub fn resources(&self) -> &Utf8Path {
         &self.resources
+    }
+
+    pub fn resource_data_dir(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
+        self.resources()
+            .join(resource_name)
+            .join(track)
+            .join("data")
     }
 
     pub fn layout_directories(&self) -> Vec<(&'static str, &Utf8Path)> {

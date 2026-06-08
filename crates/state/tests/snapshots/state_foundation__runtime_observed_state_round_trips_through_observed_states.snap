@@ -21,4 +21,15 @@ expression: database.runtime_observed_states()?
         ),
         observed_at: "<timestamp>",
     },
+    RuntimeObservedStateRecord {
+        subject: Resource {
+            name: "mailpit",
+            track: "1.0",
+        },
+        status: Running,
+        message: Some(
+            "mailpit is ready",
+        ),
+        observed_at: "<timestamp>",
+    },
 ]

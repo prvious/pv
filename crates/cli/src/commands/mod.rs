@@ -6,6 +6,7 @@ use crate::environment::Environment;
 use crate::error::ExecuteError;
 use crate::output::Output;
 
+mod artifact_resource;
 mod ca;
 mod completions;
 mod composer;

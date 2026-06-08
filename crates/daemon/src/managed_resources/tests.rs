@@ -1,0 +1,760 @@
+use std::os::unix::fs::PermissionsExt;
+
+use anyhow::{Result, bail};
+use camino::Utf8Path;
+use camino_tempfile::tempdir;
+use insta::{Settings, assert_debug_snapshot};
+use state::{
+    Database, LinkProjectInput, ProjectRecord, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
+};
+
+const FAKE_MAILPIT_TRACK: &str = "1.0";
+const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
+const FAKE_MAILPIT_ARTIFACT_VERSION: &str = "1.0.0-pv1";
+const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
+const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeFilePresence {
+    pid: bool,
+    metadata: bool,
+    config: bool,
+}
+
+#[tokio::test]
+async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let started_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let stopped_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_starts_fake_multi_port_runtime_before_env_rendering",
+        started_snapshot,
+    )?;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "fake_multi_port_runtime_stops_when_project_demand_is_removed",
+        stopped_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_before_env_rendering()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+
+    reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+    let installed_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await?;
+    let stopped_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_before_env_rendering",
+        installed_snapshot,
+    )?;
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "cached_fake_multi_port_runtime_stops_when_project_demand_is_removed",
+        stopped_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_env_rendering()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_unready_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+
+    let result = reconcile_project_env_with_unready_fake_runtime_catalog(&paths, &project.id).await;
+    let failure_snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+        let runtime_files = runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            runtime_states.clone(),
+            runtime_files.clone(),
+        )
+    };
+
+    assert!(
+        result.is_err(),
+        "expected readiness failure, got {result:#?}"
+    );
+    assert_failed_mailpit_runtime(&failure_snapshot.4);
+    assert_eq!(
+        failure_snapshot.5,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "expected readiness failure cleanup to remove runtime files"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_records_failed_runtime_when_readiness_fails_before_env_rendering",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+
+    write_project_config(
+        &project,
+        r#"mailpit:
+  version: "1.1"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_unready_fake_mailpit_artifact(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
+
+    let result = reconcile_project_env_with_unready_fake_runtime_catalog(&paths, &project.id).await;
+    let failure_snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        (
+            format!("{result:#?}"),
+            read_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_NEXT_TRACK)?,
+            database.assigned_ports()?,
+            runtime_states.clone(),
+        )
+    };
+    let previous_runtime_stopped = runtime_has_status(
+        &failure_snapshot.5,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Stopped,
+    );
+
+    if !previous_runtime_stopped {
+        write_project_config(
+            &project,
+            r#"env:
+  APP_URL: "${project_url}"
+"#,
+        )?;
+        let _cleanup_result =
+            reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    }
+
+    assert!(
+        result.is_err(),
+        "expected readiness failure, got {result:#?}"
+    );
+    assert_runtime_status(
+        &failure_snapshot.5,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Stopped,
+    );
+    assert_runtime_status(
+        &failure_snapshot.5,
+        FAKE_MAILPIT_NEXT_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demand_change_stops_previous_runtime_when_new_runtime_readiness_fails",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+async fn reconcile_project_env_with_fake_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<()> {
+    reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        paths,
+        project_id,
+        super::DEFAULT_MANIFEST_URL,
+    )
+    .await
+}
+
+async fn reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+    paths: &PvPaths,
+    project_id: &str,
+    manifest_url: &str,
+) -> Result<()> {
+    let catalog = super::fake_runtime_catalog(manifest_url)?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn reconcile_project_env_with_unready_fake_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<()> {
+    let catalog = super::fake_unready_runtime_catalog(super::DEFAULT_MANIFEST_URL)?;
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn link_project(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    primary_hostname: &str,
+    config_source: &str,
+) -> Result<ProjectRecord> {
+    let config_path = project_path.join("pv.yml");
+
+    state::fs::write_sensitive_file(&config_path, config_source)?;
+
+    let mut database = Database::open(paths)?;
+    let result = database.link_project(LinkProjectInput {
+        path: project_path.to_path_buf(),
+        original_path: project_path.to_path_buf(),
+        primary_hostname: primary_hostname.to_string(),
+        config_path,
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+
+    Ok(result.project)
+}
+
+fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
+    state::fs::write_sensitive_file(&project.config_path, config_source)?;
+
+    Ok(())
+}
+
+fn read_dotenv(project: &ProjectRecord) -> Result<String> {
+    state::fs::read_to_string(&project.path.join(".env")).map_err(Into::into)
+}
+
+fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>> {
+    match state::fs::read_to_string(&project.path.join(".env")) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_fake_mailpit_artifact_with_script(paths, track, fake_mailpit_script())
+}
+
+fn seed_fake_mailpit_artifact_with_script(
+    paths: &PvPaths,
+    track: &str,
+    script: &str,
+) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("mailpit")
+        .join(track)
+        .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}"));
+    let executable = release_path.join("bin/pv-fake-mailpit");
+
+    state::fs::write_sensitive_file(&executable, script)?;
+    set_executable(&executable)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "mailpit",
+        track,
+        FAKE_MAILPIT_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
+}
+
+fn seed_unready_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_fake_mailpit_artifact_with_script(paths, track, unready_fake_mailpit_script())
+}
+
+fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    let archive_path = tempdir.join(FAKE_MAILPIT_ARCHIVE_FILE_NAME);
+
+    create_fake_mailpit_archive(tempdir, &archive_path)?;
+    let sha256 = sha256_file(&archive_path)?;
+    let cache_path = paths
+        .downloads()
+        .join(format!("{sha256}-{FAKE_MAILPIT_ARCHIVE_FILE_NAME}"));
+
+    copy_file(&archive_path, &cache_path)?;
+    let size = file_size(&cache_path)?;
+    let manifest = fake_mailpit_manifest(&sha256, size);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
+fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
+    let archive_parent = tempdir.join("archive-root");
+    let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+    let executable = root.join("bin/pv-fake-mailpit");
+
+    state::fs::write_sensitive_file(&executable, fake_mailpit_script())?;
+    set_executable(&executable)?;
+    run_fixture_command(
+        "/usr/bin/tar",
+        &[
+            "-czf",
+            archive_path.as_str(),
+            "-C",
+            archive_parent.as_str(),
+            &root_name,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn fake_mailpit_manifest(sha256: &str, size: u64) -> String {
+    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {{
+      "name": "mailpit",
+      "default_track": "{FAKE_MAILPIT_TRACK}",
+      "tracks": [
+        {{
+          "name": "{FAKE_MAILPIT_TRACK}",
+          "artifacts": [
+            {{
+              "artifact_version": "{FAKE_MAILPIT_ARTIFACT_VERSION}",
+              "upstream_version": "1.0.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{FAKE_MAILPIT_ARCHIVE_FILE_NAME}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
+fn fake_mailpit_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+smtp_port="$1"
+dashboard_port="$2"
+
+python3 - "$smtp_port" "$dashboard_port" <<'PY'
+import http.server
+import signal
+import socketserver
+import sys
+import threading
+
+class SmtpHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.sendall(b"220 fake mailpit\r\n")
+
+class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+smtp = TcpServer(("127.0.0.1", int(sys.argv[1])), SmtpHandler)
+dashboard = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), http.server.SimpleHTTPRequestHandler)
+
+def stop(_signum, _frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+threading.Thread(target=smtp.serve_forever, daemon=True).start()
+dashboard.serve_forever()
+PY
+"#
+}
+
+fn unready_fake_mailpit_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+stop() {
+  exit 0
+}
+
+trap stop TERM INT
+
+while true; do
+  sleep 1
+done
+"#
+}
+
+fn assert_with_normalized_runtime(
+    tempdir: &Utf8Path,
+    name: &'static str,
+    snapshot: impl std::fmt::Debug,
+) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(&regex_literal(tempdir.as_str()), "<tempdir>");
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
+    settings.add_filter(
+        r"MAILPIT_DASHBOARD=http://127\.0\.0\.1:\d+",
+        "MAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>",
+    );
+    settings.add_filter(r"MAIL_PORT=\d+", "MAIL_PORT=<smtp_port>");
+    settings.add_filter(
+        r#""dashboard_url": "http://127\.0\.0\.1:\d+""#,
+        r#""dashboard_url": "http://127.0.0.1:<dashboard_port>""#,
+    );
+    settings.add_filter(r#""smtp_port": "\d+""#, r#""smtp_port": "<smtp_port>""#);
+    settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
+    settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
+    settings.add_filter(r"os error \d+", "os error <code>");
+    settings.add_filter(r"port: \d+", "port: <port>");
+    settings.bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+fn assert_failed_mailpit_runtime(states: &[state::RuntimeObservedStateRecord]) {
+    assert_runtime_status(states, FAKE_MAILPIT_TRACK, RuntimeObservedStatus::Failed);
+}
+
+fn assert_runtime_status(
+    states: &[state::RuntimeObservedStateRecord],
+    track: &str,
+    status: RuntimeObservedStatus,
+) {
+    let found = runtime_has_status(states, track, status);
+    assert!(
+        found,
+        "expected mailpit track {track:?} runtime status {status:?}, got {states:#?}"
+    );
+}
+
+fn runtime_has_status(
+    states: &[state::RuntimeObservedStateRecord],
+    track: &str,
+    status: RuntimeObservedStatus,
+) -> bool {
+    let expected_subject = RuntimeSubject::Resource {
+        name: "mailpit".to_string(),
+        track: track.to_string(),
+    };
+
+    states
+        .iter()
+        .any(|record| record.subject == expected_subject && record.status == status)
+}
+
+fn runtime_files_exist(paths: &PvPaths, track: &str) -> Result<RuntimeFilePresence> {
+    Ok(RuntimeFilePresence {
+        pid: path_exists(&paths.resource_pid("mailpit", track))?,
+        metadata: path_exists(&paths.resource_runtime_metadata("mailpit", track))?,
+        config: path_exists(&paths.resource_runtime_config("mailpit", track))?,
+    })
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests assert runtime file cleanup directly"
+)]
+fn path_exists(path: &Utf8Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn sha256_file(path: &Utf8Path) -> Result<String> {
+    let output = run_fixture_command("/usr/bin/shasum", &["-a", "256", path.as_str()])?;
+    let text = String::from_utf8(output)?;
+    let Some((sha256, _path)) = text.split_once(' ') else {
+        bail!("shasum output did not include a sha256 digest");
+    };
+
+    Ok(sha256.to_string())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "daemon runtime tests shell out to build archive fixtures without extra dev-dependencies"
+)]
+fn run_fixture_command(program: &str, args: &[&str]) -> Result<Vec<u8>> {
+    let output = std::process::Command::new(program)
+        .env("COPYFILE_DISABLE", "1")
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "fixture command `{program}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(output.stdout)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests seed cached artifact fixtures directly"
+)]
+fn copy_file(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(from, to)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests read fixture archive metadata for manifest size"
+)]
+fn file_size(path: &Utf8Path) -> Result<u64> {
+    Ok(std::fs::metadata(path)?.len())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests set fixture executable bits directly"
+)]
+fn set_executable(path: &Utf8Path) -> Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)?;
+
+    Ok(())
+}
+
+fn regex_literal(value: &str) -> String {
+    let mut literal = String::new();
+
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            literal.push('\\');
+        }
+        literal.push(character);
+    }
+
+    literal
+}

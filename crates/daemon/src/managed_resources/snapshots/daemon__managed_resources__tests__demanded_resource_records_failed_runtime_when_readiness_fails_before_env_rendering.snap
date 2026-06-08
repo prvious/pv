@@ -1,0 +1,62 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Err(\n    ReadinessTimedOut {\n        check: \"tcp:127.0.0.1:<readiness_port>\",\n        timeout_ms: <timeout_ms>,\n        last_error: Some(\n            \"I/O error: Connection refused (os error <code>)\",\n        ),\n    },\n)",
+    None,
+    ManagedResourceTrackRecord {
+        resource_name: "mailpit",
+        track: "1.0",
+        desired_state: Installed,
+        installed_version: Some(
+            "1.0.0-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
+        ),
+        env: {},
+        usage_count: 1,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "dashboard",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Failed,
+            message: Some(
+                "readiness check `tcp:127.0.0.1:<readiness_port>` timed out after 100ms; last error: Some(\"I/O error: Connection refused (os error <code>)\")",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    RuntimeFilePresence {
+        pid: false,
+        metadata: false,
+        config: false,
+    },
+)
