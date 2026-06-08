@@ -210,6 +210,18 @@ pub(crate) enum Command {
 
     #[command(name = "s3:open", about = "Open the running RustFS console (S3 alias)")]
     S3Open,
+
+    #[command(name = "mysql:install", about = "Install a MySQL track")]
+    MysqlInstall(MysqlInstallArgs),
+
+    #[command(name = "mysql:update", about = "Update installed MySQL tracks")]
+    MysqlUpdate,
+
+    #[command(name = "mysql:uninstall", about = "Uninstall a MySQL track")]
+    MysqlUninstall(MysqlUninstallArgs),
+
+    #[command(name = "mysql:list", about = "List installed MySQL tracks")]
+    MysqlList,
 }
 
 #[derive(Debug, clap::Args)]
@@ -336,6 +348,24 @@ pub(crate) struct RustfsInstallArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct RustfsUninstallArgs {
     #[arg(value_name = "track", help = "RustFS track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct MysqlInstallArgs {
+    #[arg(value_name = "track", help = "MySQL track to install")]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct MysqlUninstallArgs {
+    #[arg(value_name = "track", help = "MySQL track to uninstall")]
     pub(crate) track: String,
 
     #[arg(long, help = "Remove PV-owned runtime data for the track")]

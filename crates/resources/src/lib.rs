@@ -35,6 +35,6 @@ pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, Revoca
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
 pub use runtime::{
-    RuntimeArtifactAdapter, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
-    redis_adapter, rustfs_adapter,
+    RuntimeArtifactAdapter, composer_adapter, frankenphp_adapter, mailpit_adapter, mysql_adapter,
+    php_adapter, redis_adapter, rustfs_adapter,
 };

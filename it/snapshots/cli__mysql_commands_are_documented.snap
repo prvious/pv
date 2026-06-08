@@ -1,0 +1,34 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Install a MySQL track\n\nUsage: pv mysql:install [OPTIONS] [track]\n\nArguments:\n  [track]  MySQL track to install\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Update installed MySQL tracks\n\nUsage: pv mysql:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Uninstall a MySQL track\n\nUsage: pv mysql:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  MySQL track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned runtime data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "List installed MySQL tracks\n\nUsage: pv mysql:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

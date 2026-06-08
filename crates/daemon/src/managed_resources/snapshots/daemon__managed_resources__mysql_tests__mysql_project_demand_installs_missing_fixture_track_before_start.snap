@@ -1,0 +1,104 @@
+---
+source: crates/daemon/src/managed_resources/mysql_tests.rs
+expression: snapshot
+---
+(
+    [
+        RecordedSqlAdminOperation {
+            engine: Mysql,
+            database: "acme_test_app_db",
+            statement: "CREATE DATABASE IF NOT EXISTS `acme_test_app_db`",
+        },
+    ],
+    "# >>> PV MANAGED\nAPP_URL=https://acme.test\nDATABASE_URL=mysql://pv_root:<generated_mysql_password>@127.0.0.1:<mysql_port>/acme_test_app_db\nDB_DATABASE=acme_test_app_db\nDB_HOST=127.0.0.1\nDB_PASSWORD=<generated_mysql_password>\nDB_PORT=<mysql_port>\nDB_USERNAME=pv_root\n# <<< PV MANAGED\n",
+    ManagedResourceTrackRecord {
+        resource_name: "mysql",
+        track: "8.0",
+        desired_state: Installed,
+        installed_version: Some(
+            "8.0.35-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/mysql/8.0/releases/8.0.35-pv1",
+        ),
+        env: {
+            "host": "127.0.0.1",
+            "password": "<generated_mysql_password>",
+            "port": "<mysql_port>",
+            "url": "mysql://pv_root:<generated_mysql_password>@127.0.0.1:<mysql_port>",
+            "username": "pv_root",
+        },
+        usage_count: 1,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mysql",
+                track: "8.0",
+                port: "mysql",
+            },
+            port: <mysql_port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "<allocation_id>",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+                "host": "127.0.0.1",
+                "password": "<generated_mysql_password>",
+                "port": "<mysql_port>",
+                "url": "mysql://pv_root:<generated_mysql_password>@127.0.0.1:<mysql_port>/acme_test_app_db",
+                "username": "pv_root",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mysql",
+                track: "8.0",
+            },
+            status: Running,
+            message: Some(
+                "Managed Resource runtime is ready",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    Object {
+        "arguments": Array [
+            String("--no-defaults"),
+            String("--datadir"),
+            String("<tempdir>/home/.pv/resources/mysql/8.0/data"),
+            String("--bind-address=127.0.0.1"),
+            String("--port"),
+            String("<mysql_port>"),
+            String("--socket"),
+            String("<tempdir>/home/.pv/run/resources/mysql-8.0.sock"),
+            String("--init-file"),
+            String("<tempdir>/home/.pv/run/resources/mysql-8.0.init.sql"),
+        ],
+        "command": String("<tempdir>/home/.pv/resources/mysql/8.0/releases/8.0.35-pv1/bin/mysqld"),
+        "config_path": String("<tempdir>/home/.pv/config/resources/mysql/8.0.json"),
+        "log_path": String("<tempdir>/home/.pv/logs/resources/mysql/8.0.log"),
+        "name": String("mysql-8.0"),
+        "pid": Number(<pid>),
+        "resource_name": String("mysql"),
+        "started_at": String("<timestamp>"),
+        "track": String("8.0"),
+    },
+    true,
+)

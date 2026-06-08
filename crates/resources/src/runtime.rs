@@ -82,6 +82,13 @@ pub fn rustfs_adapter() -> Result<RuntimeArtifactAdapter> {
     ))
 }
 
+pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("mysql")?,
+        "bin/mysqld",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;

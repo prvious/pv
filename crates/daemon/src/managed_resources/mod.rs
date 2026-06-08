@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod fake;
 mod mailpit;
+pub(crate) mod mysql;
+#[cfg(test)]
+mod mysql_tests;
 mod redis;
 mod rustfs;
 pub(crate) mod sql;
@@ -38,6 +41,8 @@ const RESERVED_RESOURCE_PORT_NAME: &str = "default";
 
 pub(crate) type ManagedResourceReadinessFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
+pub(crate) type ManagedResourcePreparationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
 pub(crate) type ManagedResourceAllocationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
 
@@ -59,10 +64,6 @@ pub(crate) struct ManagedResourceRuntimeContext {
 
 pub(crate) enum ManagedResourceReadiness {
     TcpHttp(ReadinessCheck),
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
-    )]
     Async(AsyncManagedResourceReadiness),
 }
 
@@ -72,10 +73,6 @@ pub(crate) struct AsyncManagedResourceReadiness {
 }
 
 impl ManagedResourceReadiness {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
-    )]
     pub(crate) fn async_check(
         name: impl Into<String>,
         check: impl Fn() -> ManagedResourceReadinessFuture<'static> + Send + Sync + 'static,
@@ -140,6 +137,14 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec];
 
+    fn prepare_runtime<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        _context: &'a ManagedResourceRuntimeContext,
+    ) -> ManagedResourcePreparationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn build_process_spec(
         &self,
         paths: &PvPaths,
@@ -195,6 +200,10 @@ impl ManagedResourceRuntimeCatalog {
         let redis = redis::RedisRuntimeAdapter::new();
         adapters.insert(redis.resource_name(), Box::new(redis));
         adapters.insert("rustfs", Box::new(rustfs::RustfsRuntimeAdapter));
+        adapters.insert(
+            mysql::RESOURCE_NAME,
+            Box::new(mysql::MysqlRuntimeAdapter::new()),
+        );
 
         Self {
             adapters,
@@ -405,6 +414,7 @@ impl ResourceRuntimeAttempt<'_> {
             ..context.clone()
         };
         let spec = self.adapter.build_process_spec(self.paths, &context)?;
+        self.adapter.prepare_runtime(self.paths, &context).await?;
         let readiness = self.adapter.readiness(&context)?;
         let readiness_timeout = adapter_readiness_timeout(self.adapter);
 
