@@ -1,0 +1,74 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(installed_tracks, tracks_after_invalid_batch)"
+---
+(
+    [
+        ManagedResourceTrackRecord {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: Installed,
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "/Users/example/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            env: {},
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+            updated_at: "<timestamp>",
+        },
+        ManagedResourceTrackRecord {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: Installed,
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "/Users/example/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            env: {},
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        ManagedResourceTrackRecord {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: Installed,
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "/Users/example/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            env: {},
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+            updated_at: "<timestamp>",
+        },
+        ManagedResourceTrackRecord {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: Installed,
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "/Users/example/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            env: {},
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

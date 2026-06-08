@@ -1,15 +1,19 @@
+use std::collections::BTreeSet;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{
-    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PvPaths, StateError,
+    Database, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    ManagedResourceTrackRecord, ManagedResourceTrackRemovalInput, PvPaths, StateError,
 };
 use thiserror::Error;
 
 use crate::http::ResourceHttpClient;
 use crate::registry;
+use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
-    ArtifactDownloader, ArtifactInstaller, ArtifactManifest, ArtifactManifestCache,
-    ArtifactManifestSource, ArtifactVersion, ManifestArtifact, ResourceAdapter, ResourceName,
-    ResourcesError, TargetPlatform, TrackName, TrackSelector,
+    ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
+    ArtifactManifestCache, ArtifactManifestSource, ArtifactVersion, ManifestArtifact,
+    ResourceAdapter, ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector,
 };
 
 pub type ManagedResourceCommandResult<T> = std::result::Result<T, ManagedResourceCommandError>;
@@ -33,6 +37,14 @@ pub enum ManagedResourceCommandError {
         track: String,
         usage_count: i64,
     },
+
+    #[error(
+        "Managed Resource operation failed with `{original_error}`, and rollback also failed: {rollback_error}"
+    )]
+    RollbackFailed {
+        original_error: Box<ManagedResourceCommandError>,
+        rollback_error: ResourcesError,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +63,7 @@ pub struct ManagedResourceInstall {
     manifest_source: ArtifactManifestSource,
     revoked_latest: Option<ManagedResourceRevokedLatest>,
     downloaded_from_cache: bool,
+    artifact_install: ArtifactInstall,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +75,29 @@ pub struct ManagedResourceRevokedLatest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedResourceUpdate {
     installs: Vec<ManagedResourceInstall>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairInstall {
+    php: ManagedResourceInstall,
+    frankenphp: ManagedResourceInstall,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComposerWithPhpPairInstall {
+    php_pair: PhpPairInstall,
+    composer: ManagedResourceInstall,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairUpdate {
+    installs: Vec<ManagedResourceInstall>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpPairRemovalIntent {
+    php: ManagedResourceRemovalIntent,
+    frankenphp: ManagedResourceRemovalIntent,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,7 +140,7 @@ impl ManagedResourceCommands {
         &self,
         adapter: &impl ResourceAdapter,
         selector: TrackSelector,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
@@ -118,20 +154,64 @@ impl ManagedResourceCommands {
         self.install_track(adapter, track, manifest, refresh.source(), client)
     }
 
+    pub fn install_php_pair(
+        &self,
+        selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        registry::resolve_canonical(php.resource_name().as_str())?;
+        registry::resolve_canonical(frankenphp.resource_name().as_str())?;
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh(&self.manifest_url, client)?;
+        let manifest = refresh.manifest();
+        let track = manifest
+            .resolve_track(php.resource_name(), selector)?
+            .clone();
+        self.validate_install_selection(&php, &track, manifest)?;
+        self.validate_install_selection(&frankenphp, &track, manifest)?;
+
+        let install = self.prepare_php_pair_install(
+            &php,
+            &frankenphp,
+            track,
+            manifest,
+            refresh.source(),
+            client,
+        )?;
+        if let Err(error) = self.record_php_pair_install(&install) {
+            return Err(self.rollback_php_pair_after_error(&install, error));
+        }
+
+        Ok(install)
+    }
+
+    fn validate_install_selection(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: &TrackName,
+        manifest: &ArtifactManifest,
+    ) -> ManagedResourceCommandResult<()> {
+        manifest.select_latest(adapter.resource_name(), track, self.target_platform)?;
+
+        Ok(())
+    }
+
     fn install_track(
         &self,
         adapter: &impl ResourceAdapter,
         track: TrackName,
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let selection =
             manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
         let revoked_latest = selection
             .revoked_latest()
             .map(revoked_fallback_from_artifact);
-        let artifact = selection.artifact().clone();
         let mut database = Database::open(&self.paths)?;
         database.record_managed_resource_track_desired(
             adapter.resource_name().as_str(),
@@ -139,6 +219,59 @@ impl ManagedResourceCommands {
             ManagedResourceDesiredState::Installed,
         )?;
 
+        let artifact = selection.artifact().clone();
+        let install = self.install_selected_artifact(
+            adapter,
+            track,
+            artifact,
+            revoked_latest,
+            manifest_source,
+            client,
+        )?;
+        database.record_managed_resource_track_installed(
+            adapter.resource_name().as_str(),
+            install.track.as_str(),
+            install.artifact_version.as_str(),
+            &install.current_artifact_path,
+        )?;
+
+        Ok(install)
+    }
+
+    fn prepare_track_install(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: TrackName,
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        let selection =
+            manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
+        let revoked_latest = selection
+            .revoked_latest()
+            .map(revoked_fallback_from_artifact);
+        let artifact = selection.artifact().clone();
+
+        self.install_selected_artifact(
+            adapter,
+            track,
+            artifact,
+            revoked_latest,
+            manifest_source,
+            client,
+        )
+    }
+
+    fn install_selected_artifact(
+        &self,
+        adapter: &impl ResourceAdapter,
+        track: TrackName,
+        artifact: ManifestArtifact,
+        revoked_latest: Option<ManagedResourceRevokedLatest>,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let installer = ArtifactInstaller::new(self.paths.resources());
         let (install, downloaded_from_cache) = if let Some(existing_install) =
             installer.install_existing_release(adapter, &track, &artifact)?
@@ -152,28 +285,166 @@ impl ManagedResourceCommands {
                 download.is_from_cache(),
             )
         };
-        database.record_managed_resource_track_installed(
-            adapter.resource_name().as_str(),
-            track.as_str(),
-            artifact.artifact_version().as_str(),
-            install.release_path(),
-        )?;
+
+        let current_artifact_path = install.release_path().to_path_buf();
 
         Ok(ManagedResourceInstall {
             resource_name: adapter.resource_name().clone(),
             track,
             artifact_version: artifact.artifact_version().clone(),
-            current_artifact_path: install.release_path().to_path_buf(),
+            current_artifact_path,
             manifest_source: manifest_source.clone(),
             revoked_latest,
             downloaded_from_cache,
+            artifact_install: install,
         })
+    }
+
+    fn prepare_php_pair_install(
+        &self,
+        php: &impl ResourceAdapter,
+        frankenphp: &impl ResourceAdapter,
+        track: TrackName,
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        let php =
+            self.prepare_track_install(php, track.clone(), manifest, manifest_source, client)?;
+        let frankenphp = match self.prepare_track_install(
+            frankenphp,
+            track,
+            manifest,
+            manifest_source,
+            client,
+        ) {
+            Ok(install) => install,
+            Err(error) => return Err(self.rollback_after_error(&[&php], error)),
+        };
+
+        Ok(PhpPairInstall { php, frankenphp })
+    }
+
+    fn rollback_php_pair_install(
+        &self,
+        install: &PhpPairInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        self.rollback_prepared_installs(&[install.frankenphp(), install.php()])
+    }
+
+    fn rollback_prepared_installs(
+        &self,
+        installs: &[&ManagedResourceInstall],
+    ) -> ManagedResourceCommandResult<()> {
+        let installer = ArtifactInstaller::new(self.paths.resources());
+        let mut first_error = None;
+
+        for install in installs {
+            if let Err(error) = installer.rollback(&install.artifact_install)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error.into());
+        }
+
+        Ok(())
+    }
+
+    fn rollback_after_error(
+        &self,
+        installs: &[&ManagedResourceInstall],
+        original_error: ManagedResourceCommandError,
+    ) -> ManagedResourceCommandError {
+        match self.rollback_prepared_installs(installs) {
+            Ok(()) => original_error,
+            Err(ManagedResourceCommandError::Resources(rollback_error)) => {
+                ManagedResourceCommandError::RollbackFailed {
+                    original_error: Box::new(original_error),
+                    rollback_error,
+                }
+            }
+            Err(error) => error,
+        }
+    }
+
+    fn rollback_php_pair_after_error(
+        &self,
+        install: &PhpPairInstall,
+        original_error: ManagedResourceCommandError,
+    ) -> ManagedResourceCommandError {
+        match self.rollback_php_pair_install(install) {
+            Ok(()) => original_error,
+            Err(ManagedResourceCommandError::Resources(rollback_error)) => {
+                ManagedResourceCommandError::RollbackFailed {
+                    original_error: Box::new(original_error),
+                    rollback_error,
+                }
+            }
+            Err(error) => error,
+        }
+    }
+
+    fn record_php_pair_install(
+        &self,
+        install: &PhpPairInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        let mut database = Database::open(&self.paths)?;
+        database.record_managed_resource_tracks_desired_and_installed(&[
+            ManagedResourceTrackInstallInput {
+                resource_name: install.php.resource_name.as_str(),
+                track: install.php.track.as_str(),
+                installed_version: install.php.artifact_version.as_str(),
+                current_artifact_path: &install.php.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: install.frankenphp.resource_name.as_str(),
+                track: install.frankenphp.track.as_str(),
+                installed_version: install.frankenphp.artifact_version.as_str(),
+                current_artifact_path: &install.frankenphp.current_artifact_path,
+            },
+        ])?;
+
+        Ok(())
+    }
+
+    fn record_composer_with_php_pair_install(
+        &self,
+        php_pair: &PhpPairInstall,
+        composer: &ManagedResourceInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        let mut database = Database::open(&self.paths)?;
+        database.record_managed_resource_tracks_desired_and_installed(&[
+            ManagedResourceTrackInstallInput {
+                resource_name: php_pair.php.resource_name.as_str(),
+                track: php_pair.php.track.as_str(),
+                installed_version: php_pair.php.artifact_version.as_str(),
+                current_artifact_path: &php_pair.php.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: php_pair.frankenphp.resource_name.as_str(),
+                track: php_pair.frankenphp.track.as_str(),
+                installed_version: php_pair.frankenphp.artifact_version.as_str(),
+                current_artifact_path: &php_pair.frankenphp.current_artifact_path,
+            },
+            ManagedResourceTrackInstallInput {
+                resource_name: composer.resource_name.as_str(),
+                track: composer.track.as_str(),
+                installed_version: composer.artifact_version.as_str(),
+                current_artifact_path: &composer.current_artifact_path,
+            },
+        ])?;
+
+        Ok(())
     }
 
     pub fn update(
         &self,
         adapter: &impl ResourceAdapter,
-        client: &impl ResourceHttpClient,
+        client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
@@ -199,59 +470,209 @@ impl ManagedResourceCommands {
         Ok(ManagedResourceUpdate { installs })
     }
 
+    pub fn update_php_pairs(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairUpdate> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let mut tracks = BTreeSet::new();
+
+        for record in self.list(Some(php.resource_name()))? {
+            tracks.insert(record.track().clone());
+        }
+        for record in self.list(Some(frankenphp.resource_name()))? {
+            tracks.insert(record.track().clone());
+        }
+
+        let mut installs = Vec::new();
+        if tracks.is_empty() {
+            return Ok(PhpPairUpdate { installs });
+        }
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client)?;
+
+        for track in &tracks {
+            self.validate_install_selection(&php, track, refresh.manifest())?;
+            self.validate_install_selection(&frankenphp, track, refresh.manifest())?;
+        }
+
+        for track in tracks {
+            let install = self.prepare_php_pair_install(
+                &php,
+                &frankenphp,
+                track,
+                refresh.manifest(),
+                refresh.source(),
+                client,
+            )?;
+            if let Err(error) = self.record_php_pair_install(&install) {
+                return Err(self.rollback_php_pair_after_error(&install, error));
+            }
+            installs.push(install.php);
+            installs.push(install.frankenphp);
+        }
+
+        Ok(PhpPairUpdate { installs })
+    }
+
+    pub fn install_composer(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        self.install(
+            &composer_adapter()?,
+            TrackSelector::Track(composer_track()?),
+            client,
+        )
+    }
+
+    pub fn install_composer_with_php_pair(
+        &self,
+        php_selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ComposerWithPhpPairInstall> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let composer = composer_adapter()?;
+        registry::resolve_canonical(php.resource_name().as_str())?;
+        registry::resolve_canonical(frankenphp.resource_name().as_str())?;
+        registry::resolve_canonical(composer.resource_name().as_str())?;
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh(&self.manifest_url, client)?;
+        let manifest = refresh.manifest();
+        let php_track = manifest
+            .resolve_track(php.resource_name(), php_selector)?
+            .clone();
+        let composer_track = composer_track()?;
+        self.validate_install_selection(&php, &php_track, manifest)?;
+        self.validate_install_selection(&frankenphp, &php_track, manifest)?;
+        self.validate_install_selection(&composer, &composer_track, manifest)?;
+
+        let php_pair = self.prepare_php_pair_install(
+            &php,
+            &frankenphp,
+            php_track,
+            manifest,
+            refresh.source(),
+            client,
+        )?;
+        let composer = match self.prepare_track_install(
+            &composer,
+            composer_track,
+            manifest,
+            refresh.source(),
+            client,
+        ) {
+            Ok(install) => install,
+            Err(error) => return Err(self.rollback_php_pair_after_error(&php_pair, error)),
+        };
+        if let Err(error) = self.record_composer_with_php_pair_install(&php_pair, &composer) {
+            let error = self.rollback_after_error(&[&composer], error);
+
+            return Err(self.rollback_php_pair_after_error(&php_pair, error));
+        }
+
+        Ok(ComposerWithPhpPairInstall { php_pair, composer })
+    }
+
+    pub fn update_composer(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        let composer = composer_adapter()?;
+        let track = composer_track()?;
+        let installed_tracks = self.list(Some(composer.resource_name()))?;
+        let mut installs = Vec::new();
+        if !installed_tracks
+            .iter()
+            .any(|record| record.track() == &track)
+        {
+            return Ok(ManagedResourceUpdate { installs });
+        }
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client)?;
+        installs.push(self.install_track(
+            &composer,
+            track,
+            refresh.manifest(),
+            refresh.source(),
+            client,
+        )?);
+
+        Ok(ManagedResourceUpdate { installs })
+    }
+
     pub fn uninstall(
         &self,
         resource_name: &ResourceName,
         track: &TrackName,
         options: ManagedResourceUninstallOptions,
     ) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
-        registry::resolve_canonical(resource_name.as_str())?;
-        if TrackSelector::is_reserved_alias(track.as_str()) {
-            return Err(ResourcesError::ReservedTrackName {
-                name: track.as_str().to_string(),
-            }
-            .into());
-        }
+        validate_uninstall_request(resource_name, track)?;
+        let mut database = Database::open(&self.paths)?;
+        let records = database.managed_resource_tracks()?;
+        validate_uninstall_eligibility(&records, resource_name, track, options)?;
+
+        record_removal_intent(&mut database, resource_name, track, options)
+    }
+
+    pub fn uninstall_php_pair(
+        &self,
+        track: &TrackName,
+        options: ManagedResourceUninstallOptions,
+    ) -> ManagedResourceCommandResult<PhpPairRemovalIntent> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        validate_uninstall_request(php.resource_name(), track)?;
+        validate_uninstall_request(frankenphp.resource_name(), track)?;
 
         let mut database = Database::open(&self.paths)?;
-        let installed_track = database
-            .managed_resource_tracks()?
-            .into_iter()
-            .find(|record| {
-                record.resource_name == resource_name.as_str() && record.track == track.as_str()
-            })
-            .filter(|record| {
-                record.desired_state == ManagedResourceDesiredState::Installed
-                    && record.installed_version.is_some()
-                    && record.current_artifact_path.is_some()
-            })
-            .ok_or_else(|| ManagedResourceCommandError::TrackNotInstalled {
-                resource: resource_name.as_str().to_string(),
-                track: track.as_str().to_string(),
-            })?;
-        if installed_track.usage_count > 0 && !options.force {
-            return Err(ManagedResourceCommandError::TrackInUse {
-                resource: resource_name.as_str().to_string(),
-                track: track.as_str().to_string(),
-                usage_count: installed_track.usage_count,
-            });
-        }
+        let records = database.managed_resource_tracks()?;
+        validate_uninstall_eligibility(&records, php.resource_name(), track, options)?;
+        validate_uninstall_eligibility(&records, frankenphp.resource_name(), track, options)?;
 
-        // Uninstall records intent. Daemon reconciliation owns runtime stops,
-        // artifact removal, mutable data pruning, and installed metadata cleanup.
-        database.record_managed_resource_track_removal_intent(
-            resource_name.as_str(),
-            track.as_str(),
-            options.prune,
-            options.force,
-        )?;
-
-        Ok(ManagedResourceRemovalIntent {
-            resource_name: resource_name.clone(),
+        database.record_managed_resource_tracks_removal_intent(&[
+            ManagedResourceTrackRemovalInput {
+                resource_name: php.resource_name().as_str(),
+                track: track.as_str(),
+                prune: options.prune,
+                force: options.force,
+            },
+            ManagedResourceTrackRemovalInput {
+                resource_name: frankenphp.resource_name().as_str(),
+                track: track.as_str(),
+                prune: options.prune,
+                force: options.force,
+            },
+        ])?;
+        let php = ManagedResourceRemovalIntent {
+            resource_name: php.resource_name().clone(),
             track: track.clone(),
             prune: options.prune,
             force: options.force,
-        })
+        };
+        let frankenphp = ManagedResourceRemovalIntent {
+            resource_name: frankenphp.resource_name().clone(),
+            track: track.clone(),
+            prune: options.prune,
+            force: options.force,
+        };
+
+        Ok(PhpPairRemovalIntent { php, frankenphp })
+    }
+
+    pub fn uninstall_composer(
+        &self,
+        options: ManagedResourceUninstallOptions,
+    ) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
+        let composer = composer_adapter()?;
+        let track = composer_track()?;
+
+        self.uninstall(composer.resource_name(), &track, options)
     }
 
     pub fn list(
@@ -325,6 +746,42 @@ impl ManagedResourceRevokedLatest {
 impl ManagedResourceUpdate {
     pub fn installs(&self) -> &[ManagedResourceInstall] {
         &self.installs
+    }
+}
+
+impl PhpPairInstall {
+    pub fn php(&self) -> &ManagedResourceInstall {
+        &self.php
+    }
+
+    pub fn frankenphp(&self) -> &ManagedResourceInstall {
+        &self.frankenphp
+    }
+}
+
+impl ComposerWithPhpPairInstall {
+    pub fn php_pair(&self) -> &PhpPairInstall {
+        &self.php_pair
+    }
+
+    pub fn composer(&self) -> &ManagedResourceInstall {
+        &self.composer
+    }
+}
+
+impl PhpPairUpdate {
+    pub fn installs(&self) -> &[ManagedResourceInstall] {
+        &self.installs
+    }
+}
+
+impl PhpPairRemovalIntent {
+    pub fn php(&self) -> &ManagedResourceRemovalIntent {
+        &self.php
+    }
+
+    pub fn frankenphp(&self) -> &ManagedResourceRemovalIntent {
+        &self.frankenphp
     }
 }
 
@@ -413,6 +870,78 @@ impl ManagedResourceTrack {
     }
 }
 
+fn validate_uninstall_request(
+    resource_name: &ResourceName,
+    track: &TrackName,
+) -> ManagedResourceCommandResult<()> {
+    registry::resolve_canonical(resource_name.as_str())?;
+    if TrackSelector::is_reserved_alias(track.as_str()) {
+        return Err(ResourcesError::ReservedTrackName {
+            name: track.as_str().to_string(),
+        }
+        .into());
+    }
+
+    Ok(())
+}
+
+fn validate_uninstall_eligibility(
+    records: &[ManagedResourceTrackRecord],
+    resource_name: &ResourceName,
+    track: &TrackName,
+    options: ManagedResourceUninstallOptions,
+) -> ManagedResourceCommandResult<()> {
+    let Some(installed_track) = records
+        .iter()
+        .find(|record| {
+            record.resource_name == resource_name.as_str() && record.track == track.as_str()
+        })
+        .filter(|record| {
+            record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+                && record.current_artifact_path.is_some()
+        })
+    else {
+        return Err(ManagedResourceCommandError::TrackNotInstalled {
+            resource: resource_name.as_str().to_string(),
+            track: track.as_str().to_string(),
+        });
+    };
+
+    if installed_track.usage_count > 0 && !options.force {
+        return Err(ManagedResourceCommandError::TrackInUse {
+            resource: resource_name.as_str().to_string(),
+            track: track.as_str().to_string(),
+            usage_count: installed_track.usage_count,
+        });
+    }
+
+    Ok(())
+}
+
+fn record_removal_intent(
+    database: &mut Database,
+    resource_name: &ResourceName,
+    track: &TrackName,
+    options: ManagedResourceUninstallOptions,
+) -> ManagedResourceCommandResult<ManagedResourceRemovalIntent> {
+    // Uninstall records intent. Daemon reconciliation owns runtime stops,
+    // artifact removal, mutable data pruning, and installed metadata cleanup.
+    database.record_managed_resource_track_removal_intent(
+        resource_name.as_str(),
+        track.as_str(),
+        options.prune,
+        options.force,
+    )?;
+
+    Ok(ManagedResourceRemovalIntent {
+        resource_name: resource_name.clone(),
+        track: track.clone(),
+        prune: options.prune,
+        force: options.force,
+    })
+}
+
 fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourceRevokedLatest {
     ManagedResourceRevokedLatest {
         artifact_version: artifact.artifact_version().clone(),
@@ -422,4 +951,8 @@ fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourc
             .unwrap_or_default()
             .to_string(),
     }
+}
+
+fn composer_track() -> ManagedResourceCommandResult<TrackName> {
+    Ok(TrackName::new("2")?)
 }

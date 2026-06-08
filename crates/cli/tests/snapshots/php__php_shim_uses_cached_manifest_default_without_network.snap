@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(output, exec_calls)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "",
+        stderr: "",
+    },
+    [
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "--ini",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+    ],
+)

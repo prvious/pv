@@ -10,10 +10,16 @@ workspace = true
 [dependencies]
 camino = { workspace = true }
 resources = { path = "../resources" }
+serde = { workspace = true }
 thiserror = { workspace = true }
 yaml_serde = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
+divan = { version = "4.7.0", package = "codspeed-divan-compat" }
 insta = { workspace = true }
+
+[[bench]]
+name = "config"
+harness = false

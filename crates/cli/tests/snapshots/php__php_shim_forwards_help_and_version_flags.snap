@@ -1,0 +1,110 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(outputs, exec_calls)"
+---
+(
+    [
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+    ],
+    [
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "--help",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "-h",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "--version",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "-V",
+            ],
+            env: [
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+    ],
+)

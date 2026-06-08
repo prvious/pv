@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/composer.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: Composer track 2 is not installed.\nRun `pv composer:install` to install it.\n",
+}

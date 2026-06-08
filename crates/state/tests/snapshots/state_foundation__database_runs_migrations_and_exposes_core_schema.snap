@@ -12,8 +12,10 @@ DatabaseInspection {
         "003:project_primary_hostname_updates",
         "004:project_original_path",
         "005:project_resource_requirements",
+        "006:global_php_default",
     ],
     tables: [
+        "global_php_default_track",
         "jobs",
         "managed_resource_tracks",
         "observed_states",

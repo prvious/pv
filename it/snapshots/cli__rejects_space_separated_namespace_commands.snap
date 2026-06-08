@@ -7,5 +7,5 @@ CommandOutput {
         2,
     ),
     stdout: "",
-    stderr: "error: unrecognized subcommand 'php'\n\n  tip: a similar subcommand exists: 'php:install'\n\nUsage: pv [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n",
+    stderr: "error: unrecognized subcommand 'php'\n\n  tip: some similar subcommands exist: 'php:uninstall', 'php:install', 'php:update', 'php:list', 'php:use'\n\nUsage: pv [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.\n",
 }

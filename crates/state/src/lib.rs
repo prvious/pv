@@ -9,13 +9,14 @@ pub use database::{
     DNS_PREFERRED_PORT, Database, DatabaseInspection, EnvContextValues,
     GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, GatewayPortAssignments,
     JobRecord, JobStatus, LinkProjectInput, LinkProjectResult, LinkProjectStatus,
-    ManagedResourceDesiredState, ManagedResourceTrackRecord, PortAssignment, PortOwner,
-    PortRequest, ProjectConfigWatch, ProjectEnvAllocationContext, ProjectEnvObservedStateRecord,
-    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord,
-    ProjectEnvResourceContext, ProjectEnvStateContext, ProjectManagedResourceInput,
-    ProjectManagedResourceRecord, ProjectRecord, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationRecord,
-    ResourceAllocationStatus, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject,
+    ManagedResourceDesiredState, ManagedResourceTrackInstallInput, ManagedResourceTrackRecord,
+    ManagedResourceTrackRemovalInput, PortAssignment, PortOwner, PortRequest, ProjectConfigWatch,
+    ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
+    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord,
+    ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStateRecord,
+    RuntimeObservedStatus, RuntimeSubject,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};

@@ -5,6 +5,7 @@ mod filesystem;
 mod hostname;
 mod model;
 mod parser;
+mod writer;
 
 pub use env::{
     AllocationEnvContext, MANAGED_ENV_END_MARKER, MANAGED_ENV_START_MARKER,
@@ -18,3 +19,4 @@ pub use hostname::{
     hostname_from_project_path, normalize_additional_hostname, normalize_primary_hostname,
 };
 pub use model::{AllocationConfig, ProjectConfig, ProjectConfigFile, ResourceConfig};
+pub use writer::write_project_php_track;

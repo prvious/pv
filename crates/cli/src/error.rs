@@ -31,6 +31,17 @@ pub enum CliError {
 
     #[error("active pf redirects do not match the prepared PV port redirect config")]
     PfRedirectsInactive,
+
+    #[error(
+        "PHP track `{track}` has {usage_count} active Project/global default selection(s); use --force to remove it anyway"
+    )]
+    PhpTrackInUse { track: String, usage_count: i64 },
+
+    #[error("PHP track {track} is not installed.\nRun `pv php:install {track}` to install it.")]
+    MissingPhpTrack { track: String },
+
+    #[error("Composer track 2 is not installed.\nRun `pv composer:install` to install it.")]
+    MissingComposer,
 }
 
 #[derive(Debug, Error)]
@@ -58,4 +69,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     Resources(#[from] resources::ResourcesError),
+
+    #[error(transparent)]
+    ManagedResourceCommand(#[from] resources::ManagedResourceCommandError),
 }

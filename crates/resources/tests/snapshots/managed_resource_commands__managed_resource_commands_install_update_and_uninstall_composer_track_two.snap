@@ -1,0 +1,48 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summary(&installed, tempdir.path())?,\nupdate_summary(&updated, tempdir.path())?, removal_intent_summary(&intent),\nstate_after_uninstall,)"
+---
+(
+    InstallSnapshot {
+        resource_name: "composer",
+        track: "2",
+        artifact_version: "2.8.0-pv1",
+        current_artifact_path: "home/.pv/resources/composer/2/releases/2.8.0-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    [
+        InstallSnapshot {
+            resource_name: "composer",
+            track: "2",
+            artifact_version: "2.8.1-pv1",
+            current_artifact_path: "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+    ],
+    RemovalIntentSnapshot {
+        resource_name: "composer",
+        track: "2",
+        prune: true,
+        force: false,
+    },
+    [
+        RawTrackRecordSnapshot {
+            resource_name: "composer",
+            track: "2",
+            desired_state: "Removed",
+            installed_version: Some(
+                "2.8.1-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: true,
+            removal_force: false,
+        },
+    ],
+)

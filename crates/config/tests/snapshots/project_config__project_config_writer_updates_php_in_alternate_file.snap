@@ -1,0 +1,19 @@
+---
+source: crates/config/tests/project_config.rs
+expression: "(updated.path.file_name(), updated.exists, updated.config)"
+---
+(
+    Some(
+        "pv.yaml",
+    ),
+    true,
+    ProjectConfig {
+        php: Some(
+            "latest",
+        ),
+        document_root: None,
+        hostnames: [],
+        env: {},
+        resources: {},
+    },
+)

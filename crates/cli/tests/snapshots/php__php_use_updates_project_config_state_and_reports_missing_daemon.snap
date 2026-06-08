@@ -1,0 +1,66 @@
+---
+source: crates/cli/tests/php.rs
+expression: "(output, config_file.config,\nproject_snapshot(&project_after, tempdir.path())?,\nresource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Set acme.test PHP track to 8.4\nUpdated Project config: <tempdir>/acme/pv.yml\nInstalled PHP track 8.4\nInstalled FrankenPHP track 8.4\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    ProjectConfig {
+        php: Some(
+            "8.4",
+        ),
+        document_root: None,
+        hostnames: [
+            "api.acme.test",
+        ],
+        env: {},
+        resources: {},
+    },
+    ProjectSnapshot {
+        primary_hostname: "acme.test",
+        path: "acme",
+        config_path: "acme/pv.yml",
+        desired_php_track: Some(
+            "8.4",
+        ),
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+        ResourceRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.4.8-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    1,
+    0,
+)

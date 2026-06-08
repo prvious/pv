@@ -1,0 +1,162 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(outputs, exec_calls)"
+---
+(
+    [
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "",
+            stderr: "",
+        },
+    ],
+    [
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "--help",
+            ],
+            env: [
+                (
+                    "COMPOSER_HOME",
+                    "<tempdir>/home/.pv/composer",
+                ),
+                (
+                    "COMPOSER_CACHE_DIR",
+                    "<tempdir>/home/.pv/composer/cache",
+                ),
+                (
+                    "PATH",
+                    "<tempdir>/home/.pv/bin:<tempdir>/home/.pv/composer/vendor/bin",
+                ),
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "-h",
+            ],
+            env: [
+                (
+                    "COMPOSER_HOME",
+                    "<tempdir>/home/.pv/composer",
+                ),
+                (
+                    "COMPOSER_CACHE_DIR",
+                    "<tempdir>/home/.pv/composer/cache",
+                ),
+                (
+                    "PATH",
+                    "<tempdir>/home/.pv/bin:<tempdir>/home/.pv/composer/vendor/bin",
+                ),
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "--version",
+            ],
+            env: [
+                (
+                    "COMPOSER_HOME",
+                    "<tempdir>/home/.pv/composer",
+                ),
+                (
+                    "COMPOSER_CACHE_DIR",
+                    "<tempdir>/home/.pv/composer/cache",
+                ),
+                (
+                    "PATH",
+                    "<tempdir>/home/.pv/bin:<tempdir>/home/.pv/composer/vendor/bin",
+                ),
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+        ExecCall {
+            program: "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/bin/php",
+            args: [
+                "<tempdir>/home/.pv/resources/composer/2/releases/2.8.1-pv1/composer.phar",
+                "-V",
+            ],
+            env: [
+                (
+                    "COMPOSER_HOME",
+                    "<tempdir>/home/.pv/composer",
+                ),
+                (
+                    "COMPOSER_CACHE_DIR",
+                    "<tempdir>/home/.pv/composer/cache",
+                ),
+                (
+                    "PATH",
+                    "<tempdir>/home/.pv/bin:<tempdir>/home/.pv/composer/vendor/bin",
+                ),
+                (
+                    "PHPRC",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                ),
+                (
+                    "PHP_INI_SCAN_DIR",
+                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                ),
+            ],
+        },
+    ],
+)

@@ -1,0 +1,5 @@
+---
+source: crates/config/tests/project_config.rs
+expression: "read_file(&project.join(\"pv.yml\"))?"
+---
+php: '8.3'

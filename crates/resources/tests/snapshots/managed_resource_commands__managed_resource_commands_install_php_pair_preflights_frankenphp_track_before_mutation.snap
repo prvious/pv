@@ -1,0 +1,16 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(result, state_after_failure, client.byte_request_count(),)"
+---
+(
+    Err(
+        Resources(
+            TrackNotFound {
+                resource: "frankenphp",
+                track: "8.4",
+            },
+        ),
+    ),
+    [],
+    0,
+)

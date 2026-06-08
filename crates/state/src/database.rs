@@ -138,6 +138,22 @@ pub struct ManagedResourceTrackRecord {
     pub updated_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackInstallInput<'a> {
+    pub resource_name: &'a str,
+    pub track: &'a str,
+    pub installed_version: &'a str,
+    pub current_artifact_path: &'a Utf8Path,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackRemovalInput<'a> {
+    pub resource_name: &'a str,
+    pub track: &'a str,
+    pub prune: bool,
+    pub force: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkProjectInput {
     pub path: Utf8PathBuf,
@@ -749,6 +765,35 @@ impl Database {
         Ok(projects)
     }
 
+    pub fn global_php_default_track(&self) -> Result<Option<String>, StateError> {
+        let track = self
+            .connection
+            .query_row(
+                "SELECT track FROM global_php_default_track WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(track)
+    }
+
+    pub fn record_global_php_default_track(&mut self, track: &str) -> Result<(), StateError> {
+        validate_concrete_track(track)?;
+
+        let updated_at = timestamp()?;
+        self.connection.execute(
+            "INSERT INTO global_php_default_track (id, track, updated_at)
+            VALUES (1, ?1, ?2)
+            ON CONFLICT(id) DO UPDATE SET
+                track = excluded.track,
+                updated_at = excluded.updated_at",
+            params![track, updated_at],
+        )?;
+
+        Ok(())
+    }
+
     pub fn replace_project_managed_resources(
         &mut self,
         project_id: &str,
@@ -890,6 +935,34 @@ impl Database {
         self.managed_resource_track(resource_name, track)
     }
 
+    pub fn record_managed_resource_tracks_removal_intent(
+        &mut self,
+        removals: &[ManagedResourceTrackRemovalInput<'_>],
+    ) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        for removal in removals {
+            validate_managed_resource_identity("name", removal.resource_name)?;
+            validate_concrete_track(removal.track)?;
+        }
+
+        let updated_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for removal in removals {
+            upsert_managed_resource_track_removal_intent_in_transaction(
+                &transaction,
+                removal,
+                &updated_at,
+            )?;
+        }
+        transaction.commit()?;
+
+        removals
+            .iter()
+            .map(|removal| self.managed_resource_track(removal.resource_name, removal.track))
+            .collect()
+    }
+
     pub fn record_managed_resource_track_installed(
         &mut self,
         resource_name: &str,
@@ -927,6 +1000,35 @@ impl Database {
         )?;
 
         self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn record_managed_resource_tracks_desired_and_installed(
+        &mut self,
+        installs: &[ManagedResourceTrackInstallInput<'_>],
+    ) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        for install in installs {
+            validate_managed_resource_identity("name", install.resource_name)?;
+            validate_concrete_track(install.track)?;
+            validate_managed_resource_identity("artifact version", install.installed_version)?;
+        }
+
+        let updated_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for install in installs {
+            upsert_managed_resource_track_desired_and_installed_in_transaction(
+                &transaction,
+                install,
+                &updated_at,
+            )?;
+        }
+        transaction.commit()?;
+
+        installs
+            .iter()
+            .map(|install| self.managed_resource_track(install.resource_name, install.track))
+            .collect()
     }
 
     pub fn record_managed_resource_track_env_context(
@@ -2160,6 +2262,76 @@ fn upsert_managed_resource_track_desired_in_transaction(
             track,
             ManagedResourceDesiredState::Installed.as_str(),
             updated_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn upsert_managed_resource_track_desired_and_installed_in_transaction(
+    transaction: &Transaction<'_>,
+    install: &ManagedResourceTrackInstallInput<'_>,
+    updated_at: &str,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "INSERT INTO managed_resource_tracks (
+            resource_name,
+            track,
+            desired_state,
+            installed_version,
+            current_artifact_path,
+            removal_prune,
+            removal_force,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)
+        ON CONFLICT(resource_name, track) DO UPDATE SET
+            desired_state = excluded.desired_state,
+            installed_version = excluded.installed_version,
+            current_artifact_path = excluded.current_artifact_path,
+            removal_prune = 0,
+            removal_force = 0,
+            updated_at = excluded.updated_at",
+        params![
+            install.resource_name,
+            install.track,
+            ManagedResourceDesiredState::Installed.as_str(),
+            install.installed_version,
+            install.current_artifact_path.as_str(),
+            updated_at,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn upsert_managed_resource_track_removal_intent_in_transaction(
+    transaction: &Transaction<'_>,
+    removal: &ManagedResourceTrackRemovalInput<'_>,
+    updated_at: &str,
+) -> Result<(), StateError> {
+    transaction.execute(
+        "INSERT INTO managed_resource_tracks (
+            resource_name,
+            track,
+            desired_state,
+            removal_prune,
+            removal_force,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(resource_name, track) DO UPDATE SET
+            desired_state = excluded.desired_state,
+            removal_prune = excluded.removal_prune,
+            removal_force = excluded.removal_force,
+            updated_at = excluded.updated_at",
+        params![
+            removal.resource_name,
+            removal.track,
+            ManagedResourceDesiredState::Removed.as_str(),
+            removal.prune,
+            removal.force,
+            updated_at
         ],
     )?;
 

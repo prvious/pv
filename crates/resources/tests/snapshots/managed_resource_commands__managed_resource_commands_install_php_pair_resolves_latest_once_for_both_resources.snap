@@ -1,0 +1,41 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summary(installed.php(), tempdir.path())?,\ninstall_summary(installed.frankenphp(), tempdir.path())?,\ntrack_records_summary(&listed_after_install, tempdir.path())?,\nmanifest_request_count,)"
+---
+(
+    InstallSnapshot {
+        resource_name: "php",
+        track: "8.4",
+        artifact_version: "8.4.8-pv1",
+        current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    InstallSnapshot {
+        resource_name: "frankenphp",
+        track: "8.4",
+        artifact_version: "8.4.8-pv1",
+        current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    [
+        TrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            installed_version: "8.4.8-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+            usage_count: 0,
+        },
+    ],
+    1,
+)
