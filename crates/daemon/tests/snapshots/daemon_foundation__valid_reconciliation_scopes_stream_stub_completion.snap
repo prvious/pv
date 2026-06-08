@@ -19,17 +19,17 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("stub job started"),
+            "message": String("Managed Resource runtime reconciliation started"),
             "type": String("log"),
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("stub job completed without reconciliation work"),
+            "message": String("Managed Resource mysql track 8.4 reconciled"),
             "type": String("progress"),
         },
         Object {
             "job_id": String("job_000001"),
-            "summary": String("stub job completed"),
+            "summary": String("Managed Resource mysql track 8.4 reconciled"),
             "type": String("job_completed"),
         },
     ],
@@ -44,7 +44,7 @@ expression: snapshot
                 "<timestamp>",
             ),
             summary: Some(
-                "stub job completed",
+                "Managed Resource mysql track 8.4 reconciled",
             ),
             error: None,
         },

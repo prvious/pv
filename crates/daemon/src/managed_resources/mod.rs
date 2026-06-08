@@ -238,6 +238,24 @@ pub(crate) async fn reconcile_project_resources_with_catalog(
     Ok(())
 }
 
+pub(crate) async fn reconcile_system_resources(paths: &PvPaths) -> Result<(), DaemonError> {
+    let catalog = ManagedResourceRuntimeCatalog::production();
+    let mut database = Database::open(paths)?;
+
+    reconcile_system_resources_with_catalog(paths, &mut database, &catalog).await
+}
+
+pub(crate) async fn reconcile_system_resources_with_catalog(
+    paths: &PvPaths,
+    database: &mut Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<(), DaemonError> {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let demanded_tracks = BTreeSet::new();
+
+    stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks).await
+}
+
 async fn reconcile_resource_track(
     paths: &PvPaths,
     database: &mut Database,

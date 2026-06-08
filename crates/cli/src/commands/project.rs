@@ -104,7 +104,7 @@ pub(crate) fn unlink(
         "Unlinked {} -> {}",
         project.primary_hostname, project.path
     ))?;
-    request_project_reconciliation(&paths, &project, &mut output)?;
+    request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -225,6 +225,21 @@ fn request_project_reconciliation(
             "Queued reconciliation {} for {}",
             job.id, project.primary_hostname
         ))?,
+        Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => output.line(
+            "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
+        )?,
+        Err(error) => return Err(error.into()),
+    }
+
+    Ok(())
+}
+
+fn request_system_reconciliation(
+    paths: &PvPaths,
+    output: &mut Output<'_, impl Write>,
+) -> Result<(), ExecuteError> {
+    match daemon::submit_job_blocking(paths.clone(), "reconcile", "system") {
+        Ok(job) => output.line(&format!("System reconciliation requested: {}", job.id))?,
         Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => output.line(
             "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
         )?,

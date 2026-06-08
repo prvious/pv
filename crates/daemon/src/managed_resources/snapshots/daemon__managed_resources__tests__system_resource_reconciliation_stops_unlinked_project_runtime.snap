@@ -1,0 +1,45 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    ManagedResourceTrackRecord {
+        resource_name: "mailpit",
+        track: "1.0",
+        desired_state: Installed,
+        installed_version: Some(
+            "1.0.0-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
+        ),
+        env: {
+            "dashboard_url": "http://127.0.0.1:<dashboard_port>",
+            "smtp_host": "127.0.0.1",
+            "smtp_port": "<smtp_port>",
+        },
+        usage_count: 0,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Stopped,
+            message: Some(
+                "Managed Resource runtime stopped; no Projects require this track",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    RuntimeFilePresence {
+        pid: false,
+        metadata: false,
+        config: false,
+    },
+)

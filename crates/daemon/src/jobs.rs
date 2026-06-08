@@ -1,6 +1,7 @@
 use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
+use crate::managed_resources::reconcile_system_resources;
 use crate::project_env::reconcile_project_env;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -267,6 +268,7 @@ async fn complete_system_reconciliation(
     job_id: &str,
 ) -> Result<String, DaemonError> {
     let project_report = reconcile_system_projects(paths).await?;
+    reconcile_system_resources(paths).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let mut database = Database::open(paths)?;

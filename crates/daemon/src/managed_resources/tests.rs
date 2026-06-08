@@ -86,6 +86,63 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
 }
 
 #[tokio::test]
+async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+
+    let cleanup_snapshot = {
+        let mut database = Database::open(&paths)?;
+        database.unlink_project(&project.id)?;
+        let catalog = super::fake_runtime_catalog(super::DEFAULT_MANIFEST_URL)?;
+
+        super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
+
+        (
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+            runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+        )
+    };
+
+    assert_runtime_status(
+        &cleanup_snapshot.2,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Stopped,
+    );
+    assert_eq!(
+        cleanup_snapshot.3,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "expected system cleanup to remove runtime files"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "system_resource_reconciliation_stops_unlinked_project_runtime",
+        cleanup_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_before_env_rendering()
 -> Result<()> {
     let tempdir = tempdir()?;
