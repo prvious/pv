@@ -8,7 +8,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, EnvContextValues, LinkProjectInput, PortRequest, ProjectRecord, PvPaths,
+    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest, ProjectRecord, PvPaths,
     ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
@@ -790,6 +790,88 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readiness() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let external_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let occupied_port = external_listener.local_addr()?.port();
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::resource_port(
+            "mysql",
+            FAKE_SQL_TRACK,
+            "mysql",
+            occupied_port,
+            occupied_port,
+            occupied_port,
+        ),
+        |_port| true,
+    )?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let assigned_ports = database.assigned_ports()?;
+    let resource_allocations = database.resource_allocations(&project.id, "mysql")?;
+    let assigned_mysql_port = assigned_mysql_port(&assigned_ports)?;
+    let dotenv = read_dotenv(&project)?;
+    let uses_occupied_port = dotenv.contains(&format!(":{occupied_port}/"));
+
+    assert_ne!(
+        assigned_mysql_port, occupied_port,
+        "expected async readiness resource to reassign the externally occupied persisted port"
+    );
+    assert!(
+        !uses_occupied_port,
+        "expected rendered env to use the reassigned resource port"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "async_readiness_reassigns_unowned_persisted_port_before_resource_readiness",
+        (
+            (
+                "persisted_port_reassigned",
+                assigned_mysql_port != occupied_port,
+            ),
+            ("env_uses_occupied_port", uses_occupied_port),
+            dotenv,
+            assigned_ports,
+            resource_allocations,
+            database.runtime_observed_states()?,
+            cloned_hook_events(&hook_events)?,
+        ),
+    )?;
+
+    Ok(())
+}
+
 async fn reconcile_project_env_with_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -1436,6 +1518,22 @@ fn required_sql_port(
             port: "mysql".to_string(),
         }
     })
+}
+
+fn assigned_mysql_port(assignments: &[state::PortAssignment]) -> Result<u16> {
+    assignments
+        .iter()
+        .find_map(|assignment| match &assignment.owner {
+            PortOwner::Resource {
+                name,
+                track: owner_track,
+                port,
+            } if name == "mysql" && owner_track == FAKE_SQL_TRACK && port == "mysql" => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing assigned mysql {FAKE_SQL_TRACK} mysql port"))
 }
 
 fn assert_runtime_status(
