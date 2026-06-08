@@ -1,0 +1,17 @@
+---
+source: crates/daemon/src/managed_resources/mysql_tests.rs
+expression: snapshot
+---
+[
+    "--no-defaults",
+    "--datadir",
+    "<tempdir>/home/.pv/resources/mysql/8.0/data",
+    "--bind-address=127.0.0.1",
+    "--port",
+    "3307",
+    "--mysqlx=0",
+    "--socket",
+    "<tempdir>/home/.pv/run/resources/mysql-8.0.sock",
+    "--init-file",
+    "<tempdir>/home/.pv/run/resources/mysql-8.0.init.sql",
+]

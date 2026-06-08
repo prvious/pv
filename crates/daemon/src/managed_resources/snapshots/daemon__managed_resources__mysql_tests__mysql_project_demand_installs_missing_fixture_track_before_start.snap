@@ -86,6 +86,7 @@ expression: snapshot
             String("--bind-address=127.0.0.1"),
             String("--port"),
             String("<mysql_port>"),
+            String("--mysqlx=0"),
             String("--socket"),
             String("<tempdir>/home/.pv/run/resources/mysql-8.0.sock"),
             String("--init-file"),

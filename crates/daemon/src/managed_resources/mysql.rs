@@ -167,6 +167,7 @@ impl ManagedResourceRuntimeAdapter for MysqlRuntimeAdapter {
                 "--bind-address=127.0.0.1".to_string(),
                 "--port".to_string(),
                 mysql_port.to_string(),
+                "--mysqlx=0".to_string(),
                 "--socket".to_string(),
                 socket_path.to_string(),
                 "--init-file".to_string(),
@@ -398,6 +399,7 @@ fn run_initialize_insecure(
     artifact_path: &Utf8Path,
 ) -> Result<(), DaemonError> {
     let status = std::process::Command::new(executable.as_std_path())
+        .arg("--no-defaults")
         .arg("--initialize-insecure")
         .arg("--datadir")
         .arg(data_dir.as_str())

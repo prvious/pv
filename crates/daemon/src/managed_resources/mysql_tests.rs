@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, bail};
@@ -22,6 +23,43 @@ fn mysql_runtime_port_prefers_3306() -> Result<()> {
 
     assert_eq!(port.name, "mysql");
     assert_eq!(port.preferred_port, 3306);
+
+    Ok(())
+}
+
+#[test]
+fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let adapter = super::mysql::MysqlRuntimeAdapter::new();
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "mysql".to_string(),
+        track: MYSQL_TRACK.to_string(),
+        artifact_path: tempdir.path().join("mysql-artifact"),
+        data_dir: paths.resource_data_dir("mysql", MYSQL_TRACK),
+        ports: BTreeMap::from([("mysql".to_string(), 3307)]),
+        env: BTreeMap::new(),
+    };
+
+    let spec =
+        super::ManagedResourceRuntimeAdapter::build_process_spec(&adapter, &paths, &context)?;
+
+    assert_eq!(
+        spec.arguments.first().map(String::as_str),
+        Some("--no-defaults")
+    );
+    assert!(
+        spec.arguments
+            .iter()
+            .any(|argument| argument == "--mysqlx=0"),
+        "MySQL runtime args must disable X Protocol: {:#?}",
+        spec.arguments
+    );
+    assert_mysql_snapshot(
+        tempdir.path(),
+        "mysql_runtime_arguments_disable_x_protocol",
+        spec.arguments,
+    )?;
 
     Ok(())
 }
@@ -394,6 +432,7 @@ set -eu
 
 datadir=""
 port=""
+first_arg="${1:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -425,6 +464,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "${initialize:-0}" = "1" ]; then
+  if [ "${first_arg:-}" != "--no-defaults" ]; then
+    echo "mysqld initialization must start with --no-defaults" >&2
+    exit 64
+  fi
   mkdir -p "$datadir/mysql"
   exit 0
 fi
