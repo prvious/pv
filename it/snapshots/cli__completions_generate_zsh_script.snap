@@ -277,6 +277,84 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(mailpit:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- Mailpit track to install:_default' \
+&& ret=0
+;;
+(mailpit:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mailpit:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- Mailpit track to uninstall:_default' \
+&& ret=0
+;;
+(mailpit:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mailpit:open)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mail:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- Mailpit track to install:_default' \
+&& ret=0
+;;
+(mail:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mail:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- Mailpit track to uninstall:_default' \
+&& ret=0
+;;
+(mail:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mail:open)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -317,6 +395,16 @@ _pv_commands() {
 'composer:install:Install Composer track 2' \
 'composer:update:Update Composer track 2' \
 'composer:uninstall:Uninstall Composer' \
+'mailpit:install:Install a Mailpit track' \
+'mailpit:update:Update installed Mailpit tracks' \
+'mailpit:uninstall:Uninstall a Mailpit track' \
+'mailpit:list:List installed Mailpit tracks' \
+'mailpit:open:Open the running Mailpit dashboard' \
+'mail:install:Install a Mailpit track' \
+'mail:update:Update installed Mailpit tracks' \
+'mail:uninstall:Uninstall a Mailpit track' \
+'mail:list:List installed Mailpit tracks' \
+'mail:open:Open the running Mailpit dashboard' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -404,6 +492,56 @@ _pv__subcmd__link_commands() {
 _pv__subcmd__list_commands() {
     local commands; commands=()
     _describe -t commands 'pv list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mail:install_commands] )) ||
+_pv__subcmd__mail:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mail:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mail:list_commands] )) ||
+_pv__subcmd__mail:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mail:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mail:open_commands] )) ||
+_pv__subcmd__mail:open_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mail:open commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mail:uninstall_commands] )) ||
+_pv__subcmd__mail:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mail:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mail:update_commands] )) ||
+_pv__subcmd__mail:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mail:update commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mailpit:install_commands] )) ||
+_pv__subcmd__mailpit:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mailpit:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mailpit:list_commands] )) ||
+_pv__subcmd__mailpit:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mailpit:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mailpit:open_commands] )) ||
+_pv__subcmd__mailpit:open_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mailpit:open commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mailpit:uninstall_commands] )) ||
+_pv__subcmd__mailpit:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mailpit:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mailpit:update_commands] )) ||
+_pv__subcmd__mailpit:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mailpit:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__open_commands] )) ||
 _pv__subcmd__open_commands() {

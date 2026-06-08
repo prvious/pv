@@ -71,6 +71,36 @@ _pv() {
             pv,list)
                 cmd="pv__subcmd__list"
                 ;;
+            pv,mail:install)
+                cmd="pv__subcmd__mail:install"
+                ;;
+            pv,mail:list)
+                cmd="pv__subcmd__mail:list"
+                ;;
+            pv,mail:open)
+                cmd="pv__subcmd__mail:open"
+                ;;
+            pv,mail:uninstall)
+                cmd="pv__subcmd__mail:uninstall"
+                ;;
+            pv,mail:update)
+                cmd="pv__subcmd__mail:update"
+                ;;
+            pv,mailpit:install)
+                cmd="pv__subcmd__mailpit:install"
+                ;;
+            pv,mailpit:list)
+                cmd="pv__subcmd__mailpit:list"
+                ;;
+            pv,mailpit:open)
+                cmd="pv__subcmd__mailpit:open"
+                ;;
+            pv,mailpit:uninstall)
+                cmd="pv__subcmd__mailpit:uninstall"
+                ;;
+            pv,mailpit:update)
+                cmd="pv__subcmd__mailpit:update"
+                ;;
             pv,open)
                 cmd="pv__subcmd__open"
                 ;;
@@ -123,7 +153,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall"
+            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -369,6 +399,146 @@ _pv() {
             return 0
             ;;
         pv__subcmd__list)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mail:install)
+            opts="-h --no-color --help [track]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mail:list)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mail:open)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mail:uninstall)
+            opts="-h --prune --force --no-color --help <track>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mail:update)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mailpit:install)
+            opts="-h --no-color --help [track]"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mailpit:list)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mailpit:open)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mailpit:uninstall)
+            opts="-h --prune --force --no-color --help <track>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mailpit:update)
             opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
