@@ -475,30 +475,32 @@ pub fn composer_recipe_env(
     let source_sha256 = recipe.source_sha256().as_str();
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
 
-    for (field, value) in [
-        ("upstream_version", upstream_version),
-        ("artifact_version", artifact_version.as_str()),
-        ("source_url", source_url),
-        ("source_sha256", source_sha256),
-        ("minimum_pv_version", minimum_pv_version),
-        ("pv_build_revision", pv_build_revision),
-    ] {
-        validate_shell_unquoted_assignment_value(recipe.path(), field, value)?;
-    }
-
-    Ok(format!(
-        "\
-PV_RESOURCE=composer
-PV_TRACK=2
-PV_PLATFORM=any
-PV_UPSTREAM_VERSION={upstream_version}
-PV_ARTIFACT_VERSION={artifact_version}
-PV_SOURCE_URL={source_url}
-PV_SOURCE_SHA256={source_sha256}
-PV_MINIMUM_PV_VERSION={minimum_pv_version}
-PV_PV_BUILD_REVISION={pv_build_revision}
-",
-    ))
+    shell_assignments(
+        recipe.path(),
+        &[
+            ("PV_RESOURCE", "resource", "composer"),
+            ("PV_TRACK", "track", "2"),
+            ("PV_PLATFORM", "platform", "any"),
+            ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
+            (
+                "PV_ARTIFACT_VERSION",
+                "artifact_version",
+                artifact_version.as_str(),
+            ),
+            ("PV_SOURCE_URL", "source_url", source_url),
+            ("PV_SOURCE_SHA256", "source_sha256", source_sha256),
+            (
+                "PV_MINIMUM_PV_VERSION",
+                "minimum_pv_version",
+                minimum_pv_version,
+            ),
+            (
+                "PV_PV_BUILD_REVISION",
+                "pv_build_revision",
+                pv_build_revision,
+            ),
+        ],
+    )
 }
 
 pub fn php_recipe_env(
@@ -537,64 +539,91 @@ pub fn php_recipe_env(
     let expected_extensions = recipe.expected_extensions().join(",");
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
     let deployment_target = recipe.deployment_target();
-
-    for (field, value) in [
-        ("resource", resource.as_str()),
-        ("track", track.name().as_str()),
-        ("platform", platform.as_str()),
-        ("php_version", php_version),
-        ("upstream_version", upstream_version.as_str()),
-        ("artifact_version", artifact_version.as_str()),
-        ("source_url", source_url),
-        ("source_sha256", source_sha256),
-        ("deployment_target", deployment_target),
-        ("build_extensions", build_extensions.as_str()),
-        ("expected_extensions", expected_extensions.as_str()),
-        ("minimum_pv_version", minimum_pv_version),
-        ("pv_build_revision", pv_build_revision),
-    ] {
-        validate_shell_unquoted_assignment_value(recipe.path(), field, value)?;
-    }
-    if matches!(resource, PhpRecipeResource::Frankenphp) {
-        validate_shell_unquoted_assignment_value(recipe.path(), "php_source_url", php_source_url)?;
-        validate_shell_unquoted_assignment_value(
-            recipe.path(),
-            "php_source_sha256",
-            php_source_sha256,
-        )?;
-    }
-
-    let php_source_env = match resource {
-        PhpRecipeResource::Php => String::new(),
-        PhpRecipeResource::Frankenphp => format!(
-            "\
-PV_PHP_SOURCE_URL={php_source_url}
-PV_PHP_SOURCE_SHA256={php_source_sha256}
-"
+    let mut assignments = vec![
+        ("PV_RESOURCE", "resource", resource.as_str()),
+        ("PV_TRACK", "track", track.name().as_str()),
+        ("PV_PLATFORM", "platform", platform.as_str()),
+        ("PV_PHP_VERSION", "php_version", php_version),
+        (
+            "PV_UPSTREAM_VERSION",
+            "upstream_version",
+            upstream_version.as_str(),
         ),
-    };
+        (
+            "PV_ARTIFACT_VERSION",
+            "artifact_version",
+            artifact_version.as_str(),
+        ),
+        ("PV_SOURCE_URL", "source_url", source_url),
+        ("PV_SOURCE_SHA256", "source_sha256", source_sha256),
+    ];
 
-    Ok(format!(
-        "\
-PV_RESOURCE={resource}
-PV_TRACK={track}
-PV_PLATFORM={platform}
-PV_PHP_VERSION={php_version}
-PV_UPSTREAM_VERSION={upstream_version}
-PV_ARTIFACT_VERSION={artifact_version}
-PV_SOURCE_URL={source_url}
-PV_SOURCE_SHA256={source_sha256}
-{php_source_env}\
-PV_DEPLOYMENT_TARGET={deployment_target}
-PV_BUILD_EXTENSIONS={build_extensions}
-PV_EXPECTED_EXTENSIONS={expected_extensions}
-PV_MINIMUM_PV_VERSION={minimum_pv_version}
-PV_PV_BUILD_REVISION={pv_build_revision}
-",
-        resource = resource.as_str(),
-        track = track.name().as_str(),
-        platform = platform.as_str(),
-    ))
+    if matches!(resource, PhpRecipeResource::Frankenphp) {
+        assignments.extend([
+            ("PV_PHP_SOURCE_URL", "php_source_url", php_source_url),
+            (
+                "PV_PHP_SOURCE_SHA256",
+                "php_source_sha256",
+                php_source_sha256,
+            ),
+        ]);
+    }
+
+    assignments.extend([
+        (
+            "PV_DEPLOYMENT_TARGET",
+            "deployment_target",
+            deployment_target,
+        ),
+        (
+            "PV_BUILD_EXTENSIONS",
+            "build_extensions",
+            build_extensions.as_str(),
+        ),
+        (
+            "PV_EXPECTED_EXTENSIONS",
+            "expected_extensions",
+            expected_extensions.as_str(),
+        ),
+        (
+            "PV_MINIMUM_PV_VERSION",
+            "minimum_pv_version",
+            minimum_pv_version,
+        ),
+        (
+            "PV_PV_BUILD_REVISION",
+            "pv_build_revision",
+            pv_build_revision,
+        ),
+    ]);
+
+    shell_assignments(recipe.path(), &assignments)
+}
+
+fn shell_assignments(path: &Utf8Path, assignments: &[(&str, &str, &str)]) -> crate::Result<String> {
+    let mut env = String::new();
+    for (name, field, value) in assignments {
+        env.push_str(name);
+        env.push('=');
+        env.push_str(&shell_quote_assignment_value(path, field, value)?);
+        env.push('\n');
+    }
+    Ok(env)
+}
+
+fn shell_quote_assignment_value(
+    path: &Utf8Path,
+    field: &str,
+    value: &str,
+) -> crate::Result<String> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(invalid(
+            path,
+            format!("{field} contains a line break and cannot be written to recipe env output"),
+        ));
+    }
+
+    Ok(format!("'{}'", value.replace('\'', "'\\''")))
 }
 
 #[derive(Clone, Copy)]
@@ -673,29 +702,6 @@ fn validate_php_recipe_platform(
                 ),
             )
         })
-}
-
-fn validate_shell_unquoted_assignment_value(
-    path: &Utf8Path,
-    field: &str,
-    value: &str,
-) -> crate::Result<()> {
-    if let Some(character) = value.chars().find(|character| {
-        character.is_whitespace()
-            || matches!(
-                character,
-                '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\\' | '"' | '\'' | '~'
-            )
-    }) {
-        Err(invalid(
-            path,
-            format!(
-                "{field} contains shell-unsafe character `{character}` in value `{value}` for unquoted recipe env output"
-            ),
-        ))
-    } else {
-        Ok(())
-    }
 }
 
 fn validate_composer_recipe_request(

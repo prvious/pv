@@ -203,8 +203,8 @@ fn print_recipe_env_frankenphp() -> Result<()> {
     assert_eq!(
         php_source_env,
         vec![
-            "PV_PHP_SOURCE_URL=https://www.php.net/distributions/php-8.4.20.tar.gz",
-            "PV_PHP_SOURCE_SHA256=a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+            "PV_PHP_SOURCE_URL='https://www.php.net/distributions/php-8.4.20.tar.gz'",
+            "PV_PHP_SOURCE_SHA256='a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d'",
         ]
     );
     assert_snapshot!(env);
@@ -212,19 +212,18 @@ fn print_recipe_env_frankenphp() -> Result<()> {
 }
 
 #[test]
-fn print_composer_recipe_env_rejects_shell_unsafe_source_url() -> Result<()> {
+fn print_composer_recipe_env_quotes_shell_values() -> Result<()> {
     let tempdir = tempdir()?;
     let composer = tempdir.path().join("composer.toml");
-    let unsafe_source_url = VALID_COMPOSER_TOML.replace(
+    let source_url_with_query = VALID_COMPOSER_TOML.replace(
         "https://getcomposer.org/download/2.10.1/composer.phar",
         "https://getcomposer.org/download/2.10.1/composer.phar?mirror=primary&fallback=1",
     );
-    write_file(&composer, &unsafe_source_url)?;
+    write_file(&composer, &source_url_with_query)?;
 
-    assert_debug_snapshot!(recipe_env_outcome(
-        composer_recipe_env(&composer, "composer", "2", "any"),
-        tempdir.path()
-    ));
+    let env = composer_recipe_env(&composer, "composer", "2", "any")?;
+
+    assert_snapshot!(env);
     Ok(())
 }
 
@@ -262,33 +261,6 @@ fn assert_default_track(
         Some(expected_track)
     );
     Ok(())
-}
-
-type RecipeErrorSummary = (String, String, String);
-
-fn recipe_env_outcome(
-    result: pv_release::Result<String>,
-    root: &Utf8Path,
-) -> std::result::Result<String, RecipeErrorSummary> {
-    result.map_err(|error| recipe_error_summary(error, root))
-}
-
-fn recipe_error_summary(error: ReleaseError, root: &Utf8Path) -> RecipeErrorSummary {
-    match error {
-        ReleaseError::InvalidRecipeMetadata { path, reason } => (
-            "InvalidRecipeMetadata".to_string(),
-            relative_path(Utf8Path::new(&path), root),
-            reason,
-        ),
-        error => ("Other".to_string(), String::new(), error.to_string()),
-    }
-}
-
-fn relative_path(path: &Utf8Path, root: &Utf8Path) -> String {
-    match path.strip_prefix(root) {
-        Ok(path) => path.to_string(),
-        Err(_error) => path.to_string(),
-    }
 }
 
 #[expect(
