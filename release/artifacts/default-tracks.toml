@@ -13,3 +13,11 @@ default_track = "2"
 [[resource]]
 name = "redis"
 default_track = "8.2"
+
+[[resource]]
+name = "mailpit"
+default_track = "1"
+
+[[resource]]
+name = "rustfs"
+default_track = "1"

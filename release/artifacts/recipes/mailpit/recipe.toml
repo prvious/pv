@@ -1,0 +1,25 @@
+[recipe]
+resources = ["mailpit"]
+default_track = "1"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/mailpit"]
+
+[[tracks]]
+name = "1"
+upstream_version = "1.30.1"
+
+[[tracks.sources]]
+platform = "darwin-arm64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-arm64.tar.gz"
+source_sha256 = "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be2"
+
+[[tracks.sources]]
+platform = "darwin-amd64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
+source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"

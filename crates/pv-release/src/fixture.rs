@@ -216,6 +216,7 @@ fn write_backing_fixture(
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
+    let source = track.source_for_platform(recipe.path(), platform)?;
     let artifact = FixtureArtifact {
         resource: recipe.resource().as_str(),
         track: track.name().as_str(),
@@ -223,8 +224,8 @@ fn write_backing_fixture(
         pv_build_revision,
         platform,
         payload_paths,
-        source_url: track.source_url(),
-        source_sha256: track.source_sha256().as_str(),
+        source_url: source.source_url(),
+        source_sha256: source.source_sha256().as_str(),
         source_inputs: Vec::new(),
         recipe: &recipe_path,
         minimum_pv_version: recipe.minimum_pv_version().as_str(),

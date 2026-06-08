@@ -44,6 +44,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
     let redis = workspace_root.join("release/artifacts/recipes/redis/recipe.toml");
+    let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
+    let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
 
     create_dir_all(&revocations)?;
@@ -55,7 +57,11 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     generate_recipe_fixtures_with_backing(
         &php,
         &composer,
-        &[(BackingRecipeKind::Redis, redis.clone())],
+        &[
+            (BackingRecipeKind::Redis, redis.clone()),
+            (BackingRecipeKind::Mailpit, mailpit),
+            (BackingRecipeKind::Rustfs, rustfs),
+        ],
         &archives,
         &records,
         "0123456789abcdef0123456789abcdef01234567",
@@ -102,6 +108,18 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
                 "darwin-arm64",
                 "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64",
             ),
+            ArchiveRoot::new(
+                "mailpit",
+                "1",
+                "darwin-amd64",
+                "mailpit-1.30.1-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "mailpit",
+                "1",
+                "darwin-arm64",
+                "mailpit-1.30.1-pv1-darwin-arm64",
+            ),
             ArchiveRoot::new("php", "8.2", "darwin-amd64", "php-8.2.31-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.2", "darwin-arm64", "php-8.2.31-pv1-darwin-arm64"),
             ArchiveRoot::new("php", "8.3", "darwin-amd64", "php-8.3.31-pv1-darwin-amd64"),
@@ -119,6 +137,18 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
                 "8.2",
                 "darwin-arm64",
                 &format!("redis-{redis_upstream_version}-pv1-darwin-arm64"),
+            ),
+            ArchiveRoot::new(
+                "rustfs",
+                "1",
+                "darwin-amd64",
+                "rustfs-1.0.0-beta.7-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "rustfs",
+                "1",
+                "darwin-arm64",
+                "rustfs-1.0.0-beta.7-pv1-darwin-arm64",
             ),
         ],
     );
@@ -148,6 +178,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
     let manifest = tempdir.path().join("manifest.json");
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
+    let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
+    let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
     let redis = tempdir
         .path()
@@ -158,7 +190,11 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
     generate_recipe_fixtures_with_backing(
         &php,
         &composer,
-        &[(BackingRecipeKind::Redis, redis.clone())],
+        &[
+            (BackingRecipeKind::Redis, redis.clone()),
+            (BackingRecipeKind::Mailpit, mailpit),
+            (BackingRecipeKind::Rustfs, rustfs),
+        ],
         &archives,
         &records,
         "0123456789abcdef0123456789abcdef01234567",
@@ -168,6 +204,55 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
     let mut backing_summaries = load_release_records(&records)?
         .iter()
         .filter(|record| record.resource().as_str() == "redis")
+        .map(|record| backing_fixture_summary(&archives, &records, record))
+        .collect::<Result<Vec<_>>>()?;
+    backing_summaries.sort();
+    assert_debug_snapshot!(backing_summaries);
+
+    generate_manifest_file_with_defaults(
+        &records,
+        &revocations,
+        Some(&defaults),
+        &manifest,
+        "https://artifacts.example.test",
+    )?;
+    let manifest_json = read_to_string(&manifest)?;
+    ArtifactManifest::parse(&manifest_json)?;
+
+    Ok(())
+}
+
+#[test]
+fn recipe_fixture_generation_validates_committed_mailpit_and_rustfs_recipes() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tempdir = tempdir()?;
+    let archives = tempdir.path().join("archives");
+    let records = tempdir.path().join("records");
+    let revocations = tempdir.path().join("revocations");
+    let manifest = tempdir.path().join("manifest.json");
+    let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
+    let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
+    let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
+    let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
+    let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
+
+    create_dir_all(&revocations)?;
+    generate_recipe_fixtures_with_backing(
+        &php,
+        &composer,
+        &[
+            (BackingRecipeKind::Mailpit, mailpit),
+            (BackingRecipeKind::Rustfs, rustfs),
+        ],
+        &archives,
+        &records,
+        "0123456789abcdef0123456789abcdef01234567",
+        "local-test",
+    )?;
+
+    let mut backing_summaries = load_release_records(&records)?
+        .iter()
+        .filter(|record| matches!(record.resource().as_str(), "mailpit" | "rustfs"))
         .map(|record| backing_fixture_summary(&archives, &records, record))
         .collect::<Result<Vec<_>>>()?;
     backing_summaries.sort();
