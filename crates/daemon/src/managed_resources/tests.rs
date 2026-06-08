@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, bail};
@@ -6,8 +7,8 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, LinkProjectInput, ProjectRecord, PvPaths, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    Database, LinkProjectInput, PortRequest, ProjectRecord, PvPaths, RuntimeObservedStatus,
+    RuntimeSubject, StateError,
 };
 
 use crate::{ReadinessCheck, managed_resources::ManagedResourceRuntimeAdapter};
@@ -42,7 +43,9 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
 "#,
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
+    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
     let started_snapshot = {
         let database = Database::open(&paths)?;
@@ -131,6 +134,9 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 "#,
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+
+    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
 
     let cleanup_snapshot = {
@@ -189,7 +195,9 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
 "#,
     )?;
     seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
+    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
         &paths,
         &project.id,
@@ -318,6 +326,9 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
 "#,
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+
+    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
 
     write_project_config(
@@ -511,6 +522,30 @@ fn seed_fake_mailpit_artifact_with_script(
 
 fn seed_unready_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     seed_fake_mailpit_artifact_with_script(paths, track, unready_fake_mailpit_script())
+}
+
+fn seed_fake_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[TcpListener; 2]> {
+    let smtp_guard = seed_fake_mailpit_runtime_port(paths, track, "smtp")?;
+    let dashboard_guard = seed_fake_mailpit_runtime_port(paths, track, "dashboard")?;
+
+    Ok([smtp_guard, dashboard_guard])
+}
+
+fn seed_fake_mailpit_runtime_port(
+    paths: &PvPaths,
+    track: &str,
+    port_name: &str,
+) -> Result<TcpListener> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+
+    let mut database = Database::open(paths)?;
+    database.assign_port(
+        PortRequest::resource_port("mailpit", track, port_name, port, port, port),
+        |candidate| candidate == port,
+    )?;
+
+    Ok(listener)
 }
 
 fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
