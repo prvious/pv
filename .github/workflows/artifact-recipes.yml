@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64","darwin-amd64"]' || format('["{0}"]', inputs.platform)) }}
+        platform: ${{ fromJSON(inputs.platform == 'all' && inputs.resource != 'composer' && '["darwin-arm64","darwin-amd64"]' || inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
       - name: Checkout
@@ -137,6 +137,7 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -187,6 +188,11 @@ jobs:
               build_rustfs=true
               ;;
           esac
+          if [ "$PV_RECIPE_RESOURCE" = all ] \
+            && [ "$PV_RECIPE_INPUT_PLATFORM" = all ] \
+            && [ "$PV_RECIPE_PLATFORM" != darwin-arm64 ]; then
+            build_composer=false
+          fi
 
           case "$PV_RECIPE_TRACK" in
             all)
@@ -247,6 +253,8 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
@@ -274,7 +282,9 @@ jobs:
             all)
               write_default_track php "$php_default_track"
               write_default_track frankenphp "$php_default_track"
-              write_default_track composer 2
+              if [ "$PV_RECIPE_INPUT_PLATFORM" != all ] || [ "$PV_RECIPE_PLATFORM" = darwin-arm64 ]; then
+                write_default_track composer 2
+              fi
               write_default_track redis 8.2
               write_default_track mysql 8.4
               write_default_track postgres 18
