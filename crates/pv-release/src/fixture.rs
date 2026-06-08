@@ -1,4 +1,4 @@
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use resources::ArtifactPlatform;
@@ -6,13 +6,35 @@ use serde::Serialize;
 use std::io::Write;
 use tar::{Builder, Header};
 
-use crate::recipe::{ComposerRecipe, PhpRecipe, PhpTrack};
+use crate::recipe::{
+    BackingRecipe, BackingRecipeKind, BackingTrack, ComposerRecipe, PhpRecipe, PhpTrack,
+};
 
 const PUBLISHED_AT: &str = "2026-01-01T00:00:00Z";
 
 pub fn generate_recipe_fixtures(
     php: &Utf8Path,
     composer: &Utf8Path,
+    archives: &Utf8Path,
+    records: &Utf8Path,
+    pv_commit: &str,
+    build_run_id: &str,
+) -> crate::Result<()> {
+    generate_recipe_fixtures_with_backing(
+        php,
+        composer,
+        &[],
+        archives,
+        records,
+        pv_commit,
+        build_run_id,
+    )
+}
+
+pub fn generate_recipe_fixtures_with_backing(
+    php: &Utf8Path,
+    composer: &Utf8Path,
+    backing_recipes: &[(BackingRecipeKind, Utf8PathBuf)],
     archives: &Utf8Path,
     records: &Utf8Path,
     pv_commit: &str,
@@ -43,7 +65,26 @@ pub fn generate_recipe_fixtures(
             )?;
         }
     }
-    write_composer_fixture(&composer, archives, records, pv_commit, build_run_id)
+    write_composer_fixture(&composer, archives, records, pv_commit, build_run_id)?;
+
+    for (kind, path) in backing_recipes {
+        let recipe = BackingRecipe::load(path, *kind)?;
+        for track in recipe.tracks() {
+            for platform in recipe.platforms() {
+                write_backing_fixture(
+                    &recipe,
+                    track,
+                    *platform,
+                    archives,
+                    records,
+                    pv_commit,
+                    build_run_id,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn write_php_fixture(
@@ -64,7 +105,7 @@ fn write_php_fixture(
         upstream_version,
         pv_build_revision,
         platform,
-        payload_path: "bin/php",
+        payload_paths: vec!["bin/php"],
         source_url: track.php_source_url(),
         source_sha256: track.php_source_sha256().as_str(),
         source_inputs: Vec::new(),
@@ -101,7 +142,7 @@ fn write_frankenphp_fixture(
         upstream_version: &upstream_version,
         pv_build_revision,
         platform,
-        payload_path: "bin/frankenphp",
+        payload_paths: vec!["bin/frankenphp"],
         source_url: recipe.frankenphp_source_url(),
         source_sha256: recipe.frankenphp_source_sha256().as_str(),
         source_inputs: vec![
@@ -143,9 +184,47 @@ fn write_composer_fixture(
         upstream_version,
         pv_build_revision,
         platform: recipe.platform(),
-        payload_path: "composer.phar",
+        payload_paths: vec!["composer.phar"],
         source_url: recipe.source_url(),
         source_sha256: recipe.source_sha256().as_str(),
+        source_inputs: Vec::new(),
+        recipe: &recipe_path,
+        minimum_pv_version: recipe.minimum_pv_version().as_str(),
+        license_files: recipe.license_files(),
+        notice_files: recipe.notice_files(),
+        pv_commit,
+        build_run_id,
+    };
+
+    write_fixture_artifact(archives, records, &artifact)
+}
+
+fn write_backing_fixture(
+    recipe: &BackingRecipe,
+    track: &BackingTrack,
+    platform: ArtifactPlatform,
+    archives: &Utf8Path,
+    records: &Utf8Path,
+    pv_commit: &str,
+    build_run_id: &str,
+) -> crate::Result<()> {
+    let upstream_version = track.upstream_version();
+    let pv_build_revision = recipe.pv_build_revision();
+    let recipe_path = recipe_provenance_path(recipe.path());
+    let payload_paths = recipe
+        .payload_paths()
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let artifact = FixtureArtifact {
+        resource: recipe.resource().as_str(),
+        track: track.name().as_str(),
+        upstream_version,
+        pv_build_revision,
+        platform,
+        payload_paths,
+        source_url: track.source_url(),
+        source_sha256: track.source_sha256().as_str(),
         source_inputs: Vec::new(),
         recipe: &recipe_path,
         minimum_pv_version: recipe.minimum_pv_version().as_str(),
@@ -164,7 +243,7 @@ struct FixtureArtifact<'a> {
     upstream_version: &'a str,
     pv_build_revision: &'a str,
     platform: ArtifactPlatform,
-    payload_path: &'a str,
+    payload_paths: Vec<&'a str>,
     source_url: &'a str,
     source_sha256: &'a str,
     source_inputs: Vec<SourceInputJson<'a>>,
@@ -332,17 +411,19 @@ fn write_fixture_archive(
             0o644,
         )?;
     }
-    append_archive_file(
-        archive,
-        &mut builder,
-        &format!("{archive_root}/{}", artifact.payload_path),
-        b"fixture binary\n",
-        if artifact.payload_path.starts_with("bin/") {
-            0o755
-        } else {
-            0o644
-        },
-    )?;
+    for payload_path in &artifact.payload_paths {
+        append_archive_file(
+            archive,
+            &mut builder,
+            &format!("{archive_root}/{payload_path}"),
+            b"fixture binary\n",
+            if payload_path.starts_with("bin/") {
+                0o755
+            } else {
+                0o644
+            },
+        )?;
+    }
     let encoder = builder
         .into_inner()
         .map_err(|error| filesystem_error(archive, error))?;

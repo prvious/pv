@@ -1,0 +1,25 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(recipe.kind(), recipe.resource().as_str(), recipe.default_track().as_str(),\nrecipe.platforms().iter().map(|platform|\nplatform.as_str()).collect::<Vec<_>>(),\nrecipe.tracks().iter().map(|track|\n(track.name().as_str(), track.upstream_version(), track.source_url(),\ntrack.source_sha256().as_str(),)).collect::<Vec<_>>(),\nrecipe.payload_paths(),)"
+---
+(
+    Redis,
+    "redis",
+    "8.2",
+    [
+        "darwin-arm64",
+        "darwin-amd64",
+    ],
+    [
+        (
+            "8.2",
+            "8.2.1",
+            "https://download.redis.io/releases/redis-8.2.1.tar.gz",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    ],
+    [
+        "bin/redis-server",
+        "bin/redis-cli",
+    ],
+)

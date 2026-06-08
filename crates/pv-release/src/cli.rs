@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 
 use crate::publication::PublicationRequest;
+use crate::recipe::BackingRecipeKind;
 use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
 
 #[derive(Debug, Parser)]
@@ -57,6 +58,16 @@ enum Command {
         php: Utf8PathBuf,
         #[arg(long)]
         composer: Utf8PathBuf,
+        #[arg(long)]
+        redis: Option<Utf8PathBuf>,
+        #[arg(long)]
+        mysql: Option<Utf8PathBuf>,
+        #[arg(long)]
+        postgres: Option<Utf8PathBuf>,
+        #[arg(long)]
+        mailpit: Option<Utf8PathBuf>,
+        #[arg(long)]
+        rustfs: Option<Utf8PathBuf>,
         #[arg(long)]
         archives: Utf8PathBuf,
         #[arg(long)]
@@ -164,13 +175,19 @@ pub fn run() -> anyhow::Result<()> {
         Command::GenerateRecipeFixtures {
             php,
             composer,
+            redis,
+            mysql,
+            postgres,
+            mailpit,
+            rustfs,
             archives,
             records,
             pv_commit,
             build_run_id,
-        } => crate::fixture::generate_recipe_fixtures(
+        } => crate::fixture::generate_recipe_fixtures_with_backing(
             &php,
             &composer,
+            &backing_recipe_paths(redis, mysql, postgres, mailpit, rustfs),
             &archives,
             &records,
             &pv_commit,
@@ -267,6 +284,32 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
     Ok(source_inputs)
 }
 
+fn backing_recipe_paths(
+    redis: Option<Utf8PathBuf>,
+    mysql: Option<Utf8PathBuf>,
+    postgres: Option<Utf8PathBuf>,
+    mailpit: Option<Utf8PathBuf>,
+    rustfs: Option<Utf8PathBuf>,
+) -> Vec<(BackingRecipeKind, Utf8PathBuf)> {
+    let mut paths = Vec::new();
+    if let Some(path) = redis {
+        paths.push((BackingRecipeKind::Redis, path));
+    }
+    if let Some(path) = mysql {
+        paths.push((BackingRecipeKind::Mysql, path));
+    }
+    if let Some(path) = postgres {
+        paths.push((BackingRecipeKind::Postgres, path));
+    }
+    if let Some(path) = mailpit {
+        paths.push((BackingRecipeKind::Mailpit, path));
+    }
+    if let Some(path) = rustfs {
+        paths.push((BackingRecipeKind::Rustfs, path));
+    }
+    paths
+}
+
 fn print_recipe_env(
     php: Option<&Utf8Path>,
     composer: Option<&Utf8Path>,
@@ -318,6 +361,11 @@ mod tests {
             Command::GenerateRecipeFixtures {
                 php,
                 composer,
+                redis,
+                mysql,
+                postgres,
+                mailpit,
+                rustfs,
                 archives,
                 records,
                 pv_commit,
@@ -330,6 +378,102 @@ mod tests {
                 assert_eq!(
                     composer,
                     Utf8PathBuf::from("release/artifacts/recipes/composer/composer.toml")
+                );
+                assert_eq!(redis, None);
+                assert_eq!(mysql, None);
+                assert_eq!(postgres, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(rustfs, None);
+                assert_eq!(archives, Utf8PathBuf::from("archives"));
+                assert_eq!(records, Utf8PathBuf::from("records"));
+                assert_eq!(pv_commit, "0123456789abcdef0123456789abcdef01234567");
+                assert_eq!(build_run_id, "local-test");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generate_recipe_fixtures_arguments_with_backing_paths() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "generate-recipe-fixtures",
+            "--php",
+            "release/artifacts/recipes/php/tracks.toml",
+            "--composer",
+            "release/artifacts/recipes/composer/composer.toml",
+            "--redis",
+            "release/artifacts/recipes/redis/recipe.toml",
+            "--mysql",
+            "release/artifacts/recipes/mysql/recipe.toml",
+            "--postgres",
+            "release/artifacts/recipes/postgres/recipe.toml",
+            "--mailpit",
+            "release/artifacts/recipes/mailpit/recipe.toml",
+            "--rustfs",
+            "release/artifacts/recipes/rustfs/recipe.toml",
+            "--archives",
+            "archives",
+            "--records",
+            "records",
+            "--pv-commit",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--build-run-id",
+            "local-test",
+        ])?;
+
+        match args.command {
+            Command::GenerateRecipeFixtures {
+                php,
+                composer,
+                redis,
+                mysql,
+                postgres,
+                mailpit,
+                rustfs,
+                archives,
+                records,
+                pv_commit,
+                build_run_id,
+            } => {
+                assert_eq!(
+                    php,
+                    Utf8PathBuf::from("release/artifacts/recipes/php/tracks.toml")
+                );
+                assert_eq!(
+                    composer,
+                    Utf8PathBuf::from("release/artifacts/recipes/composer/composer.toml")
+                );
+                assert_eq!(
+                    redis,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/redis/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    mysql,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/mysql/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    postgres,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/postgres/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    mailpit,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/mailpit/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    rustfs,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/rustfs/recipe.toml"
+                    ))
                 );
                 assert_eq!(archives, Utf8PathBuf::from("archives"));
                 assert_eq!(records, Utf8PathBuf::from("records"));
