@@ -102,6 +102,7 @@ pub struct ComposerTrack {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPhpRecipe {
     recipe: RawRecipeHeader,
     php: RawPhpSettings,
@@ -111,6 +112,7 @@ struct RawPhpRecipe {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawComposerRecipe {
     recipe: RawRecipeHeader,
     #[serde(default)]
@@ -118,6 +120,7 @@ struct RawComposerRecipe {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRecipeHeader {
     resources: Vec<String>,
     default_track: String,
@@ -130,6 +133,7 @@ struct RawRecipeHeader {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPhpSettings {
     deployment_target: String,
     build_extensions: Vec<String>,
@@ -137,6 +141,7 @@ struct RawPhpSettings {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawFrankenphpSettings {
     version: String,
     source_url: String,
@@ -144,6 +149,7 @@ struct RawFrankenphpSettings {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPhpTrack {
     name: String,
     php_version: String,
@@ -152,6 +158,7 @@ struct RawPhpTrack {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawComposerTrack {
     name: String,
     upstream_version: String,

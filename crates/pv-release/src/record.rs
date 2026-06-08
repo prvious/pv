@@ -59,6 +59,7 @@ struct RevocationMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawReleaseRecord {
     resource: String,
     track: String,
@@ -78,6 +79,7 @@ struct RawReleaseRecord {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Provenance {
     source_url: String,
     source_sha256: String,
@@ -89,6 +91,7 @@ pub struct Provenance {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceInput {
     name: String,
     source_url: String,
@@ -96,6 +99,7 @@ pub struct SourceInput {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRevocationRecord {
     resource: String,
     track: String,

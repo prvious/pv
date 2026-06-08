@@ -110,6 +110,40 @@ fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
 }
 
 #[test]
+fn recipe_metadata_rejects_unknown_fields() -> Result<()> {
+    let unknown_root = VALID_PHP_TOML.replacen(
+        "[recipe]",
+        "unknown_recipe_metadata = \"ignored\"\n\n[recipe]",
+        1,
+    );
+    let unknown_php_settings = VALID_PHP_TOML.replacen(
+        "[php]",
+        "[php]\nunknown_php_metadata = \"ignored\"",
+        1,
+    );
+    let unknown_composer_track = VALID_COMPOSER_TOML.replacen(
+        "source_sha256 = \"345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06\"",
+        "source_sha256 = \"345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06\"\nunknown_track_metadata = \"ignored\"",
+        1,
+    );
+
+    assert_invalid_recipe_metadata(PhpRecipe::from_toml(
+        Utf8Path::new("unknown-root.toml"),
+        &unknown_root,
+    ));
+    assert_invalid_recipe_metadata(PhpRecipe::from_toml(
+        Utf8Path::new("unknown-php.toml"),
+        &unknown_php_settings,
+    ));
+    assert_invalid_recipe_metadata(ComposerRecipe::from_toml(
+        Utf8Path::new("unknown-composer-track.toml"),
+        &unknown_composer_track,
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn print_composer_recipe_env() -> Result<()> {
     let tempdir = tempdir()?;
     let composer = tempdir.path().join("composer.toml");
@@ -172,6 +206,13 @@ fn print_composer_recipe_env_rejects_shell_unsafe_source_url() -> Result<()> {
         tempdir.path()
     ));
     Ok(())
+}
+
+fn assert_invalid_recipe_metadata(result: pv_release::Result<impl std::fmt::Debug>) {
+    assert!(
+        matches!(result, Err(ReleaseError::InvalidRecipeMetadata { .. })),
+        "unknown recipe metadata should be rejected, got {result:?}"
+    );
 }
 
 fn php_summary(recipe: &PhpRecipe) -> Vec<(String, String, String)> {

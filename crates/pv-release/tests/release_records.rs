@@ -135,6 +135,52 @@ fn release_records_reject_invalid_source_inputs() -> Result<()> {
 }
 
 #[test]
+fn release_records_reject_unknown_metadata_fields() -> Result<()> {
+    let unknown_release_field =
+        VALID_RELEASE_RECORD.replacen("{", "{\n  \"unknown_release_metadata\": \"ignored\",", 1);
+    let unknown_provenance_field = VALID_RELEASE_RECORD.replacen(
+        "\"provenance\": {",
+        "\"provenance\": {\n    \"unknown_provenance_metadata\": \"ignored\",",
+        1,
+    );
+    let unknown_source_input_field = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replacen(
+        "\"name\": \"frankenphp\"",
+        "\"unknown_source_input_metadata\": \"ignored\",\n        \"name\": \"frankenphp\"",
+        1,
+    );
+    let unknown_revocation_field = VALID_REVOCATION_RECORD.replacen(
+        "\"reason\": \"security issue\"",
+        "\"unknown_revocation_metadata\": \"ignored\",\n  \"reason\": \"security issue\"",
+        1,
+    );
+
+    assert_invalid_release_record(ReleaseRecord::from_json(
+        Utf8Path::new("unknown-release.json"),
+        &unknown_release_field,
+    ));
+    assert_invalid_release_record(ReleaseRecord::from_json(
+        Utf8Path::new("unknown-provenance.json"),
+        &unknown_provenance_field,
+    ));
+    assert_invalid_release_record(ReleaseRecord::from_json(
+        Utf8Path::new("unknown-source-input.json"),
+        &unknown_source_input_field,
+    ));
+    assert!(
+        matches!(
+            RevocationRecord::from_json(
+                Utf8Path::new("unknown-revocation.json"),
+                &unknown_revocation_field,
+            ),
+            Err(ReleaseError::InvalidRevocationRecord { .. })
+        ),
+        "unknown revocation metadata should be rejected"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn release_record_loader_rejects_duplicate_artifact_identity() -> Result<()> {
     let tempdir = tempdir()?;
     write_file(&tempdir.path().join("one.json"), VALID_RELEASE_RECORD)?;
@@ -152,6 +198,13 @@ fn release_record_error(result: ReleaseResult<ReleaseRecord>) -> Result<ReleaseE
         )),
         Err(error) => Ok(error),
     }
+}
+
+fn assert_invalid_release_record(result: ReleaseResult<ReleaseRecord>) {
+    assert!(
+        matches!(result, Err(ReleaseError::InvalidReleaseRecord { .. })),
+        "unknown release metadata should be rejected, got {result:?}"
+    );
 }
 
 #[test]
