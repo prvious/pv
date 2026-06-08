@@ -50,6 +50,7 @@ impl ManagedResourceRuntimeAdapter for MailpitRuntimeAdapter {
     ) -> Result<ProcessSpec, DaemonError> {
         let smtp_port = required_port(context, "smtp")?;
         let dashboard_port = required_port(context, "dashboard")?;
+        let database_path = context.data_dir.join("mailpit.db");
         let config_path = paths.resource_runtime_config(&context.resource_name, &context.track);
         let config = serde_json::json!({
             "resource": context.resource_name,
@@ -59,6 +60,7 @@ impl ManagedResourceRuntimeAdapter for MailpitRuntimeAdapter {
             "data_dir": context.data_dir.as_str(),
         });
 
+        state::fs::ensure_user_dir(&context.data_dir)?;
         state::fs::write_sensitive_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
 
         Ok(ProcessSpec {
@@ -71,6 +73,9 @@ impl ManagedResourceRuntimeAdapter for MailpitRuntimeAdapter {
                 format!("{RESOURCE_HOST}:{smtp_port}"),
                 "--listen".to_string(),
                 format!("{RESOURCE_HOST}:{dashboard_port}"),
+                "--database".to_string(),
+                database_path.to_string(),
+                "--disable-version-check".to_string(),
             ],
             config_path,
             log_path: paths.resource_log(&context.resource_name, &context.track),

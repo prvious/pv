@@ -13,7 +13,8 @@ use state::{
 };
 
 use crate::{
-    DaemonError, ProcessSpec, ReadinessCheck, managed_resources::ManagedResourceRuntimeAdapter,
+    DaemonError, ProcessSpec, ReadinessCheck,
+    managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
 };
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
@@ -156,6 +157,53 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
         OFFLINE_TEST_MANIFEST_URL,
     )
     .await?;
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_process_spec_uses_persistent_database_and_disables_version_check() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let data_dir = paths.resource_data_dir("mailpit", FAKE_MAILPIT_TRACK);
+    let database_path = data_dir.join("mailpit.db");
+    let context = ManagedResourceRuntimeContext {
+        resource_name: "mailpit".to_string(),
+        track: FAKE_MAILPIT_TRACK.to_string(),
+        artifact_path: paths
+            .resources()
+            .join("mailpit")
+            .join(FAKE_MAILPIT_TRACK)
+            .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}")),
+        data_dir,
+        ports: BTreeMap::from([("smtp".to_string(), 1025), ("dashboard".to_string(), 8025)]),
+    };
+    let adapter = super::mailpit::MailpitRuntimeAdapter::new();
+
+    let spec = adapter.build_process_spec(&paths, &context)?;
+
+    assert_eq!(
+        spec.arguments,
+        vec![
+            "--smtp".to_string(),
+            "127.0.0.1:1025".to_string(),
+            "--listen".to_string(),
+            "127.0.0.1:8025".to_string(),
+            "--database".to_string(),
+            database_path.to_string(),
+            "--disable-version-check".to_string(),
+        ],
+    );
+    assert!(
+        path_exists(&context.data_dir)?,
+        "expected Mailpit data directory to be created before process start"
+    );
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "mailpit_process_spec_uses_persistent_database_and_disables_version_check",
+        (spec.arguments, path_exists(&context.data_dir)?),
+    )?;
 
     Ok(())
 }
@@ -1712,6 +1760,8 @@ set -eu
 
 smtp=""
 listen=""
+database=""
+disable_version_check=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -1723,12 +1773,45 @@ while [ "$#" -gt 0 ]; do
       listen="$2"
       shift 2
       ;;
+    --database)
+      database="$2"
+      shift 2
+      ;;
+    --disable-version-check)
+      disable_version_check=true
+      shift
+      ;;
     *)
       echo "unexpected argument: $1" >&2
       exit 2
       ;;
   esac
 done
+
+if [ -z "$smtp" ] || [ -z "$listen" ] || [ -z "$database" ]; then
+  echo "missing required mailpit argument" >&2
+  exit 2
+fi
+
+if [ "$disable_version_check" != true ]; then
+  echo "missing --disable-version-check" >&2
+  exit 2
+fi
+
+case "$database" in
+  */mailpit.db)
+    ;;
+  *)
+    echo "unexpected database path: $database" >&2
+    exit 2
+    ;;
+esac
+
+database_dir="$(dirname "$database")"
+if [ ! -d "$database_dir" ]; then
+  echo "database directory does not exist: $database_dir" >&2
+  exit 2
+fi
 
 python3 - "$smtp" "$listen" <<'PY'
 import http.server

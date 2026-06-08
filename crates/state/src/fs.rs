@@ -147,7 +147,7 @@ fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
     ]
 }
 
-fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
+pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     create_dir_all(path)?;
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
     validate_mode(path, USER_ONLY_DIR_MODE)?;
