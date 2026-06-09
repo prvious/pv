@@ -8,8 +8,10 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest, ProjectRecord, PvPaths,
-    ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
+    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
+    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
+    ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
 };
 
 use crate::{
@@ -24,6 +26,9 @@ const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const FAKE_SQL_TRACK: &str = "8.0";
 const FAKE_SQL_ARTIFACT_VERSION: &str = "8.0.0-pv1";
 const MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
+const REDIS_TRACK: &str = "7.2";
+const REDIS_ARTIFACT_VERSION: &str = "7.2.0-pv1";
+const REDIS_ARCHIVE_FILE_NAME: &str = "redis-7.2.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
@@ -1050,6 +1055,234 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
     Ok(())
 }
 
+#[tokio::test]
+async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        redis_project_config(),
+    )?;
+    seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
+    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+
+    drop(redis_port_guard);
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("redis", REDIS_TRACK)?,
+            database.resource_allocations(&project.id, "redis")?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_reconciliation_marks_prefix_allocation_ready_and_renders_env",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        redis_project_config(),
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_managed_resources(
+        &project.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "redis".to_string(),
+            track: REDIS_TRACK.to_string(),
+        }],
+    )?;
+    database.record_managed_resource_track_env_context(
+        "redis",
+        REDIS_TRACK,
+        &BTreeMap::from([
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("port".to_string(), "6379".to_string()),
+            ("url".to_string(), "redis://127.0.0.1:6379/0".to_string()),
+        ]),
+    )?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "redis",
+        REDIS_TRACK,
+        &[ResourceAllocationInput {
+            allocation_name: "cache".to_string(),
+            generated_name: "acme-test-cache-".to_string(),
+        }],
+    )?;
+    let adapter = super::redis::RedisRuntimeAdapter::new();
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "redis".to_string(),
+        track: REDIS_TRACK.to_string(),
+        artifact_path: paths
+            .resources()
+            .join("redis")
+            .join(REDIS_TRACK)
+            .join(format!("releases/{REDIS_ARTIFACT_VERSION}")),
+        data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
+        ports: BTreeMap::from([("redis".to_string(), 6379)]),
+    };
+
+    let desired_allocations = database.resource_allocations(&project.id, "redis")?;
+    super::ManagedResourceRuntimeAdapter::reconcile_allocations(
+        &adapter,
+        &paths,
+        &mut database,
+        &context,
+        &desired_allocations,
+    )
+    .await?;
+    let first_snapshot = (
+        database.resource_allocations(&project.id, "redis")?,
+        database.project_env_context(&project.id)?,
+    );
+
+    let ready_allocations = database.resource_allocations(&project.id, "redis")?;
+    super::ManagedResourceRuntimeAdapter::reconcile_allocations(
+        &adapter,
+        &paths,
+        &mut database,
+        &context,
+        &ready_allocations,
+    )
+    .await?;
+    let second_snapshot = (
+        database.resource_allocations(&project.id, "redis")?,
+        database.project_env_context(&project.id)?,
+    );
+    let [first_allocation] = first_snapshot.0.as_slice() else {
+        bail!(
+            "expected one Redis allocation after first reconciliation, got {:#?}",
+            first_snapshot.0
+        );
+    };
+    let [second_allocation] = second_snapshot.0.as_slice() else {
+        bail!(
+            "expected one Redis allocation after second reconciliation, got {:#?}",
+            second_snapshot.0
+        );
+    };
+
+    assert_eq!(first_allocation.status, ResourceAllocationStatus::Ready);
+    assert_eq!(second_allocation.status, ResourceAllocationStatus::Ready);
+    assert_eq!(
+        first_allocation.generated_name, second_allocation.generated_name,
+        "Redis prefix allocation should remain stable across reconciliations"
+    );
+    assert_eq!(
+        first_allocation.env, second_allocation.env,
+        "Redis allocation env should remain stable across reconciliations"
+    );
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_reconciliation_reuses_ready_prefix_allocation",
+        (first_snapshot, second_snapshot),
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let adapter = super::redis::RedisRuntimeAdapter::new();
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "redis".to_string(),
+        track: REDIS_TRACK.to_string(),
+        artifact_path: tempdir.path().join("redis-artifact"),
+        data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
+        ports: BTreeMap::from([("redis".to_string(), 6380)]),
+    };
+
+    let spec =
+        super::ManagedResourceRuntimeAdapter::build_process_spec(&adapter, &paths, &context)?;
+
+    assert!(
+        !spec.arguments.iter().any(String::is_empty),
+        "Redis process arguments must not contain empty argv tokens: {:#?}",
+        spec.arguments
+    );
+    let config = state::fs::read_to_string(&spec.config_path)?;
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_process_arguments_disable_snapshots_without_empty_argv",
+        (spec.arguments, config),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn redis_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        redis_project_config(),
+    )?;
+    seed_redis_cached_fixture(&paths, tempdir.path())?;
+    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+
+    drop(redis_port_guard);
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            read_dotenv(&project)?,
+            database.managed_resource_track("redis", REDIS_TRACK)?,
+            database.resource_allocations(&project.id, "redis")?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_project_demand_installs_missing_fixture_track_before_start",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
 async fn reconcile_project_env_with_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -1202,6 +1435,23 @@ fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>> {
     }
 }
 
+fn redis_project_config() -> &'static str {
+    r#"redis:
+  version: "7.2"
+  env:
+    REDIS_HOST: "${host}"
+    REDIS_PORT: "${port}"
+    REDIS_URL: "${url}"
+  allocations:
+    cache:
+      env:
+        CACHE_REDIS_HOST: "${host}"
+        CACHE_REDIS_PORT: "${port}"
+        CACHE_REDIS_PREFIX: "${prefix}"
+        CACHE_REDIS_URL: "${url}"
+"#
+}
+
 fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     seed_fake_mailpit_artifact_with_script(paths, track, fake_mailpit_script())
 }
@@ -1301,6 +1551,27 @@ fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Resul
     Ok(())
 }
 
+fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("redis")
+        .join(track)
+        .join(format!("releases/{REDIS_ARTIFACT_VERSION}"));
+    let executable = release_path.join("bin/redis-server");
+
+    state::fs::write_sensitive_file(&executable, redis_server_script())?;
+    set_executable(&executable)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "redis",
+        track,
+        REDIS_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
+}
+
 fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
     super::ManagedResourceRuntimeCatalog {
         adapters: BTreeMap::new(),
@@ -1347,6 +1618,37 @@ fn seed_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()
     Ok(())
 }
 
+fn seed_redis_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    let archive_path = tempdir.join(REDIS_ARCHIVE_FILE_NAME);
+
+    create_redis_archive(tempdir, &archive_path)?;
+    let sha256 = sha256_file(&archive_path)?;
+    let cache_path = paths
+        .downloads()
+        .join(format!("{sha256}-{REDIS_ARCHIVE_FILE_NAME}"));
+
+    copy_file(&archive_path, &cache_path)?;
+    let size = file_size(&cache_path)?;
+    let manifest = redis_manifest(&sha256, size);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
+fn seed_redis_runtime_port(paths: &PvPaths) -> Result<TcpListener> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+
+    let mut database = Database::open(paths)?;
+    database.assign_port(
+        PortRequest::resource_port("redis", REDIS_TRACK, "redis", port, port, port),
+        |candidate| candidate == port,
+    )?;
+
+    Ok(listener)
+}
+
 fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
@@ -1376,6 +1678,28 @@ fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result
     let executable = root.join("bin/mailpit");
 
     state::fs::write_sensitive_file(&executable, mailpit_script())?;
+    set_executable(&executable)?;
+    run_fixture_command(
+        "/usr/bin/tar",
+        &[
+            "-czf",
+            archive_path.as_str(),
+            "-C",
+            archive_parent.as_str(),
+            &root_name,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
+    let archive_parent = tempdir.join("redis-archive-root");
+    let root_name = format!("redis-{REDIS_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+    let executable = root.join("bin/redis-server");
+
+    state::fs::write_sensitive_file(&executable, redis_server_script())?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -1489,6 +1813,83 @@ fn mailpit_manifest(sha256: &str, size: u64) -> String {
               "pv_build_revision": "1",
               "platform": "any",
               "url": "https://artifacts.example.test/{MAILPIT_ARCHIVE_FILE_NAME}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }},
+    {{
+      "name": "frankenphp",
+      "default_track": "8.4",
+      "tracks": [
+        {{
+          "name": "8.4",
+          "artifacts": [
+            {{
+              "artifact_version": "8.4.8-pv1",
+              "upstream_version": "8.4.8",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
+              "sha256": "{dummy_sha256}",
+              "size": 1,
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
+fn redis_manifest(sha256: &str, size: u64) -> String {
+    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {{
+      "name": "redis",
+      "default_track": "{REDIS_TRACK}",
+      "tracks": [
+        {{
+          "name": "{REDIS_TRACK}",
+          "artifacts": [
+            {{
+              "artifact_version": "{REDIS_ARTIFACT_VERSION}",
+              "upstream_version": "7.2.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{REDIS_ARCHIVE_FILE_NAME}",
               "sha256": "{sha256}",
               "size": {size},
               "published_at": "2026-06-08T00:00:00Z"
@@ -1866,6 +2267,73 @@ PY
 "#
 }
 
+fn redis_server_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+python3 - "$@" <<'PY'
+import os
+import signal
+import shlex
+import socketserver
+import sys
+
+def redis_config(argv):
+    port = None
+    data_dir = None
+    args = list(argv)
+    while args:
+        arg = args.pop(0)
+        if arg == "--port" and args:
+            port = int(args.pop(0))
+        elif arg == "--dir" and args:
+            data_dir = args.pop(0)
+        elif os.path.isfile(arg):
+            with open(arg, "r", encoding="utf-8") as config:
+                for line in config:
+                    parts = shlex.split(line)
+                    if len(parts) == 2 and parts[0] == "port":
+                        port = int(parts[1])
+                    elif len(parts) == 2 and parts[0] == "dir":
+                        data_dir = parts[1]
+    if port is None:
+        raise RuntimeError("missing Redis port")
+    return port, data_dir
+
+class RedisPingHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        while True:
+            data = self.request.recv(4096)
+            if not data:
+                return
+            upper = data.upper()
+            responses = []
+            for _ in range(upper.count(b"CLIENT")):
+                responses.append(b"+OK\r\n")
+            for _ in range(upper.count(b"PING")):
+                responses.append(b"+PONG\r\n")
+            if not responses:
+                responses.append(b"+OK\r\n")
+            self.request.sendall(b"".join(responses))
+
+class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+def stop(_signum, _frame):
+    server.shutdown()
+
+port, data_dir = redis_config(sys.argv[1:])
+if data_dir:
+    os.makedirs(data_dir, exist_ok=True)
+
+server = RedisServer(("127.0.0.1", port), RedisPingHandler)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+server.serve_forever()
+PY
+"#
+}
+
 fn assert_with_normalized_runtime(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -1883,12 +2351,35 @@ fn assert_with_normalized_runtime(
         "MAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>",
     );
     settings.add_filter(r"MAIL_PORT=\d+", "MAIL_PORT=<smtp_port>");
+    settings.add_filter(r"REDIS_PORT=\d+", "REDIS_PORT=<redis_port>");
+    settings.add_filter(
+        r"REDIS_URL=redis://127\.0\.0\.1:\d+/0",
+        "REDIS_URL=redis://127.0.0.1:<redis_port>/0",
+    );
+    settings.add_filter(r"CACHE_REDIS_PORT=\d+", "CACHE_REDIS_PORT=<redis_port>");
+    settings.add_filter(
+        r"CACHE_REDIS_URL=redis://127\.0\.0\.1:\d+/0",
+        "CACHE_REDIS_URL=redis://127.0.0.1:<redis_port>/0",
+    );
     settings.add_filter(
         r#""dashboard_url": "http://127\.0\.0\.1:\d+""#,
         r#""dashboard_url": "http://127.0.0.1:<dashboard_port>""#,
     );
     settings.add_filter(r#""smtp_port": "\d+""#, r#""smtp_port": "<smtp_port>""#);
-    settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
+    settings.add_filter(
+        r#""url": "redis://127\.0\.0\.1:\d+/0""#,
+        r#""url": "redis://127.0.0.1:<redis_port>/0""#,
+    );
+    settings.add_filter(
+        r"redis-ping:127\.0\.0\.1:\d+",
+        "redis-ping:127.0.0.1:<redis_port>",
+    );
+    settings.add_filter(r"port \d+", "port <redis_port>");
+    if name.starts_with("redis_") {
+        settings.add_filter(r#""port": "\d+""#, r#""port": "<redis_port>""#);
+    } else {
+        settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
+    }
     settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
     settings.add_filter(
         r"http:127\.0\.0\.1:\d+/__pv_unready_fixture__",

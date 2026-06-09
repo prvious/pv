@@ -1,0 +1,10 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    [
+        "<tempdir>/home/.pv/config/resources/redis/7.2.json",
+    ],
+    "bind 127.0.0.1\nport <redis_port>\ndir \"<tempdir>/home/.pv/resources/redis/7.2/data\"\nsave \"\"\nappendonly no\n",
+)

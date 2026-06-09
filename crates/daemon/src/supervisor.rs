@@ -68,6 +68,10 @@ pub enum ReadinessCheck {
         host: String,
         port: u16,
     },
+    RedisPing {
+        host: String,
+        port: u16,
+    },
     Http {
         host: String,
         port: u16,
@@ -340,6 +344,7 @@ impl ReadinessCheck {
     fn name(&self) -> String {
         match self {
             Self::Tcp { host, port } => format!("tcp:{host}:{port}"),
+            Self::RedisPing { host, port } => format!("redis-ping:{host}:{port}"),
             Self::Http { host, port, path } => format!("http:{host}:{port}{path}"),
         }
     }
@@ -350,6 +355,19 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
         ReadinessCheck::Tcp { host, port } => {
             let _stream = TcpStream::connect((host.as_str(), *port)).await?;
             Ok(())
+        }
+        ReadinessCheck::RedisPing { host, port } => {
+            let url = format!("redis://{host}:{port}/");
+            let client = redis::Client::open(url)?;
+            let mut connection = client.get_multiplexed_async_connection().await?;
+            let pong: String = redis::cmd("PING").query_async(&mut connection).await?;
+            if pong == "PONG" {
+                return Ok(());
+            }
+
+            Err(DaemonError::DaemonRejected {
+                message: format!("Redis PING returned {pong}"),
+            })
         }
         ReadinessCheck::Http { host, port, path } => {
             let mut stream = TcpStream::connect((host.as_str(), *port)).await?;

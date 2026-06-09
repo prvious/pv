@@ -66,6 +66,9 @@ pub enum DaemonError {
     #[error("Managed Resource command failed: {0}")]
     ManagedResourceCommand(#[from] ManagedResourceCommandError),
 
+    #[error("Redis readiness failed: {0}")]
+    Redis(#[from] redis::RedisError),
+
     #[error("daemon task failed: {0}")]
     Task(#[from] JoinError),
 

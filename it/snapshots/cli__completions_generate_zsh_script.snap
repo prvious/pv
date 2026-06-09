@@ -355,6 +355,38 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(redis:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- Redis track to install:_default' \
+&& ret=0
+;;
+(redis:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(redis:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- Redis track to uninstall:_default' \
+&& ret=0
+;;
+(redis:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -405,6 +437,10 @@ _pv_commands() {
 'mail:uninstall:Uninstall a Mailpit track' \
 'mail:list:List installed Mailpit tracks' \
 'mail:open:Open the running Mailpit dashboard' \
+'redis:install:Install a Redis track' \
+'redis:update:Update installed Redis tracks' \
+'redis:uninstall:Uninstall a Redis track' \
+'redis:list:List installed Redis tracks' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -592,6 +628,26 @@ _pv__subcmd__ports:uninstall_commands() {
 _pv__subcmd__project:env_commands() {
     local commands; commands=()
     _describe -t commands 'pv project:env commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__redis:install_commands] )) ||
+_pv__subcmd__redis:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv redis:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__redis:list_commands] )) ||
+_pv__subcmd__redis:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv redis:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__redis:uninstall_commands] )) ||
+_pv__subcmd__redis:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv redis:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__redis:update_commands] )) ||
+_pv__subcmd__redis:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv redis:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__setup_commands] )) ||
 _pv__subcmd__setup_commands() {

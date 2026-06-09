@@ -1,0 +1,34 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Install a Redis track\n\nUsage: pv redis:install [OPTIONS] [track]\n\nArguments:\n  [track]  Redis track to install\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Update installed Redis tracks\n\nUsage: pv redis:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Uninstall a Redis track\n\nUsage: pv redis:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  Redis track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned runtime data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "List installed Redis tracks\n\nUsage: pv redis:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]
