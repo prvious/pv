@@ -1070,8 +1070,8 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
         "MySQL CMake invocation should use the recipe-built OpenSSL prefix: {cmake_log}"
     );
     assert!(
-        cmake_log.contains("[-DOPENSSL_USE_STATIC_LIBS=TRUE]"),
-        "MySQL CMake invocation should prefer the recipe-built static OpenSSL libraries: {cmake_log}"
+        !cmake_log.contains("OPENSSL_USE_STATIC_LIBS"),
+        "MySQL CMake invocation should let WITH_SSL select the recipe-built OpenSSL libraries: {cmake_log}"
     );
     assert!(
         cmake_log.contains("[-DBISON_EXECUTABLE=<bison>]"),
@@ -3105,8 +3105,8 @@ case "${1:-}" in
     openssl_prefix=$(cat .pv-openssl-prefix)
     mkdir -p "$openssl_prefix/include/openssl" "$openssl_prefix/lib"
     printf '%s\n' 'openssl fixture' >"$openssl_prefix/include/openssl/ssl.h"
-    printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.a"
-    printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.a"
+    printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.3.dylib"
+    printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.3.dylib"
     ;;
   -j)
     [ -n "${2:-}" ] || exit 78

@@ -110,17 +110,25 @@ build_openssl_dependency() {
 
   (
     cd "$openssl_source_dir"
+    # MySQL consumes OpenSSL through CMake imported targets; shared libs keep
+    # those locations concrete while this recipe controls the macOS target.
     MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
-      perl ./Configure "$openssl_configure_target" no-shared no-tests \
+      perl ./Configure "$openssl_configure_target" no-tests \
       --prefix="$openssl_prefix" \
       --openssldir="$openssl_prefix/ssl"
     MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make -j "$BUILD_JOBS"
     MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make install_sw
   )
 
+  validate_openssl_prefix "$openssl_prefix"
+}
+
+validate_openssl_prefix() {
+  openssl_prefix=$1
+
   [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libssl.a" ] || die "OpenSSL static SSL library not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libcrypto.a" ] || die "OpenSSL static crypto library not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
 }
 
 copy_install_tree() {
@@ -194,7 +202,7 @@ if [ -z "$OPENSSL_PREFIX" ]; then
   OPENSSL_PREFIX="$work_dir/openssl-$OPENSSL_VERSION"
   build_openssl_dependency "$OPENSSL_PREFIX" "$openssl_source_archive" "$openssl_source_extract_dir"
 else
-  [ -f "$OPENSSL_PREFIX/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $OPENSSL_PREFIX"
+  validate_openssl_prefix "$OPENSSL_PREFIX"
 fi
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")
@@ -211,7 +219,6 @@ cmake -S "$source_dir" -B "$build_dir" \
   -DWITH_ICU=bundled \
   -DWITH_LZ4=bundled \
   -DWITH_NDB=OFF \
-  -DOPENSSL_USE_STATIC_LIBS=TRUE \
   -DWITH_PROTOBUF=bundled \
   -DWITH_ROUTER=OFF \
   -DWITH_SSL="$OPENSSL_PREFIX" \
