@@ -21,7 +21,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Uninstall a RustFS track\n\nUsage: pv rustfs:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned RustFS data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stdout: "Uninstall a RustFS track\n\nUsage: pv rustfs:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned runtime data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
@@ -56,7 +56,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Uninstall a RustFS track (S3 alias)\n\nUsage: pv s3:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned RustFS data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stdout: "Uninstall a RustFS track (S3 alias)\n\nUsage: pv s3:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned runtime data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
