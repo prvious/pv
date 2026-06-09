@@ -152,19 +152,19 @@ async fn seeded_resource_and_allocation_contexts_render_dotenv() -> Result<()> {
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"mysql:
+        r#"postgres:
   version: "8.0"
   allocations:
     app-db:
       env:
-        DATABASE_URL: "mysql://${username}:${password}@${host}:${port}/${database}"
+        DATABASE_URL: "postgres://${username}:${password}@${host}:${port}/${database}"
         DB_DATABASE: "${database}"
         DB_HOST: "${host}"
         DB_PORT: "${port}"
         DB_USERNAME: "${username}"
 "#,
     )?;
-    seed_mysql_context(&paths, &project)?;
+    seed_postgres_context(&paths, &project)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -175,7 +175,7 @@ async fn seeded_resource_and_allocation_contexts_render_dotenv() -> Result<()> {
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -192,7 +192,7 @@ async fn existing_allocation_name_survives_primary_hostname_change() -> Result<(
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"mysql:
+        r#"postgres:
   version: "8.0"
   allocations:
     app-db:
@@ -200,7 +200,7 @@ async fn existing_allocation_name_survives_primary_hostname_change() -> Result<(
         DB_DATABASE: "${database}"
 "#,
     )?;
-    seed_mysql_context(&paths, &project)?;
+    seed_postgres_context(&paths, &project)?;
     let project = update_project_primary_hostname(
         &paths,
         &project,
@@ -215,7 +215,7 @@ async fn existing_allocation_name_survives_primary_hostname_change() -> Result<(
         (
             lines,
             read_optional_dotenv(&project)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -232,7 +232,7 @@ async fn missing_context_leaves_dotenv_unchanged_and_records_failure() -> Result
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n  version: \"8.0\"\n  env:\n    DB_HOST: \"${host}\"\n",
+        "postgres:\n  version: \"8.0\"\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
     state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
@@ -260,7 +260,7 @@ async fn root_env_with_resource_waits_for_resource_context_before_dotenv() -> Re
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\n",
+        "env:\n  APP_URL: \"${project_url}\"\npostgres:\n  version: \"8.0\"\n",
     )?;
     state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
@@ -290,7 +290,7 @@ async fn first_allocation_reconciliation_records_desired_state_before_context_fa
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"mysql:
+        r#"postgres:
   version: "8.0"
   allocations:
     app-db:
@@ -308,7 +308,7 @@ async fn first_allocation_reconciliation_records_desired_state_before_context_fa
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -358,7 +358,7 @@ async fn malformed_pv_block_preflight_preserves_resource_and_hostname_state() ->
         "acme.test",
         r#"hostnames:
   - api.acme.test
-mysql:
+postgres:
   version: "8.0"
   env:
     DB_HOST: "${host}"
@@ -382,7 +382,7 @@ mysql:
             read_dotenv(&project)?,
             hostnames,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -427,15 +427,15 @@ async fn duplicate_rendered_env_key_leaves_resource_state_unchanged() -> Result<
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"mysql:
+        r#"postgres:
   version: "8.0"
   allocations:
     analytics:
       env:
-        DATABASE_URL: "mysql://${database}"
+        DATABASE_URL: "postgres://${database}"
     app:
       env:
-        DATABASE_URL: "mysql://${database}"
+        DATABASE_URL: "postgres://${database}"
 "#,
     )?;
 
@@ -448,7 +448,7 @@ async fn duplicate_rendered_env_key_leaves_resource_state_unchanged() -> Result<
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -467,7 +467,7 @@ async fn generated_allocation_name_too_long_leaves_resource_state_unchanged() ->
         &tempdir.path().join("project"),
         "a.test",
         &format!(
-            r#"mysql:
+            r#"postgres:
   version: "8.0"
   allocations:
     {allocation_name}:
@@ -486,7 +486,7 @@ async fn generated_allocation_name_too_long_leaves_resource_state_unchanged() ->
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -505,7 +505,7 @@ async fn invalid_config_failure_rolls_back_resource_state_mutations() -> Result<
         "acme.test",
         r#"hostnames:
   - api.acme.test
-mysql:
+postgres:
   version: "8.0"
   allocations:
     app-db:
@@ -513,11 +513,11 @@ mysql:
         DB_DATABASE: "${database}"
 "#,
     )?;
-    seed_mysql_context(&paths, &project)?;
+    seed_postgres_context(&paths, &project)?;
     let initial_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let managed_resources_before = database.project_managed_resources(&project.id)?;
-    let allocations_before = database.resource_allocations(&project.id, "mysql")?;
+    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
     let hostnames_before = database
         .project_by_id(&project.id)?
         .map(|project| project.additional_hostnames);
@@ -537,7 +537,7 @@ redis:
     let invalid_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let managed_resources_after = database.project_managed_resources(&project.id)?;
-    let allocations_after = database.resource_allocations(&project.id, "mysql")?;
+    let allocations_after = database.resource_allocations(&project.id, "postgres")?;
     let hostnames_after = database
         .project_by_id(&project.id)?
         .map(|project| project.additional_hostnames);
@@ -590,7 +590,7 @@ async fn legacy_url_placeholder_failure_preserves_last_valid_desired_state() -> 
   - api.acme.test
 env:
   APP_URL: "${project_url}"
-mysql:
+postgres:
   version: "8.0"
   allocations:
     app-db:
@@ -598,11 +598,11 @@ mysql:
         DB_DATABASE: "${database}"
 "#,
     )?;
-    seed_mysql_context(&paths, &project)?;
+    seed_postgres_context(&paths, &project)?;
     let initial_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let managed_resources_before = database.project_managed_resources(&project.id)?;
-    let allocations_before = database.resource_allocations(&project.id, "mysql")?;
+    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
     let hostnames_before = database
         .project_by_id(&project.id)?
         .map(|project| project.additional_hostnames);
@@ -624,7 +624,7 @@ redis:
     let invalid_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let managed_resources_after = database.project_managed_resources(&project.id)?;
-    let allocations_after = database.resource_allocations(&project.id, "mysql")?;
+    let allocations_after = database.resource_allocations(&project.id, "postgres")?;
     let hostnames_after = database
         .project_by_id(&project.id)?
         .map(|project| project.additional_hostnames);
@@ -702,7 +702,7 @@ async fn resources_and_empty_allocations_without_env_mappings_update_state_witho
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"mysql:
+        r#"postgres:
   version: "8.0"
   allocations:
     app-db: {}
@@ -718,7 +718,7 @@ async fn resources_and_empty_allocations_without_env_mappings_update_state_witho
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -841,10 +841,10 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
+        "postgres:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
     seed_manifest(&paths, "8.0")?;
-    seed_mysql_resource_context(&paths)?;
+    seed_postgres_resource_context(&paths)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -856,7 +856,7 @@ async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_wr
             read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -873,14 +873,14 @@ async fn latest_resource_track_reuses_stored_track_when_manifest_default_changes
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
+        "postgres:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
     )?;
     seed_manifest(&paths, "8.0")?;
-    seed_mysql_resource_context(&paths)?;
+    seed_postgres_resource_context(&paths)?;
     let initial_lines = run_project_reconciliation(&paths, &project).await?;
 
     seed_manifest(&paths, "8.4")?;
-    seed_mysql_resource_context_for_track(&paths, "8.4", "3406")?;
+    seed_postgres_resource_context_for_track(&paths, "8.4", "3406")?;
     let rerun_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
 
@@ -908,10 +908,10 @@ async fn omitted_resource_track_resolves_manifest_default_track() -> Result<()> 
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n  env:\n    DB_HOST: \"${host}\"\n",
+        "postgres:\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
     seed_manifest(&paths, "8.0")?;
-    seed_mysql_resource_context(&paths)?;
+    seed_postgres_resource_context(&paths)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -939,14 +939,14 @@ async fn omitted_resource_track_reuses_stored_track_when_manifest_default_change
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
+        "postgres:\n  env:\n    DB_HOST: \"${host}\"\n    DB_PORT: \"${port}\"\n",
     )?;
     seed_manifest(&paths, "8.0")?;
-    seed_mysql_resource_context(&paths)?;
+    seed_postgres_resource_context(&paths)?;
     let initial_lines = run_project_reconciliation(&paths, &project).await?;
 
     seed_manifest(&paths, "8.4")?;
-    seed_mysql_resource_context_for_track(&paths, "8.4", "3406")?;
+    seed_postgres_resource_context_for_track(&paths, "8.4", "3406")?;
     let rerun_lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
 
@@ -974,7 +974,7 @@ async fn omitted_resource_track_without_mappings_updates_state_without_dotenv() 
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "mysql:\n",
+        "postgres:\n",
     )?;
     seed_manifest(&paths, "8.0")?;
 
@@ -987,7 +987,7 @@ async fn omitted_resource_track_without_mappings_updates_state_without_dotenv() 
             lines,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,
-            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -1122,20 +1122,20 @@ fn update_project_primary_hostname(
     Ok(result.project)
 }
 
-fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
+fn seed_postgres_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
     let mut database = Database::open(paths)?;
 
-    seed_mysql_resource_context_in_database(&mut database)?;
+    seed_postgres_resource_context_in_database(&mut database)?;
     database.replace_project_managed_resources(
         &project.id,
         &[ProjectManagedResourceInput {
-            resource_name: "mysql".to_string(),
+            resource_name: "postgres".to_string(),
             track: "8.0".to_string(),
         }],
     )?;
     database.replace_project_resource_allocations(
         &project.id,
-        "mysql",
+        "postgres",
         "8.0",
         &[ResourceAllocationInput {
             allocation_name: "app-db".to_string(),
@@ -1144,7 +1144,7 @@ fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
     )?;
     database.mark_resource_allocation_ready(
         &project.id,
-        "mysql",
+        "postgres",
         "8.0",
         "app-db",
         &env_context(&[("database", "acme_test_app_db")]),
@@ -1153,26 +1153,30 @@ fn seed_mysql_context(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
     Ok(())
 }
 
-fn seed_mysql_resource_context(paths: &PvPaths) -> Result<()> {
-    seed_mysql_resource_context_for_track(paths, "8.0", "3306")
+fn seed_postgres_resource_context(paths: &PvPaths) -> Result<()> {
+    seed_postgres_resource_context_for_track(paths, "8.0", "3306")
 }
 
-fn seed_mysql_resource_context_for_track(paths: &PvPaths, track: &str, port: &str) -> Result<()> {
+fn seed_postgres_resource_context_for_track(
+    paths: &PvPaths,
+    track: &str,
+    port: &str,
+) -> Result<()> {
     let mut database = Database::open(paths)?;
-    seed_mysql_resource_context_for_track_in_database(&mut database, track, port)
+    seed_postgres_resource_context_for_track_in_database(&mut database, track, port)
 }
 
-fn seed_mysql_resource_context_in_database(database: &mut Database) -> Result<()> {
-    seed_mysql_resource_context_for_track_in_database(database, "8.0", "3306")
+fn seed_postgres_resource_context_in_database(database: &mut Database) -> Result<()> {
+    seed_postgres_resource_context_for_track_in_database(database, "8.0", "3306")
 }
 
-fn seed_mysql_resource_context_for_track_in_database(
+fn seed_postgres_resource_context_for_track_in_database(
     database: &mut Database,
     track: &str,
     port: &str,
 ) -> Result<()> {
     database.record_managed_resource_track_env_context(
-        "mysql",
+        "postgres",
         track,
         &env_context(&[
             ("host", "127.0.0.1"),
@@ -1200,7 +1204,7 @@ fn test_manifest(default_track: &str) -> String {
         "minimum_pv_version": "0.1.0",
         "resources": [
             {
-                "name": "mysql",
+                "name": "postgres",
                 "default_track": default_track,
                 "tracks": [
                     {
@@ -1211,7 +1215,7 @@ fn test_manifest(default_track: &str) -> String {
                                 "upstream_version": "8.0.42",
                                 "pv_build_revision": "pv1",
                                 "platform": "darwin-arm64",
-                                "url": "https://artifacts.example.test/mysql-8.0.42-pv1-darwin-arm64.tar.gz",
+                                "url": "https://artifacts.example.test/postgres-8.0.42-pv1-darwin-arm64.tar.gz",
                                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                                 "size": 12345,
                                 "published_at": "2026-05-26T14:30:00Z"
@@ -1226,7 +1230,7 @@ fn test_manifest(default_track: &str) -> String {
                                 "upstream_version": "8.4.5",
                                 "pv_build_revision": "pv1",
                                 "platform": "darwin-arm64",
-                                "url": "https://artifacts.example.test/mysql-8.4.5-pv1-darwin-arm64.tar.gz",
+                                "url": "https://artifacts.example.test/postgres-8.4.5-pv1-darwin-arm64.tar.gz",
                                 "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                                 "size": 12345,
                                 "published_at": "2026-05-27T14:30:00Z"

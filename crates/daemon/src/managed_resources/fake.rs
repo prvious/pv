@@ -4,8 +4,8 @@ use std::time::Duration;
 use state::{EnvContextValues, PvPaths};
 
 use crate::managed_resources::{
-    ManagedResourceArtifactAdapter, ManagedResourcePortSpec, ManagedResourceRuntimeAdapter,
-    ManagedResourceRuntimeContext, RESOURCE_HOST,
+    ManagedResourceArtifactAdapter, ManagedResourcePortSpec, ManagedResourceReadiness,
+    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
 use crate::{DaemonError, ProcessSpec, ReadinessCheck};
 
@@ -116,22 +116,25 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
     fn readiness(
         &self,
         context: &ManagedResourceRuntimeContext,
-    ) -> Result<ReadinessCheck, DaemonError> {
+    ) -> Result<ManagedResourceReadiness, DaemonError> {
         match self.readiness {
             FakeMailpitReadiness::Smtp => Ok(ReadinessCheck::Tcp {
                 host: RESOURCE_HOST.to_string(),
                 port: required_port(context, "smtp")?,
-            }),
+            }
+            .into()),
             FakeMailpitReadiness::ExitAfterDashboardReadiness => Ok(ReadinessCheck::Http {
                 host: RESOURCE_HOST.to_string(),
                 port: required_port(context, "dashboard")?,
                 path: "/ready".to_string(),
-            }),
+            }
+            .into()),
             FakeMailpitReadiness::UnservedDashboardPort { .. } => Ok(ReadinessCheck::Http {
                 host: RESOURCE_HOST.to_string(),
                 port: required_port(context, "dashboard")?,
                 path: "/__pv_unready_fixture__".to_string(),
-            }),
+            }
+            .into()),
         }
     }
 

@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 resources = { path = "../resources" }
 rustix = { workspace = true }
+sqlx = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
 time = { workspace = true }

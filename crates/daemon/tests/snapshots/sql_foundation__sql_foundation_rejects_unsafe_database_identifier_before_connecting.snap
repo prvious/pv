@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/sql_foundation.rs
+expression: snapshot
+---
+"Err(\n    InvalidSqlIdentifier {\n        identifier: \"bad-name\",\n    },\n)"

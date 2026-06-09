@@ -1,0 +1,41 @@
+---
+source: crates/daemon/tests/sql_foundation.rs
+expression: snapshot
+---
+(
+    {
+        "host": "127.0.0.1",
+        "password": "secret",
+        "port": "3306",
+        "url": "mysql://root:secret@127.0.0.1:3306",
+        "username": "root",
+    },
+    [
+        RecordedSqlAdminOperation {
+            engine: Mysql,
+            database: "acme_test_app_db",
+            statement: "CREATE DATABASE IF NOT EXISTS `acme_test_app_db`",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+                "host": "127.0.0.1",
+                "password": "secret",
+                "port": "3306",
+                "url": "mysql://root:secret@127.0.0.1:3306/acme_test_app_db",
+                "username": "root",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+)

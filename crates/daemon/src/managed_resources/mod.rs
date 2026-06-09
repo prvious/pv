@@ -1,12 +1,15 @@
 #[cfg(test)]
 mod fake;
+pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::io;
 use std::net::TcpListener;
-use std::time::Duration;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use resources::{
@@ -18,15 +21,22 @@ use state::{
     PortRequest, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
     ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
+use tokio::time::{sleep, timeout};
 
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 const DEFAULT_MANIFEST_URL: &str = "https://artifacts.prvious.test/manifest.json";
 const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const ASYNC_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const RESOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const RESOURCE_START_ATTEMPTS: usize = 10;
 const RESERVED_RESOURCE_PORT_NAME: &str = "default";
+
+pub(crate) type ManagedResourceReadinessFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
+pub(crate) type ManagedResourceAllocationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ManagedResourcePortSpec {
@@ -41,6 +51,42 @@ pub(crate) struct ManagedResourceRuntimeContext {
     pub artifact_path: camino::Utf8PathBuf,
     pub data_dir: camino::Utf8PathBuf,
     pub ports: BTreeMap<String, u16>,
+}
+
+pub(crate) enum ManagedResourceReadiness {
+    TcpHttp(ReadinessCheck),
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
+    )]
+    Async(AsyncManagedResourceReadiness),
+}
+
+pub(crate) struct AsyncManagedResourceReadiness {
+    name: String,
+    check: Box<dyn Fn() -> ManagedResourceReadinessFuture<'static> + Send + Sync>,
+}
+
+impl ManagedResourceReadiness {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
+    )]
+    pub(crate) fn async_check(
+        name: impl Into<String>,
+        check: impl Fn() -> ManagedResourceReadinessFuture<'static> + Send + Sync + 'static,
+    ) -> Self {
+        Self::Async(AsyncManagedResourceReadiness {
+            name: name.into(),
+            check: Box::new(check),
+        })
+    }
+}
+
+impl From<ReadinessCheck> for ManagedResourceReadiness {
+    fn from(check: ReadinessCheck) -> Self {
+        Self::TcpHttp(check)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +159,7 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
     fn readiness(
         &self,
         context: &ManagedResourceRuntimeContext,
-    ) -> Result<ReadinessCheck, DaemonError>;
+    ) -> Result<ManagedResourceReadiness, DaemonError>;
 
     #[cfg(test)]
     fn readiness_timeout(&self) -> Duration {
@@ -125,14 +171,14 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
         context: &ManagedResourceRuntimeContext,
     ) -> Result<EnvContextValues, DaemonError>;
 
-    fn reconcile_allocations(
-        &self,
-        _paths: &PvPaths,
-        _database: &mut Database,
-        _context: &ManagedResourceRuntimeContext,
-        _allocations: &[ResourceAllocationRecord],
-    ) -> Result<(), DaemonError> {
-        Ok(())
+    fn reconcile_allocations<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        _database: &'a mut Database,
+        _context: &'a ManagedResourceRuntimeContext,
+        _allocations: &'a [ResourceAllocationRecord],
+    ) -> ManagedResourceAllocationFuture<'a> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -355,7 +401,7 @@ impl ResourceRuntimeAttempt<'_> {
         let readiness = self.adapter.readiness(context)?;
         let readiness_timeout = adapter_readiness_timeout(self.adapter);
 
-        start_or_adopt_runtime(self.supervisor, spec, readiness, readiness_timeout).await?;
+        start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
         let env = self.adapter.resource_env(context)?;
         self.database.record_managed_resource_track_env_context(
@@ -366,7 +412,8 @@ impl ResourceRuntimeAttempt<'_> {
         let allocations =
             desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
-            .reconcile_allocations(self.paths, self.database, context, &allocations)?;
+            .reconcile_allocations(self.paths, self.database, context, &allocations)
+            .await?;
         self.database.record_runtime_observed_snapshot(
             self.subject.clone(),
             RuntimeObservedStatus::Running,
@@ -556,23 +603,22 @@ fn ports_occupied_without_recorded_runtime(
 async fn start_or_adopt_runtime(
     supervisor: &ProcessSupervisor,
     spec: ProcessSpec,
-    readiness: ReadinessCheck,
+    readiness: &ManagedResourceReadiness,
     readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     if supervisor.adopt(&spec)?.is_some() {
-        wait_for_readiness(readiness, readiness_timeout).await?;
+        wait_for_managed_resource_readiness(readiness, readiness_timeout).await?;
 
         return Ok(());
     }
-    if crate::supervisor::probe_readiness_once(&readiness)
-        .await
-        .is_ok()
+    if let ManagedResourceReadiness::TcpHttp(check) = readiness
+        && crate::supervisor::probe_readiness_once(check).await.is_ok()
     {
         return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });
     }
 
     let mut process = supervisor.start(spec.clone()).await?;
-    if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+    if let Err(error) = wait_for_managed_resource_readiness(readiness, readiness_timeout).await {
         process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
         cleanup_started_runtime_files(&spec)?;
 
@@ -591,6 +637,54 @@ async fn start_or_adopt_runtime(
     }
 
     Ok(())
+}
+
+async fn wait_for_managed_resource_readiness(
+    readiness: &ManagedResourceReadiness,
+    readiness_timeout: Duration,
+) -> Result<(), DaemonError> {
+    match readiness {
+        ManagedResourceReadiness::TcpHttp(check) => {
+            wait_for_readiness(check.clone(), readiness_timeout).await
+        }
+        ManagedResourceReadiness::Async(check) => {
+            wait_for_async_readiness(check, readiness_timeout).await
+        }
+    }
+}
+
+async fn wait_for_async_readiness(
+    readiness: &AsyncManagedResourceReadiness,
+    readiness_timeout: Duration,
+) -> Result<(), DaemonError> {
+    let started_at = Instant::now();
+    let mut last_error = None;
+
+    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+        match timeout(remaining, (readiness.check)()).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => {
+                last_error = Some(error.to_string());
+                sleep(remaining.min(ASYNC_READINESS_POLL_INTERVAL)).await;
+            }
+            Err(elapsed) => {
+                last_error = Some(elapsed.to_string());
+                break;
+            }
+        }
+    }
+
+    Err(DaemonError::ReadinessTimedOut {
+        check: format!("async:{}", readiness.name),
+        timeout_ms: readiness_timeout.as_millis(),
+        last_error,
+    })
+}
+
+fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
+    readiness_timeout
+        .checked_sub(started_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
 }
 
 fn cleanup_started_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {

@@ -1272,6 +1272,59 @@ impl Database {
         resource_allocation_by_key(&self.connection, project_id, resource_name, allocation_name)
     }
 
+    pub fn record_resource_allocation_env_context(
+        &mut self,
+        project_id: &str,
+        resource_name: &str,
+        track: &str,
+        allocation_name: &str,
+        env: &EnvContextValues,
+    ) -> Result<ResourceAllocationRecord, StateError> {
+        validate_resource_allocation_identity("resource", resource_name)?;
+        validate_concrete_track(track)?;
+        validate_resource_allocation_name(allocation_name)?;
+        let context = format!(
+            "resource allocation {project_id:?}/{resource_name:?}/{track:?}/{allocation_name:?}"
+        );
+        let env_json = serialize_env_context(&context, env)?;
+        let updated_at = timestamp()?;
+        let updated = self.connection.execute(
+            "UPDATE resource_allocations
+            SET env_json = ?1,
+                updated_at = ?2
+            WHERE project_id = ?3
+            AND resource_name = ?4
+            AND track = ?5
+            AND allocation_name = ?6
+            AND status = ?7",
+            params![
+                env_json,
+                updated_at,
+                project_id,
+                resource_name,
+                track,
+                allocation_name,
+                ResourceAllocationStatus::Ready.as_str(),
+            ],
+        )?;
+        if updated == 0 {
+            resource_allocation_by_key(
+                &self.connection,
+                project_id,
+                resource_name,
+                allocation_name,
+            )?;
+            return Err(StateError::ResourceAllocationNotDesired {
+                project_id: project_id.to_string(),
+                resource: resource_name.to_string(),
+                track: track.to_string(),
+                allocation: allocation_name.to_string(),
+            });
+        }
+
+        resource_allocation_by_key(&self.connection, project_id, resource_name, allocation_name)
+    }
+
     pub fn resource_allocations(
         &self,
         project_id: &str,

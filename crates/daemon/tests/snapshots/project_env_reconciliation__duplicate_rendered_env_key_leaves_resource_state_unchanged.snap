@@ -23,7 +23,7 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `mysql.allocations.analytics.env.DATABASE_URL` and `mysql.allocations.app.env.DATABASE_URL`"),
+            "error": String("Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `postgres.allocations.analytics.env.DATABASE_URL` and `postgres.allocations.app.env.DATABASE_URL`"),
             "job_id": String("job_000001"),
             "type": String("job_failed"),
         },
@@ -36,7 +36,7 @@ expression: snapshot
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `mysql.allocations.analytics.env.DATABASE_URL` and `mysql.allocations.app.env.DATABASE_URL`",
+                "Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `postgres.allocations.analytics.env.DATABASE_URL` and `postgres.allocations.app.env.DATABASE_URL`",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -53,7 +53,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `mysql.allocations.analytics.env.DATABASE_URL` and `mysql.allocations.app.env.DATABASE_URL`",
+            "Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `postgres.allocations.analytics.env.DATABASE_URL` and `postgres.allocations.app.env.DATABASE_URL`",
         ),
     },
 )

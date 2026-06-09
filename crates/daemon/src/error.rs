@@ -111,6 +111,14 @@ pub enum DaemonError {
         port: String,
     },
 
+    #[error(
+        "invalid SQL database identifier `{identifier}`: identifiers must use ASCII alphanumeric characters and underscores"
+    )]
+    InvalidSqlIdentifier { identifier: String },
+
+    #[error("SQL admin error: {0}")]
+    SqlAdmin(#[from] sqlx::Error),
+
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 }

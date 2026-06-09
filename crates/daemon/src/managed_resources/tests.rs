@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, EnvContextValues, LinkProjectInput, PortRequest, ProjectRecord, PvPaths,
-    RuntimeObservedStatus, RuntimeSubject, StateError,
+    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest, ProjectRecord, PvPaths,
+    ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 use crate::{
@@ -19,6 +20,8 @@ const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
 const FAKE_MAILPIT_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
+const FAKE_SQL_TRACK: &str = "8.0";
+const FAKE_SQL_ARTIFACT_VERSION: &str = "8.0.0-pv1";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
@@ -117,8 +120,13 @@ fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -
         ]),
     };
 
+    let readiness = adapter.readiness(&context)?;
+    let super::ManagedResourceReadiness::TcpHttp(readiness) = readiness else {
+        bail!("expected tcp/http readiness");
+    };
+
     assert_eq!(
-        adapter.readiness(&context)?,
+        readiness,
         ReadinessCheck::Http {
             host: super::RESOURCE_HOST.to_string(),
             port: 18026,
@@ -718,6 +726,152 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
     Ok(())
 }
 
+#[tokio::test]
+async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let mut database = Database::open(&paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let started_snapshot = (
+        read_dotenv(&project)?,
+        database.resource_allocations(&project.id, "mysql")?,
+        database.runtime_observed_states()?,
+        cloned_hook_events(&hook_events)?,
+    );
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_uses_async_readiness_and_allocation_hooks",
+        started_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readiness() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let external_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let occupied_port = external_listener.local_addr()?.port();
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::resource_port(
+            "mysql",
+            FAKE_SQL_TRACK,
+            "mysql",
+            occupied_port,
+            occupied_port,
+            occupied_port,
+        ),
+        |_port| true,
+    )?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let assigned_ports = database.assigned_ports()?;
+    let resource_allocations = database.resource_allocations(&project.id, "mysql")?;
+    let assigned_mysql_port = assigned_mysql_port(&assigned_ports)?;
+    let dotenv = read_dotenv(&project)?;
+    let uses_occupied_port = dotenv.contains(&format!(":{occupied_port}/"));
+
+    assert_ne!(
+        assigned_mysql_port, occupied_port,
+        "expected async readiness resource to reassign the externally occupied persisted port"
+    );
+    assert!(
+        !uses_occupied_port,
+        "expected rendered env to use the reassigned resource port"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "async_readiness_reassigns_unowned_persisted_port_before_resource_readiness",
+        (
+            (
+                "persisted_port_reassigned",
+                assigned_mysql_port != occupied_port,
+            ),
+            ("env_uses_occupied_port", uses_occupied_port),
+            dotenv,
+            assigned_ports,
+            resource_allocations,
+            database.runtime_observed_states()?,
+            cloned_hook_events(&hook_events)?,
+        ),
+    )?;
+
+    Ok(())
+}
+
 async fn reconcile_project_env_with_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -910,6 +1064,27 @@ fn seed_fake_mailpit_runtime_port(
     )?;
 
     Ok(listener)
+}
+
+fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join(resource)
+        .join(track)
+        .join(format!("releases/{FAKE_SQL_ARTIFACT_VERSION}"));
+    let executable = release_path.join("bin/pv-fake-sql");
+
+    state::fs::write_sensitive_file(&executable, fake_sql_script())?;
+    set_executable(&executable)?;
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        resource,
+        track,
+        FAKE_SQL_ARTIFACT_VERSION,
+        &release_path,
+    )?;
+
+    Ok(())
 }
 
 fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
@@ -1109,6 +1284,152 @@ PY
 "#
 }
 
+fn fake_sql_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+stop() {
+  exit 0
+}
+
+trap stop TERM INT
+
+while true; do
+  sleep 1
+done
+"#
+}
+
+#[derive(Clone, Debug)]
+struct AsyncSqlHookRuntimeAdapter {
+    artifact_adapter: super::ManagedResourceArtifactAdapter,
+    hook_events: Arc<Mutex<Vec<String>>>,
+}
+
+impl AsyncSqlHookRuntimeAdapter {
+    fn new(hook_events: Arc<Mutex<Vec<String>>>) -> Result<Self> {
+        Ok(Self {
+            artifact_adapter: super::ManagedResourceArtifactAdapter::new(
+                "mysql",
+                "bin/pv-fake-sql",
+            )?,
+            hook_events,
+        })
+    }
+}
+
+impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
+    fn resource_name(&self) -> &'static str {
+        "mysql"
+    }
+
+    fn artifact_adapter(
+        &self,
+    ) -> Result<super::ManagedResourceArtifactAdapter, crate::DaemonError> {
+        Ok(self.artifact_adapter.clone())
+    }
+
+    fn port_specs(&self) -> &'static [super::ManagedResourcePortSpec] {
+        &[super::ManagedResourcePortSpec {
+            name: "mysql",
+            preferred_port: 3306,
+        }]
+    }
+
+    fn build_process_spec(
+        &self,
+        paths: &PvPaths,
+        context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<crate::ProcessSpec, crate::DaemonError> {
+        let config_path = paths.resource_runtime_config(&context.resource_name, &context.track);
+        state::fs::write_sensitive_file(&config_path, "{}")?;
+
+        Ok(crate::ProcessSpec {
+            name: format!("{}-{}", context.resource_name, context.track),
+            command: self
+                .artifact_adapter
+                .executable_path(&context.artifact_path),
+            arguments: Vec::new(),
+            config_path,
+            log_path: paths.resource_log(&context.resource_name, &context.track),
+            pid_path: paths.resource_pid(&context.resource_name, &context.track),
+            metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
+            resource_name: context.resource_name.clone(),
+            track: context.track.clone(),
+        })
+    }
+
+    fn readiness(
+        &self,
+        _context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<super::ManagedResourceReadiness, crate::DaemonError> {
+        let hook_events = Arc::clone(&self.hook_events);
+
+        Ok(super::ManagedResourceReadiness::async_check(
+            "sql:mysql:admin",
+            move || {
+                let hook_events = Arc::clone(&hook_events);
+
+                Box::pin(async move {
+                    push_hook_event(&hook_events, "readiness")?;
+
+                    Ok(())
+                })
+            },
+        ))
+    }
+
+    fn resource_env(
+        &self,
+        context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<EnvContextValues, crate::DaemonError> {
+        Ok(BTreeMap::from([
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("port".to_string(), required_sql_port(context)?.to_string()),
+        ]))
+    }
+
+    fn reconcile_allocations<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        database: &'a mut Database,
+        context: &'a super::ManagedResourceRuntimeContext,
+        allocations: &'a [ResourceAllocationRecord],
+    ) -> super::ManagedResourceAllocationFuture<'a> {
+        let hook_events = Arc::clone(&self.hook_events);
+
+        Box::pin(async move {
+            push_hook_event(&hook_events, "allocation")?;
+            let port = required_sql_port(context)?;
+
+            for allocation in allocations {
+                database.mark_resource_allocation_ready(
+                    &allocation.project_id,
+                    &allocation.resource_name,
+                    &allocation.track,
+                    &allocation.allocation_name,
+                    &BTreeMap::from([
+                        ("database".to_string(), allocation.generated_name.clone()),
+                        ("host".to_string(), "127.0.0.1".to_string()),
+                        ("password".to_string(), "secret".to_string()),
+                        ("port".to_string(), port.to_string()),
+                        (
+                            "url".to_string(),
+                            format!(
+                                "mysql://root:secret@127.0.0.1:{port}/{}",
+                                allocation.generated_name
+                            ),
+                        ),
+                        ("username".to_string(), "root".to_string()),
+                    ]),
+                )?;
+            }
+
+            Ok(())
+        })
+    }
+}
+
 fn assert_with_normalized_runtime(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -1131,15 +1452,24 @@ fn assert_with_normalized_runtime(
         r#""dashboard_url": "http://127.0.0.1:<dashboard_port>""#,
     );
     settings.add_filter(r#""smtp_port": "\d+""#, r#""smtp_port": "<smtp_port>""#);
+    settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
     settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
     settings.add_filter(
         r"http:127\.0\.0\.1:\d+/__pv_unready_fixture__",
         "http:127.0.0.1:<readiness_port>/__pv_unready_fixture__",
     );
+    settings.add_filter(
+        r"DATABASE_URL=mysql://root:secret@127\.0\.0\.1:\d+/acme_test_app_db",
+        "DATABASE_URL=mysql://root:secret@127.0.0.1:<mysql_port>/acme_test_app_db",
+    );
+    settings.add_filter(
+        r#"mysql://root:secret@127\.0\.0\.1:\d+/acme_test_app_db"#,
+        "mysql://root:secret@127.0.0.1:<mysql_port>/acme_test_app_db",
+    );
     settings.add_filter(r"timeout_ms: \d+", "timeout_ms: <timeout_ms>");
     settings.add_filter(r"os error \d+", "os error <code>");
     settings.add_filter(
-        r"I/O error: Connection refused \(os error <code>\)|I/O error: HTTP readiness returned non-success status",
+        r"I/O error: Connection refused \(os error <code>\)|I/O error: HTTP readiness returned non-success status|deadline has elapsed",
         "I/O error: readiness unavailable",
     );
     settings.add_filter(r"port: \d+", "port: <port>");
@@ -1153,6 +1483,57 @@ fn assert_with_normalized_runtime(
 
 fn assert_failed_mailpit_runtime(states: &[state::RuntimeObservedStateRecord]) {
     assert_runtime_status(states, FAKE_MAILPIT_TRACK, RuntimeObservedStatus::Failed);
+}
+
+fn push_hook_event(
+    hook_events: &Arc<Mutex<Vec<String>>>,
+    event: &str,
+) -> Result<(), crate::DaemonError> {
+    let mut events =
+        hook_events
+            .lock()
+            .map_err(|_error| crate::DaemonError::UnexpectedProtocolResponse {
+                reason: "async hook event log was poisoned".to_string(),
+            })?;
+    events.push(event.to_string());
+
+    Ok(())
+}
+
+fn cloned_hook_events(hook_events: &Arc<Mutex<Vec<String>>>) -> Result<Vec<String>> {
+    let events = hook_events
+        .lock()
+        .map_err(|_error| anyhow::anyhow!("async hook event log was poisoned"))?;
+
+    Ok(events.clone())
+}
+
+fn required_sql_port(
+    context: &super::ManagedResourceRuntimeContext,
+) -> Result<u16, crate::DaemonError> {
+    context.ports.get("mysql").copied().ok_or_else(|| {
+        crate::DaemonError::ManagedResourcePortMissing {
+            resource: context.resource_name.clone(),
+            track: context.track.clone(),
+            port: "mysql".to_string(),
+        }
+    })
+}
+
+fn assigned_mysql_port(assignments: &[state::PortAssignment]) -> Result<u16> {
+    assignments
+        .iter()
+        .find_map(|assignment| match &assignment.owner {
+            PortOwner::Resource {
+                name,
+                track: owner_track,
+                port,
+            } if name == "mysql" && owner_track == FAKE_SQL_TRACK && port == "mysql" => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing assigned mysql {FAKE_SQL_TRACK} mysql port"))
 }
 
 fn assert_runtime_status(
@@ -1312,7 +1693,7 @@ impl ManagedResourceRuntimeAdapter for InvalidDefaultPortRuntimeAdapter {
     fn readiness(
         &self,
         _context: &super::ManagedResourceRuntimeContext,
-    ) -> Result<ReadinessCheck, DaemonError> {
+    ) -> Result<super::ManagedResourceReadiness, DaemonError> {
         Err(DaemonError::UnexpectedProtocolResponse {
             reason: "invalid default-port test adapter should fail during port assignment"
                 .to_string(),
