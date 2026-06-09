@@ -1,3 +1,6 @@
+use std::ffi::OsString;
+use std::sync::{Mutex, MutexGuard};
+
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
@@ -15,8 +18,10 @@ mod sql;
 
 use sql::{
     RecordingSqlAdmin, SqlAdminContext, SqlAllocationContext, SqlAllocationRequest, SqlEngine,
-    ensure_database_allocation_for_test, sql_allocation_env, sql_resource_env,
+    ensure_database_allocation_for_test, postgres_options, sql_allocation_env, sql_resource_env,
 };
+
+static PG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn sql_foundation_creates_database_and_marks_allocation_ready() -> Result<()> {
@@ -188,6 +193,107 @@ async fn sql_foundation_verifies_already_ready_allocation_without_rewriting_stat
 }
 
 #[tokio::test]
+async fn sql_foundation_refreshes_ready_allocation_env_when_context_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db: {}
+"#,
+    )?;
+    seed_desired_sql_allocation(
+        &paths,
+        &project,
+        "mysql",
+        "8.0",
+        "app-db",
+        "acme_test_app_db",
+    )?;
+    let mut database = Database::open(&paths)?;
+    let old_context = SqlAdminContext {
+        port: 19_001,
+        ..sql_admin_context()
+    };
+    let new_context = SqlAdminContext {
+        port: 19_002,
+        ..sql_admin_context()
+    };
+    database.mark_resource_allocation_ready(
+        &project.id,
+        "mysql",
+        "8.0",
+        "app-db",
+        &sql_allocation_env(
+            &allocation_context(&old_context, "acme_test_app_db"),
+            SqlEngine::Mysql,
+        ),
+    )?;
+    let mut admin = RecordingSqlAdmin::default();
+
+    ensure_database_allocation_for_test(
+        &mut database,
+        &mut admin,
+        SqlAllocationRequest {
+            project_id: &project.id,
+            resource_name: "mysql",
+            track: "8.0",
+            allocation_name: "app-db",
+            engine: SqlEngine::Mysql,
+            context: &new_context,
+        },
+    )
+    .await?;
+
+    let allocations = database.resource_allocations(&project.id, "mysql")?;
+    let expected_env = sql_allocation_env(
+        &allocation_context(&new_context, "acme_test_app_db"),
+        SqlEngine::Mysql,
+    );
+    assert_eq!(
+        allocations[0].env, expected_env,
+        "expected Ready allocation env to refresh after SQL runtime context changed"
+    );
+    assert_sql_snapshot(
+        "sql_foundation_refreshes_ready_allocation_env_when_context_changes",
+        (admin.operations(), allocations),
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn sql_foundation_postgres_admin_options_ignore_ambient_ssl_env() -> Result<()> {
+    let _env = ScopedPgEnv::with([
+        ("PGSSLMODE", "require"),
+        ("PGSSLROOTCERT", "/tmp/hostile-root.pem"),
+        ("PGSSLCERT", "/tmp/hostile-client.pem"),
+        ("PGSSLKEY", "/tmp/hostile-client.key"),
+        ("PGAPPNAME", "hostile-app"),
+    ]);
+    let context = postgres_admin_context();
+
+    let options = postgres_options(&context);
+
+    assert_eq!(
+        format!("{:?}", options.get_ssl_mode()),
+        "Disable",
+        "expected PV Postgres admin options to force local non-TLS connections"
+    );
+    assert_eq!(
+        options.get_application_name(),
+        Some("pv"),
+        "expected PV Postgres admin options to use a PV-owned application name"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn sql_foundation_rejects_unsafe_database_identifier_before_connecting() -> Result<()> {
     let result =
         sql::create_database_if_missing(&sql_admin_context(), SqlEngine::Mysql, "bad-name").await;
@@ -301,6 +407,88 @@ fn allocation_context(context: &SqlAdminContext, database: &str) -> SqlAllocatio
         port: context.port,
         username: context.username.clone(),
         password: context.password.clone(),
+    }
+}
+
+struct ScopedPgEnv {
+    _guard: MutexGuard<'static, ()>,
+    saved: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl ScopedPgEnv {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "SQL foundation regression tests explicitly control PG* env inputs"
+    )]
+    fn with<const N: usize>(vars: [(&'static str, &'static str); N]) -> Self {
+        let guard = pg_env_guard();
+        let keys = [
+            "PGSSLMODE",
+            "PGSSLROOTCERT",
+            "PGSSLCERT",
+            "PGSSLKEY",
+            "PGAPPNAME",
+        ];
+        let saved = keys
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect::<Vec<_>>();
+
+        for key in keys {
+            // SAFETY: This test helper serializes all PG* environment mutations in this
+            // test binary with PG_ENV_LOCK and restores the previous values before the
+            // guard is released.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+        for (key, value) in vars {
+            // SAFETY: This test helper serializes all PG* environment mutations in this
+            // test binary with PG_ENV_LOCK and restores the previous values before the
+            // guard is released.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+
+        Self {
+            _guard: guard,
+            saved,
+        }
+    }
+}
+
+impl Drop for ScopedPgEnv {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "SQL foundation regression tests explicitly restore PG* env inputs"
+    )]
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            match value {
+                Some(value) => {
+                    // SAFETY: ScopedPgEnv holds PG_ENV_LOCK while restoring the values
+                    // that were saved before this test's PG* environment mutation.
+                    unsafe {
+                        std::env::set_var(key, value);
+                    }
+                }
+                None => {
+                    // SAFETY: ScopedPgEnv holds PG_ENV_LOCK while restoring the values
+                    // that were saved before this test's PG* environment mutation.
+                    unsafe {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn pg_env_guard() -> MutexGuard<'static, ()> {
+    match PG_ENV_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 

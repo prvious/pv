@@ -4,7 +4,7 @@
 )]
 
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool};
-use sqlx::postgres::{PgConnectOptions, PgPool};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgSslMode};
 use state::{
     Database, EnvContextValues, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
@@ -204,10 +204,6 @@ fn mark_database_allocation_ready(
     request: SqlAllocationRequest<'_>,
     allocation: ResourceAllocationRecord,
 ) -> Result<(), DaemonError> {
-    if allocation.status != ResourceAllocationStatus::Desired {
-        return Ok(());
-    }
-
     let allocation_context = SqlAllocationContext {
         database: allocation.generated_name,
         host: request.context.host.clone(),
@@ -215,13 +211,29 @@ fn mark_database_allocation_ready(
         username: request.context.username.clone(),
         password: request.context.password.clone(),
     };
-    database.mark_resource_allocation_ready(
-        request.project_id,
-        request.resource_name,
-        request.track,
-        request.allocation_name,
-        &sql_allocation_env(&allocation_context, request.engine),
-    )?;
+    let env = sql_allocation_env(&allocation_context, request.engine);
+
+    match allocation.status {
+        ResourceAllocationStatus::Desired => {
+            database.mark_resource_allocation_ready(
+                request.project_id,
+                request.resource_name,
+                request.track,
+                request.allocation_name,
+                &env,
+            )?;
+        }
+        ResourceAllocationStatus::Ready if allocation.env != env => {
+            database.record_resource_allocation_env_context(
+                request.project_id,
+                request.resource_name,
+                request.track,
+                request.allocation_name,
+                &env,
+            )?;
+        }
+        _ => {}
+    }
 
     Ok(())
 }
@@ -234,13 +246,15 @@ fn mysql_options(context: &SqlAdminContext) -> MySqlConnectOptions {
         .password(&context.password)
 }
 
-fn postgres_options(context: &SqlAdminContext) -> PgConnectOptions {
+pub(crate) fn postgres_options(context: &SqlAdminContext) -> PgConnectOptions {
     PgConnectOptions::new()
         .host(&context.host)
         .port(context.port)
         .username(&context.username)
         .password(&context.password)
         .database("postgres")
+        .ssl_mode(PgSslMode::Disable)
+        .application_name("pv")
 }
 
 fn sql_resource_url(context: &SqlAdminContext, engine: SqlEngine) -> String {
