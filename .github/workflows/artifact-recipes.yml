@@ -20,12 +20,12 @@ on:
       track:
         description: "Track to build: all; PHP/all supports 8.2, 8.3, 8.4; resource tracks: composer 2, redis 8.2, mysql 8.4, postgres 18, mailpit 1, rustfs 1"
         required: true
-        default: "all"
+        default: "8.4"
         type: string
       platform:
         description: "Artifact platform: all, darwin-arm64, darwin-amd64"
         required: true
-        default: "all"
+        default: "darwin-arm64"
         type: choice
         options:
           - all
@@ -39,7 +39,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(inputs.platform == 'all' && inputs.resource != 'composer' && '["darwin-arm64","darwin-amd64"]' || inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+        # StaticPHP v3 currently fails the FrankenPHP macOS Intel link step, and
+        # PHP 8.3 patching is unstable. Keep the default publication proof on the
+        # known-good arm64/PHP 8.4 lane; explicit darwin-amd64 dispatch remains
+        # available only for diagnostics until upstream v3 is fixed.
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
       - name: Checkout
