@@ -23,14 +23,9 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "error": String("Managed Resource runtime `mysql` is not supported yet"),
             "job_id": String("job_000001"),
-            "message": String("Project env unchanged; no mappings configured"),
-            "type": String("progress"),
-        },
-        Object {
-            "job_id": String("job_000001"),
-            "summary": String("Project env unchanged; no mappings configured"),
-            "type": String("job_completed"),
+            "type": String("job_failed"),
         },
     ],
     None,
@@ -47,9 +42,9 @@ expression: snapshot
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
-            status: Rendered,
+            status: Failed,
             message: Some(
-                "no Project env mappings configured",
+                "Managed Resource runtime `mysql` is not supported yet",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -59,14 +54,14 @@ expression: snapshot
         id: "job_000001",
         kind: "reconcile",
         scope: "project:<project_id>",
-        status: Succeeded,
+        status: Failed,
         started_at: "<timestamp>",
         finished_at: Some(
             "<timestamp>",
         ),
-        summary: Some(
-            "Project env unchanged; no mappings configured",
+        summary: None,
+        error: Some(
+            "Managed Resource runtime `mysql` is not supported yet",
         ),
-        error: None,
     },
 )

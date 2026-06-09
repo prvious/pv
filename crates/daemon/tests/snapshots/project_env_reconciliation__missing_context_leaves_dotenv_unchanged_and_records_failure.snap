@@ -23,7 +23,7 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Project config error: missing Project env context for resource `mysql`"),
+            "error": String("Managed Resource runtime `mysql` is not supported yet"),
             "job_id": String("job_000001"),
             "type": String("job_failed"),
         },
@@ -34,7 +34,7 @@ expression: snapshot
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Project config error: missing Project env context for resource `mysql`",
+                "Managed Resource runtime `mysql` is not supported yet",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -51,7 +51,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Project config error: missing Project env context for resource `mysql`",
+            "Managed Resource runtime `mysql` is not supported yet",
         ),
     },
 )

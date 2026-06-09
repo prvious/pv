@@ -1,0 +1,54 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(legacy_mysql_rows, assigned_smtp, assigned_dashboard,\ndatabase.assigned_ports()?,)"
+---
+(
+    1,
+    PortAssignment {
+        owner: Resource {
+            name: "mailpit",
+            track: "1.0",
+            port: "smtp",
+        },
+        port: 1025,
+        updated_at: "<timestamp>",
+    },
+    PortAssignment {
+        owner: Resource {
+            name: "mailpit",
+            track: "1.0",
+            port: "dashboard",
+        },
+        port: 8025,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "dashboard",
+            },
+            port: 8025,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: 1025,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mysql",
+                track: "8.0",
+                port: "default",
+            },
+            port: 3307,
+            updated_at: "<timestamp>",
+        },
+    ],
+)

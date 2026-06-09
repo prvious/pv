@@ -96,6 +96,30 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         paths.worker_runtime_metadata("8.4").as_str(),
         "/Users/alice/.pv/run/workers/php-8.4.json"
     );
+    assert_eq!(
+        paths.resource_runtime_config("mailpit", "1.0").as_str(),
+        "/Users/alice/.pv/config/resources/mailpit/1.0.json"
+    );
+    assert_eq!(
+        paths.resource_log("mailpit", "1.0").as_str(),
+        "/Users/alice/.pv/logs/resources/mailpit/1.0.log"
+    );
+    assert_eq!(
+        paths.resource_pid("mailpit", "1.0").as_str(),
+        "/Users/alice/.pv/run/resources/mailpit/1.0.pid"
+    );
+    assert_eq!(
+        paths.resource_runtime_metadata("mailpit", "1.0").as_str(),
+        "/Users/alice/.pv/run/resources/mailpit/1.0.json"
+    );
+    assert_eq!(
+        paths.resource_data_dir("mailpit", "1.0").as_str(),
+        "/Users/alice/.pv/resources/mailpit/1.0/data"
+    );
+    assert_ne!(
+        paths.resource_log("a-b", "c"),
+        paths.resource_log("a", "b-c")
+    );
 }
 
 #[test]
@@ -1548,6 +1572,14 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
         RuntimeObservedStatus::Failed,
         Some("readiness timed out"),
     )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "mailpit".to_string(),
+            track: "1.0".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("mailpit is ready"),
+    )?;
     let updated_gateway = database.record_runtime_observed_snapshot(
         RuntimeSubject::Gateway,
         RuntimeObservedStatus::Degraded,
@@ -2266,6 +2298,7 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
     let released_mysql = database.release_port(PortOwner::Resource {
         name: "mysql".to_string(),
         track: "8.4".to_string(),
+        port: "default".to_string(),
     })?;
     let reassigned_mysql = database.assign_port(mysql, |port| port != 3306)?;
 
@@ -2276,6 +2309,91 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
             assigned_redis,
             released_mysql,
             reassigned_mysql,
+            database.assigned_ports()?,
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn resource_port_allocator_distinguishes_named_ports_for_one_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let smtp = PortRequest::resource_port("mailpit", "1.0", "smtp", 1025, 45000, 45009);
+    let dashboard = PortRequest::resource_port("mailpit", "1.0", "dashboard", 8025, 45000, 45009);
+
+    let assigned_smtp = database.assign_port(smtp.clone(), |_port| true)?;
+    let assigned_dashboard = database.assign_port(dashboard.clone(), |_port| true)?;
+    let reused_smtp = database.assign_port(smtp, |_port| true)?;
+    let released_dashboard = database.release_port(PortOwner::Resource {
+        name: "mailpit".to_string(),
+        track: "1.0".to_string(),
+        port: "dashboard".to_string(),
+    })?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            assigned_smtp,
+            assigned_dashboard,
+            reused_smtp,
+            released_dashboard,
+            database.assigned_ports()?,
+        ));
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn legacy_port_insert_contract_survives_named_resource_port_migration() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
+                port = excluded.port,
+                updated_at = excluded.updated_at",
+            params!["resource", "mysql", "8.0", 3306, "2026-06-08T00:00:00Z"],
+        )?;
+        transaction.execute(
+            "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
+                port = excluded.port,
+                updated_at = excluded.updated_at",
+            params!["resource", "mysql", "8.0", 3307, "2026-06-08T00:00:01Z"],
+        )?;
+
+        Ok(())
+    })?;
+
+    let smtp = PortRequest::resource_port("mailpit", "1.0", "smtp", 1025, 45000, 45009);
+    let dashboard = PortRequest::resource_port("mailpit", "1.0", "dashboard", 8025, 45000, 45009);
+    let assigned_smtp = database.assign_port(smtp, |_port| true)?;
+    let assigned_dashboard = database.assign_port(dashboard, |_port| true)?;
+    let legacy_mysql_rows = state::testing::query_i64(
+        &database,
+        "SELECT COUNT(*)
+        FROM ports
+        WHERE owner_kind = 'resource'
+        AND owner_id = 'mysql'
+        AND owner_track = '8.0'
+        AND port = 3307",
+    )?;
+
+    with_normalized_timestamps(|| {
+        assert_debug_snapshot!((
+            legacy_mysql_rows,
+            assigned_smtp,
+            assigned_dashboard,
             database.assigned_ports()?,
         ));
         Ok::<(), anyhow::Error>(())
@@ -2446,37 +2564,38 @@ fn port_allocator_keeps_owner_components_structured() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let mysql_debug = PortRequest::resource("mysql", "8.4:debug", 45000, 45000, 45009);
-    let mysql_track_resource = PortRequest::resource("mysql:8.4", "debug", 45000, 45000, 45009);
+    let mysql_debug = PortRequest::resource_port("mysql", "8.4", "debug", 45000, 45000, 45009);
+    let mysql_default =
+        PortRequest::resource_port("mysql", "8.4-debug", "default", 45000, 45000, 45009);
 
     let assigned_mysql_debug = database.assign_port(mysql_debug, |_port| true)?;
-    let assigned_mysql_track_resource = database.assign_port(mysql_track_resource, |_port| true)?;
+    let assigned_mysql_default = database.assign_port(mysql_default, |_port| true)?;
     let released_mysql_debug = database.release_port(PortOwner::Resource {
         name: "mysql".to_string(),
-        track: "8.4:debug".to_string(),
+        track: "8.4".to_string(),
+        port: "debug".to_string(),
     })?;
 
     assert_eq!(
         assigned_mysql_debug.owner,
         PortOwner::Resource {
             name: "mysql".to_string(),
-            track: "8.4:debug".to_string(),
+            track: "8.4".to_string(),
+            port: "debug".to_string(),
         }
     );
     assert_eq!(assigned_mysql_debug.port, 45000);
     assert_eq!(
-        assigned_mysql_track_resource.owner,
+        assigned_mysql_default.owner,
         PortOwner::Resource {
-            name: "mysql:8.4".to_string(),
-            track: "debug".to_string(),
+            name: "mysql".to_string(),
+            track: "8.4-debug".to_string(),
+            port: "default".to_string(),
         }
     );
-    assert_eq!(assigned_mysql_track_resource.port, 45001);
+    assert_eq!(assigned_mysql_default.port, 45001);
     assert!(released_mysql_debug);
-    assert_eq!(
-        database.assigned_ports()?,
-        vec![assigned_mysql_track_resource]
-    );
+    assert_eq!(database.assigned_ports()?, vec![assigned_mysql_default]);
 
     Ok(())
 }

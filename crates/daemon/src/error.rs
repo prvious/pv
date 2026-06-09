@@ -4,7 +4,7 @@ use config::ConfigError;
 use hickory_proto::ProtoError;
 use hickory_proto::serialize::binary::DecodeError;
 use protocol::ProtocolError;
-use resources::ResourcesError;
+use resources::{ManagedResourceCommandError, ResourcesError};
 use serde_json::Error as JsonError;
 use state::StateError;
 use thiserror::Error;
@@ -63,6 +63,9 @@ pub enum DaemonError {
     #[error("Managed Resource error: {0}")]
     Resources(#[from] ResourcesError),
 
+    #[error("Managed Resource command failed: {0}")]
+    ManagedResourceCommand(#[from] ManagedResourceCommandError),
+
     #[error("daemon task failed: {0}")]
     Task(#[from] JoinError),
 
@@ -74,6 +77,38 @@ pub enum DaemonError {
         check: String,
         timeout_ms: u128,
         last_error: Option<String>,
+    },
+
+    #[error("Managed Resource runtime `{resource}` is not supported yet")]
+    UnsupportedManagedResourceRuntime { resource: String },
+
+    #[error(
+        "Managed Resource runtime `{name}` is listening but no PV-owned process could be verified"
+    )]
+    NonPvManagedResourceRuntimeListener { name: String },
+
+    #[error(
+        "Managed Resource runtime `{resource}` track `{track}` is missing installed artifact path"
+    )]
+    ManagedResourceArtifactMissing { resource: String, track: String },
+
+    #[error("Managed Resource runtime `{resource}` track `{track}` is marked removed")]
+    ManagedResourceTrackRemoved { resource: String, track: String },
+
+    #[error("Managed Resource runtime `{resource}` track `{track}` is missing port `{port}`")]
+    ManagedResourcePortMissing {
+        resource: String,
+        track: String,
+        port: String,
+    },
+
+    #[error(
+        "Managed Resource runtime `{resource}` track `{track}` uses reserved port name `{port}`"
+    )]
+    ManagedResourcePortNameReserved {
+        resource: String,
+        track: String,
+        port: String,
     },
 
     #[error("time formatting failed: {0}")]

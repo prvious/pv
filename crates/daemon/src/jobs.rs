@@ -1,6 +1,7 @@
 use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
+use crate::managed_resources::reconcile_system_resources;
 use crate::project_env::reconcile_project_env;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -207,14 +208,18 @@ fn abandon_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<(), Daemo
     Ok(())
 }
 
-fn complete_stub_reconciliation(
+async fn complete_managed_resource_reconciliation(
     paths: &PvPaths,
     job_id: &str,
-) -> Result<&'static str, DaemonError> {
+    name: &crate::reconciliation::ReconciliationScopeComponent,
+    track: &crate::reconciliation::ReconciliationScopeComponent,
+) -> Result<String, DaemonError> {
+    let project_report = reconcile_system_projects(paths).await?;
+    let summary =
+        managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut database = Database::open(paths)?;
-    let summary = "stub job completed";
 
-    database.complete_job(job_id, summary)?;
+    database.complete_job(job_id, &summary)?;
 
     Ok(summary)
 }
@@ -229,8 +234,8 @@ async fn complete_reconciliation_job(
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             complete_gateway_reconciliation(paths, job_id).await
         }
-        ReconciliationScope::Resource { .. } => {
-            complete_stub_reconciliation(paths, job_id).map(str::to_string)
+        ReconciliationScope::Resource { name, track } => {
+            complete_managed_resource_reconciliation(paths, job_id, name, track).await
         }
         ReconciliationScope::Project { id } => {
             complete_project_reconciliation(paths, job_id, id).await
@@ -262,7 +267,8 @@ async fn complete_system_reconciliation(
     paths: &PvPaths,
     job_id: &str,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects(paths)?;
+    let project_report = reconcile_system_projects(paths).await?;
+    reconcile_system_resources(paths).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let mut database = Database::open(paths)?;
@@ -277,7 +283,7 @@ async fn complete_project_reconciliation(
     job_id: &str,
     id: &crate::reconciliation::ReconciliationScopeComponent,
 ) -> Result<String, DaemonError> {
-    let project_env_summary = reconcile_project_env(paths, id.as_str())?;
+    let project_env_summary = reconcile_project_env(paths, id.as_str()).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
@@ -299,7 +305,7 @@ struct SystemProjectReconciliationReport {
     failures: Vec<String>,
 }
 
-fn reconcile_system_projects(
+async fn reconcile_system_projects(
     paths: &PvPaths,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let projects = linked_projects(paths)?;
@@ -309,7 +315,7 @@ fn reconcile_system_projects(
     };
 
     for project in projects {
-        match reconcile_project_env(paths, &project.id) {
+        match reconcile_project_env(paths, &project.id).await {
             Ok(summary) => {
                 report.succeeded += 1;
                 report.summaries.push(summary.as_str().to_owned());
@@ -370,11 +376,24 @@ fn system_project_summary(report: &SystemProjectReconciliationReport) -> Option<
     ))
 }
 
+fn managed_resource_reconciliation_summary(
+    resource_name: &str,
+    track: &str,
+    project_report: &SystemProjectReconciliationReport,
+) -> String {
+    let Some(project_summary) = system_project_summary(project_report) else {
+        return format!(
+            "Managed Resource {resource_name} track {track} standalone reconciliation deferred"
+        );
+    };
+
+    format!(
+        "Managed Resource {resource_name} track {track} standalone reconciliation deferred; {project_summary}"
+    )
+}
+
 fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
     match scope {
-        ReconciliationScope::Resource { name, .. } if !gateway_runtime_resource(name.as_str()) => {
-            "stub job completed without reconciliation work".to_string()
-        }
         ReconciliationScope::System
         | ReconciliationScope::Resource { .. }
         | ReconciliationScope::Project { .. } => summary.to_string(),
@@ -388,7 +407,7 @@ fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             "Gateway runtime reconciliation started"
         }
-        ReconciliationScope::Resource { .. } => "stub job started",
+        ReconciliationScope::Resource { .. } => "Managed Resource runtime reconciliation started",
     }
 }
 

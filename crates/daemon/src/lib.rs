@@ -5,6 +5,7 @@ pub mod gateway;
 pub mod gateway_config;
 mod ipc;
 mod jobs;
+mod managed_resources;
 mod project_env;
 mod reconciliation;
 mod server;

@@ -1,0 +1,28 @@
+---
+source: crates/cli/src/commands/artifact_resource.rs
+expression: "(RunOutput::from_stdout(exit_code, stdout)?,\nresource_record_snapshot(&record, tempdir.path())?,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Refusing to prune Redis track 7.2 without an interactive confirmation.\nRerun with `pv redis:uninstall 7.2 --prune --force` to prune non-interactively.\n",
+    },
+    ResourceRecordSnapshot {
+        resource_name: "redis",
+        track: "7.2",
+        desired_state: "Installed",
+        installed_version: Some(
+            "7.2.5-pv1",
+        ),
+        current_artifact_path: Some(
+            "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+        ),
+        usage_count: 0,
+        removal_prune: false,
+        removal_force: false,
+    },
+)

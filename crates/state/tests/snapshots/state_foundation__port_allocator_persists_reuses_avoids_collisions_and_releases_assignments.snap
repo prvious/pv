@@ -1,6 +1,5 @@
 ---
 source: crates/state/tests/state_foundation.rs
-assertion_line: 500
 expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nreassigned_mysql, database.assigned_ports()?,)"
 ---
 (
@@ -8,6 +7,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
         owner: Resource {
             name: "mysql",
             track: "8.4",
+            port: "default",
         },
         port: 45000,
         updated_at: "<timestamp>",
@@ -16,6 +16,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
         owner: Resource {
             name: "mysql",
             track: "8.4",
+            port: "default",
         },
         port: 45000,
         updated_at: "<timestamp>",
@@ -24,6 +25,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
         owner: Resource {
             name: "redis",
             track: "8.6",
+            port: "default",
         },
         port: 45001,
         updated_at: "<timestamp>",
@@ -33,6 +35,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
         owner: Resource {
             name: "mysql",
             track: "8.4",
+            port: "default",
         },
         port: 45000,
         updated_at: "<timestamp>",
@@ -42,6 +45,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
             owner: Resource {
                 name: "mysql",
                 track: "8.4",
+                port: "default",
             },
             port: 45000,
             updated_at: "<timestamp>",
@@ -50,6 +54,7 @@ expression: "(assigned_mysql, reused_mysql, assigned_redis, released_mysql,\nrea
             owner: Resource {
                 name: "redis",
                 track: "8.6",
+                port: "default",
             },
             port: 45001,
             updated_at: "<timestamp>",

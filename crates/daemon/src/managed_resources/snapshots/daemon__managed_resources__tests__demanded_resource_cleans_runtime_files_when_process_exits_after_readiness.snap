@@ -1,0 +1,57 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Err(\n    UnexpectedProtocolResponse {\n        reason: \"runtime `mailpit-1.0` exited before readiness was verified\",\n    },\n)",
+    None,
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "dashboard",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Failed,
+            message: Some(
+                "daemon protocol error: runtime `mailpit-1.0` exited before readiness was verified",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    RuntimeFilePresence {
+        pid: false,
+        metadata: false,
+        config: false,
+    },
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Failed,
+            message: Some(
+                "daemon protocol error: runtime `mailpit-1.0` exited before readiness was verified",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
+)
