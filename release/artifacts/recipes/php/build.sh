@@ -158,6 +158,19 @@ validate_macho_runtime_paths() {
   done
 }
 
+delete_known_stale_macho_rpaths() {
+  binary=$1
+
+  macho_rpaths "$binary" | while IFS= read -r macho_rpath; do
+    case "$macho_rpath" in
+      /usr/local/lib)
+        need install_name_tool
+        install_name_tool -delete_rpath "$macho_rpath" "$binary"
+        ;;
+    esac
+  done
+}
+
 validate_macho_binary() {
   binary=$1
   expected_arch=$(expected_arch_for_platform "$PV_PLATFORM")
@@ -263,6 +276,7 @@ stage_artifact() {
   mkdir -p "$root_dir/bin"
   cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
   [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
+  delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
   validate_macho_binary "$root_dir/bin/$binary_name"
 
   cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"

@@ -268,6 +268,14 @@ jobs:
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
 
+      - name: Upload StaticPHP failure logs
+        if: ${{ failure() && (inputs.resource == 'all' || inputs.resource == 'php') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-staticphp-logs-${{ matrix.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-artifacts/work/**/staticphp/log/*.log
+          if-no-files-found: ignore
+
       - name: Generate manifest from records
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}

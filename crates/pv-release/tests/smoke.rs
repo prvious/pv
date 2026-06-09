@@ -1264,6 +1264,27 @@ fn php_pair_build_smoke_rejects_runner_rpath_on_frankenphp_binary() -> Result<()
 }
 
 #[test]
+fn php_pair_build_smoke_removes_unmanaged_frankenphp_rpath_before_validation() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        frankenphp_macho_rpaths: "@loader_path/../lib\n/usr/local/lib",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(run.deleted_rpath_log, "/usr/local/lib\n");
+    assert!(
+        run.frankenphp_archive_exists,
+        "FrankenPHP archive should be written after the unmanaged rpath is removed"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_accepts_system_and_relative_macho_runtime_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         macho_libraries: "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2503.1.0)\n\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@loader_path/../lib/libz.dylib (compatibility version 1.0.0, current version 1.3.1)",
@@ -1294,6 +1315,7 @@ struct BuildRecipeRun {
     spc_log: String,
     curl_log: String,
     validate_log: String,
+    deleted_rpath_log: String,
     php_archive_exists: bool,
     frankenphp_archive_exists: bool,
 }
@@ -1772,16 +1794,23 @@ fn run_php_build_recipe_smoke_with_options(
     let curl_log = tempdir.path().join("curl.log");
     let spc_log = tempdir.path().join("spc.log");
     let validate_log = tempdir.path().join("validate.log");
+    let deleted_rpath_log = tempdir.path().join("deleted-rpaths.log");
+    let install_name_log = tempdir.path().join("install-name.log");
+    let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "frankenphp-source")?;
     write_source_archive(&php_source_archive, "php-source")?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
+    write_file(&deleted_rpath_log, "")?;
+    write_file(&install_name_log, "")?;
+    write_file(&removed_rpaths_log, "")?;
     write_file(&spc_log, "")?;
     write_file(&validate_log, "")?;
 
@@ -1809,11 +1838,14 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_MACHO_MINOS", options.macho_minos)
         .env("PV_TEST_MACHO_RPATHS", options.macho_rpaths)
         .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
+        .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
         .env("PV_TEST_PHP_SOURCE_ARCHIVE", &php_source_archive)
         .env(
             "PV_TEST_PHP_SOURCE_SHA256",
             file_sha256(&php_source_archive)?,
         )
+        .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
         .env(
@@ -1869,6 +1901,7 @@ fn run_php_build_recipe_smoke_with_options(
         spc_log: read_file(&spc_log)?,
         curl_log: read_file(&curl_log)?,
         validate_log: read_file(&validate_log)?,
+        deleted_rpath_log: read_file(&deleted_rpath_log)?,
         php_archive_exists: path_exists(&php_archive),
         frankenphp_archive_exists: path_exists(&frankenphp_archive),
     })
@@ -2781,6 +2814,10 @@ EOF
     if [ -n "$macho_rpaths" ]; then
       load_command=2
       printf '%s\n' "$macho_rpaths" | while IFS= read -r macho_rpath; do
+        if [ -n "${PV_TEST_REMOVED_RPATHS_LOG:-}" ] \
+          && grep -Fqx "$binary|$macho_rpath" "$PV_TEST_REMOVED_RPATHS_LOG"; then
+          continue
+        fi
         cat <<EOF
 Load command $load_command
           cmd LC_RPATH
@@ -2951,6 +2988,11 @@ for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_INSTALL_NAME_LOG"
 done
 printf '\n' >>"$PV_TEST_INSTALL_NAME_LOG"
+
+if [ "${1:-}" = "-delete_rpath" ]; then
+  printf '%s\n' "${2:-}" >>"$PV_TEST_DELETED_RPATH_LOG"
+  printf '%s|%s\n' "${3:-}" "${2:-}" >>"$PV_TEST_REMOVED_RPATHS_LOG"
+fi
 "#,
     )
 }
