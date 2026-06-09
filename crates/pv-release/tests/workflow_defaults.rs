@@ -7,11 +7,12 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(".github/workflows/artifact-recipes.yml"))?;
     let summary = format!(
-        "track_default={}\nplatform_default={}\nplatform_matrix={}\nstaticphp_comment_present={}",
+        "track_default={}\nplatform_default={}\nplatform_matrix={}\nstaticphp_comment_present={}\nstaticphp_work_cleanup_restores_write_permission={}",
         input_default(&workflow, "track").unwrap_or(""),
         input_default(&workflow, "platform").unwrap_or(""),
         platform_matrix(&workflow).unwrap_or(""),
         workflow.contains("StaticPHP v3"),
+        workflow.contains("chmod -R u+w \"$PV_ARTIFACT_OUT_DIR/work\""),
     );
 
     assert_snapshot!(summary, @r###"
@@ -19,6 +20,7 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     platform_default=darwin-arm64
     platform_matrix=platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
     staticphp_comment_present=true
+    staticphp_work_cleanup_restores_write_permission=true
     "###);
 
     Ok(())

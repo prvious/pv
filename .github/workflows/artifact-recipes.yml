@@ -270,6 +270,11 @@ jobs:
               release/artifacts/recipes/rustfs/build.sh
           fi
 
+          # StaticPHP's Go module cache can leave read-only files under work/.
+          # Restore user write permission before pruning non-uploaded build scratch.
+          if [ -d "$PV_ARTIFACT_OUT_DIR/work" ]; then
+            chmod -R u+w "$PV_ARTIFACT_OUT_DIR/work"
+          fi
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
 
       - name: Upload StaticPHP failure logs
