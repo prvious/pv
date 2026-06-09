@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use resources::{ResourceName, RuntimeArtifactAdapter};
 use state::{EnvContextValues, PvPaths};
 
 use crate::managed_resources::{
-    ManagedResourceArtifactAdapter, ManagedResourcePortSpec, ManagedResourceReadiness,
-    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
+    ManagedResourcePortSpec, ManagedResourceReadiness, ManagedResourceRuntimeAdapter,
+    ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
 use crate::{DaemonError, ProcessSpec, ReadinessCheck};
 
@@ -22,7 +23,7 @@ const FAKE_MAILPIT_PORTS: &[ManagedResourcePortSpec] = &[
 
 #[derive(Clone, Debug)]
 pub(crate) struct FakeMailpitRuntimeAdapter {
-    artifact_adapter: ManagedResourceArtifactAdapter,
+    artifact_adapter: RuntimeArtifactAdapter,
     readiness: FakeMailpitReadiness,
 }
 
@@ -36,20 +37,20 @@ enum FakeMailpitReadiness {
 impl FakeMailpitRuntimeAdapter {
     pub(crate) fn new() -> Result<Self, DaemonError> {
         Ok(Self {
-            artifact_adapter: ManagedResourceArtifactAdapter::new(
-                "mailpit",
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
-            )?,
+            ),
             readiness: FakeMailpitReadiness::Smtp,
         })
     }
 
     pub(crate) fn unready() -> Result<Self, DaemonError> {
         Ok(Self {
-            artifact_adapter: ManagedResourceArtifactAdapter::new(
-                "mailpit",
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
-            )?,
+            ),
             readiness: FakeMailpitReadiness::UnservedDashboardPort {
                 timeout: Duration::from_millis(100),
             },
@@ -58,10 +59,10 @@ impl FakeMailpitRuntimeAdapter {
 
     pub(crate) fn exits_after_readiness() -> Result<Self, DaemonError> {
         Ok(Self {
-            artifact_adapter: ManagedResourceArtifactAdapter::new(
-                "mailpit",
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
-            )?,
+            ),
             readiness: FakeMailpitReadiness::ExitAfterDashboardReadiness,
         })
     }
@@ -72,7 +73,7 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
         "mailpit"
     }
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError> {
+    fn artifact_adapter(&self) -> Result<RuntimeArtifactAdapter, DaemonError> {
         Ok(self.artifact_adapter.clone())
     }
 

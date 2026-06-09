@@ -6,8 +6,8 @@ use state::{
 };
 
 use crate::managed_resources::{
-    ManagedResourceArtifactAdapter, ManagedResourcePortSpec, ManagedResourceReadiness,
-    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
+    ManagedResourcePortSpec, ManagedResourceReadiness, ManagedResourceRuntimeAdapter,
+    ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
 use crate::{DaemonError, ProcessSpec, ReadinessCheck};
 
@@ -30,8 +30,8 @@ impl ManagedResourceRuntimeAdapter for RedisRuntimeAdapter {
         "redis"
     }
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError> {
-        ManagedResourceArtifactAdapter::new("redis", "bin/redis-server")
+    fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError> {
+        resources::redis_adapter().map_err(Into::into)
     }
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec] {

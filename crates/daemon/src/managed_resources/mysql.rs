@@ -14,9 +14,9 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use super::{
-    ManagedResourceAllocationFuture, ManagedResourceArtifactAdapter, ManagedResourcePortSpec,
-    ManagedResourcePreparationFuture, ManagedResourceReadiness, ManagedResourceReadinessFuture,
-    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST, sql,
+    ManagedResourceAllocationFuture, ManagedResourcePortSpec, ManagedResourcePreparationFuture,
+    ManagedResourceReadiness, ManagedResourceReadinessFuture, ManagedResourceRuntimeAdapter,
+    ManagedResourceRuntimeContext, RESOURCE_HOST, sql,
 };
 #[cfg(test)]
 use super::{
@@ -105,8 +105,8 @@ impl ManagedResourceRuntimeAdapter for MysqlRuntimeAdapter {
         RESOURCE_NAME
     }
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError> {
-        ManagedResourceArtifactAdapter::new(RESOURCE_NAME, "bin/mysqld")
+    fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError> {
+        resources::mysql_adapter().map_err(Into::into)
     }
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec] {

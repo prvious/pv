@@ -15,7 +15,11 @@ expression: snapshot
         current_artifact_path: Some(
             "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
         ),
-        env: {},
+        env: {
+            "dashboard_url": "http://127.0.0.1:<dashboard_port>",
+            "smtp_host": "127.0.0.1",
+            "smtp_port": "<smtp_port>",
+        },
         usage_count: 1,
         removal_prune: false,
         removal_force: false,

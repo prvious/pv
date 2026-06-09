@@ -17,11 +17,8 @@ use std::net::TcpListener;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use camino::{Utf8Path, Utf8PathBuf};
-use resources::{
-    ManagedResourceCommands, ResourceAdapter, ResourceName, ResourcesError, TrackName,
-    TrackSelector,
-};
+use camino::Utf8Path;
+use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     PortRequest, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
@@ -90,50 +87,10 @@ impl From<ReadinessCheck> for ManagedResourceReadiness {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ManagedResourceArtifactAdapter {
-    resource_name: ResourceName,
-    executable_relative_path: Utf8PathBuf,
-}
-
-impl ManagedResourceArtifactAdapter {
-    pub(crate) fn new(
-        resource_name: &str,
-        executable_relative_path: impl Into<Utf8PathBuf>,
-    ) -> Result<Self, DaemonError> {
-        Ok(Self {
-            resource_name: ResourceName::new(resource_name)?,
-            executable_relative_path: executable_relative_path.into(),
-        })
-    }
-
-    pub(crate) fn executable_path(&self, release: &Utf8Path) -> Utf8PathBuf {
-        release.join(&self.executable_relative_path)
-    }
-}
-
-impl ResourceAdapter for ManagedResourceArtifactAdapter {
-    fn resource_name(&self) -> &ResourceName {
-        &self.resource_name
-    }
-
-    fn validate_installation(&self, root: &Utf8Path) -> resources::Result<()> {
-        let executable_path = self.executable_path(root);
-        if path_is_file(&executable_path)? {
-            return Ok(());
-        }
-
-        Err(ResourcesError::InvalidArtifactLayout {
-            resource: self.resource_name.as_str().to_string(),
-            reason: format!("missing executable `{}`", self.executable_relative_path),
-        })
-    }
-}
-
 pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
     fn resource_name(&self) -> &'static str;
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError>;
+    fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError>;
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec];
 
@@ -409,6 +366,11 @@ struct ResourceRuntimeAttempt<'a> {
 impl ResourceRuntimeAttempt<'_> {
     async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
         let env = self.adapter.resource_env(context)?;
+        self.database.record_managed_resource_track_env_context(
+            &self.resource.resource_name,
+            &self.resource.track,
+            &env,
+        )?;
         let context = ManagedResourceRuntimeContext {
             env: env.clone(),
             ..context.clone()
@@ -420,11 +382,6 @@ impl ResourceRuntimeAttempt<'_> {
 
         start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
-        self.database.record_managed_resource_track_env_context(
-            &self.resource.resource_name,
-            &self.resource.track,
-            &env,
-        )?;
         let allocations =
             desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
@@ -521,7 +478,7 @@ fn installed_track(
 fn install_missing_track_blocking(
     paths: PvPaths,
     install_options: ManagedResourceInstallOptions,
-    adapter: ManagedResourceArtifactAdapter,
+    adapter: resources::RuntimeArtifactAdapter,
     resource_name: String,
     track: String,
 ) -> Result<(), DaemonError> {
@@ -872,21 +829,6 @@ fn delete_optional_file(path: &Utf8Path) -> Result<(), DaemonError> {
 
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind((RESOURCE_HOST, port)).is_ok()
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Managed Resource artifact validation owns direct filesystem metadata checks"
-)]
-fn path_is_file(path: &Utf8Path) -> resources::Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file()),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(ResourcesError::Filesystem {
-            path: path.to_string(),
-            reason: source.to_string(),
-        }),
-    }
 }
 
 fn current_target_platform() -> resources::TargetPlatform {

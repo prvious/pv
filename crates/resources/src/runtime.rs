@@ -10,7 +10,10 @@ pub struct RuntimeArtifactAdapter {
 }
 
 impl RuntimeArtifactAdapter {
-    fn new(resource_name: ResourceName, executable_relative_path: impl Into<Utf8PathBuf>) -> Self {
+    pub fn new(
+        resource_name: ResourceName,
+        executable_relative_path: impl Into<Utf8PathBuf>,
+    ) -> Self {
         Self {
             resource_name,
             executable_relative_path: executable_relative_path.into(),

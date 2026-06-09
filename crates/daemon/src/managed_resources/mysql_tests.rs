@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use resources::RuntimeArtifactAdapter;
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
 use super::ManagedResourceRuntimeAdapter;
@@ -23,6 +24,16 @@ fn mysql_runtime_port_prefers_3306() -> Result<()> {
 
     assert_eq!(port.name, "mysql");
     assert_eq!(port.preferred_port, 3306);
+
+    Ok(())
+}
+
+#[test]
+fn mysql_runtime_uses_resources_artifact_adapter() -> Result<()> {
+    let adapter = super::mysql::MysqlRuntimeAdapter::new();
+    let artifact_adapter: RuntimeArtifactAdapter = adapter.artifact_adapter()?;
+
+    assert_eq!(artifact_adapter, resources::mysql_adapter()?);
 
     Ok(())
 }

@@ -1246,7 +1246,7 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 | command                      | what it does                                                                   |
 | ---------------------------- | ------------------------------------------------------------------------------ |
 | pv mysql:install [version]   | Install a MySQL track. Uses the manifest default track if omitted. |
-| pv mysql:uninstall <version> [--prune] | Uninstalls a mysql version.                                             |
+| pv mysql:uninstall <version> [--prune] [--force] | Uninstalls a mysql version.                                             |
 | pv mysql:update              | Update all installed MySQL tracks                                               |
 | pv mysql:list                | List installed MySQL tracks                                                     |
 
