@@ -36,10 +36,7 @@ impl PostgresRuntimeAdapter {
 
     #[cfg(test)]
     pub(crate) fn with_readiness_timeout(readiness_timeout: Duration) -> Self {
-        Self {
-            readiness_timeout,
-            ..Self::new()
-        }
+        Self { readiness_timeout }
     }
 }
 
