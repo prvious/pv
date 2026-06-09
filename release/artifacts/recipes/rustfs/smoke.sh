@@ -4,6 +4,8 @@ set -eu
 artifact_root=$1
 rustfs_binary="$artifact_root/bin/rustfs"
 expected_version=${PV_UPSTREAM_VERSION:-}
+pid=
+tmp_dir=
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -22,6 +24,49 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
+actual_rustfs_version() {
+  "$rustfs_binary" --version | awk '$1 == "rustfs" { print $2; exit }'
+}
+
+# Invoked by the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup() {
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  if [ -n "$tmp_dir" ]; then
+    rm -rf "$tmp_dir"
+  fi
+}
+
+wait_for_stop() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      pid=
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_rustfs() {
+  if ! kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "RustFS smoke failed: server exited before clean shutdown" >&2
+    exit 46
+  fi
+  kill "$pid" 2>/dev/null || {
+    printf '%s\n' "RustFS smoke failed: could not request server shutdown" >&2
+    exit 46
+  }
+  if ! wait_for_stop; then
+    printf '%s\n' "RustFS smoke failed: server did not stop cleanly" >&2
+    exit 46
+  fi
+}
+
 [ -x "$rustfs_binary" ] || {
   printf '%s\n' "missing executable bin/rustfs in $artifact_root" >&2
   exit 42
@@ -31,28 +76,35 @@ PY
   exit 42
 }
 
-need grep
+need awk
 need mktemp
 need python3
+need sleep
 
-"$rustfs_binary" --version | grep -F "rustfs $expected_version" >/dev/null
+actual_version=$(actual_rustfs_version)
+[ "$actual_version" = "$expected_version" ] || {
+  printf '%s\n' "RustFS version mismatch: expected $expected_version, got ${actual_version:-<unknown>}" >&2
+  exit 43
+}
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pv-rustfs-smoke.XXXXXX")
 data_dir="$tmp_dir/data"
 log_file="$tmp_dir/rustfs.log"
 api_port=$(available_port)
+console_port=$(available_port)
 access_key=pvsmokeaccess
 secret_key=pvsmokesecret1234567890
 bucket=pv-smoke-bucket
 mkdir -p "$data_dir"
+trap cleanup 0
 
 "$rustfs_binary" server \
   --address "127.0.0.1:$api_port" \
+  --console-address "127.0.0.1:$console_port" \
   --access-key "$access_key" \
   --secret-key "$secret_key" \
   "$data_dir" >"$log_file" 2>&1 &
 pid=$!
-trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$tmp_dir"' 0
 
 endpoint="http://127.0.0.1:$api_port"
 export PV_RUSTFS_SMOKE_ENDPOINT="$endpoint"
@@ -139,7 +191,7 @@ def request(method, path):
         return response.status, response.read()
 
 last_error = None
-for _ in range(30):
+for _ in range(20):
     try:
         status, _body = request("GET", "/")
         if 200 <= status < 300:
@@ -161,3 +213,5 @@ if not 200 <= status < 300 or bucket.encode("utf-8") not in body:
     print("RustFS list buckets did not include smoke bucket", file=sys.stderr)
     sys.exit(45)
 PY
+
+stop_rustfs

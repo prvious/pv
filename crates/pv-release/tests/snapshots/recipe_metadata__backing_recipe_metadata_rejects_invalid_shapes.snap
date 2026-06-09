@@ -1,6 +1,6 @@
 ---
 source: crates/pv-release/tests/recipe_metadata.rs
-expression: "(BackingRecipe::from_toml(Utf8Path::new(\"wrong-resource.toml\"),\nBackingRecipeKind::Redis, &wrong_resource,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-platform.toml\"),\nBackingRecipeKind::Redis, &missing_platform,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-default-track.toml\"),\nBackingRecipeKind::Redis, &missing_default_track,),\nBackingRecipe::from_toml(Utf8Path::new(\"empty-payload-paths.toml\"),\nBackingRecipeKind::Redis, &empty_payload_paths,),\nBackingRecipe::from_toml(Utf8Path::new(\"unsafe-payload-path.toml\"),\nBackingRecipeKind::Redis, &unsafe_payload_path,),\nBackingRecipe::from_toml(Utf8Path::new(\"insecure-source-url.toml\"),\nBackingRecipeKind::Redis, &insecure_source_url,),\nBackingRecipe::from_toml(Utf8Path::new(\"bad-source-sha256.toml\"),\nBackingRecipeKind::Redis, &bad_source_sha256,),)"
+expression: "(BackingRecipe::from_toml(Utf8Path::new(\"wrong-resource.toml\"),\nBackingRecipeKind::Redis, &wrong_resource,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-platform.toml\"),\nBackingRecipeKind::Redis, &missing_platform,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-default-track.toml\"),\nBackingRecipeKind::Redis, &missing_default_track,),\nBackingRecipe::from_toml(Utf8Path::new(\"empty-payload-paths.toml\"),\nBackingRecipeKind::Redis, &empty_payload_paths,),\nBackingRecipe::from_toml(Utf8Path::new(\"unsafe-payload-path.toml\"),\nBackingRecipeKind::Redis, &unsafe_payload_path,),\nBackingRecipe::from_toml(Utf8Path::new(\"insecure-source-url.toml\"),\nBackingRecipeKind::Redis, &insecure_source_url,),\nBackingRecipe::from_toml(Utf8Path::new(\"bad-source-sha256.toml\"),\nBackingRecipeKind::Redis, &bad_source_sha256,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-platform-source.toml\"),\nBackingRecipeKind::Mailpit, &missing_platform_source,),\nBackingRecipe::from_toml(Utf8Path::new(\"duplicate-platform-source.toml\"),\nBackingRecipeKind::Mailpit, &duplicate_platform_source,),\nBackingRecipe::from_toml(Utf8Path::new(\"unsupported-platform-source.toml\"),\nBackingRecipeKind::Mailpit, &unsupported_platform_source,),\nBackingRecipe::from_toml(Utf8Path::new(\"mixed-common-and-platform-sources.toml\"),\nBackingRecipeKind::Mailpit, &mixed_common_and_platform_sources,),)"
 ---
 (
     Err(
@@ -43,6 +43,30 @@ expression: "(BackingRecipe::from_toml(Utf8Path::new(\"wrong-resource.toml\"),\n
         InvalidRecipeMetadata {
             path: "bad-source-sha256.toml",
             reason: "invalid source_sha256: invalid sha256 `bad`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "missing-platform-source.toml",
+            reason: "missing source for platform `darwin-amd64`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "duplicate-platform-source.toml",
+            reason: "duplicate source for platform `darwin-arm64`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "unsupported-platform-source.toml",
+            reason: "sources.platform `any` is not listed in recipe.platforms",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "mixed-common-and-platform-sources.toml",
+            reason: "track-level source_url/source_sha256 cannot be combined with sources",
         },
     ),
 )

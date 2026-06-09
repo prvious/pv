@@ -389,14 +389,6 @@ impl BackingTrack {
         &self.upstream_version
     }
 
-    pub fn source_url(&self) -> &str {
-        &self.sources[0].source_url
-    }
-
-    pub fn source_sha256(&self) -> &Sha256Digest {
-        &self.sources[0].source_sha256
-    }
-
     pub fn source_for_platform(
         &self,
         path: &Utf8Path,

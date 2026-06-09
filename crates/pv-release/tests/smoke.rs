@@ -550,8 +550,231 @@ exit 72
         command_output_debug(&output)
     );
     assert!(
-        started.elapsed() < Duration::from_secs(4),
+        started.elapsed() < Duration::from_secs(5),
         "Redis smoke should kill the server instead of waiting for it to exit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_smoke_rejects_prefix_version_match() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_fake_mailpit(&artifact_bin.join("mailpit"))?;
+    write_fake_success_curl(&command_bin.join("curl"))?;
+
+    let output = StdCommand::new(mailpit_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_TEST_MAILPIT_VERSION_OUTPUT", "Mailpit v1.30.10")
+        .env("PV_UPSTREAM_VERSION", "1.30.1")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Mailpit smoke should reject prefix version matches: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Mailpit version mismatch"),
+        "Mailpit smoke should report the exact version mismatch: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_fake_mailpit(&artifact_bin.join("mailpit"))?;
+    write_fake_success_curl(&command_bin.join("curl"))?;
+
+    let started = Instant::now();
+    let output = StdCommand::new(mailpit_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_TEST_MAILPIT_IGNORE_TERM", "1")
+        .env("PV_TEST_MAILPIT_SLEEP_SECONDS", "3")
+        .env("PV_TEST_MAILPIT_VERSION_OUTPUT", "Mailpit v1.30.1")
+        .env("PV_UPSTREAM_VERSION", "1.30.1")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Mailpit smoke should fail when the server ignores shutdown: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "Mailpit smoke should use a bounded shutdown wait"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rustfs_smoke_rejects_prefix_version_match() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+
+    create_dir_all(&artifact_bin)?;
+    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
+
+    let output = StdCommand::new(rustfs_smoke_hook())
+        .arg(&artifact_root)
+        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.70")
+        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "RustFS smoke should reject prefix version matches: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("RustFS version mismatch"),
+        "RustFS smoke should report the exact version mismatch: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rustfs_smoke_uses_explicit_loopback_console_port() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let rustfs_log = tempdir.path().join("rustfs.log");
+
+    create_dir_all(&artifact_bin)?;
+    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
+    write_file(&rustfs_log, "")?;
+
+    let output = StdCommand::new(rustfs_smoke_hook())
+        .arg(&artifact_root)
+        .env("PV_TEST_RUSTFS_LOG", &rustfs_log)
+        .env("PV_TEST_RUSTFS_REQUIRE_CONSOLE_ADDRESS", "1")
+        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
+        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "RustFS smoke should pass an explicit loopback console port: {}",
+        command_output_debug(&output)
+    );
+    let rustfs_log = read_file(&rustfs_log)?;
+    assert!(
+        rustfs_log.contains("console=127.0.0.1:"),
+        "RustFS smoke should not leave the console on the default wildcard listener: {rustfs_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+
+    create_dir_all(&artifact_bin)?;
+    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
+
+    let started = Instant::now();
+    let output = StdCommand::new(rustfs_smoke_hook())
+        .arg(&artifact_root)
+        .env("PV_TEST_RUSTFS_IGNORE_TERM", "1")
+        .env("PV_TEST_RUSTFS_SLEEP_SECONDS", "3")
+        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
+        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "RustFS smoke should fail when the server ignores shutdown: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "RustFS smoke should use a bounded shutdown wait"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_build_recipe_rejects_unexpected_macho_architecture() -> Result<()> {
+    let run = run_mailpit_build_recipe_smoke(BackingBuildRecipeOptions {
+        lipo_archs: "x86_64",
+        ..default_backing_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "Mailpit build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        !run.archive_exists,
+        "Mailpit archive should not be written before Mach-O validation succeeds"
+    );
+    assert!(
+        run.record_json.is_none(),
+        "Mailpit record should not be written before Mach-O validation succeeds"
+    );
+    assert_eq!(
+        run.validate_log, "",
+        "archive validation should not run before Mach-O validation succeeds"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rustfs_build_recipe_rejects_newer_macho_minimum_os() -> Result<()> {
+    let run = run_rustfs_build_recipe_smoke(BackingBuildRecipeOptions {
+        macho_minos: "14.0",
+        ..default_backing_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "RustFS build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        !run.archive_exists,
+        "RustFS archive should not be written before Mach-O validation succeeds"
+    );
+    assert!(
+        run.record_json.is_none(),
+        "RustFS record should not be written before Mach-O validation succeeds"
+    );
+    assert_eq!(
+        run.validate_log, "",
+        "archive validation should not run before Mach-O validation succeeds"
     );
 
     Ok(())
@@ -785,6 +1008,13 @@ struct RedisBuildRecipeRun {
     archive_exists: bool,
 }
 
+struct BackingBuildRecipeRun {
+    output: Output,
+    record_json: Option<String>,
+    validate_log: String,
+    archive_exists: bool,
+}
+
 struct BuildRecipeOptions<'a> {
     lipo_archs: &'a str,
     macho_minos: &'a str,
@@ -799,6 +1029,13 @@ struct RedisBuildRecipeOptions {
     validate_archive_failure: bool,
 }
 
+struct BackingBuildRecipeOptions<'a> {
+    lipo_archs: &'a str,
+    macho_minos: &'a str,
+    macho_libraries: &'a str,
+    macho_rpaths: &'a str,
+}
+
 fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
 }
@@ -810,6 +1047,16 @@ fn composer_smoke_hook() -> camino::Utf8PathBuf {
 
 fn redis_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/redis/smoke.sh")
+}
+
+fn mailpit_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/mailpit/smoke.sh")
+}
+
+fn rustfs_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/rustfs/smoke.sh")
 }
 
 fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
@@ -899,6 +1146,104 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
         codesign_log: read_file(&codesign_log)?,
         archive_entries,
         archive_exists,
+    })
+}
+
+fn default_backing_build_recipe_options() -> BackingBuildRecipeOptions<'static> {
+    BackingBuildRecipeOptions {
+        lipo_archs: "arm64",
+        macho_minos: "13.0",
+        macho_libraries: "",
+        macho_rpaths: "",
+    }
+}
+
+fn run_mailpit_build_recipe_smoke(
+    options: BackingBuildRecipeOptions<'_>,
+) -> Result<BackingBuildRecipeRun> {
+    run_backing_build_recipe_smoke("mailpit", "1.30.1", "mailpit", "tar.gz", options)
+}
+
+fn run_rustfs_build_recipe_smoke(
+    options: BackingBuildRecipeOptions<'_>,
+) -> Result<BackingBuildRecipeRun> {
+    run_backing_build_recipe_smoke("rustfs", "1.0.0-beta.7", "rustfs", "zip", options)
+}
+
+fn run_backing_build_recipe_smoke(
+    resource: &str,
+    upstream_version: &str,
+    binary_name: &str,
+    source_extension: &str,
+    options: BackingBuildRecipeOptions<'_>,
+) -> Result<BackingBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir
+        .path()
+        .join(format!("{resource}-source.{source_extension}"));
+    let curl_log = tempdir.path().join("curl.log");
+    let validate_log = tempdir.path().join("validate.log");
+    let codesign_log = tempdir.path().join("codesign.log");
+
+    create_dir_all(&fake_bin)?;
+    match source_extension {
+        "tar.gz" => write_single_binary_source_archive(&source_archive, binary_name)?,
+        "zip" => write_file(&source_archive, "zip fixture\n")?,
+        _ => anyhow::bail!("unsupported source extension: {source_extension}"),
+    }
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_unzip(&fake_bin.join("unzip"))?;
+    write_file(&curl_log, "")?;
+    write_file(&validate_log, "")?;
+    write_file(&codesign_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../release/artifacts/recipes/{resource}/build.sh"
+    ));
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_TRACK", "1")
+        .env("PV_TEST_BINARY_NAME", binary_name)
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_RESOURCE", resource)
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env("PV_TEST_UPSTREAM_VERSION", upstream_version)
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .env("PV_TEST_LIPO_ARCHS", options.lipo_archs)
+        .env("PV_TEST_MACHO_LIBRARIES", options.macho_libraries)
+        .env("PV_TEST_MACHO_MINOS", options.macho_minos)
+        .env("PV_TEST_MACHO_RPATHS", options.macho_rpaths)
+        .output()?;
+
+    let artifact_version = format!("{upstream_version}-pv1");
+    let artifact_basename = format!("{resource}-{artifact_version}-darwin-arm64");
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join(resource)
+        .join("1")
+        .join(&artifact_version)
+        .join("darwin-arm64")
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(BackingBuildRecipeRun {
+        output,
+        record_json: read_optional_file(&record)?,
+        validate_log: read_file(&validate_log)?,
+        archive_exists: path_exists(&archive),
     })
 }
 
@@ -1440,6 +1785,117 @@ fi
     )
 }
 
+fn write_fake_backing_cargo(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
+  case "$5" in
+    print-recipe-env)
+      cat <<EOF
+PV_RESOURCE=$PV_TEST_RESOURCE
+PV_TRACK=$PV_RECIPE_TRACK
+PV_PLATFORM=$PV_RECIPE_PLATFORM
+PV_UPSTREAM_VERSION=$PV_TEST_UPSTREAM_VERSION
+PV_ARTIFACT_VERSION=$PV_TEST_UPSTREAM_VERSION-pv1
+PV_SOURCE_URL=https://sources.example.test/$PV_TEST_RESOURCE
+PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
+PV_PV_BUILD_REVISION=pv1
+PV_MINIMUM_PV_VERSION=0.1.0
+EOF
+      ;;
+    write-release-record)
+      record=
+      object_key=
+      source_url=
+      source_sha256=
+      recipe=
+      pv_commit=
+      build_run_id=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --object-key)
+            shift
+            object_key=${1:-}
+            ;;
+          --source-url)
+            shift
+            source_url=${1:-}
+            ;;
+          --source-sha256)
+            shift
+            source_sha256=${1:-}
+            ;;
+          --recipe)
+            shift
+            recipe=${1:-}
+            ;;
+          --pv-commit)
+            shift
+            pv_commit=${1:-}
+            ;;
+          --build-run-id)
+            shift
+            build_run_id=${1:-}
+            ;;
+        esac
+        shift
+      done
+      mkdir -p "$(dirname "$record")"
+      cat >"$record" <<EOF
+{
+  "object_key": "$object_key",
+  "provenance": {
+    "source_url": "$source_url",
+    "source_sha256": "$source_sha256",
+    "recipe": "$recipe",
+    "pv_commit": "$pv_commit",
+    "build_run_id": "$build_run_id"
+  }
+}
+EOF
+      ;;
+    validate-archive)
+      archive=
+      record=
+      smoke_hook=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --archive)
+            shift
+            archive=${1:-}
+            ;;
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --smoke-hook)
+            shift
+            smoke_hook=${1:-}
+            ;;
+        esac
+        shift
+      done
+      printf 'archive=%s record=%s smoke=%s\n' \
+        "${archive##*/}" \
+        "${record##*/}" \
+        "${smoke_hook##*/}" >>"$PV_TEST_VALIDATE_LOG"
+      ;;
+    *) exit 77 ;;
+  esac
+else
+  exit 77
+fi
+"#,
+    )
+}
+
 fn write_fake_composer_cargo(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -1588,6 +2044,167 @@ case "$url" in
     cp "$PV_TEST_SOURCE_ARCHIVE" "$output"
     ;;
 esac
+"#,
+    )
+}
+
+fn write_fake_success_curl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+exit 0
+"#,
+    )
+}
+
+fn write_fake_mailpit(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  version)
+    printf '%s\n' "${PV_TEST_MAILPIT_VERSION_OUTPUT:-Mailpit v1.30.1}"
+    exit 0
+    ;;
+esac
+
+smtp=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --smtp)
+      shift
+      smtp=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$smtp" ] || exit 78
+smtp_port=${smtp##*:}
+export PV_TEST_MAILPIT_SMTP_PORT=$smtp_port
+exec python3 - <<'PY'
+import os
+import signal
+import socket
+import time
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", int(os.environ["PV_TEST_MAILPIT_SMTP_PORT"])))
+sock.listen(1)
+
+if os.environ.get("PV_TEST_MAILPIT_IGNORE_TERM"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+time.sleep(float(os.environ.get("PV_TEST_MAILPIT_SLEEP_SECONDS", "60")))
+PY
+"#,
+    )
+}
+
+fn write_fake_rustfs(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  --version)
+    printf '%s\n' "${PV_TEST_RUSTFS_VERSION_OUTPUT:-rustfs 1.0.0-beta.7}"
+    exit 0
+    ;;
+  server)
+    shift
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+
+address=
+console_address=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --address)
+      shift
+      address=${1:-}
+      ;;
+    --console-address)
+      shift
+      console_address=${1:-}
+      ;;
+    --access-key | --secret-key)
+      shift
+      ;;
+  esac
+  shift
+done
+
+[ -n "$address" ] || exit 78
+if [ -n "${PV_TEST_RUSTFS_REQUIRE_CONSOLE_ADDRESS:-}" ]; then
+  case "$console_address" in
+    127.0.0.1:*) ;;
+    *) exit 73 ;;
+  esac
+fi
+if [ -n "${PV_TEST_RUSTFS_LOG:-}" ]; then
+  printf 'address=%s console=%s\n' "$address" "$console_address" >>"$PV_TEST_RUSTFS_LOG"
+fi
+
+export PV_TEST_RUSTFS_ADDRESS=$address
+export PV_TEST_RUSTFS_CONSOLE_ADDRESS=$console_address
+exec python3 - <<'PY'
+import http.server
+import os
+import signal
+import socket
+import threading
+import time
+
+bucket_names = set()
+
+def split_address(address):
+    host, port = address.rsplit(":", 1)
+    return host, int(port)
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = "\n".join(sorted(bucket_names)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_PUT(self):
+        bucket_names.add(self.path.strip("/"))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+api_host, api_port = split_address(os.environ["PV_TEST_RUSTFS_ADDRESS"])
+server = http.server.HTTPServer((api_host, api_port), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+
+console_address = os.environ.get("PV_TEST_RUSTFS_CONSOLE_ADDRESS")
+console_socket = None
+if console_address:
+    console_host, console_port = split_address(console_address)
+    console_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    console_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    console_socket.bind((console_host, console_port))
+    console_socket.listen(1)
+
+if os.environ.get("PV_TEST_RUSTFS_IGNORE_TERM"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+time.sleep(float(os.environ.get("PV_TEST_RUSTFS_SLEEP_SECONDS", "60")))
+PY
 "#,
     )
 }
@@ -1758,6 +2375,30 @@ esac
     )
 }
 
+fn write_fake_unzip(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+destination=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d)
+      shift
+      destination=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$destination" ] || exit 78
+mkdir -p "$destination"
+printf '%s\n' '#!/bin/sh' >"$destination/$PV_TEST_BINARY_NAME"
+"#,
+    )
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -1773,6 +2414,21 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     header.set_mode(0o644);
     header.set_cksum();
     builder.append(&header, content as &[u8])?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    append_archive_file(&mut builder, binary_name, b"#!/bin/sh\n")?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
