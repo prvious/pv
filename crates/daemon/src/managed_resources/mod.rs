@@ -379,15 +379,15 @@ struct ResourceRuntimeAttempt<'a> {
 impl ResourceRuntimeAttempt<'_> {
     async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
         let env = self.adapter.resource_env(context)?;
+        let context = ManagedResourceRuntimeContext {
+            env: env.clone(),
+            ..context.clone()
+        };
         self.database.record_managed_resource_track_env_context(
             &self.resource.resource_name,
             &self.resource.track,
             &env,
         )?;
-        let context = ManagedResourceRuntimeContext {
-            env: env.clone(),
-            ..context.clone()
-        };
         let spec = self.adapter.build_process_spec(self.paths, &context)?;
         self.adapter.prepare_runtime(self.paths, &context).await?;
         let readiness = self.adapter.readiness(&context)?;

@@ -234,7 +234,9 @@ fn write_postgres_config(
     context: &ManagedResourceRuntimeContext,
     port: u16,
 ) -> Result<(), DaemonError> {
-    let config = format!("listen_addresses = '{RESOURCE_HOST}'\nport = {port}\n");
+    let config = format!(
+        "listen_addresses = '{RESOURCE_HOST}'\nport = {port}\nunix_socket_directories = ''\n"
+    );
 
     state::fs::write_sensitive_file(&context.data_dir.join("postgresql.conf"), &config)?;
     state::fs::write_sensitive_file(

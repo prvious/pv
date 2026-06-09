@@ -8,7 +8,9 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use resources::{ResourceName, RuntimeArtifactAdapter};
+use resources::{
+    ManagedResourceCommandError, ResourceName, ResourcesError, RuntimeArtifactAdapter,
+};
 use serde::Deserialize;
 use state::{
     Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
@@ -144,6 +146,82 @@ async fn postgres_project_demand_installs_missing_fixture_track_before_start() -
 }
 
 #[tokio::test]
+async fn postgres_project_demand_rejects_cached_fixture_missing_support_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_cached_fixture_without_support_files(&paths, tempdir.path())?;
+    let catalog = super::postgres_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+    let mut database = Database::open(&paths)?;
+
+    let result = crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await;
+
+    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+        ResourcesError::InvalidArtifactLayout { resource, reason },
+    ))) = result
+    else {
+        bail!("expected missing Postgres support files to reject project-demand install");
+    };
+    let runtime_states = database.runtime_observed_states()?;
+
+    assert_eq!(resource, "postgres");
+    assert_eq!(
+        reason,
+        "missing required file `share/postgresql/postgres.bki`"
+    );
+    assert_eq!(
+        read_optional_dotenv(&project)?,
+        None,
+        "expected rejected Postgres artifact to leave Project env withheld"
+    );
+    assert_runtime_status_for_resource(
+        &runtime_states,
+        "postgres",
+        POSTGRES_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_034)?;
+
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let data_config = state::fs::read_to_string(
+        &paths
+            .resource_data_dir("postgres", POSTGRES_TRACK)
+            .join("postgresql.conf"),
+    )?;
+    let runtime_config =
+        state::fs::read_to_string(&paths.resource_runtime_config("postgres", POSTGRES_TRACK))?;
+
+    stop_postgres_runtime(&paths, &project).await?;
+
+    assert!(
+        data_config.contains("unix_socket_directories = ''"),
+        "expected Postgres data config to disable Unix socket listeners"
+    );
+    assert!(
+        runtime_config.contains("unix_socket_directories = ''"),
+        "expected recorded Postgres runtime config to disable Unix socket listeners"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -195,6 +273,87 @@ async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() 
         "postgres_reconciliation_replaces_stale_admin_username_from_track_env",
         snapshot,
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_reconciliation_retries_with_initialized_password_after_config_write_failure()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_035)?;
+    let config_parent_blocker = paths.config().join("resources");
+    state::fs::write_sensitive_file(&config_parent_blocker, "not a directory")?;
+
+    let failed_result = crate::project_env::reconcile_project_env(&paths, &project.id).await;
+    let initdb_password = state::fs::read_to_string(
+        &paths
+            .resource_data_dir("postgres", POSTGRES_TRACK)
+            .join("initdb.password"),
+    )?;
+    let failed_track_env = {
+        let database = Database::open(&paths)?;
+        database
+            .managed_resource_track("postgres", POSTGRES_TRACK)?
+            .env
+    };
+
+    assert!(
+        failed_result.is_err(),
+        "expected config write failure after initdb, got {failed_result:#?}"
+    );
+    assert_eq!(
+        read_optional_dotenv(&project)?,
+        None,
+        "expected failed retry setup to leave Project env withheld"
+    );
+    assert_eq!(
+        failed_track_env.get("password").map(String::as_str),
+        Some(initdb_password.as_str()),
+        "expected initdb password to be persisted before config writes can fail"
+    );
+
+    state::fs::delete_file(&config_parent_blocker)?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let recovered_dotenv = read_dotenv(&project)?;
+    let (recovered_track, recovered_allocations, runtime_states) = {
+        let database = Database::open(&paths)?;
+        (
+            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
+            database.resource_allocations(&project.id, "postgres")?,
+            database.runtime_observed_states()?,
+        )
+    };
+    stop_postgres_runtime(&paths, &project).await?;
+
+    assert!(
+        recovered_dotenv.contains(&format!("DB_PASSWORD={initdb_password}\n")),
+        "expected retry to render Project env with the password from initialized PGDATA"
+    );
+    assert_eq!(
+        recovered_track.env.get("password").map(String::as_str),
+        Some(initdb_password.as_str()),
+        "expected retry to reuse the password from initialized PGDATA"
+    );
+    let recovered_database_password = recovered_allocations
+        .iter()
+        .find(|allocation| allocation.allocation_name == "app-db")
+        .and_then(|allocation| allocation.env.get("password"))
+        .map(String::as_str);
+    assert_eq!(
+        recovered_database_password,
+        Some(initdb_password.as_str()),
+        "expected retry to render database allocation env with the persisted password"
+    );
+    assert_runtime_status_for_resource(
+        &runtime_states,
+        "postgres",
+        POSTGRES_TRACK,
+        RuntimeObservedStatus::Running,
+    );
 
     Ok(())
 }
@@ -2562,12 +2721,29 @@ fn seed_postgres_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<(
     let archive_path = tempdir.join(POSTGRES_ARCHIVE_FILE_NAME);
 
     create_postgres_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
+    seed_postgres_cached_fixture_from_archive(paths, &archive_path)
+}
+
+fn seed_postgres_cached_fixture_without_support_files(
+    paths: &PvPaths,
+    tempdir: &Utf8Path,
+) -> Result<()> {
+    let archive_path = tempdir.join(POSTGRES_ARCHIVE_FILE_NAME);
+
+    create_postgres_archive_without_support_files(tempdir, &archive_path)?;
+    seed_postgres_cached_fixture_from_archive(paths, &archive_path)
+}
+
+fn seed_postgres_cached_fixture_from_archive(
+    paths: &PvPaths,
+    archive_path: &Utf8Path,
+) -> Result<()> {
+    let sha256 = sha256_file(archive_path)?;
     let cache_path = paths
         .downloads()
         .join(format!("{sha256}-{POSTGRES_ARCHIVE_FILE_NAME}"));
 
-    copy_file(&archive_path, &cache_path)?;
+    copy_file(archive_path, &cache_path)?;
     let size = file_size(&cache_path)?;
     let manifest = postgres_fixture_manifest(&sha256, size);
 
@@ -2731,6 +2907,26 @@ fn create_postgres_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Resul
     let root = archive_parent.join(&root_name);
 
     write_postgres_fixture_binaries(&root)?;
+    create_archive(&archive_parent, archive_path, &root_name)
+}
+
+fn create_postgres_archive_without_support_files(
+    tempdir: &Utf8Path,
+    archive_path: &Utf8Path,
+) -> Result<()> {
+    let archive_parent = tempdir.join("postgres-archive-root-missing-support");
+    let root_name = format!("postgres-{POSTGRES_ARTIFACT_VERSION}");
+    let root = archive_parent.join(&root_name);
+
+    write_postgres_fixture_binaries_without_support_files(&root)?;
+    create_archive(&archive_parent, archive_path, &root_name)
+}
+
+fn create_archive(
+    archive_parent: &Utf8Path,
+    archive_path: &Utf8Path,
+    root_name: &str,
+) -> Result<()> {
     run_fixture_command(
         "/usr/bin/tar",
         &[
@@ -2738,7 +2934,7 @@ fn create_postgres_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Resul
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
-            &root_name,
+            root_name,
         ],
     )?;
 
@@ -2841,13 +3037,31 @@ fn write_postgres_fixture_binaries_with_script(
     release_path: &Utf8Path,
     postgres_script: &str,
 ) -> Result<()> {
+    write_postgres_fixture_binaries_without_support_files(release_path)?;
+    write_postgres_support_files(release_path)?;
+    state::fs::write_sensitive_file(&release_path.join("bin/postgres"), postgres_script)?;
+    set_executable(&release_path.join("bin/postgres"))?;
+
+    Ok(())
+}
+
+fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path) -> Result<()> {
     let initdb = release_path.join("bin/initdb");
     let postgres = release_path.join("bin/postgres");
 
     state::fs::write_sensitive_file(&initdb, fake_postgres_initdb_script())?;
-    state::fs::write_sensitive_file(&postgres, postgres_script)?;
+    state::fs::write_sensitive_file(&postgres, fake_postgres_script())?;
     set_executable(&initdb)?;
     set_executable(&postgres)?;
+
+    Ok(())
+}
+
+fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
+    state::fs::write_sensitive_file(
+        &release_path.join("share/postgresql/postgres.bki"),
+        "postgres catalog",
+    )?;
 
     Ok(())
 }

@@ -111,7 +111,8 @@ pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
 pub fn postgres_adapter() -> Result<RuntimeArtifactAdapter> {
     Ok(
         RuntimeArtifactAdapter::new(ResourceName::new("postgres")?, "bin/postgres")
-            .required_file("bin/initdb"),
+            .required_file("bin/initdb")
+            .required_file("share/postgresql/postgres.bki"),
     )
 }
 

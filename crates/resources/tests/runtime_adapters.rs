@@ -119,6 +119,10 @@ fn postgres_adapter_validates_expected_executable_and_initdb_layout() -> Result<
     let executable_path = release.join("bin/postgres");
     write_sensitive_file(&executable_path, "postgres executable")?;
     write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
+    write_sensitive_file(
+        &release.join("share/postgresql/postgres.bki"),
+        "postgres catalog",
+    )?;
 
     adapter.validate_installation(release)?;
 
@@ -142,6 +146,29 @@ fn postgres_adapter_rejects_missing_initdb() -> Result<()> {
 
     assert_eq!(resource, "postgres");
     assert_eq!(reason, "missing required file `bin/initdb`");
+
+    Ok(())
+}
+
+#[test]
+fn postgres_adapter_rejects_missing_support_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let release = tempdir.path();
+    let adapter = postgres_adapter()?;
+    write_sensitive_file(&release.join("bin/postgres"), "postgres executable")?;
+    write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
+
+    let Err(ResourcesError::InvalidArtifactLayout { resource, reason }) =
+        adapter.validate_installation(release)
+    else {
+        bail!("expected InvalidArtifactLayout for missing Postgres support files");
+    };
+
+    assert_eq!(resource, "postgres");
+    assert_eq!(
+        reason,
+        "missing required file `share/postgresql/postgres.bki`"
+    );
 
     Ok(())
 }
