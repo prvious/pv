@@ -33,14 +33,14 @@ expression: snapshot
             "type": String("job_completed"),
         },
     ],
-    "mysql:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
+    "postgres:\n  version: latest\n  env:\n    DB_HOST: \"${host}\"\n",
     Some(
         "# >>> PV MANAGED\nDB_HOST=127.0.0.1\n# <<< PV MANAGED\n",
     ),
     [
         ProjectManagedResourceRecord {
             project_id: "<project_id>",
-            resource_name: "mysql",
+            resource_name: "postgres",
             track: "8.0",
             created_at: "<timestamp>",
             updated_at: "<timestamp>",

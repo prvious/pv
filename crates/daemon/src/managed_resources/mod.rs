@@ -57,10 +57,7 @@ pub(crate) enum ManagedResourceReadiness {
     TcpHttp(ReadinessCheck),
     #[cfg_attr(
         not(test),
-        allow(
-            dead_code,
-            reason = "MySQL and Postgres adapter PRs construct async SQL readiness"
-        )
+        allow(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
     )]
     Async(AsyncManagedResourceReadiness),
 }
@@ -73,10 +70,7 @@ pub(crate) struct AsyncManagedResourceReadiness {
 impl ManagedResourceReadiness {
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "MySQL and Postgres adapter PRs construct async SQL readiness"
-        )
+        expect(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
     )]
     pub(crate) fn async_check(
         name: impl Into<String>,

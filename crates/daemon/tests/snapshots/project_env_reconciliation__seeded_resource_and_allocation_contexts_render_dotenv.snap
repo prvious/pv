@@ -34,12 +34,12 @@ expression: snapshot
         },
     ],
     Some(
-        "# >>> PV MANAGED\nDATABASE_URL=mysql://root:secret@127.0.0.1:3306/acme_test_app_db\nDB_DATABASE=acme_test_app_db\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USERNAME=root\n# <<< PV MANAGED\n",
+        "# >>> PV MANAGED\nDATABASE_URL=postgres://root:secret@127.0.0.1:3306/acme_test_app_db\nDB_DATABASE=acme_test_app_db\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USERNAME=root\n# <<< PV MANAGED\n",
     ),
     [
         ProjectManagedResourceRecord {
             project_id: "<project_id>",
-            resource_name: "mysql",
+            resource_name: "postgres",
             track: "8.0",
             created_at: "<timestamp>",
             updated_at: "<timestamp>",
@@ -49,7 +49,7 @@ expression: snapshot
         ResourceAllocationRecord {
             id: "allocation_000001",
             project_id: "<project_id>",
-            resource_name: "mysql",
+            resource_name: "postgres",
             track: "8.0",
             allocation_name: "app-db",
             generated_name: "acme_test_app_db",

@@ -23,7 +23,7 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
-            "error": String("Managed Resource runtime `mysql` is not supported yet"),
+            "error": String("Managed Resource runtime `postgres` is not supported yet"),
             "job_id": String("job_000001"),
             "type": String("job_failed"),
         },
@@ -32,7 +32,7 @@ expression: snapshot
     [
         ProjectManagedResourceRecord {
             project_id: "<project_id>",
-            resource_name: "mysql",
+            resource_name: "postgres",
             track: "8.0",
             created_at: "<timestamp>",
             updated_at: "<timestamp>",
@@ -43,7 +43,7 @@ expression: snapshot
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "Managed Resource runtime `mysql` is not supported yet",
+                "Managed Resource runtime `postgres` is not supported yet",
             ),
             observed_at: "<timestamp>",
             warnings: [],
@@ -60,7 +60,7 @@ expression: snapshot
         ),
         summary: None,
         error: Some(
-            "Managed Resource runtime `mysql` is not supported yet",
+            "Managed Resource runtime `postgres` is not supported yet",
         ),
     },
 )
