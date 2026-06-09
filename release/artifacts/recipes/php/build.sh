@@ -253,11 +253,13 @@ frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION
 
 (
   cd "$spc_work_dir"
+  # StaticPHP dependency downloads default to no retries; GNU mirrors can return transient 5xxs.
   spc build:php "$PHP_BUILD_EXTENSIONS" \
     --build-cli \
     --build-frankenphp \
     --enable-zts \
     --dl-with-php="$PHP_PHP_VERSION" \
+    --dl-retry=3 \
     --dl-custom-local "php-src:$php_source_dir" \
     --dl-custom-local "frankenphp:$frankenphp_source_dir"
 )
