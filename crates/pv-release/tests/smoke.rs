@@ -91,17 +91,17 @@ esac
 set -eu
 case "${1:-}" in
   php-cli)
-    case "${2:-}" in
-      -v)
-        printf '%s\n' 'php-cli -v' >>"$PV_FRANKENPHP_LOG"
-        printf '%s\n' 'PHP 8.4.20 (cli)'
-        ;;
-      -m)
-        printf '%s\n' 'php-cli -m' >>"$PV_FRANKENPHP_LOG"
-        printf '%s\n' 'json'
-        ;;
-      *) exit 99 ;;
-    esac
+    [ "${2:-}" = "-r" ] || exit 99
+    code=${3:-}
+    if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
+      printf '%s\n' 'php-cli -r version' >>"$PV_FRANKENPHP_LOG"
+      printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
+      printf '%s\n' 'php-cli -r extensions' >>"$PV_FRANKENPHP_LOG"
+      printf '%s\n' 'json'
+    else
+      exit 99
+    fi
     ;;
   php-server)
     shift
@@ -146,7 +146,10 @@ printf '%s\n' 'pv-frankenphp-ok'
 
     assert!(status.success(), "smoke hook exited with {status}");
     let frankenphp_log = read_file(&frankenphp_log)?;
-    assert!(frankenphp_log.starts_with("php-cli -v\nphp-cli -m\nphp-server 127.0.0.1:"));
+    assert!(
+        frankenphp_log
+            .starts_with("php-cli -r version\nphp-cli -r extensions\nphp-server 127.0.0.1:")
+    );
     assert!(
         !frankenphp_log.contains("php-server 127.0.0.1:48123\n"),
         "smoke hook should not use the old fixed loopback port: {frankenphp_log}"
