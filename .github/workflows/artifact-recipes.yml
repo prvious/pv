@@ -166,6 +166,7 @@ jobs:
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_COMMIT: ${{ github.sha }}
           PV_BUILD_RUN_ID: ${{ github.run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -eu
 
