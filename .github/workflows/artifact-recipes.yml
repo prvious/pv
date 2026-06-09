@@ -76,6 +76,29 @@ jobs:
               ;;
           esac
 
+      - name: Classify selected artifacts
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+
+          include_composer=false
+          case "$PV_RECIPE_RESOURCE" in
+            all | composer)
+              include_composer=true
+              ;;
+          esac
+
+          if [ "$PV_RECIPE_RESOURCE" = all ] \
+            && [ "$PV_RECIPE_INPUT_PLATFORM" = all ] \
+            && [ "$PV_RECIPE_PLATFORM" != darwin-arm64 ]; then
+            include_composer=false
+          fi
+
+          printf 'PV_INCLUDE_COMPOSER=%s\n' "$include_composer" >>"${GITHUB_ENV:?}"
+
       - name: Install PHP runtime dependency
         if: ${{ inputs.resource == 'all' || inputs.resource == 'php' || inputs.resource == 'composer' }}
         run: |
@@ -159,7 +182,6 @@ jobs:
           case "$PV_RECIPE_RESOURCE" in
             all)
               build_php_family=true
-              build_composer=true
               build_redis=true
               build_mysql=true
               build_postgres=true
@@ -188,11 +210,7 @@ jobs:
               build_rustfs=true
               ;;
           esac
-          if [ "$PV_RECIPE_RESOURCE" = all ] \
-            && [ "$PV_RECIPE_INPUT_PLATFORM" = all ] \
-            && [ "$PV_RECIPE_PLATFORM" != darwin-arm64 ]; then
-            build_composer=false
-          fi
+          build_composer=$PV_INCLUDE_COMPOSER
 
           case "$PV_RECIPE_TRACK" in
             all)
@@ -282,7 +300,7 @@ jobs:
             all)
               write_default_track php "$php_default_track"
               write_default_track frankenphp "$php_default_track"
-              if [ "$PV_RECIPE_INPUT_PLATFORM" != all ] || [ "$PV_RECIPE_PLATFORM" = darwin-arm64 ]; then
+              if [ "$PV_INCLUDE_COMPOSER" = true ]; then
                 write_default_track composer 2
               fi
               write_default_track redis 8.2

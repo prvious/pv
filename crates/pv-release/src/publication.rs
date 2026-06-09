@@ -1,6 +1,8 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
-use resources::{ArtifactManifest, ArtifactPlatform};
+use resources::{
+    ArtifactManifest, ArtifactPlatform, ResourceName, ResourcesError, TargetPlatform, TrackName,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -104,7 +106,11 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
 
     validate_publication_object_keys(request, &candidates)?;
     validate_publication_local_paths(request, &candidates)?;
-    validate_public_manifest_platform_matrix(&defaults, &published_records, &candidate_records)?;
+    validate_default_release_record_platform_matrix(
+        &defaults,
+        &published_records,
+        &candidate_records,
+    )?;
     stage_immutable_uploads(request, &candidates)?;
     let tempdir = Utf8TempDir::new().map_err(|error| filesystem_error(&request.stage, error))?;
     let combined_records = tempdir.path().join("records");
@@ -125,11 +131,12 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &request.base_url,
     )?;
     let manifest_json = read_to_string(&versioned_manifest_path)?;
-    ArtifactManifest::parse(&manifest_json).map_err(|error| {
+    let manifest = ArtifactManifest::parse(&manifest_json).map_err(|error| {
         crate::ReleaseError::GeneratedManifestInvalid {
             reason: error.to_string(),
         }
     })?;
+    validate_public_manifest_platform_matrix(&manifest)?;
 
     let stable_manifest_path = request.stage.join(&request.stable_manifest_key);
     write(&stable_manifest_path, &manifest_json)?;
@@ -147,7 +154,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
     )
 }
 
-fn validate_public_manifest_platform_matrix(
+fn validate_default_release_record_platform_matrix(
     defaults: &ManifestDefaults,
     published_records: &[ReleaseRecordFile],
     candidate_records: &[ReleaseRecordFile],
@@ -207,6 +214,78 @@ fn validate_public_manifest_platform_matrix(
     }
 
     Ok(())
+}
+
+fn validate_public_manifest_platform_matrix(manifest: &ArtifactManifest) -> crate::Result<()> {
+    for (resource, track) in manifest.resource_tracks() {
+        if resource.as_str() == "composer" {
+            validate_public_portable_track(manifest, resource, track)?;
+            continue;
+        }
+
+        let missing = [
+            (TargetPlatform::DarwinArm64, ArtifactPlatform::DarwinArm64),
+            (TargetPlatform::DarwinAmd64, ArtifactPlatform::DarwinAmd64),
+        ]
+        .into_iter()
+        .filter_map(|(target, expected_platform)| {
+            match selects_expected_platform(manifest, resource, track, target, expected_platform) {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(target.as_str())),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+
+        if !missing.is_empty() {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest resource `{resource}` track `{track}` is missing required platform(s): {}",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_public_portable_track(
+    manifest: &ArtifactManifest,
+    resource: &ResourceName,
+    track: &TrackName,
+) -> crate::Result<()> {
+    match manifest.select_latest(resource, track, TargetPlatform::DarwinArm64) {
+        Ok(selection) if selection.artifact().platform() == ArtifactPlatform::Any => Ok(()),
+        Ok(_) | Err(ResourcesError::NoInstallableArtifact { .. }) => {
+            Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest resource `{resource}` track `{track}` is missing required portable platform: any",
+                ),
+            })
+        }
+        Err(error) => Err(generated_manifest_error(error)),
+    }
+}
+
+fn selects_expected_platform(
+    manifest: &ArtifactManifest,
+    resource: &ResourceName,
+    track: &TrackName,
+    target: TargetPlatform,
+    expected_platform: ArtifactPlatform,
+) -> crate::Result<bool> {
+    match manifest.select_latest(resource, track, target) {
+        Ok(selection) => Ok(selection.artifact().platform() == expected_platform),
+        Err(ResourcesError::NoInstallableArtifact { .. }) => Ok(false),
+        Err(error) => Err(generated_manifest_error(error)),
+    }
+}
+
+fn generated_manifest_error(error: ResourcesError) -> crate::ReleaseError {
+    crate::ReleaseError::GeneratedManifestInvalid {
+        reason: error.to_string(),
+    }
 }
 
 fn validate_publication_object_keys(

@@ -137,6 +137,15 @@ impl ArtifactManifest {
         &self.minimum_pv_version
     }
 
+    pub fn resource_tracks(&self) -> impl Iterator<Item = (&ResourceName, &TrackName)> + '_ {
+        self.resources.iter().flat_map(|resource| {
+            resource
+                .tracks
+                .iter()
+                .map(|track| (&resource.name, &track.name))
+        })
+    }
+
     fn from_raw(raw: RawManifest) -> Result<Self> {
         let schema_version = ManifestSchemaVersion::parse(raw.schema_version)?;
         let minimum_pv_version = PvVersion::parse(raw.minimum_pv_version)?;
