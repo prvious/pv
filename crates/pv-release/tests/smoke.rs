@@ -843,6 +843,7 @@ fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
     let artifact_lib = artifact_root.join("lib");
     let artifact_plugin = artifact_lib.join("plugin");
     let artifact_postgresql = artifact_lib.join("postgresql");
+    let openssl_prefix = tempdir.path().join("openssl@3");
     let install_name_log = tempdir.path().join("install-name.log");
     let harness = tempdir.path().join("rewrite-harness.sh");
     let common =
@@ -858,6 +859,7 @@ fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
         &artifact_lib.join("libmysqlclient.dylib"),
         "mach-o fixture\n",
     )?;
+    write_file(&artifact_lib.join("libssl.3.dylib"), "mach-o fixture\n")?;
     write_file(&artifact_plugin.join("auth.so"), "mach-o fixture\n")?;
     write_file(
         &artifact_postgresql.join("extension.so"),
@@ -873,7 +875,7 @@ set -eu
 
 # shellcheck source=/dev/null
 . "$PV_TEST_COMMON_SH"
-rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
+rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR" "$PV_TEST_OPENSSL_PREFIX"
 "#,
     )?;
 
@@ -884,6 +886,7 @@ rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
         .env("PV_TEST_COMMON_SH", &common)
         .env("PV_TEST_INSTALL_DIR", install_dir)
         .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+        .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
         .output()?;
 
     assert!(
@@ -3198,13 +3201,17 @@ case "$mode" in
       */lib/libmysqlclient.dylib)
         printf '%s/lib/libmysqlclient.dylib\n' "$PV_TEST_INSTALL_DIR"
         ;;
+      */lib/libssl.3.dylib)
+        printf '%s/lib/libssl.3.dylib\n' "$PV_TEST_OPENSSL_PREFIX"
+        ;;
     esac
     ;;
   -L)
     case "$binary" in
-      */bin/mysql | */lib/libmysqlclient.dylib | */lib/plugin/auth.so | */lib/postgresql/extension.so)
+      */bin/mysql | */lib/libmysqlclient.dylib | */lib/libssl.3.dylib | */lib/plugin/auth.so | */lib/postgresql/extension.so)
         printf '%s:\n' "$binary"
         printf '\t%s/lib/libmysqlclient.dylib (compatibility version 1.0.0, current version 1.0.0)\n' "$PV_TEST_INSTALL_DIR"
+        printf '\t%s/lib/libssl.3.dylib (compatibility version 3.0.0, current version 3.6.2)\n' "$PV_TEST_OPENSSL_PREFIX"
         ;;
       *)
         exit 1

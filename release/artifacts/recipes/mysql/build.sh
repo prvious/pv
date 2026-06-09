@@ -117,7 +117,7 @@ copy_install_tree() {
       mv "$tmp" "$path" || exit 1
     done
   ' sh {} +
-  rewrite_macho_install_names "$root_dir" "$install_dir"
+  rewrite_macho_install_names "$root_dir" "$install_dir" "$OPENSSL_PREFIX"
   pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
   for binary in mysqld mysql mysqladmin; do
     [ -x "$root_dir/bin/$binary" ] || die "MySQL artifact missing bin/$binary"
