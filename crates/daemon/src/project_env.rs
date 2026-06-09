@@ -44,6 +44,14 @@ pub(crate) async fn reconcile_project_env(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
+    reconcile_project_env_with_runtime_catalog(paths, project_id, None).await
+}
+
+pub(crate) async fn reconcile_project_env_with_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let mut database = Database::open(paths)?;
     let project =
         database
@@ -52,7 +60,7 @@ pub(crate) async fn reconcile_project_env(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(paths, &mut database, &project, None).await {
+    match reconcile_loaded_project(paths, &mut database, &project, catalog).await {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();

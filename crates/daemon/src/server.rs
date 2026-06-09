@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -12,6 +13,7 @@ use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
 };
+use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::reconciliation::ReconciliationQueue;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
@@ -27,20 +29,28 @@ pub(crate) async fn serve(
     paths: PvPaths,
     listener: LocalListener,
     mut shutdown: oneshot::Receiver<()>,
+    runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
     let queue = ReconciliationQueue::new();
     let background_paths = paths.clone();
     let background_queue = queue.clone();
+    let background_runtime_catalog = runtime_catalog.clone();
     let debouncer = crate::reconciliation::ReconciliationDebouncer::new(
         PROJECT_CONFIG_DEBOUNCE,
         move |scope| {
             let paths = background_paths.clone();
             let queue = background_queue.clone();
+            let runtime_catalog = background_runtime_catalog.clone();
             let _task = tokio::spawn(async move {
                 let scope_text = scope.to_string();
-                if let Err(error) =
-                    run_background_reconciliation_job(paths.clone(), queue, scope).await
+                if let Err(error) = run_background_reconciliation_job(
+                    paths.clone(),
+                    queue,
+                    scope,
+                    runtime_catalog.as_deref(),
+                )
+                .await
                 {
                     let _result =
                         record_background_reconciliation_error(&paths, &scope_text, &error);
@@ -75,9 +85,16 @@ pub(crate) async fn serve(
                     Ok((stream, _address)) => {
                         let connection_paths = paths.clone();
                         let connection_queue = queue.clone();
+                        let connection_runtime_catalog = runtime_catalog.clone();
 
                         connections.spawn(async move {
-                            handle_connection(connection_paths, connection_queue, stream).await
+                            handle_connection(
+                                connection_paths,
+                                connection_queue,
+                                stream,
+                                connection_runtime_catalog,
+                            )
+                            .await
                         });
                     }
                     Err(_error) => {
@@ -101,6 +118,7 @@ async fn handle_connection(
     paths: PvPaths,
     queue: ReconciliationQueue,
     stream: LocalStream,
+    runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
 ) -> Result<(), DaemonError> {
     let mut transport = protocol::transport(stream);
     let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
@@ -125,7 +143,15 @@ async fn handle_connection(
             Ok(())
         }
         DaemonCommand::RunJob { kind, scope } => {
-            run_job(paths, queue, transport, &kind, &scope).await
+            run_job(
+                paths,
+                queue,
+                transport,
+                &kind,
+                &scope,
+                runtime_catalog.as_deref(),
+            )
+            .await
         }
     }
 }

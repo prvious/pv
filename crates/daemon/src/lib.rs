@@ -14,7 +14,9 @@ mod watcher;
 
 use std::future::Future;
 use std::io;
+use std::sync::Arc;
 
+use managed_resources::ManagedResourceRuntimeCatalog;
 use state::{Database, PvPaths};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
@@ -45,6 +47,24 @@ pub struct RunningDaemon {
 
 impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
+        Self::start_with_runtime_catalog(paths, None).await
+    }
+
+    #[doc(hidden)]
+    pub async fn start_without_managed_resource_adapters(
+        paths: PvPaths,
+    ) -> Result<Self, DaemonError> {
+        Self::start_with_runtime_catalog(
+            paths,
+            Some(ManagedResourceRuntimeCatalog::without_adapters()),
+        )
+        .await
+    }
+
+    async fn start_with_runtime_catalog(
+        paths: PvPaths,
+        runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+    ) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
         let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
@@ -57,7 +77,13 @@ impl RunningDaemon {
         };
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
-        let task = tokio::spawn(server::serve(server_paths, listener, shutdown_receiver));
+        let runtime_catalog = runtime_catalog.map(Arc::new);
+        let task = tokio::spawn(server::serve(
+            server_paths,
+            listener,
+            shutdown_receiver,
+            runtime_catalog,
+        ));
 
         Ok(Self {
             paths,

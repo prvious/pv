@@ -174,6 +174,16 @@ impl ManagedResourceRuntimeCatalog {
         }
     }
 
+    pub(crate) fn without_adapters() -> Self {
+        Self {
+            adapters: BTreeMap::new(),
+            install_options: ManagedResourceInstallOptions {
+                manifest_url: DEFAULT_MANIFEST_URL.to_string(),
+                target_platform: current_target_platform(),
+            },
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_adapter(
         install_options: ManagedResourceInstallOptions,

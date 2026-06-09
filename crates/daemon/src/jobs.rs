@@ -1,8 +1,11 @@
 use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
-use crate::managed_resources::reconcile_system_resources;
-use crate::project_env::reconcile_project_env;
+use crate::managed_resources::{
+    ManagedResourceRuntimeCatalog, reconcile_system_resources,
+    reconcile_system_resources_with_catalog,
+};
+use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runtime_catalog};
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, ProjectRecord, PvPaths};
@@ -14,11 +17,14 @@ pub(crate) async fn run_job(
     transport: DaemonTransport<LocalStream>,
     kind: &str,
     scope: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
     let parsed_scope = scope.parse::<ReconciliationScope>();
     if kind == "reconcile" {
         return match parsed_scope {
-            Ok(parsed_scope) => run_reconciliation_job(paths, queue, transport, parsed_scope).await,
+            Ok(parsed_scope) => {
+                run_reconciliation_job(paths, queue, transport, parsed_scope, runtime_catalog).await
+            }
             Err(error) => {
                 run_invalid_reconciliation_scope_job(paths, transport, scope, error).await
             }
@@ -32,6 +38,7 @@ pub(crate) async fn run_background_reconciliation_job(
     paths: PvPaths,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
     let EnqueueResult::Queued(queued) = result else {
@@ -40,7 +47,7 @@ pub(crate) async fn run_background_reconciliation_job(
     let running = queued.wait_for_turn().await;
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result = complete_reconciliation_job(&paths, &job_id, &scope)
+    let result = complete_reconciliation_job(&paths, &job_id, &scope, runtime_catalog)
         .await
         .map(|_summary| ());
 
@@ -54,6 +61,7 @@ async fn run_reconciliation_job(
     queue: ReconciliationQueue,
     mut transport: DaemonTransport<LocalStream>,
     scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
 
@@ -75,6 +83,7 @@ async fn run_reconciliation_job(
                 stream_is_open,
                 running.job_id(),
                 scope,
+                runtime_catalog,
             )
             .await;
 
@@ -125,6 +134,7 @@ async fn stream_started_reconciliation_job<Stream>(
     stream_is_open: bool,
     job_id: &str,
     scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
@@ -151,7 +161,8 @@ where
         Ok(())
     };
 
-    let reconciliation_result = complete_reconciliation_job(&paths, job_id, &scope).await;
+    let reconciliation_result =
+        complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await;
     started_stream_result?;
 
     if !stream_is_open {
@@ -213,8 +224,9 @@ async fn complete_managed_resource_reconciliation(
     job_id: &str,
     name: &crate::reconciliation::ReconciliationScopeComponent,
     track: &crate::reconciliation::ReconciliationScopeComponent,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects(paths).await?;
+    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut database = Database::open(paths)?;
@@ -228,17 +240,21 @@ async fn complete_reconciliation_job(
     paths: &PvPaths,
     job_id: &str,
     scope: &ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
     let result = match scope {
-        ReconciliationScope::System => complete_system_reconciliation(paths, job_id).await,
+        ReconciliationScope::System => {
+            complete_system_reconciliation(paths, job_id, runtime_catalog).await
+        }
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             complete_gateway_reconciliation(paths, job_id).await
         }
         ReconciliationScope::Resource { name, track } => {
-            complete_managed_resource_reconciliation(paths, job_id, name, track).await
+            complete_managed_resource_reconciliation(paths, job_id, name, track, runtime_catalog)
+                .await
         }
         ReconciliationScope::Project { id } => {
-            complete_project_reconciliation(paths, job_id, id).await
+            complete_project_reconciliation(paths, job_id, id, runtime_catalog).await
         }
     };
 
@@ -266,9 +282,10 @@ async fn complete_gateway_reconciliation(
 async fn complete_system_reconciliation(
     paths: &PvPaths,
     job_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects(paths).await?;
-    reconcile_system_resources(paths).await?;
+    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
+    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let mut database = Database::open(paths)?;
@@ -282,8 +299,10 @@ async fn complete_project_reconciliation(
     paths: &PvPaths,
     job_id: &str,
     id: &crate::reconciliation::ReconciliationScopeComponent,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
-    let project_env_summary = reconcile_project_env(paths, id.as_str()).await?;
+    let project_env_summary =
+        reconcile_project_env_for_runtime_catalog(paths, id.as_str(), runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
@@ -307,6 +326,7 @@ struct SystemProjectReconciliationReport {
 
 async fn reconcile_system_projects(
     paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let projects = linked_projects(paths)?;
     let mut report = SystemProjectReconciliationReport {
@@ -315,7 +335,7 @@ async fn reconcile_system_projects(
     };
 
     for project in projects {
-        match reconcile_project_env(paths, &project.id).await {
+        match reconcile_project_env_for_runtime_catalog(paths, &project.id, runtime_catalog).await {
             Ok(summary) => {
                 report.succeeded += 1;
                 report.summaries.push(summary.as_str().to_owned());
@@ -329,6 +349,31 @@ async fn reconcile_system_projects(
     }
 
     Ok(report)
+}
+
+async fn reconcile_project_env_for_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
+    if let Some(catalog) = runtime_catalog {
+        return reconcile_project_env_with_runtime_catalog(paths, project_id, Some(catalog)).await;
+    }
+
+    reconcile_project_env(paths, project_id).await
+}
+
+async fn reconcile_system_resources_with_runtime_catalog(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
+    if let Some(catalog) = runtime_catalog {
+        let mut database = Database::open(paths)?;
+
+        return reconcile_system_resources_with_catalog(paths, &mut database, catalog).await;
+    }
+
+    reconcile_system_resources(paths).await
 }
 
 fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
@@ -624,6 +669,7 @@ mod tests {
             true,
             &job_id,
             ReconciliationScope::System,
+            None,
         )
         .await;
 

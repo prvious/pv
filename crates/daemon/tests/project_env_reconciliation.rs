@@ -1002,7 +1002,8 @@ async fn run_project_reconciliation(
 ) -> Result<Vec<Value>> {
     ensure_reconciliation_dns_port(paths)?;
 
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     let lines = request_lines(
         paths,
         json!({
