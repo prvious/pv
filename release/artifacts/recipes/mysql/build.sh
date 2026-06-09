@@ -43,7 +43,8 @@ if [ -z "$BUILD_JOBS" ]; then
 fi
 
 if [ -z "$BISON_EXECUTABLE" ]; then
-  if ! BISON_PREFIX=$(brew --prefix bison 2>/dev/null); then
+  BISON_PREFIX=$(brew --prefix bison 2>/dev/null || true)
+  if [ -z "$BISON_PREFIX" ] || [ ! -x "$BISON_PREFIX/bin/bison" ]; then
     brew install bison
     BISON_PREFIX=$(brew --prefix bison)
   fi

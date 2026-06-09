@@ -1614,12 +1614,7 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
 
     create_dir_all(&fake_bin)?;
     create_dir_all(&openssl_include)?;
-    create_dir_all(&bison_prefix.join("bin"))?;
     write_file(&openssl_include.join("ssl.h"), "openssl fixture\n")?;
-    write_executable(
-        &bison_executable,
-        "#!/bin/sh\nprintf '%s\\n' 'bison fixture'\n",
-    )?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
