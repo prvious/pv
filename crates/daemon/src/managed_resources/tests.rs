@@ -2375,7 +2375,11 @@ fn assert_with_normalized_runtime(
         "redis-ping:127.0.0.1:<redis_port>",
     );
     settings.add_filter(r"port \d+", "port <redis_port>");
-    settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
+    if name.starts_with("redis_") {
+        settings.add_filter(r#""port": "\d+""#, r#""port": "<redis_port>""#);
+    } else {
+        settings.add_filter(r#""port": "\d+""#, r#""port": "<port>""#);
+    }
     settings.add_filter(r"tcp:127\.0\.0\.1:\d+", "tcp:127.0.0.1:<readiness_port>");
     settings.add_filter(
         r"http:127\.0\.0\.1:\d+/__pv_unready_fixture__",
