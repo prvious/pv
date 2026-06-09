@@ -106,6 +106,9 @@ reject_unmanaged_macho_runtime_path() {
   case "$runtime_path" in
     /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/*)
       ;;
+    @loader_path | @executable_path)
+      [ "$metadata_kind" = "rpath" ] || die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path"
+      ;;
     *) die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path" ;;
   esac
 }

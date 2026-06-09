@@ -1334,7 +1334,7 @@ fn php_pair_build_smoke_removes_unmanaged_frankenphp_rpath_before_validation() -
 fn php_build_smoke_accepts_system_and_relative_macho_runtime_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         macho_libraries: "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2503.1.0)\n\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@loader_path/../lib/libz.dylib (compatibility version 1.0.0, current version 1.3.1)",
-        macho_rpaths: "@loader_path/../lib\n@executable_path/../lib",
+        macho_rpaths: "@loader_path\n@loader_path/../lib\n@executable_path\n@executable_path/../lib",
         ..default_build_recipe_options()
     })?;
 
