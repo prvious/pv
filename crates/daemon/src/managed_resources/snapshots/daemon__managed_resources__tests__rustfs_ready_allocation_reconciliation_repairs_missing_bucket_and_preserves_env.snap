@@ -13,13 +13,7 @@ expression: snapshot
             allocation_name: "uploads",
             generated_name: "acme-test-uploads",
             env: {
-                "access_key": "pv-rustfs",
                 "bucket": "acme-test-uploads",
-                "endpoint": "http://127.0.0.1:<api_port>",
-                "host": "127.0.0.1",
-                "port": "<api_port>",
-                "secret_key": "<secret_key>",
-                "url": "http://127.0.0.1:<api_port>",
             },
             status: Ready,
             created_at: "<timestamp>",

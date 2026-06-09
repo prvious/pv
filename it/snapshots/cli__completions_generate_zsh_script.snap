@@ -524,11 +524,11 @@ _pv_commands() {
 'rustfs:uninstall:Uninstall a RustFS track' \
 'rustfs:list:List installed RustFS tracks' \
 'rustfs:open:Open the running RustFS console' \
-'s3:install:Install a RustFS S3 track' \
-'s3:update:Update installed RustFS S3 tracks' \
-'s3:uninstall:Uninstall a RustFS S3 track' \
-'s3:list:List installed RustFS S3 tracks' \
-'s3:open:Open the running RustFS S3 console' \
+'s3:install:Install a RustFS track (S3 alias)' \
+'s3:update:Update installed RustFS tracks (S3 alias)' \
+'s3:uninstall:Uninstall a RustFS track (S3 alias)' \
+'s3:list:List installed RustFS tracks (S3 alias)' \
+'s3:open:Open the running RustFS console (S3 alias)' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }

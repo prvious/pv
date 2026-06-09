@@ -19,6 +19,7 @@ protocol = { path = "../protocol" }
 redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 resources = { path = "../resources" }
 rustix = { workspace = true }
 sqlx = { workspace = true }

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use camino::Utf8Path;
@@ -16,7 +17,7 @@ use state::{
 };
 
 use crate::{
-    DaemonError, ProcessSpec, ReadinessCheck,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
 };
 
@@ -57,8 +58,6 @@ struct RustfsRuntimeCredentialSnapshot {
     process_env: BTreeMap<String, String>,
     recorded_access_key: String,
     recorded_secret_key: String,
-    allocation_access_key: String,
-    allocation_secret_key: String,
     runtime_metadata: RustfsRuntimeMetadataSnapshot,
 }
 
@@ -564,11 +563,16 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
+        let allocations = database.resource_allocations(&project.id, "rustfs")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("RustFS reconciliation did not record an allocation");
+        };
 
         (
             read_dotenv(&project)?,
             database.managed_resource_track("rustfs", RUSTFS_TRACK)?,
-            database.resource_allocations(&project.id, "rustfs")?,
+            read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &allocation.generated_name)?,
+            allocations,
             database.assigned_ports()?,
             database.runtime_observed_states()?,
         )
@@ -700,6 +704,142 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
     assert_with_normalized_runtime(
         tempdir.path(),
         "rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_preserves_env",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+    reserve_rustfs_ports(&paths, 19_030, 19_031)?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let (bucket, initial_endpoint) = {
+        let database = Database::open(&paths)?;
+        let track = database.managed_resource_track("rustfs", RUSTFS_TRACK)?;
+        let allocations = database.resource_allocations(&project.id, "rustfs")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("RustFS reconciliation did not record an allocation");
+        };
+
+        (
+            allocation.generated_name.clone(),
+            required_env_value(&track.env, "endpoint")?,
+        )
+    };
+    stop_recorded_rustfs_runtime(&paths).await?;
+    let _api_port_guard = TcpListener::bind(("127.0.0.1", 19_030))?;
+    let _console_port_guard = TcpListener::bind(("127.0.0.1", 19_031))?;
+
+    reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+        let track = database.managed_resource_track("rustfs", RUSTFS_TRACK)?;
+        let current_endpoint = required_env_value(&track.env, "endpoint")?;
+        let allocations = database.resource_allocations(&project.id, "rustfs")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("RustFS reconciliation did not preserve an allocation");
+        };
+        let dotenv = read_dotenv(&project)?;
+
+        assert_eq!(allocation.generated_name, bucket);
+        assert_ne!(
+            initial_endpoint, current_endpoint,
+            "test setup should force RustFS onto a new API endpoint"
+        );
+        assert!(
+            !allocation.env.contains_key("endpoint"),
+            "Ready allocation env should not persist resource-level endpoint values"
+        );
+        assert!(
+            dotenv.contains(&format!("S3_ENDPOINT={current_endpoint}")),
+            "resource-level endpoint should render from current RustFS resource env"
+        );
+        assert!(
+            dotenv.contains(&format!("AWS_ENDPOINT={current_endpoint}")),
+            "allocation endpoint should render from current RustFS resource env"
+        );
+        assert!(
+            dotenv.contains(&format!("AWS_URL={current_endpoint}")),
+            "allocation URL should render from current RustFS resource env"
+        );
+
+        (
+            dotenv,
+            track,
+            allocations,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let _cleanup_result =
+        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation",
+        snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runtime() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    state::fs::write_sensitive_file(&project.path.join(".env"), "EXISTING=value\n")?;
+    seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+    reserve_available_rustfs_ports(&paths)?;
+
+    let result = reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            format!("{result:#?}"),
+            read_dotenv(&project)?,
+            database.resource_allocations(&project.id, "rustfs")?,
+            database.runtime_observed_states()?,
+            database.project_env_observed_state(&project.id)?,
+        )
+    };
+
+    assert!(
+        result.is_err(),
+        "expected RustFS allocation failure, got {result:#?}"
+    );
+    assert!(
+        snapshot
+            .2
+            .iter()
+            .all(|allocation| allocation.status != ResourceAllocationStatus::Ready),
+        "allocation failure should not mark RustFS allocations Ready"
+    );
+    assert!(
+        snapshot
+            .3
+            .iter()
+            .any(|state| state.status == RuntimeObservedStatus::Failed),
+        "allocation failure should record a failed RustFS runtime"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "rustfs_allocation_failure_preserves_project_env_and_records_failed_runtime",
         snapshot,
     )?;
 
@@ -1796,6 +1936,17 @@ fn rustfs_process_env_path(paths: &PvPaths, track: &str) -> camino::Utf8PathBuf 
     paths.resource_data_dir("rustfs", track).join("process-env")
 }
 
+async fn stop_recorded_rustfs_runtime(paths: &PvPaths) -> Result<()> {
+    if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
+        &paths.resource_pid("rustfs", RUSTFS_TRACK),
+        &paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK),
+    )? {
+        process.stop(Duration::from_secs(1)).await?;
+    }
+
+    Ok(())
+}
+
 fn rustfs_bucket_exists(paths: &PvPaths, track: &str, bucket: &str) -> Result<bool> {
     path_exists(&rustfs_bucket_path(paths, track, bucket))
 }
@@ -1835,25 +1986,29 @@ fn redis_project_config() -> &'static str {
 
 fn rustfs_runtime_credential_snapshot(
     paths: &PvPaths,
-    project_id: &str,
+    _project_id: &str,
 ) -> Result<RustfsRuntimeCredentialSnapshot> {
     let database = Database::open(paths)?;
     let track = database.managed_resource_track("rustfs", RUSTFS_TRACK)?;
-    let allocations = database.resource_allocations(project_id, "rustfs")?;
-    let Some(allocation) = allocations.first() else {
-        bail!("RustFS reconciliation did not record an allocation");
-    };
     let process_env = read_rustfs_process_env(paths, RUSTFS_TRACK)?;
     let runtime_metadata_source =
         state::fs::read_to_string(&paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK))?;
+    let recorded_access_key = required_env_value(&track.env, "access_key")?;
+    let recorded_secret_key = required_env_value(&track.env, "secret_key")?;
+    assert!(
+        !runtime_metadata_source.contains(&recorded_access_key),
+        "raw RustFS runtime metadata should not contain the access key"
+    );
+    assert!(
+        !runtime_metadata_source.contains(&recorded_secret_key),
+        "raw RustFS runtime metadata should not contain the secret key"
+    );
     let runtime_metadata = serde_json::from_str(&runtime_metadata_source)?;
 
     Ok(RustfsRuntimeCredentialSnapshot {
         process_env,
-        recorded_access_key: required_env_value(&track.env, "access_key")?,
-        recorded_secret_key: required_env_value(&track.env, "secret_key")?,
-        allocation_access_key: required_env_value(&allocation.env, "access_key")?,
-        allocation_secret_key: required_env_value(&allocation.env, "secret_key")?,
+        recorded_access_key,
+        recorded_secret_key,
         runtime_metadata,
     })
 }
@@ -1893,15 +2048,6 @@ fn assert_process_credentials_match_recorded_env(
         snapshot.recorded_secret_key,
         "RustFS child process secret key should match recorded resource env"
     );
-    assert_eq!(
-        snapshot.allocation_access_key, snapshot.recorded_access_key,
-        "RustFS allocation access key should reuse resource env credentials"
-    );
-    assert_eq!(
-        snapshot.allocation_secret_key, snapshot.recorded_secret_key,
-        "RustFS allocation secret key should reuse resource env credentials"
-    );
-
     Ok(())
 }
 
@@ -2055,6 +2201,18 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
 }
 
 fn seed_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_rustfs_fixture_artifact_with_script(paths, track, &rustfs_script())
+}
+
+fn seed_auth_rejecting_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_rustfs_fixture_artifact_with_script(paths, track, &auth_rejecting_rustfs_script())
+}
+
+fn seed_rustfs_fixture_artifact_with_script(
+    paths: &PvPaths,
+    track: &str,
+    script: &str,
+) -> Result<()> {
     let release_path = paths
         .resources()
         .join("rustfs")
@@ -2062,7 +2220,7 @@ fn seed_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join(format!("releases/{RUSTFS_ARTIFACT_VERSION}"));
     let executable = release_path.join("bin/rustfs");
 
-    state::fs::write_sensitive_file(&executable, rustfs_script())?;
+    state::fs::write_sensitive_file(&executable, script)?;
     set_executable(&executable)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
@@ -2242,7 +2400,7 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/rustfs");
 
-    state::fs::write_sensitive_file(&executable, rustfs_script())?;
+    state::fs::write_sensitive_file(&executable, &rustfs_script())?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -2956,7 +3114,15 @@ PY
 "#
 }
 
-fn rustfs_script() -> &'static str {
+fn rustfs_script() -> String {
+    rustfs_script_source("False")
+}
+
+fn auth_rejecting_rustfs_script() -> String {
+    rustfs_script_source("True")
+}
+
+fn rustfs_script_source(reject_s3: &str) -> String {
     r#"#!/bin/sh
 set -eu
 
@@ -2994,6 +3160,7 @@ import urllib.parse
 api_address = sys.argv[1]
 console_address = sys.argv[2]
 data_dir = sys.argv[3]
+reject_s3 = __PV_REJECT_S3__
 buckets_dir = os.path.join(data_dir, "buckets")
 os.makedirs(buckets_dir, exist_ok=True)
 with open(os.path.join(data_dir, "process-env"), "w", encoding="utf-8") as file:
@@ -3024,6 +3191,11 @@ class RustfsHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_PUT(self):
+        if reject_s3:
+            self.send_response(403)
+            self.end_headers()
+            return
+
         path = urllib.parse.urlparse(self.path).path.strip("/")
         parts = path.split("/", 1)
         length = int(self.headers.get("Content-Length", "0"))
@@ -3049,6 +3221,11 @@ class RustfsHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_HEAD(self):
+        if reject_s3:
+            self.send_response(403)
+            self.end_headers()
+            return
+
         path = urllib.parse.urlparse(self.path).path.strip("/")
         parts = path.split("/", 1)
         if len(parts) != 2:
@@ -3101,6 +3278,7 @@ threading.Thread(target=console.serve_forever, daemon=True).start()
 api.serve_forever()
 PY
 "#
+    .replace("__PV_REJECT_S3__", reject_s3)
 }
 
 fn assert_with_normalized_runtime(
@@ -3153,10 +3331,6 @@ fn assert_with_normalized_runtime(
     settings.add_filter(
         r#"recorded_secret_key: "[0-9a-f]{32}""#,
         r#"recorded_secret_key: "<secret_key>""#,
-    );
-    settings.add_filter(
-        r#"allocation_secret_key: "[0-9a-f]{32}""#,
-        r#"allocation_secret_key: "<secret_key>""#,
     );
     settings.add_filter(
         r#""dashboard_url": "http://127\.0\.0\.1:\d+""#,

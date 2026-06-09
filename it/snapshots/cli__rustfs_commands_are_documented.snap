@@ -42,35 +42,35 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Install a RustFS S3 track\n\nUsage: pv s3:install [OPTIONS] [track]\n\nArguments:\n  [track]  RustFS track to install\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Install a RustFS track (S3 alias)\n\nUsage: pv s3:install [OPTIONS] [track]\n\nArguments:\n  [track]  RustFS track to install\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Update installed RustFS S3 tracks\n\nUsage: pv s3:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Update installed RustFS tracks (S3 alias)\n\nUsage: pv s3:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Uninstall a RustFS S3 track\n\nUsage: pv s3:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned RustFS data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stdout: "Uninstall a RustFS track (S3 alias)\n\nUsage: pv s3:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  RustFS track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned RustFS data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "List installed RustFS S3 tracks\n\nUsage: pv s3:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "List installed RustFS tracks (S3 alias)\n\nUsage: pv s3:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Open the running RustFS S3 console\n\nUsage: pv s3:open [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Open the running RustFS console (S3 alias)\n\nUsage: pv s3:open [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
 ]

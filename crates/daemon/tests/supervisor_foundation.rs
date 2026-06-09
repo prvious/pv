@@ -319,6 +319,37 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 }
 
 #[tokio::test]
+async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut spec = process_spec(
+        &paths,
+        "private-env-runtime",
+        "/bin/sh",
+        vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+    );
+    spec.private_environment = BTreeMap::from([(
+        "RUSTFS_SECRET_KEY".to_string(),
+        "initial-secret".to_string(),
+    )]);
+    let process = supervisor.start(spec.clone()).await?;
+    let mut changed_spec = spec.clone();
+    changed_spec.private_environment = BTreeMap::from([(
+        "RUSTFS_SECRET_KEY".to_string(),
+        "changed-secret".to_string(),
+    )]);
+
+    assert!(supervisor.verify_ownership(&spec)?.is_some());
+    assert!(supervisor.verify_ownership(&changed_spec)?.is_none());
+
+    process.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

@@ -1,5 +1,7 @@
 use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use state::{Database, PortOwner, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError};
@@ -11,6 +13,7 @@ use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
 
 const NOT_RUNNING_MESSAGE: &str = "RustFS is not running for any linked Project";
+const CONSOLE_LIVENESS_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) fn install(
     args: RustfsInstallArgs,
@@ -85,6 +88,10 @@ fn running_console_url(database: &Database) -> Result<Option<String>, ExecuteErr
             continue;
         }
         if let Some(port) = console_port(database, &track)? {
+            if !console_port_is_reachable(port) {
+                continue;
+            }
+
             return Ok(Some(format!("http://127.0.0.1:{port}")));
         }
     }
@@ -109,6 +116,12 @@ fn console_port(database: &Database, track: &str) -> Result<Option<u16>, Execute
 
             None
         }))
+}
+
+fn console_port_is_reachable(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+
+    TcpStream::connect_timeout(&address, CONSOLE_LIVENESS_TIMEOUT).is_ok()
 }
 
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {

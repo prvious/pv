@@ -1,0 +1,46 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Err(\n    UnexpectedProtocolResponse {\n        reason: \"RustFS admin error: failed to create bucket `acme-test-uploads`; service error\",\n    },\n)",
+    "EXISTING=value\n",
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "rustfs",
+            track: "1.0",
+            allocation_name: "uploads",
+            generated_name: "acme-test-uploads",
+            env: {},
+            status: Desired,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "rustfs",
+                track: "1.0",
+            },
+            status: Failed,
+            message: Some(
+                "daemon protocol error: RustFS admin error: failed to create bucket `acme-test-uploads`; service error",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Failed,
+            message: Some(
+                "daemon protocol error: RustFS admin error: failed to create bucket `acme-test-uploads`; service error",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
+)

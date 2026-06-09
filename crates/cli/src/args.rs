@@ -193,19 +193,22 @@ pub(crate) enum Command {
     #[command(name = "rustfs:open", about = "Open the running RustFS console")]
     RustfsOpen,
 
-    #[command(name = "s3:install", about = "Install a RustFS S3 track")]
+    #[command(name = "s3:install", about = "Install a RustFS track (S3 alias)")]
     S3Install(RustfsInstallArgs),
 
-    #[command(name = "s3:update", about = "Update installed RustFS S3 tracks")]
+    #[command(
+        name = "s3:update",
+        about = "Update installed RustFS tracks (S3 alias)"
+    )]
     S3Update,
 
-    #[command(name = "s3:uninstall", about = "Uninstall a RustFS S3 track")]
+    #[command(name = "s3:uninstall", about = "Uninstall a RustFS track (S3 alias)")]
     S3Uninstall(RustfsUninstallArgs),
 
-    #[command(name = "s3:list", about = "List installed RustFS S3 tracks")]
+    #[command(name = "s3:list", about = "List installed RustFS tracks (S3 alias)")]
     S3List,
 
-    #[command(name = "s3:open", about = "Open the running RustFS S3 console")]
+    #[command(name = "s3:open", about = "Open the running RustFS console (S3 alias)")]
     S3Open,
 }
 

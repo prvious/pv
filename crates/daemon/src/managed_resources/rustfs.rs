@@ -128,7 +128,7 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
                     continue;
                 }
 
-                let allocation_env = allocation_env(resource_env, bucket)?;
+                let allocation_env = allocation_env(bucket);
                 database.mark_resource_allocation_ready(
                     &allocation.project_id,
                     &context.resource_name,
@@ -167,34 +167,8 @@ fn rustfs_resource_env(
     ]))
 }
 
-fn allocation_env(
-    resource_env: &EnvContextValues,
-    bucket: &str,
-) -> Result<EnvContextValues, DaemonError> {
-    Ok(BTreeMap::from([
-        ("bucket".to_string(), bucket.to_string()),
-        (
-            "access_key".to_string(),
-            required_env_value(resource_env, "access_key")?,
-        ),
-        (
-            "secret_key".to_string(),
-            required_env_value(resource_env, "secret_key")?,
-        ),
-        (
-            "endpoint".to_string(),
-            required_env_value(resource_env, "endpoint")?,
-        ),
-        (
-            "host".to_string(),
-            required_env_value(resource_env, "host")?,
-        ),
-        (
-            "port".to_string(),
-            required_env_value(resource_env, "port")?,
-        ),
-        ("url".to_string(), required_env_value(resource_env, "url")?),
-    ]))
+fn allocation_env(bucket: &str) -> EnvContextValues {
+    BTreeMap::from([("bucket".to_string(), bucket.to_string())])
 }
 
 fn process_environment(
