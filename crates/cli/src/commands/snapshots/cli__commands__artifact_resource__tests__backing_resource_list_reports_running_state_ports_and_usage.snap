@@ -1,0 +1,12 @@
+---
+source: crates/cli/src/commands/artifact_resource.rs
+expression: "RunOutput::from_stdout(exit_code, stdout)?"
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "Track  Status  Ports  Projects  Version  Path\n1  running  dashboard=8025,smtp=1025  1  1.20.0-pv1  <tempdir>/home/.pv/resources/mailpit/1/releases/1.20.0-pv1\n",
+}
