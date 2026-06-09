@@ -31,7 +31,6 @@ pub(crate) struct ProjectResourcePlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectResourceAllocationPlan {
-    pub(crate) track: String,
     pub(crate) allocations: Vec<ResourceAllocationInput>,
 }
 
@@ -256,7 +255,7 @@ fn project_resource_plan(
 
         allocation_plans.insert(
             resource.clone(),
-            ProjectResourceAllocationPlan { track, allocations },
+            ProjectResourceAllocationPlan { allocations },
         );
     }
 
@@ -354,7 +353,7 @@ fn apply_project_resource_plan(
         database.replace_project_resource_allocations(
             project_id,
             &resource.resource_name,
-            &allocation_plan.track,
+            &resource.track,
             &allocation_plan.allocations,
         )?;
     }

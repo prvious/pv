@@ -3,12 +3,12 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "Err(\n    ReadinessTimedOut {\n        check: \"http:127.0.0.1:<readiness_port>/__pv_unready_fixture__\",\n        timeout_ms: <timeout_ms>,\n        last_error: Some(\n            \"I/O error: readiness unavailable\",\n        ),\n    },\n)",
+    "Err(\n    ManagedResourceTrackRemoved {\n        resource: \"mailpit\",\n        track: \"1.0\",\n    },\n)",
     None,
     ManagedResourceTrackRecord {
         resource_name: "mailpit",
         track: "1.0",
-        desired_state: Installed,
+        desired_state: Removed,
         installed_version: Some(
             "1.0.0-pv1",
         ),
@@ -18,7 +18,7 @@ expression: snapshot
         env: {},
         usage_count: 1,
         removal_prune: false,
-        removal_force: false,
+        removal_force: true,
         updated_at: "<timestamp>",
     },
     [
@@ -49,22 +49,17 @@ expression: snapshot
             },
             status: Failed,
             message: Some(
-                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
+                "Managed Resource runtime `mailpit` track `1.0` is marked removed",
             ),
             observed_at: "<timestamp>",
         },
     ],
-    RuntimeFilePresence {
-        pid: false,
-        metadata: false,
-        config: false,
-    },
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
+                "Managed Resource runtime `mailpit` track `1.0` is marked removed",
             ),
             observed_at: "<timestamp>",
             warnings: [],

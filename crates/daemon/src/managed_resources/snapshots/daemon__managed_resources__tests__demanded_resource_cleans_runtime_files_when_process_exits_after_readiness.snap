@@ -3,24 +3,8 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "Err(\n    ReadinessTimedOut {\n        check: \"http:127.0.0.1:<readiness_port>/__pv_unready_fixture__\",\n        timeout_ms: <timeout_ms>,\n        last_error: Some(\n            \"I/O error: readiness unavailable\",\n        ),\n    },\n)",
+    "Err(\n    UnexpectedProtocolResponse {\n        reason: \"runtime `mailpit-1.0` exited before readiness was verified\",\n    },\n)",
     None,
-    ManagedResourceTrackRecord {
-        resource_name: "mailpit",
-        track: "1.0",
-        desired_state: Installed,
-        installed_version: Some(
-            "1.0.0-pv1",
-        ),
-        current_artifact_path: Some(
-            "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
-        ),
-        env: {},
-        usage_count: 1,
-        removal_prune: false,
-        removal_force: false,
-        updated_at: "<timestamp>",
-    },
     [
         PortAssignment {
             owner: Resource {
@@ -49,7 +33,7 @@ expression: snapshot
             },
             status: Failed,
             message: Some(
-                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
+                "daemon protocol error: runtime `mailpit-1.0` exited before readiness was verified",
             ),
             observed_at: "<timestamp>",
         },
@@ -64,7 +48,7 @@ expression: snapshot
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
+                "daemon protocol error: runtime `mailpit-1.0` exited before readiness was verified",
             ),
             observed_at: "<timestamp>",
             warnings: [],

@@ -1,0 +1,33 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Err(\n    ManagedResourcePortNameReserved {\n        resource: \"mailpit\",\n        track: \"1.0\",\n        port: \"default\",\n    },\n)",
+    None,
+    [],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Failed,
+            message: Some(
+                "Managed Resource runtime `mailpit` track `1.0` uses reserved port name `default`",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Failed,
+            message: Some(
+                "Managed Resource runtime `mailpit` track `1.0` uses reserved port name `default`",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
+)

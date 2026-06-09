@@ -139,14 +139,12 @@ RustFS adapter:
 ```toml
 [workspace.dependencies]
 object_store = { version = "0.13.2", default-features = false, features = ["aws"] }
-aws-sdk-s3 = { version = "1.135.0", default-features = false, features = ["rustls", "rt-tokio", "http-1x"] }
 ```
 
 Then:
 
 ```bash
 cargo update -p object_store --precise 0.13.2
-cargo update -p aws-sdk-s3 --precise 1.135.0
 ```
 
 Use `sqlx::query(...)`, `sqlx::query_as(...)`, and dynamic SQL strings. Do not use `sqlx::query!` macros or offline metadata.
@@ -159,28 +157,7 @@ let mut connection = client.get_multiplexed_async_connection().await?;
 let pong: String = redis::cmd("PING").query_async(&mut connection).await?;
 ```
 
-Use `object_store` only for S3 object checks. Use `aws-sdk-s3` for RustFS bucket creation:
-
-```rust
-use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use aws_sdk_s3::{Client, Config};
-
-let config = Config::builder()
-    .behavior_version(BehaviorVersion::latest())
-    .credentials_provider(Credentials::new(
-        access_key,
-        secret_key,
-        None,
-        None,
-        "pv-rustfs",
-    ))
-    .region(Region::new("us-east-1"))
-    .endpoint_url(endpoint)
-    .force_path_style(true)
-    .build();
-let client = Client::from_conf(config);
-client.create_bucket().bucket(bucket).send().await?;
-```
+Use `object_store` first for RustFS bucket create/check work. Add the AWS SDK only if `object_store` cannot create or verify buckets cleanly against RustFS.
 
 ## Task 1: Runtime Foundation
 
@@ -561,7 +538,7 @@ pub(crate) async fn reconcile_project_resources(
 Behavior:
 
 1. For every resource in `plan.resources`, look up a runtime adapter in the catalog.
-2. If no adapter is registered, return `DaemonError::UnsupportedManagedResourceRuntime`.
+2. If no adapter is registered and no seeded test env context exists for that track, record the resource runtime as failed and return `DaemonError::UnsupportedManagedResourceRuntime`.
 3. Ensure the track is installed. If a track row exists without `current_artifact_path`, return `ManagedResourceArtifactMissing` in this task. Demand-driven install from manifests is added in Step 12.
 4. Assign every named port with `PortRequest::resource_port`.
 5. Build `ManagedResourceRuntimeContext`.
@@ -1270,7 +1247,7 @@ url=http://127.0.0.1:<api port>
 
 Allocation behavior:
 
-1. Create bucket with `aws-sdk-s3` `create_bucket`.
+1. Create or confirm the bucket through `object_store`.
 2. Treat already-existing bucket as success.
 3. Verify object operations by creating a short object with `object_store::aws::AmazonS3Builder` and `ObjectStoreExt::put` followed by `head`.
 4. Mark allocation ready with `bucket`, `access_key`, `secret_key`, `endpoint`, `host`, `port`, and `url`.

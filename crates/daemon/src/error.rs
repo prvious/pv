@@ -83,12 +83,29 @@ pub enum DaemonError {
     UnsupportedManagedResourceRuntime { resource: String },
 
     #[error(
+        "Managed Resource runtime `{name}` is listening but no PV-owned process could be verified"
+    )]
+    NonPvManagedResourceRuntimeListener { name: String },
+
+    #[error(
         "Managed Resource runtime `{resource}` track `{track}` is missing installed artifact path"
     )]
     ManagedResourceArtifactMissing { resource: String, track: String },
 
+    #[error("Managed Resource runtime `{resource}` track `{track}` is marked removed")]
+    ManagedResourceTrackRemoved { resource: String, track: String },
+
     #[error("Managed Resource runtime `{resource}` track `{track}` is missing port `{port}`")]
     ManagedResourcePortMissing {
+        resource: String,
+        track: String,
+        port: String,
+    },
+
+    #[error(
+        "Managed Resource runtime `{resource}` track `{track}` uses reserved port name `{port}`"
+    )]
+    ManagedResourcePortNameReserved {
         resource: String,
         track: String,
         port: String,

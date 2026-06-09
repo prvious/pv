@@ -7,17 +7,29 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, LinkProjectInput, PortRequest, ProjectRecord, PvPaths, RuntimeObservedStatus,
-    RuntimeSubject, StateError,
+    Database, EnvContextValues, LinkProjectInput, PortRequest, ProjectRecord, PvPaths,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
-use crate::{ReadinessCheck, managed_resources::ManagedResourceRuntimeAdapter};
+use crate::{
+    DaemonError, ProcessSpec, ReadinessCheck, managed_resources::ManagedResourceRuntimeAdapter,
+};
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
 const FAKE_MAILPIT_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
+    super::ManagedResourcePortSpec {
+        name: "smtp",
+        preferred_port: 1025,
+    },
+    super::ManagedResourcePortSpec {
+        name: "default",
+        preferred_port: 8025,
+    },
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeFilePresence {
@@ -138,6 +150,8 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 
     drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let stale_port_guard = seed_fake_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
+    drop(stale_port_guard);
 
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
@@ -172,6 +186,84 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         tempdir.path(),
         "system_resource_reconciliation_stops_unlinked_project_runtime",
         cleanup_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let stale_smtp_guard = seed_fake_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "smtp")?;
+    let stale_smtp_port = stale_smtp_guard.local_addr()?.port();
+    let stale_dashboard_guard =
+        seed_fake_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "dashboard")?;
+    let stale_dashboard_port = stale_dashboard_guard.local_addr()?.port();
+
+    let result = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    let reassign_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+    let stale_port_still_assigned = reassign_snapshot.2.iter().any(|assignment| {
+        matches!(
+            &assignment.owner,
+            state::PortOwner::Resource { name, track, port }
+                if name == "mailpit"
+                    && track == FAKE_MAILPIT_TRACK
+                    && ((port == "smtp" && assignment.port == stale_smtp_port)
+                        || (port == "dashboard" && assignment.port == stale_dashboard_port))
+        )
+    });
+
+    if result.is_ok() {
+        write_project_config(
+            &project,
+            r#"env:
+  APP_URL: "${project_url}"
+"#,
+        )?;
+        let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    }
+
+    assert!(
+        result.is_ok(),
+        "expected occupied stale port to be reassigned, got {result:#?}"
+    );
+    assert!(
+        !stale_port_still_assigned,
+        "expected stale non-PV listener ports {stale_smtp_port} and {stale_dashboard_port} to be released"
+    );
+    assert_runtime_status(
+        &reassign_snapshot.3,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Running,
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it",
+        reassign_snapshot,
     )?;
 
     Ok(())
@@ -283,6 +375,7 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
             database.assigned_ports()?,
             runtime_states.clone(),
             runtime_files.clone(),
+            database.project_env_observed_state(&project.id)?,
         )
     };
 
@@ -303,6 +396,234 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
     assert_with_normalized_runtime(
         tempdir.path(),
         "demanded_resource_records_failed_runtime_when_readiness_fails_before_env_rendering",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readiness() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fast_exit_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+
+    drop(mailpit_port_guards);
+    let result =
+        reconcile_project_env_with_fast_exit_fake_runtime_catalog(&paths, &project.id).await;
+    let failure_snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.assigned_ports()?,
+            runtime_states.clone(),
+            runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+            database.project_env_observed_state(&project.id)?,
+        )
+    };
+
+    if result.is_ok() {
+        write_project_config(
+            &project,
+            r#"env:
+  APP_URL: "${project_url}"
+"#,
+        )?;
+        let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    }
+
+    assert!(
+        result.is_err(),
+        "expected fast-exit runtime failure, got {result:#?}"
+    );
+    assert_failed_mailpit_runtime(&failure_snapshot.3);
+    assert_eq!(
+        failure_snapshot.4,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "expected fast-exit failure cleanup to remove runtime files"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_cleans_runtime_files_when_process_exits_after_readiness",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_removal_intent(
+            "mailpit",
+            FAKE_MAILPIT_TRACK,
+            false,
+            true,
+        )?;
+    }
+    let mailpit_port_guards = seed_fake_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+
+    drop(mailpit_port_guards);
+    let result = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    let failure_snapshot = {
+        let database = Database::open(&paths)?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
+            database.assigned_ports()?,
+            runtime_states.clone(),
+            database.project_env_observed_state(&project.id)?,
+        )
+    };
+
+    if result.is_ok() {
+        write_project_config(
+            &project,
+            r#"env:
+  APP_URL: "${project_url}"
+"#,
+        )?;
+        let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    }
+
+    assert!(
+        result.is_err(),
+        "expected removed track to fail before runtime start, got {result:#?}"
+    );
+    assert_failed_mailpit_runtime(&failure_snapshot.4);
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_removed_track_fails_without_starting_runtime",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn demanded_resource_records_failed_runtime_when_named_port_assignment_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    let catalog = invalid_default_port_runtime_catalog()?;
+    let mut database = Database::open(&paths)?;
+
+    let result = crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await;
+    let failure_snapshot = (
+        format!("{result:#?}"),
+        read_optional_dotenv(&project)?,
+        database.assigned_ports()?,
+        database.runtime_observed_states()?,
+        database.project_env_observed_state(&project.id)?,
+    );
+
+    assert!(
+        result.is_err(),
+        "expected named port assignment failure, got {result:#?}"
+    );
+    assert_eq!(
+        failure_snapshot.2,
+        Vec::new(),
+        "expected failed named port assignment to release earlier port rows"
+    );
+    assert_failed_mailpit_runtime(&failure_snapshot.3);
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "demanded_resource_records_failed_runtime_when_named_port_assignment_fails",
+        failure_snapshot,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn production_demanded_resource_without_adapter_fails_before_env_rendering() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mailpit:
+  version: "1.0"
+"#,
+    )?;
+
+    let result = crate::project_env::reconcile_project_env(&paths, &project.id).await;
+    let failure_snapshot = {
+        let database = Database::open(&paths)?;
+
+        (
+            format!("{result:#?}"),
+            read_optional_dotenv(&project)?,
+            database.project_managed_resources(&project.id)?,
+            database.runtime_observed_states()?,
+            database.project_env_observed_state(&project.id)?,
+        )
+    };
+
+    assert!(
+        result.is_err(),
+        "expected unsupported production resource to fail, got {result:#?}"
+    );
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "production_demanded_resource_without_adapter_fails_before_env_rendering",
         failure_snapshot,
     )?;
 
@@ -446,6 +767,45 @@ async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     Ok(())
 }
 
+async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<()> {
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        super::fake::FakeMailpitRuntimeAdapter::exits_after_readiness()?,
+    );
+    let mut database = Database::open(paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        project_id,
+        &catalog,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntimeCatalog> {
+    Ok(super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        InvalidDefaultPortRuntimeAdapter {
+            artifact_adapter: super::ManagedResourceArtifactAdapter::new(
+                "mailpit",
+                "bin/pv-fake-mailpit",
+            )?,
+        },
+    ))
+}
+
 fn link_project(
     paths: &PvPaths,
     project_path: &Utf8Path,
@@ -522,6 +882,10 @@ fn seed_fake_mailpit_artifact_with_script(
 
 fn seed_unready_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     seed_fake_mailpit_artifact_with_script(paths, track, unready_fake_mailpit_script())
+}
+
+fn seed_fast_exit_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_fake_mailpit_artifact_with_script(paths, track, fast_exit_fake_mailpit_script())
 }
 
 fn seed_fake_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[TcpListener; 2]> {
@@ -717,6 +1081,34 @@ done
 "#
 }
 
+fn fast_exit_fake_mailpit_script() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+
+dashboard_port="$2"
+
+python3 - "$dashboard_port" <<'PY'
+import http.server
+import os
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ready")
+        self.wfile.flush()
+        os._exit(0)
+
+    def log_message(self, _format, *_args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+server.serve_forever()
+PY
+"#
+}
+
 fn assert_with_normalized_runtime(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -886,4 +1278,51 @@ fn regex_literal(value: &str) -> String {
     }
 
     literal
+}
+
+#[derive(Clone, Debug)]
+struct InvalidDefaultPortRuntimeAdapter {
+    artifact_adapter: super::ManagedResourceArtifactAdapter,
+}
+
+impl ManagedResourceRuntimeAdapter for InvalidDefaultPortRuntimeAdapter {
+    fn resource_name(&self) -> &'static str {
+        "mailpit"
+    }
+
+    fn artifact_adapter(&self) -> Result<super::ManagedResourceArtifactAdapter, DaemonError> {
+        Ok(self.artifact_adapter.clone())
+    }
+
+    fn port_specs(&self) -> &'static [super::ManagedResourcePortSpec] {
+        INVALID_DEFAULT_PORT_SPECS
+    }
+
+    fn build_process_spec(
+        &self,
+        _paths: &PvPaths,
+        _context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<ProcessSpec, DaemonError> {
+        Err(DaemonError::UnexpectedProtocolResponse {
+            reason: "invalid default-port test adapter should fail during port assignment"
+                .to_string(),
+        })
+    }
+
+    fn readiness(
+        &self,
+        _context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<ReadinessCheck, DaemonError> {
+        Err(DaemonError::UnexpectedProtocolResponse {
+            reason: "invalid default-port test adapter should fail during port assignment"
+                .to_string(),
+        })
+    }
+
+    fn resource_env(
+        &self,
+        _context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<EnvContextValues, DaemonError> {
+        Ok(BTreeMap::new())
+    }
 }

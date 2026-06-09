@@ -126,7 +126,7 @@ impl PvPaths {
 
     pub fn resource_runtime_config(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
         self.config()
-            .join(format!("resources/{resource_name}-{track}.json"))
+            .join(format!("resources/{resource_name}/{track}.json"))
     }
 
     pub fn certificates(&self) -> &Utf8Path {
@@ -151,7 +151,7 @@ impl PvPaths {
 
     pub fn resource_log(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
         self.logs()
-            .join(format!("resources/{resource_name}-{track}.log"))
+            .join(format!("resources/{resource_name}/{track}.log"))
     }
 
     pub fn gateway_pid(&self) -> Utf8PathBuf {
@@ -172,12 +172,12 @@ impl PvPaths {
 
     pub fn resource_pid(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
         self.run()
-            .join(format!("resources/{resource_name}-{track}.pid"))
+            .join(format!("resources/{resource_name}/{track}.pid"))
     }
 
     pub fn resource_runtime_metadata(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
         self.run()
-            .join(format!("resources/{resource_name}-{track}.json"))
+            .join(format!("resources/{resource_name}/{track}.json"))
     }
 
     pub fn composer(&self) -> &Utf8Path {

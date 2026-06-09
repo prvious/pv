@@ -14,9 +14,9 @@ use resources::{
     TrackSelector,
 };
 use state::{
-    Database, EnvContextValues, ManagedResourceTrackRecord, PortOwner, PortRequest, ProjectRecord,
-    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
-    RuntimeObservedStatus, RuntimeSubject, StateError,
+    Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
+    PortRequest, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
@@ -25,18 +25,13 @@ const DEFAULT_MANIFEST_URL: &str = "https://artifacts.prvious.test/manifest.json
 const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const RESOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const RESOURCE_START_ATTEMPTS: usize = 10;
+const RESERVED_RESOURCE_PORT_NAME: &str = "default";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ManagedResourcePortSpec {
     pub name: &'static str,
     pub preferred_port: u16,
-    pub env_key: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ManagedResourcePortAssignment {
-    pub name: String,
-    pub port: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,7 +145,6 @@ pub(crate) struct ManagedResourceInstallOptions {
 pub(crate) struct ManagedResourceRuntimeCatalog {
     adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>>,
     install_options: ManagedResourceInstallOptions,
-    strict_unsupported_resources: bool,
 }
 
 impl ManagedResourceRuntimeCatalog {
@@ -161,7 +155,6 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: DEFAULT_MANIFEST_URL.to_string(),
                 target_platform: current_target_platform(),
             },
-            strict_unsupported_resources: false,
         }
     }
 
@@ -177,20 +170,11 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters,
             install_options,
-            strict_unsupported_resources: true,
         }
     }
 
     fn adapter(&self, resource_name: &str) -> Option<&dyn ManagedResourceRuntimeAdapter> {
         self.adapters.get(resource_name).map(Box::as_ref)
-    }
-
-    fn contains(&self, resource_name: &str) -> bool {
-        self.adapters.contains_key(resource_name)
-    }
-
-    fn should_error_on_unsupported_resource(&self) -> bool {
-        self.strict_unsupported_resources
     }
 }
 
@@ -265,61 +249,81 @@ async fn reconcile_resource_track(
     supervisor: &ProcessSupervisor,
     resource: &state::ProjectManagedResourceInput,
 ) -> Result<(), DaemonError> {
-    let Some(adapter) = catalog.adapter(&resource.resource_name) else {
-        if !catalog.should_error_on_unsupported_resource() {
-            return Ok(());
-        }
-
-        return Err(DaemonError::UnsupportedManagedResourceRuntime {
-            resource: resource.resource_name.clone(),
-        });
-    };
-    let track_record = ensure_track_artifact(paths, database, catalog, adapter, resource).await?;
-    let Some(artifact_path) = track_record.current_artifact_path else {
-        return Err(DaemonError::ManagedResourceArtifactMissing {
-            resource: resource.resource_name.clone(),
-            track: resource.track.clone(),
-        });
-    };
-    let port_assignments =
-        assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
-    let ports = port_assignments
-        .into_iter()
-        .map(|assignment| (assignment.name, assignment.port))
-        .collect::<BTreeMap<_, _>>();
-    let context = ManagedResourceRuntimeContext {
-        resource_name: resource.resource_name.clone(),
-        track: resource.track.clone(),
-        artifact_path,
-        data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
-        ports,
-    };
     let subject = RuntimeSubject::Resource {
         name: resource.resource_name.clone(),
         track: resource.track.clone(),
     };
-    let result = async {
-        let spec = adapter.build_process_spec(paths, &context)?;
-        let readiness = adapter.readiness(&context)?;
-        let readiness_timeout = adapter_readiness_timeout(adapter);
+    let Some(adapter) = catalog.adapter(&resource.resource_name) else {
+        if unsupported_resource_has_seeded_env_context(database, resource)? {
+            return Ok(());
+        }
 
-        start_or_adopt_runtime(supervisor, spec, readiness, readiness_timeout).await?;
-
-        let env = adapter.resource_env(&context)?;
-        database.record_managed_resource_track_env_context(
-            &resource.resource_name,
-            &resource.track,
-            &env,
-        )?;
-        let allocations = desired_allocations(database, project, plan, resource)?;
-        adapter.reconcile_allocations(paths, database, &context, &allocations)?;
+        let error = DaemonError::UnsupportedManagedResourceRuntime {
+            resource: resource.resource_name.clone(),
+        };
         database.record_runtime_observed_snapshot(
-            subject.clone(),
-            RuntimeObservedStatus::Running,
-            Some("Managed Resource runtime is ready"),
+            subject,
+            RuntimeObservedStatus::Failed,
+            Some(&error.to_string()),
         )?;
 
-        Ok::<(), DaemonError>(())
+        return Err(error);
+    };
+    let result = async {
+        let track_record =
+            ensure_track_artifact(paths, database, catalog, adapter, resource).await?;
+        let Some(artifact_path) = track_record.current_artifact_path else {
+            return Err(DaemonError::ManagedResourceArtifactMissing {
+                resource: resource.resource_name.clone(),
+                track: resource.track.clone(),
+            });
+        };
+        let mut attempt = 0;
+
+        loop {
+            attempt += 1;
+            let ports =
+                assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
+            if ports_occupied_without_recorded_runtime(paths, supervisor, resource, &ports)?
+                && attempt < RESOURCE_START_ATTEMPTS
+            {
+                cleanup_resource_runtime_files(paths, resource)?;
+                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+
+                continue;
+            }
+            let context = ManagedResourceRuntimeContext {
+                resource_name: resource.resource_name.clone(),
+                track: resource.track.clone(),
+                artifact_path: artifact_path.clone(),
+                data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
+                ports,
+            };
+            let mut runtime_attempt = ResourceRuntimeAttempt {
+                paths,
+                database,
+                project,
+                plan,
+                adapter,
+                supervisor,
+                resource,
+                subject: &subject,
+            };
+            let result = runtime_attempt.run(&context).await;
+
+            if matches!(
+                result,
+                Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
+            ) && attempt < RESOURCE_START_ATTEMPTS
+            {
+                cleanup_resource_runtime_files(paths, resource)?;
+                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+
+                continue;
+            }
+
+            break result;
+        }
     }
     .await;
 
@@ -332,6 +336,61 @@ async fn reconcile_resource_track(
     }
 
     result
+}
+
+struct ResourceRuntimeAttempt<'a> {
+    paths: &'a PvPaths,
+    database: &'a mut Database,
+    project: &'a ProjectRecord,
+    plan: &'a crate::project_env::ProjectResourcePlan,
+    adapter: &'a dyn ManagedResourceRuntimeAdapter,
+    supervisor: &'a ProcessSupervisor,
+    resource: &'a state::ProjectManagedResourceInput,
+    subject: &'a RuntimeSubject,
+}
+
+impl ResourceRuntimeAttempt<'_> {
+    async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
+        let spec = self.adapter.build_process_spec(self.paths, context)?;
+        let readiness = self.adapter.readiness(context)?;
+        let readiness_timeout = adapter_readiness_timeout(self.adapter);
+
+        start_or_adopt_runtime(self.supervisor, spec, readiness, readiness_timeout).await?;
+
+        let env = self.adapter.resource_env(context)?;
+        self.database.record_managed_resource_track_env_context(
+            &self.resource.resource_name,
+            &self.resource.track,
+            &env,
+        )?;
+        let allocations =
+            desired_allocations(self.database, self.project, self.plan, self.resource)?;
+        self.adapter
+            .reconcile_allocations(self.paths, self.database, context, &allocations)?;
+        self.database.record_runtime_observed_snapshot(
+            self.subject.clone(),
+            RuntimeObservedStatus::Running,
+            Some("Managed Resource runtime is ready"),
+        )?;
+
+        Ok(())
+    }
+}
+
+fn unsupported_resource_has_seeded_env_context(
+    database: &Database,
+    resource: &state::ProjectManagedResourceInput,
+) -> Result<bool, DaemonError> {
+    let has_context = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .any(|track| {
+            track.resource_name == resource.resource_name
+                && track.track == resource.track
+                && !track.env.is_empty()
+        });
+
+    Ok(has_context)
 }
 
 async fn ensure_track_artifact(
@@ -375,16 +434,25 @@ fn installed_track(
     resource_name: &str,
     track: &str,
 ) -> Result<Option<ManagedResourceTrackRecord>, DaemonError> {
-    let record = database
+    let Some(record) = database
         .managed_resource_tracks()?
         .into_iter()
-        .find(|record| {
-            record.resource_name == resource_name
-                && record.track == track
-                && record.current_artifact_path.is_some()
-        });
+        .find(|record| record.resource_name == resource_name && record.track == track)
+    else {
+        return Ok(None);
+    };
 
-    Ok(record)
+    if record.current_artifact_path.is_none() {
+        return Ok(None);
+    }
+    if record.desired_state == ManagedResourceDesiredState::Removed {
+        return Err(DaemonError::ManagedResourceTrackRemoved {
+            resource: resource_name.to_string(),
+            track: track.to_string(),
+        });
+    }
+
+    Ok(Some(record))
 }
 
 fn install_missing_track_blocking(
@@ -420,10 +488,33 @@ fn assign_named_ports(
     adapter: &dyn ManagedResourceRuntimeAdapter,
     resource_name: &str,
     track: &str,
-) -> Result<Vec<ManagedResourcePortAssignment>, DaemonError> {
-    let mut assignments = Vec::new();
+) -> Result<BTreeMap<String, u16>, DaemonError> {
+    let result = assign_named_ports_inner(database, adapter, resource_name, track);
+
+    if result.is_err() {
+        release_resource_track_ports(database, resource_name, track)?;
+    }
+
+    result
+}
+
+fn assign_named_ports_inner(
+    database: &mut Database,
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    resource_name: &str,
+    track: &str,
+) -> Result<BTreeMap<String, u16>, DaemonError> {
+    let mut assignments = BTreeMap::new();
 
     for port_spec in adapter.port_specs() {
+        if port_spec.name == RESERVED_RESOURCE_PORT_NAME {
+            return Err(DaemonError::ManagedResourcePortNameReserved {
+                resource: resource_name.to_string(),
+                track: track.to_string(),
+                port: port_spec.name.to_string(),
+            });
+        }
+
         let assignment = database.assign_port(
             PortRequest::resource_port(
                 resource_name,
@@ -436,13 +527,30 @@ fn assign_named_ports(
             local_loopback_port_available,
         )?;
 
-        assignments.push(ManagedResourcePortAssignment {
-            name: port_spec.name.to_string(),
-            port: assignment.port,
-        });
+        assignments.insert(port_spec.name.to_string(), assignment.port);
     }
 
     Ok(assignments)
+}
+
+fn ports_occupied_without_recorded_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    resource: &state::ProjectManagedResourceInput,
+    ports: &BTreeMap<String, u16>,
+) -> Result<bool, DaemonError> {
+    if ports
+        .values()
+        .all(|port| local_loopback_port_available(*port))
+    {
+        return Ok(false);
+    }
+    let recorded_runtime = supervisor.adopt_recorded(
+        &paths.resource_pid(&resource.resource_name, &resource.track),
+        &paths.resource_runtime_metadata(&resource.resource_name, &resource.track),
+    )?;
+
+    Ok(recorded_runtime.is_none())
 }
 
 async fn start_or_adopt_runtime(
@@ -460,12 +568,7 @@ async fn start_or_adopt_runtime(
         .await
         .is_ok()
     {
-        return Err(DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime `{}` is listening but no PV-owned process could be verified",
-                spec.name
-            ),
-        });
+        return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });
     }
 
     let mut process = supervisor.start(spec.clone()).await?;
@@ -475,7 +578,10 @@ async fn start_or_adopt_runtime(
 
         return Err(error);
     }
+    tokio::time::sleep(Duration::from_millis(25)).await;
     if process.has_exited()? {
+        cleanup_started_runtime_files(&spec)?;
+
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: format!(
                 "runtime `{}` exited before readiness was verified",
@@ -545,18 +651,16 @@ async fn stop_undemanded_catalog_runtimes(
     let tracks = database.managed_resource_tracks()?;
 
     for track in tracks {
-        if !catalog.contains(&track.resource_name)
-            || track.usage_count > 0
+        let Some(_adapter) = catalog.adapter(&track.resource_name) else {
+            continue;
+        };
+        if track.usage_count > 0
             || demanded_tracks.contains(&(track.resource_name.clone(), track.track.clone()))
         {
             continue;
         }
 
-        let Some(adapter) = catalog.adapter(&track.resource_name) else {
-            continue;
-        };
-
-        stop_resource_runtime(paths, database, supervisor, adapter, &track).await?;
+        stop_resource_runtime(paths, database, supervisor, &track).await?;
     }
 
     Ok(())
@@ -566,7 +670,6 @@ async fn stop_resource_runtime(
     paths: &PvPaths,
     database: &mut Database,
     supervisor: &ProcessSupervisor,
-    adapter: &dyn ManagedResourceRuntimeAdapter,
     track: &ManagedResourceTrackRecord,
 ) -> Result<(), DaemonError> {
     if let Some(adopted) = supervisor.adopt_recorded(
@@ -583,7 +686,7 @@ async fn stop_resource_runtime(
         RuntimeObservedStatus::Stopped,
         Some("Managed Resource runtime stopped; no Projects require this track"),
     )?;
-    cleanup_resource_runtime(paths, database, adapter, track)?;
+    cleanup_resource_runtime(paths, database, track)?;
 
     Ok(())
 }
@@ -591,19 +694,57 @@ async fn stop_resource_runtime(
 fn cleanup_resource_runtime(
     paths: &PvPaths,
     database: &mut Database,
-    adapter: &dyn ManagedResourceRuntimeAdapter,
     track: &ManagedResourceTrackRecord,
 ) -> Result<(), DaemonError> {
-    delete_optional_file(&paths.resource_pid(&track.resource_name, &track.track))?;
-    delete_optional_file(&paths.resource_runtime_metadata(&track.resource_name, &track.track))?;
-    delete_optional_file(&paths.resource_runtime_config(&track.resource_name, &track.track))?;
+    cleanup_resource_runtime_files_for_track(paths, &track.resource_name, &track.track)?;
+    release_resource_track_ports(database, &track.resource_name, &track.track)?;
 
-    for port_spec in adapter.port_specs() {
-        database.release_port(PortOwner::Resource {
-            name: track.resource_name.clone(),
-            track: track.track.clone(),
-            port: port_spec.name.to_string(),
-        })?;
+    Ok(())
+}
+
+fn cleanup_resource_runtime_files(
+    paths: &PvPaths,
+    resource: &state::ProjectManagedResourceInput,
+) -> Result<(), DaemonError> {
+    cleanup_resource_runtime_files_for_track(paths, &resource.resource_name, &resource.track)
+}
+
+fn cleanup_resource_runtime_files_for_track(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+) -> Result<(), DaemonError> {
+    delete_optional_file(&paths.resource_pid(resource_name, track))?;
+    delete_optional_file(&paths.resource_runtime_metadata(resource_name, track))?;
+    delete_optional_file(&paths.resource_runtime_config(resource_name, track))?;
+
+    Ok(())
+}
+
+fn release_resource_track_ports(
+    database: &mut Database,
+    resource_name: &str,
+    track: &str,
+) -> Result<(), DaemonError> {
+    let port_owners = database
+        .assigned_ports()?
+        .into_iter()
+        .filter_map(|assignment| match assignment.owner {
+            PortOwner::Resource {
+                name,
+                track: owner_track,
+                port,
+            } if name == resource_name && owner_track == track => Some(PortOwner::Resource {
+                name,
+                track: owner_track,
+                port,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for owner in port_owners {
+        database.release_port(owner)?;
     }
 
     Ok(())

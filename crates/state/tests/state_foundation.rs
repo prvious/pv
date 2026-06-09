@@ -98,23 +98,27 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
     );
     assert_eq!(
         paths.resource_runtime_config("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/config/resources/mailpit-1.0.json"
+        "/Users/alice/.pv/config/resources/mailpit/1.0.json"
     );
     assert_eq!(
         paths.resource_log("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/logs/resources/mailpit-1.0.log"
+        "/Users/alice/.pv/logs/resources/mailpit/1.0.log"
     );
     assert_eq!(
         paths.resource_pid("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/run/resources/mailpit-1.0.pid"
+        "/Users/alice/.pv/run/resources/mailpit/1.0.pid"
     );
     assert_eq!(
         paths.resource_runtime_metadata("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/run/resources/mailpit-1.0.json"
+        "/Users/alice/.pv/run/resources/mailpit/1.0.json"
     );
     assert_eq!(
         paths.resource_data_dir("mailpit", "1.0").as_str(),
         "/Users/alice/.pv/resources/mailpit/1.0/data"
+    );
+    assert_ne!(
+        paths.resource_log("a-b", "c"),
+        paths.resource_log("a", "b-c")
     );
 }
 

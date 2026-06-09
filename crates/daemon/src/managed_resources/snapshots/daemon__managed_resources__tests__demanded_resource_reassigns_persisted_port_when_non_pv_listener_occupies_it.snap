@@ -1,0 +1,43 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Ok(\n    (),\n)",
+    Some(
+        "# >>> PV MANAGED\nMAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>\nMAIL_HOST=127.0.0.1\nMAIL_PORT=<smtp_port>\n# <<< PV MANAGED\n",
+    ),
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "dashboard",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Running,
+            message: Some(
+                "Managed Resource runtime is ready",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+)

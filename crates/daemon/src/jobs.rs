@@ -382,10 +382,14 @@ fn managed_resource_reconciliation_summary(
     project_report: &SystemProjectReconciliationReport,
 ) -> String {
     let Some(project_summary) = system_project_summary(project_report) else {
-        return format!("Managed Resource {resource_name} track {track} reconciled");
+        return format!(
+            "Managed Resource {resource_name} track {track} standalone reconciliation deferred"
+        );
     };
 
-    format!("Managed Resource {resource_name} track {track} reconciled; {project_summary}")
+    format!(
+        "Managed Resource {resource_name} track {track} standalone reconciliation deferred; {project_summary}"
+    )
 }
 
 fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
