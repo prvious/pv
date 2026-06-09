@@ -66,6 +66,7 @@ fn mailpit_adapter_validates_expected_executable_layout() -> Result<()> {
     Ok(())
 }
 
+#[test]
 fn rustfs_adapter_validates_expected_executable_layout() -> Result<()> {
     let tempdir = tempdir()?;
     let release = tempdir.path();
