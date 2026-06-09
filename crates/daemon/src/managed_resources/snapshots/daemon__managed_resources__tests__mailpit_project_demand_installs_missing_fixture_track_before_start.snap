@@ -1,0 +1,60 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "# >>> PV MANAGED\nMAILPIT_DASHBOARD=http://127.0.0.1:<dashboard_port>\nMAIL_HOST=127.0.0.1\nMAIL_PORT=<smtp_port>\n# <<< PV MANAGED\n",
+    ManagedResourceTrackRecord {
+        resource_name: "mailpit",
+        track: "1.0",
+        desired_state: Installed,
+        installed_version: Some(
+            "1.0.0-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
+        ),
+        env: {
+            "dashboard_url": "http://127.0.0.1:<dashboard_port>",
+            "smtp_host": "127.0.0.1",
+            "smtp_port": "<smtp_port>",
+        },
+        usage_count: 1,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "dashboard",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: Resource {
+                name: "mailpit",
+                track: "1.0",
+                port: "smtp",
+            },
+            port: <port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "mailpit",
+                track: "1.0",
+            },
+            status: Running,
+            message: Some(
+                "Managed Resource runtime is ready",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+)

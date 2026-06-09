@@ -60,3 +60,10 @@ pub fn composer_adapter() -> Result<RuntimeArtifactAdapter> {
         "composer.phar",
     ))
 }
+
+pub fn mailpit_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("mailpit")?,
+        "bin/mailpit",
+    ))
+}

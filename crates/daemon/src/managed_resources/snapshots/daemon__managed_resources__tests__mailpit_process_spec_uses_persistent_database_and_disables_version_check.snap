@@ -1,0 +1,16 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    [
+        "--smtp",
+        "127.0.0.1:1025",
+        "--listen",
+        "127.0.0.1:8025",
+        "--database",
+        "<tempdir>/home/.pv/resources/mailpit/1.0/data/mailpit.db",
+        "--disable-version-check",
+    ],
+    true,
+)

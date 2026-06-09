@@ -135,6 +135,36 @@ pub(crate) enum Command {
 
     #[command(name = "composer:uninstall", about = "Uninstall Composer")]
     ComposerUninstall(ComposerUninstallArgs),
+
+    #[command(name = "mailpit:install", about = "Install a Mailpit track")]
+    MailpitInstall(MailpitInstallArgs),
+
+    #[command(name = "mailpit:update", about = "Update installed Mailpit tracks")]
+    MailpitUpdate,
+
+    #[command(name = "mailpit:uninstall", about = "Uninstall a Mailpit track")]
+    MailpitUninstall(MailpitUninstallArgs),
+
+    #[command(name = "mailpit:list", about = "List installed Mailpit tracks")]
+    MailpitList,
+
+    #[command(name = "mailpit:open", about = "Open the running Mailpit dashboard")]
+    MailpitOpen,
+
+    #[command(name = "mail:install", about = "Install a Mailpit track")]
+    MailInstall(MailpitInstallArgs),
+
+    #[command(name = "mail:update", about = "Update installed Mailpit tracks")]
+    MailUpdate,
+
+    #[command(name = "mail:uninstall", about = "Uninstall a Mailpit track")]
+    MailUninstall(MailpitUninstallArgs),
+
+    #[command(name = "mail:list", about = "List installed Mailpit tracks")]
+    MailList,
+
+    #[command(name = "mail:open", about = "Open the running Mailpit dashboard")]
+    MailOpen,
 }
 
 #[derive(Debug, clap::Args)]
@@ -213,6 +243,24 @@ pub(crate) struct ComposerUninstallArgs {
     pub(crate) prune: bool,
 
     #[arg(long, help = "Remove Composer even if in use")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct MailpitInstallArgs {
+    #[arg(value_name = "track", help = "Mailpit track to install")]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct MailpitUninstallArgs {
+    #[arg(value_name = "track", help = "Mailpit track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
     pub(crate) force: bool,
 }
 

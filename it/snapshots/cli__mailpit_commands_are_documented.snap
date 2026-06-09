@@ -1,0 +1,48 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Install a Mailpit track\n\nUsage: pv mailpit:install [OPTIONS] [track]\n\nArguments:\n  [track]  Mailpit track to install\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Update installed Mailpit tracks\n\nUsage: pv mailpit:update [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Uninstall a Mailpit track\n\nUsage: pv mailpit:uninstall [OPTIONS] <track>\n\nArguments:\n  <track>  Mailpit track to uninstall\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned runtime data for the track\n      --force     Remove the track even if Projects use it\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "List installed Mailpit tracks\n\nUsage: pv mailpit:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Open the running Mailpit dashboard\n\nUsage: pv mailpit:open [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Open the running Mailpit dashboard\n\nUsage: pv mail:open [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

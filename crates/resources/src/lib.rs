@@ -34,4 +34,6 @@ pub use install::{ArtifactInstall, ArtifactInstaller, ResourceAdapter};
 pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
-pub use runtime::{RuntimeArtifactAdapter, composer_adapter, frankenphp_adapter, php_adapter};
+pub use runtime::{
+    RuntimeArtifactAdapter, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
+};

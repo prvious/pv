@@ -13,6 +13,7 @@ mod composer;
 mod daemon;
 mod dns;
 mod env;
+mod mailpit;
 mod php;
 mod ports;
 mod project;
@@ -57,6 +58,15 @@ pub(crate) fn execute(
         Command::ComposerInstall => composer::install(environment, stdout),
         Command::ComposerUpdate => composer::update(environment, stdout),
         Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
+        Command::MailpitInstall(args) | Command::MailInstall(args) => {
+            mailpit::install(args, environment, stdout)
+        }
+        Command::MailpitUpdate | Command::MailUpdate => mailpit::update(environment, stdout),
+        Command::MailpitUninstall(args) | Command::MailUninstall(args) => {
+            mailpit::uninstall(args, environment, stdout)
+        }
+        Command::MailpitList | Command::MailList => mailpit::list(environment, stdout),
+        Command::MailpitOpen | Command::MailOpen => mailpit::open(environment, stdout),
     }
 }
 

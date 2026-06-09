@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod fake;
+mod mailpit;
 pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
@@ -96,13 +97,6 @@ pub(crate) struct ManagedResourceArtifactAdapter {
 }
 
 impl ManagedResourceArtifactAdapter {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production adapter modules construct daemon Managed Resource artifact adapters in follow-up PRs"
-        )
-    )]
     pub(crate) fn new(
         resource_name: &str,
         executable_relative_path: impl Into<Utf8PathBuf>,
@@ -195,8 +189,15 @@ pub(crate) struct ManagedResourceRuntimeCatalog {
 
 impl ManagedResourceRuntimeCatalog {
     pub(crate) fn production() -> Self {
+        let mut adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>> =
+            BTreeMap::new();
+        adapters.insert(
+            mailpit::MailpitRuntimeAdapter::NAME,
+            Box::new(mailpit::MailpitRuntimeAdapter::new()),
+        );
+
         Self {
-            adapters: BTreeMap::new(),
+            adapters,
             install_options: ManagedResourceInstallOptions {
                 manifest_url: DEFAULT_MANIFEST_URL.to_string(),
                 target_platform: current_target_platform(),
@@ -906,5 +907,19 @@ pub(crate) fn fake_unready_runtime_catalog(
             target_platform: current_target_platform(),
         },
         fake::FakeMailpitRuntimeAdapter::unready()?,
+    ))
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn mailpit_runtime_catalog(
+    manifest_url: &str,
+) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
+    Ok(ManagedResourceRuntimeCatalog::with_adapter(
+        ManagedResourceInstallOptions {
+            manifest_url: manifest_url.to_string(),
+            target_platform: current_target_platform(),
+        },
+        mailpit::MailpitRuntimeAdapter::new(),
     ))
 }
