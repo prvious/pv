@@ -56,6 +56,10 @@ fn platform_matrix(workflow: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests read workflow fixtures directly"
+)]
 fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }

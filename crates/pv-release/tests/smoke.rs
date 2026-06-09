@@ -1028,6 +1028,37 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
+fn mysql_build_recipe_passes_openssl_prefix_to_cmake() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke()?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.archive_exists,
+        "MySQL archive should be written after CMake build and archive validation"
+    );
+    assert!(run.record_json.is_some(), "MySQL record was not written");
+    assert_eq!(
+        run.validate_log,
+        "archive=mysql-8.4.9-pv1-darwin-arm64.tar.gz record=mysql-8.4.9-pv1-darwin-arm64.json smoke=smoke.sh\n"
+    );
+    let cmake_log = run.cmake_log.replace(&run.openssl_prefix, "<openssl>");
+    assert!(
+        cmake_log.contains("[-DWITH_SSL=<openssl>]"),
+        "MySQL CMake invocation should use the resolved OpenSSL prefix: {cmake_log}"
+    );
+    assert!(
+        !cmake_log.contains("[-DWITH_SSL=bundled]"),
+        "MySQL 8.4 rejects WITH_SSL=bundled: {cmake_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
@@ -1346,6 +1377,15 @@ struct RedisBuildRecipeRun {
     archive_exists: bool,
 }
 
+struct MysqlBuildRecipeRun {
+    output: Output,
+    record_json: Option<String>,
+    cmake_log: String,
+    openssl_prefix: String,
+    validate_log: String,
+    archive_exists: bool,
+}
+
 #[derive(Clone, Copy)]
 struct BackingBuildRecipe {
     resource: &'static str,
@@ -1548,6 +1588,82 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
         codesign_log: read_file(&codesign_log)?,
         archive_entries,
         archive_exists,
+    })
+}
+
+fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join("mysql-source.tar.gz");
+    let openssl_prefix = tempdir.path().join("openssl@3");
+    let openssl_include = openssl_prefix.join("include/openssl");
+    let curl_log = tempdir.path().join("curl.log");
+    let cmake_log = tempdir.path().join("cmake.log");
+    let validate_log = tempdir.path().join("validate.log");
+    let codesign_log = tempdir.path().join("codesign.log");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&openssl_include)?;
+    write_file(&openssl_include.join("ssl.h"), "openssl fixture\n")?;
+    write_source_archive(&source_archive, "mysql-source")?;
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_brew(&fake_bin.join("brew"))?;
+    write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_file(&curl_log, "")?;
+    write_file(&cmake_log, "")?;
+    write_file(&validate_log, "")?;
+    write_file(&codesign_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/mysql/build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_TEST_CMAKE_LOG", &cmake_log)
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "")
+        .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
+        .env("PV_TEST_RESOURCE", "mysql")
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env("PV_TEST_UPSTREAM_VERSION", "8.4.9")
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .output()?;
+
+    let artifact_version = "8.4.9-pv1";
+    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join("mysql")
+        .join("8.4")
+        .join(artifact_version)
+        .join("darwin-arm64")
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(MysqlBuildRecipeRun {
+        output,
+        record_json: read_optional_file(&record)?,
+        cmake_log: read_file(&cmake_log)?,
+        openssl_prefix: openssl_prefix.to_string(),
+        validate_log: read_file(&validate_log)?,
+        archive_exists: path_exists(&archive),
     })
 }
 
@@ -2535,6 +2651,30 @@ esac
     )
 }
 
+fn write_fake_brew(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  --prefix)
+    [ "${2:-}" = "openssl@3" ] || exit 78
+    printf '%s\n' "$PV_TEST_OPENSSL_PREFIX"
+    ;;
+  install)
+    [ "${2:-}" = "openssl@3" ] || exit 78
+    mkdir -p "$PV_TEST_OPENSSL_PREFIX/include/openssl"
+    printf '%s\n' 'openssl fixture' >"$PV_TEST_OPENSSL_PREFIX/include/openssl/ssl.h"
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
 fn write_fake_success_curl(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2869,6 +3009,65 @@ cat >"$build_dir/src/redis-cli" <<'EOF'
 redis-cli fixture
 EOF
 chmod 755 "$build_dir/src/redis-server" "$build_dir/src/redis-cli"
+"#,
+    )
+}
+
+fn write_fake_mysql_cmake(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'argv=' >>"$PV_TEST_CMAKE_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_CMAKE_LOG"
+done
+printf '\n' >>"$PV_TEST_CMAKE_LOG"
+
+case "${1:-}" in
+  -S)
+    build_dir=
+    install_dir=
+    with_ssl=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -B)
+          shift
+          build_dir=${1:-}
+          ;;
+        -DCMAKE_INSTALL_PREFIX=*)
+          install_dir=${1#-DCMAKE_INSTALL_PREFIX=}
+          ;;
+        -DWITH_SSL=*)
+          with_ssl=${1#-DWITH_SSL=}
+          ;;
+      esac
+      shift
+    done
+    [ -n "$build_dir" ] || exit 78
+    [ -n "$install_dir" ] || exit 78
+    [ "$with_ssl" = "$PV_TEST_OPENSSL_PREFIX" ] || exit 82
+    mkdir -p "$build_dir"
+    printf '%s\n' "$install_dir" >"$build_dir/install-prefix"
+    ;;
+  --build)
+    [ -n "${2:-}" ] || exit 78
+    ;;
+  --install)
+    build_dir=${2:-}
+    [ -n "$build_dir" ] || exit 78
+    install_dir=$(cat "$build_dir/install-prefix")
+    mkdir -p "$install_dir/bin" "$install_dir/lib"
+    for binary in mysqld mysql mysqladmin; do
+      printf '%s fixture\n' "$binary" >"$install_dir/bin/$binary"
+      chmod 755 "$install_dir/bin/$binary"
+    done
+    ;;
+  *)
+    exit 78
+    ;;
+esac
 "#,
     )
 }

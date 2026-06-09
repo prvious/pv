@@ -12,9 +12,11 @@ RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-mysql}
 BUILD_JOBS=${PV_BUILD_JOBS:-}
+OPENSSL_PREFIX=${PV_MYSQL_OPENSSL_PREFIX:-}
 DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
 
+need brew
 need cargo
 need cmake
 need curl
@@ -38,6 +40,14 @@ fi
 if [ -z "$BUILD_JOBS" ]; then
   BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || printf '%s\n' 2)
 fi
+
+if [ -z "$OPENSSL_PREFIX" ]; then
+  if ! OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null); then
+    brew install openssl@3
+    OPENSSL_PREFIX=$(brew --prefix openssl@3)
+  fi
+fi
+[ -f "$OPENSSL_PREFIX/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $OPENSSL_PREFIX"
 
 download_source() {
   source_archive=$1
@@ -151,7 +161,7 @@ cmake -S "$source_dir" -B "$build_dir" \
   -DWITH_NDB=OFF \
   -DWITH_PROTOBUF=bundled \
   -DWITH_ROUTER=OFF \
-  -DWITH_SSL=bundled \
+  -DWITH_SSL="$OPENSSL_PREFIX" \
   -DWITH_UNIT_TESTS=OFF \
   -DWITH_ZLIB=bundled \
   -DWITH_ZSTD=bundled
