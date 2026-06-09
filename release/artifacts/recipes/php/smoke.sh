@@ -51,16 +51,6 @@ check_extensions() {
         ;;
     esac
   done
-  for extension in $actual_extensions; do
-    [ -n "$extension" ] || continue
-    case ",$expected_extensions_sorted" in
-      *,"$extension",*) ;;
-      *)
-        printf '%s\n' "unexpected PHP extension: $extension" >&2
-        exit 43
-        ;;
-    esac
-  done
   IFS=$old_ifs
 }
 

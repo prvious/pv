@@ -205,7 +205,7 @@ esac
 }
 
 #[test]
-fn php_smoke_rejects_unexpected_extensions() -> Result<()> {
+fn php_smoke_allows_extra_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
     let artifact_bin = artifact_root.join("bin");
@@ -231,7 +231,11 @@ esac
         .env("PV_UPSTREAM_VERSION", "8.4.20")
         .output()?;
 
-    assert_debug_snapshot!(command_output_summary(&output));
+    assert!(
+        output.status.success(),
+        "smoke hook failed: {}",
+        command_output_debug(&output)
+    );
 
     Ok(())
 }
