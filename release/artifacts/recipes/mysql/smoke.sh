@@ -47,7 +47,7 @@ pid_file="$tmpdir/mysqld.pid"
 port=$(available_port)
 server_pid=
 
-trap 'if [ -n "$server_pid" ]; then "$mysqladmin" --protocol=socket --socket="$socket_path" --user=root shutdown >/dev/null 2>&1 || true; wait "$server_pid" 2>/dev/null || true; fi; rm -rf "$tmpdir"' 0 1 2 3 15
+trap 'if [ -n "$server_pid" ]; then "$mysqladmin" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root shutdown >/dev/null 2>&1 || true; wait "$server_pid" 2>/dev/null || true; fi; rm -rf "$tmpdir"' 0 1 2 3 15
 
 "$mysqld" \
   --no-defaults \
@@ -69,13 +69,13 @@ trap 'if [ -n "$server_pid" ]; then "$mysqladmin" --protocol=socket --socket="$s
 server_pid=$!
 
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-  if "$mysqladmin" --protocol=socket --socket="$socket_path" --user=root ping >/dev/null 2>&1; then
-    select_output=$("$mysql" --protocol=socket --socket="$socket_path" --user=root --batch --skip-column-names -e 'SELECT 1')
+  if "$mysqladmin" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root ping >/dev/null 2>&1; then
+    select_output=$("$mysql" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root --batch --skip-column-names -e 'SELECT 1')
     printf '%s\n' "$select_output" | grep -Fx 1 >/dev/null || {
       printf '%s\n' "MySQL SELECT 1 smoke returned: $select_output" >&2
       exit 43
     }
-    "$mysqladmin" --protocol=socket --socket="$socket_path" --user=root shutdown
+    "$mysqladmin" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root shutdown
     wait "$server_pid"
     server_pid=
     exit 0

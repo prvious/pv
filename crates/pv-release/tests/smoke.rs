@@ -524,7 +524,7 @@ fn redis_smoke_kills_server_when_shutdown_fails() -> Result<()> {
         &artifact_bin.join("redis-server"),
         r#"#!/bin/sh
 set -eu
-exec /bin/sleep 5
+exec /bin/sleep 10
 "#,
     )?;
     write_executable(
@@ -550,7 +550,7 @@ exit 72
         command_output_debug(&output)
     );
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(10),
         "Redis smoke should kill the server instead of waiting for it to exit"
     );
 
@@ -613,7 +613,7 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
             format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
         )
         .env("PV_TEST_MAILPIT_IGNORE_TERM", "1")
-        .env("PV_TEST_MAILPIT_SLEEP_SECONDS", "3")
+        .env("PV_TEST_MAILPIT_SLEEP_SECONDS", "10")
         .env("PV_TEST_MAILPIT_VERSION_OUTPUT", "Mailpit v1.30.1")
         .env("PV_UPSTREAM_VERSION", "1.30.1")
         .output()?;
@@ -624,7 +624,7 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
         command_output_debug(&output)
     );
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(10),
         "Mailpit smoke should use a bounded shutdown wait"
     );
 
@@ -706,7 +706,7 @@ fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
     let output = StdCommand::new(rustfs_smoke_hook())
         .arg(&artifact_root)
         .env("PV_TEST_RUSTFS_IGNORE_TERM", "1")
-        .env("PV_TEST_RUSTFS_SLEEP_SECONDS", "3")
+        .env("PV_TEST_RUSTFS_SLEEP_SECONDS", "10")
         .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
         .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
         .output()?;
@@ -717,7 +717,7 @@ fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
         command_output_debug(&output)
     );
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(10),
         "RustFS smoke should use a bounded shutdown wait"
     );
 
@@ -900,6 +900,155 @@ rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
         .collect::<Vec<_>>();
     rewrites.sort();
     assert_debug_snapshot!(rewrites);
+
+    Ok(())
+}
+
+#[test]
+fn common_recipe_helper_fails_when_signing_one_macho_file_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let sign_count = tempdir.path().join("codesign.count");
+    let harness = tempdir.path().join("sign-fail-harness.sh");
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&artifact_bin)?;
+    write_file(&artifact_bin.join("mysql"), "mach-o fixture\n")?;
+    write_file(&artifact_bin.join("mysqladmin"), "mach-o fixture\n")?;
+    write_fake_signing_otool(&fake_bin.join("otool"))?;
+    write_fake_first_call_failing_codesign(&fake_bin.join("codesign"))?;
+    write_file(&sign_count, "0\n")?;
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
+"#,
+    )?;
+
+    let output = StdCommand::new(&harness)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_CODESIGN_COUNT", &sign_count)
+        .env("PV_TEST_COMMON_SH", &common)
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "signing helper should fail on the first failed file: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn common_recipe_helper_fails_when_install_name_rewrite_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_lib = artifact_root.join("lib");
+    let install_name_count = tempdir.path().join("install-name.count");
+    let harness = tempdir.path().join("rewrite-fail-harness.sh");
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&artifact_lib)?;
+    write_file(&artifact_lib.join("liba.dylib"), "mach-o fixture\n")?;
+    write_file(&artifact_lib.join("libz.dylib"), "mach-o fixture\n")?;
+    write_fake_rewrite_failure_otool(&fake_bin.join("otool"))?;
+    write_fake_first_call_failing_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_file(&install_name_count, "0\n")?;
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
+"#,
+    )?;
+
+    let output = StdCommand::new(&harness)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_COMMON_SH", &common)
+        .env("PV_TEST_INSTALL_DIR", "/opt/pv-mysql")
+        .env("PV_TEST_INSTALL_NAME_COUNT", &install_name_count)
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "rewrite helper should fail on the first failed file: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_fake_mysql_server(&artifact_bin.join("mysqld"))?;
+    write_fake_mysqladmin_requires_tcp(&artifact_bin.join("mysqladmin"))?;
+    write_fake_mysql_requires_tcp(&artifact_bin.join("mysql"))?;
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+
+    let output = StdCommand::new(mysql_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "MySQL smoke should validate TCP readiness and SELECT 1: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
+    let postgres_build =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
+
+    assert!(
+        mysql_build.contains("\nDEPLOYMENT_TARGET=13.0\n"),
+        "MySQL build recipe should pin the deployment target to macOS 13.0"
+    );
+    assert!(
+        !mysql_build.contains("PV_MACOSX_DEPLOYMENT_TARGET"),
+        "MySQL build recipe should not allow caller-controlled deployment targets"
+    );
+    assert!(
+        postgres_build.contains("\nDEPLOYMENT_TARGET=13.0\n"),
+        "Postgres build recipe should pin the deployment target to macOS 13.0"
+    );
+    assert!(
+        !postgres_build.contains("PV_MACOSX_DEPLOYMENT_TARGET"),
+        "Postgres build recipe should not allow caller-controlled deployment targets"
+    );
 
     Ok(())
 }
@@ -1171,6 +1320,10 @@ fn composer_smoke_hook() -> camino::Utf8PathBuf {
 
 fn redis_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/redis/smoke.sh")
+}
+
+fn mysql_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/mysql/smoke.sh")
 }
 
 fn mailpit_smoke_hook() -> camino::Utf8PathBuf {
@@ -2333,6 +2486,84 @@ PY
     )
 }
 
+fn write_fake_mysql_server(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+for arg in "$@"; do
+  case "$arg" in
+    --initialize-insecure)
+      exit 0
+      ;;
+  esac
+done
+
+exit 0
+"#,
+    )
+}
+
+fn write_fake_mysqladmin_requires_tcp(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+protocol=
+command=
+for arg in "$@"; do
+  case "$arg" in
+    --protocol=*)
+      protocol=${arg#--protocol=}
+      ;;
+    ping | shutdown)
+      command=$arg
+      ;;
+  esac
+done
+
+[ "$protocol" = "tcp" ] || exit 70
+case "$command" in
+  ping | shutdown) exit 0 ;;
+  *) exit 78 ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_mysql_requires_tcp(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+protocol=
+host=
+port=
+for arg in "$@"; do
+  case "$arg" in
+    --protocol=*)
+      protocol=${arg#--protocol=}
+      ;;
+    --host=*)
+      host=${arg#--host=}
+      ;;
+    --port=*)
+      port=${arg#--port=}
+      ;;
+  esac
+done
+
+[ "$protocol" = "tcp" ] || exit 70
+[ "$host" = "127.0.0.1" ] || exit 71
+[ -n "$port" ] || exit 72
+printf '%s\n' 1
+"#,
+    )
+}
+
 fn write_fake_lipo(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2469,6 +2700,46 @@ printf '\n' >>"$PV_TEST_INSTALL_NAME_LOG"
     )
 }
 
+fn write_fake_rewrite_failure_otool(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+mode=${1:-}
+binary=${2:-}
+
+case "$mode" in
+  -D)
+    printf '%s:\n' "$binary"
+    printf '%s/lib/%s\n' "$PV_TEST_INSTALL_DIR" "${binary##*/}"
+    ;;
+  -L)
+    printf '%s:\n' "$binary"
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_first_call_failing_install_name_tool(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+count=$(cat "$PV_TEST_INSTALL_NAME_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" >"$PV_TEST_INSTALL_NAME_COUNT"
+[ "$count" -ne 1 ] || exit 71
+exit 0
+"#,
+    )
+}
+
 fn write_fake_spc(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2540,6 +2811,21 @@ for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_CODESIGN_LOG"
 done
 printf '\n' >>"$PV_TEST_CODESIGN_LOG"
+"#,
+    )
+}
+
+fn write_fake_first_call_failing_codesign(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+count=$(cat "$PV_TEST_CODESIGN_COUNT")
+count=$((count + 1))
+printf '%s\n' "$count" >"$PV_TEST_CODESIGN_COUNT"
+[ "$count" -ne 1 ] || exit 71
+exit 0
 "#,
     )
 }

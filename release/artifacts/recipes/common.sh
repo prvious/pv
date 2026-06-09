@@ -32,6 +32,7 @@ pv_recipe_macho_loader_prefix() {
         */*)
           directory=${relative%/*}
           loader_prefix="@loader_path"
+          # Nested lib modules need enough ".." hops to resolve back to the artifact lib root.
           while :; do
             loader_prefix="$loader_prefix/.."
             case "$directory" in
@@ -58,6 +59,7 @@ rewrite_macho_install_names() {
 
   if [ -d "$root_dir/lib" ]; then
     find "$root_dir/lib" -type f -name '*.dylib' -exec sh -c '
+      set -e
       install_dir=$1
       shift
       for library do
@@ -70,7 +72,7 @@ rewrite_macho_install_names() {
         )
         case "$install_name" in
           "$install_dir"/lib/*)
-            install_name_tool -id "@loader_path/${install_name##*/}" "$library"
+            install_name_tool -id "@loader_path/${install_name##*/}" "$library" || exit 1
             ;;
         esac
       done
@@ -85,7 +87,7 @@ rewrite_macho_install_names() {
       otool -L "$macho" | while read -r linked _; do
         case "$linked" in
           "$install_dir"/lib/*)
-            install_name_tool -change "$linked" "$loader_prefix/${linked##*/}" "$macho"
+            install_name_tool -change "$linked" "$loader_prefix/${linked##*/}" "$macho" || exit 1
             ;;
         esac
       done
@@ -103,9 +105,10 @@ pv_recipe_ad_hoc_sign_macho_tree() {
   for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
     [ -d "$macho_dir" ] || continue
     find "$macho_dir" -type f -exec sh -c '
+      set -e
       for macho do
         otool -L "$macho" >/dev/null 2>&1 || continue
-        codesign --force --sign - "$macho" >/dev/null
+        codesign --force --sign - "$macho" >/dev/null || exit 1
       done
     ' sh {} +
   done

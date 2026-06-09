@@ -121,6 +121,10 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
     assert_eq!(mysql.default_track().as_str(), "8.4");
     assert_eq!(
+        mysql.payload_paths(),
+        ["bin/mysqld", "bin/mysql", "bin/mysqladmin"]
+    );
+    assert_eq!(
         mysql
             .tracks()
             .iter()
@@ -129,6 +133,10 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         vec![("8.4", "8.4.9")]
     );
     assert_eq!(postgres.default_track().as_str(), "18");
+    assert_eq!(
+        postgres.payload_paths(),
+        ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
+    );
     assert_eq!(
         postgres
             .tracks()

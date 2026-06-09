@@ -12,7 +12,7 @@ RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-postgres}
 BUILD_JOBS=${PV_BUILD_JOBS:-}
-DEPLOYMENT_TARGET=${PV_MACOSX_DEPLOYMENT_TARGET:-13.0}
+DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/postgres"
 
 need cargo
