@@ -1031,7 +1031,7 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
-fn mysql_build_recipe_passes_openssl_prefix_to_cmake() -> Result<()> {
+fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
     let run = run_mysql_build_recipe_smoke()?;
 
     assert!(
@@ -1050,9 +1050,28 @@ fn mysql_build_recipe_passes_openssl_prefix_to_cmake() -> Result<()> {
     );
     let cmake_log = run.cmake_log.replace(&run.openssl_prefix, "<openssl>");
     let cmake_log = cmake_log.replace(&run.bison_executable, "<bison>");
+    let openssl_build_log = run
+        .openssl_build_log
+        .replace(&run.openssl_prefix, "<openssl>");
+    assert!(
+        openssl_build_log.contains("configure-target=darwin64-arm64-cc deployment=13.0"),
+        "MySQL recipe should configure its OpenSSL dependency for arm64 macOS 13: {openssl_build_log}"
+    );
+    assert!(
+        openssl_build_log.contains("make=[-j][1]"),
+        "MySQL recipe should build OpenSSL before configuring MySQL: {openssl_build_log}"
+    );
+    assert!(
+        openssl_build_log.contains("make=[install_sw]"),
+        "MySQL recipe should install the recipe-built OpenSSL prefix before configuring MySQL: {openssl_build_log}"
+    );
     assert!(
         cmake_log.contains("[-DWITH_SSL=<openssl>]"),
-        "MySQL CMake invocation should use the resolved OpenSSL prefix: {cmake_log}"
+        "MySQL CMake invocation should use the recipe-built OpenSSL prefix: {cmake_log}"
+    );
+    assert!(
+        cmake_log.contains("[-DOPENSSL_USE_STATIC_LIBS=TRUE]"),
+        "MySQL CMake invocation should prefer the recipe-built static OpenSSL libraries: {cmake_log}"
     );
     assert!(
         cmake_log.contains("[-DBISON_EXECUTABLE=<bison>]"),
@@ -1390,6 +1409,7 @@ struct MysqlBuildRecipeRun {
     record_json: Option<String>,
     bison_executable: String,
     cmake_log: String,
+    openssl_build_log: String,
     openssl_prefix: String,
     validate_log: String,
     archive_exists: bool,
@@ -1606,19 +1626,23 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     let out_dir = tempdir.path().join("out");
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
-    let openssl_prefix = tempdir.path().join("openssl@3");
-    let openssl_include = openssl_prefix.join("include/openssl");
+    let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
+    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
+    let openssl_prefix = out_dir
+        .join("work")
+        .join(artifact_basename)
+        .join("openssl-3.5.7");
     let bison_prefix = tempdir.path().join("bison");
     let bison_executable = bison_prefix.join("bin/bison");
     let curl_log = tempdir.path().join("curl.log");
     let cmake_log = tempdir.path().join("cmake.log");
+    let openssl_build_log = tempdir.path().join("openssl-build.log");
     let validate_log = tempdir.path().join("validate.log");
     let codesign_log = tempdir.path().join("codesign.log");
 
     create_dir_all(&fake_bin)?;
-    create_dir_all(&openssl_include)?;
-    write_file(&openssl_include.join("ssl.h"), "openssl fixture\n")?;
     write_source_archive(&source_archive, "mysql-source")?;
+    write_openssl_source_archive(&openssl_source_archive)?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
     write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
@@ -1627,9 +1651,12 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_mysql_make(&fake_bin.join("make"))?;
+    write_fake_openssl_perl(&fake_bin.join("perl"))?;
     write_fake_sysctl(&fake_bin.join("sysctl"))?;
     write_file(&curl_log, "")?;
     write_file(&cmake_log, "")?;
+    write_file(&openssl_build_log, "")?;
     write_file(&validate_log, "")?;
     write_file(&codesign_log, "")?;
 
@@ -1646,13 +1673,23 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .env("PV_TEST_CMAKE_LOG", &cmake_log)
         .env("PV_TEST_CODESIGN_LOG", &codesign_log)
         .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_OPENSSL_BUILD_LOG", &openssl_build_log)
         .env("PV_TEST_BISON_EXECUTABLE", &bison_executable)
         .env("PV_TEST_BISON_PREFIX", &bison_prefix)
         .env("PV_TEST_LIPO_ARCHS", "arm64")
         .env("PV_TEST_MACHO_LIBRARIES", "")
         .env("PV_TEST_MACHO_MINOS", "13.0")
         .env("PV_TEST_MACHO_RPATHS", "")
+        .env(
+            "PV_MYSQL_OPENSSL_SOURCE_URL",
+            "https://sources.example.test/openssl.tar.gz",
+        )
+        .env(
+            "PV_MYSQL_OPENSSL_SOURCE_SHA256",
+            file_sha256(&openssl_source_archive)?,
+        )
         .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
+        .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
         .env("PV_TEST_RESOURCE", "mysql")
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
@@ -1661,7 +1698,6 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .output()?;
 
     let artifact_version = "8.4.9-pv1";
-    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
     let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
     let record = record_dir
         .join("mysql")
@@ -1675,6 +1711,7 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         record_json: read_optional_file(&record)?,
         bison_executable: bison_executable.to_string(),
         cmake_log: read_file(&cmake_log)?,
+        openssl_build_log: read_file(&openssl_build_log)?,
         openssl_prefix: openssl_prefix.to_string(),
         validate_log: read_file(&validate_log)?,
         archive_exists: path_exists(&archive),
@@ -2657,6 +2694,9 @@ case "$url" in
   https://sources.example.test/php.tar.gz)
     cp "$PV_TEST_PHP_SOURCE_ARCHIVE" "$output"
     ;;
+  https://sources.example.test/openssl.tar.gz)
+    cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
+    ;;
   *)
     cp "$PV_TEST_SOURCE_ARCHIVE" "$output"
     ;;
@@ -3047,6 +3087,72 @@ chmod 755 "$build_dir/src/redis-server" "$build_dir/src/redis-cli"
     )
 }
 
+fn write_fake_mysql_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'make=' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+done
+printf '\n' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+
+[ -f .pv-openssl-prefix ] || exit 78
+case "${1:-}" in
+  install_sw)
+    openssl_prefix=$(cat .pv-openssl-prefix)
+    mkdir -p "$openssl_prefix/include/openssl" "$openssl_prefix/lib"
+    printf '%s\n' 'openssl fixture' >"$openssl_prefix/include/openssl/ssl.h"
+    printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.a"
+    printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.a"
+    ;;
+  -j)
+    [ -n "${2:-}" ] || exit 78
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_openssl_perl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+configure_script=${1:-}
+shift || true
+[ "${configure_script##*/}" = "Configure" ] || exit 78
+
+configure_target=${1:-}
+shift || true
+prefix=
+for arg in "$@"; do
+  case "$arg" in
+    --prefix=*)
+      prefix=${arg#--prefix=}
+      ;;
+  esac
+done
+
+[ -n "$configure_target" ] || exit 78
+[ -n "$prefix" ] || exit 78
+[ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79
+
+printf 'configure-target=%s deployment=%s prefix=%s\n' \
+  "$configure_target" \
+  "$MACOSX_DEPLOYMENT_TARGET" \
+  "$prefix" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+printf '%s\n' "$prefix" >.pv-openssl-prefix
+"#,
+    )
+}
+
 fn write_fake_mysql_cmake(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -3370,6 +3476,26 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     header.set_mode(0o644);
     header.set_cksum();
     builder.append(&header, content as &[u8])?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "openssl-source/Configure",
+        b"openssl configure\n",
+    )?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
