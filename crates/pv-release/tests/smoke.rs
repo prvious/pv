@@ -1046,9 +1046,14 @@ fn mysql_build_recipe_passes_openssl_prefix_to_cmake() -> Result<()> {
         "archive=mysql-8.4.9-pv1-darwin-arm64.tar.gz record=mysql-8.4.9-pv1-darwin-arm64.json smoke=smoke.sh\n"
     );
     let cmake_log = run.cmake_log.replace(&run.openssl_prefix, "<openssl>");
+    let cmake_log = cmake_log.replace(&run.bison_executable, "<bison>");
     assert!(
         cmake_log.contains("[-DWITH_SSL=<openssl>]"),
         "MySQL CMake invocation should use the resolved OpenSSL prefix: {cmake_log}"
+    );
+    assert!(
+        cmake_log.contains("[-DBISON_EXECUTABLE=<bison>]"),
+        "MySQL CMake invocation should use a Homebrew Bison executable: {cmake_log}"
     );
     assert!(
         !cmake_log.contains("[-DWITH_SSL=bundled]"),
@@ -1380,6 +1385,7 @@ struct RedisBuildRecipeRun {
 struct MysqlBuildRecipeRun {
     output: Output,
     record_json: Option<String>,
+    bison_executable: String,
     cmake_log: String,
     openssl_prefix: String,
     validate_log: String,
@@ -1599,6 +1605,8 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
     let openssl_prefix = tempdir.path().join("openssl@3");
     let openssl_include = openssl_prefix.join("include/openssl");
+    let bison_prefix = tempdir.path().join("bison");
+    let bison_executable = bison_prefix.join("bin/bison");
     let curl_log = tempdir.path().join("curl.log");
     let cmake_log = tempdir.path().join("cmake.log");
     let validate_log = tempdir.path().join("validate.log");
@@ -1606,7 +1614,12 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
 
     create_dir_all(&fake_bin)?;
     create_dir_all(&openssl_include)?;
+    create_dir_all(&bison_prefix.join("bin"))?;
     write_file(&openssl_include.join("ssl.h"), "openssl fixture\n")?;
+    write_executable(
+        &bison_executable,
+        "#!/bin/sh\nprintf '%s\\n' 'bison fixture'\n",
+    )?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
@@ -1635,6 +1648,8 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .env("PV_TEST_CMAKE_LOG", &cmake_log)
         .env("PV_TEST_CODESIGN_LOG", &codesign_log)
         .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_BISON_EXECUTABLE", &bison_executable)
+        .env("PV_TEST_BISON_PREFIX", &bison_prefix)
         .env("PV_TEST_LIPO_ARCHS", "arm64")
         .env("PV_TEST_MACHO_LIBRARIES", "")
         .env("PV_TEST_MACHO_MINOS", "13.0")
@@ -1660,6 +1675,7 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     Ok(MysqlBuildRecipeRun {
         output,
         record_json: read_optional_file(&record)?,
+        bison_executable: bison_executable.to_string(),
         cmake_log: read_file(&cmake_log)?,
         openssl_prefix: openssl_prefix.to_string(),
         validate_log: read_file(&validate_log)?,
@@ -2659,13 +2675,33 @@ set -eu
 
 case "${1:-}" in
   --prefix)
-    [ "${2:-}" = "openssl@3" ] || exit 78
-    printf '%s\n' "$PV_TEST_OPENSSL_PREFIX"
+    case "${2:-}" in
+      bison)
+        printf '%s\n' "$PV_TEST_BISON_PREFIX"
+        ;;
+      openssl@3)
+        printf '%s\n' "$PV_TEST_OPENSSL_PREFIX"
+        ;;
+      *)
+        exit 78
+        ;;
+    esac
     ;;
   install)
-    [ "${2:-}" = "openssl@3" ] || exit 78
-    mkdir -p "$PV_TEST_OPENSSL_PREFIX/include/openssl"
-    printf '%s\n' 'openssl fixture' >"$PV_TEST_OPENSSL_PREFIX/include/openssl/ssl.h"
+    case "${2:-}" in
+      bison)
+        mkdir -p "$PV_TEST_BISON_PREFIX/bin"
+        printf '#!/bin/sh\n' >"$PV_TEST_BISON_EXECUTABLE"
+        chmod 755 "$PV_TEST_BISON_EXECUTABLE"
+        ;;
+      openssl@3)
+        mkdir -p "$PV_TEST_OPENSSL_PREFIX/include/openssl"
+        printf '%s\n' 'openssl fixture' >"$PV_TEST_OPENSSL_PREFIX/include/openssl/ssl.h"
+        ;;
+      *)
+        exit 78
+        ;;
+    esac
     ;;
   *)
     exit 78
@@ -3029,6 +3065,7 @@ case "${1:-}" in
   -S)
     build_dir=
     install_dir=
+    bison_executable=
     with_ssl=
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -3039,6 +3076,9 @@ case "${1:-}" in
         -DCMAKE_INSTALL_PREFIX=*)
           install_dir=${1#-DCMAKE_INSTALL_PREFIX=}
           ;;
+        -DBISON_EXECUTABLE=*)
+          bison_executable=${1#-DBISON_EXECUTABLE=}
+          ;;
         -DWITH_SSL=*)
           with_ssl=${1#-DWITH_SSL=}
           ;;
@@ -3047,6 +3087,7 @@ case "${1:-}" in
     done
     [ -n "$build_dir" ] || exit 78
     [ -n "$install_dir" ] || exit 78
+    [ "$bison_executable" = "$PV_TEST_BISON_EXECUTABLE" ] || exit 81
     [ "$with_ssl" = "$PV_TEST_OPENSSL_PREFIX" ] || exit 82
     mkdir -p "$build_dir"
     printf '%s\n' "$install_dir" >"$build_dir/install-prefix"

@@ -12,6 +12,7 @@ RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-mysql}
 BUILD_JOBS=${PV_BUILD_JOBS:-}
+BISON_EXECUTABLE=${PV_MYSQL_BISON_EXECUTABLE:-}
 OPENSSL_PREFIX=${PV_MYSQL_OPENSSL_PREFIX:-}
 DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
@@ -40,6 +41,15 @@ fi
 if [ -z "$BUILD_JOBS" ]; then
   BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || printf '%s\n' 2)
 fi
+
+if [ -z "$BISON_EXECUTABLE" ]; then
+  if ! BISON_PREFIX=$(brew --prefix bison 2>/dev/null); then
+    brew install bison
+    BISON_PREFIX=$(brew --prefix bison)
+  fi
+  BISON_EXECUTABLE="$BISON_PREFIX/bin/bison"
+fi
+[ -x "$BISON_EXECUTABLE" ] || die "Bison executable not found: $BISON_EXECUTABLE"
 
 if [ -z "$OPENSSL_PREFIX" ]; then
   if ! OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null); then
@@ -153,6 +163,7 @@ cmake -S "$source_dir" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$install_dir" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+  -DBISON_EXECUTABLE="$BISON_EXECUTABLE" \
   -DINSTALL_LAYOUT=STANDALONE \
   -DMYSQL_DATADIR="$install_dir/data" \
   -DWITH_EDITLINE=bundled \
