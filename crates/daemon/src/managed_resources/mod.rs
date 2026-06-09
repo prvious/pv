@@ -97,13 +97,6 @@ pub(crate) struct ManagedResourceArtifactAdapter {
 }
 
 impl ManagedResourceArtifactAdapter {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production adapter modules construct daemon Managed Resource artifact adapters in follow-up PRs"
-        )
-    )]
     pub(crate) fn new(
         resource_name: &str,
         executable_relative_path: impl Into<Utf8PathBuf>,
