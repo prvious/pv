@@ -122,6 +122,9 @@ reject_unmanaged_macho_runtime_path() {
   case "$runtime_path" in
     /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/*)
       ;;
+    @loader_path | @executable_path)
+      [ "$metadata_kind" = "rpath" ] || die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path"
+      ;;
     *)
       die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path"
       ;;
@@ -155,6 +158,19 @@ validate_macho_runtime_paths() {
 
   macho_rpaths "$binary" | while IFS= read -r macho_rpath; do
     reject_unmanaged_macho_runtime_path "$binary" "rpath" "$macho_rpath"
+  done
+}
+
+delete_known_stale_macho_rpaths() {
+  binary=$1
+
+  macho_rpaths "$binary" | while IFS= read -r macho_rpath; do
+    case "$macho_rpath" in
+      /usr/local/lib)
+        need install_name_tool
+        install_name_tool -delete_rpath "$macho_rpath" "$binary"
+        ;;
+    esac
   done
 }
 
@@ -237,11 +253,13 @@ frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION
 
 (
   cd "$spc_work_dir"
+  # StaticPHP dependency downloads default to no retries; GNU mirrors can return transient 5xxs.
   spc build:php "$PHP_BUILD_EXTENSIONS" \
     --build-cli \
     --build-frankenphp \
     --enable-zts \
     --dl-with-php="$PHP_PHP_VERSION" \
+    --dl-retry=3 \
     --dl-custom-local "php-src:$php_source_dir" \
     --dl-custom-local "frankenphp:$frankenphp_source_dir"
 )
@@ -263,6 +281,7 @@ stage_artifact() {
   mkdir -p "$root_dir/bin"
   cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
   [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
+  delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
   validate_macho_binary "$root_dir/bin/$binary_name"
 
   cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"

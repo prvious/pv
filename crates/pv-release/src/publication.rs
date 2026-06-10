@@ -1,6 +1,8 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
-use resources::ArtifactManifest;
+use resources::{
+    ArtifactManifest, ArtifactPlatform, ResourceName, ResourcesError, TargetPlatform, TrackName,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,7 +68,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         }
     }
 
-    ManifestDefaults::load(&request.defaults)?;
+    let defaults = ManifestDefaults::load(&request.defaults)?;
     let mut candidates = Vec::new();
     for candidate in &candidate_records {
         let archive_name = archive_name(candidate.record.object_key())?;
@@ -102,7 +104,13 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         });
     }
 
+    validate_publication_object_keys(request, &candidates)?;
     validate_publication_local_paths(request, &candidates)?;
+    validate_default_release_record_platform_matrix(
+        &defaults,
+        &published_records,
+        &candidate_records,
+    )?;
     stage_immutable_uploads(request, &candidates)?;
     let tempdir = Utf8TempDir::new().map_err(|error| filesystem_error(&request.stage, error))?;
     let combined_records = tempdir.path().join("records");
@@ -123,11 +131,12 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &request.base_url,
     )?;
     let manifest_json = read_to_string(&versioned_manifest_path)?;
-    ArtifactManifest::parse(&manifest_json).map_err(|error| {
+    let manifest = ArtifactManifest::parse(&manifest_json).map_err(|error| {
         crate::ReleaseError::GeneratedManifestInvalid {
             reason: error.to_string(),
         }
     })?;
+    validate_public_manifest_platform_matrix(&manifest)?;
 
     let stable_manifest_path = request.stage.join(&request.stable_manifest_key);
     write(&stable_manifest_path, &manifest_json)?;
@@ -143,6 +152,183 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &request.stage.join("publication-plan.json"),
         &format!("{plan_json}\n"),
     )
+}
+
+fn validate_default_release_record_platform_matrix(
+    defaults: &ManifestDefaults,
+    published_records: &[ReleaseRecordFile],
+    candidate_records: &[ReleaseRecordFile],
+) -> crate::Result<()> {
+    let mut platforms_by_default = BTreeMap::<(String, String), BTreeSet<ArtifactPlatform>>::new();
+    for record_file in published_records.iter().chain(candidate_records) {
+        let record = &record_file.record;
+        if let Some(default_track) = defaults.default_track_for(record.resource())
+            && record.track() == default_track
+        {
+            platforms_by_default
+                .entry((
+                    record.resource().as_str().to_string(),
+                    record.track().as_str().to_string(),
+                ))
+                .or_default()
+                .insert(record.platform());
+        }
+    }
+
+    for (resource, track) in defaults.entries() {
+        let key = (resource.as_str().to_string(), track.as_str().to_string());
+        let platforms = platforms_by_default.get(&key);
+        if resource.as_str() == "composer" {
+            if platforms
+                .map(|platforms| platforms.contains(&ArtifactPlatform::Any))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest default resource `{resource}` track `{track}` is missing required portable platform: any",
+                ),
+            });
+        }
+
+        let missing = [ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64]
+            .into_iter()
+            .filter(|platform| {
+                !platforms
+                    .map(|platforms| platforms.contains(platform))
+                    .unwrap_or(false)
+            })
+            .map(ArtifactPlatform::as_str)
+            .collect::<Vec<_>>();
+
+        if !missing.is_empty() {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest default resource `{resource}` track `{track}` is missing required platform(s): {}",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_public_manifest_platform_matrix(manifest: &ArtifactManifest) -> crate::Result<()> {
+    for (resource, track) in manifest.resource_tracks() {
+        if resource.as_str() == "composer" {
+            validate_public_portable_track(manifest, resource, track)?;
+            continue;
+        }
+
+        let missing = [
+            (TargetPlatform::DarwinArm64, ArtifactPlatform::DarwinArm64),
+            (TargetPlatform::DarwinAmd64, ArtifactPlatform::DarwinAmd64),
+        ]
+        .into_iter()
+        .filter_map(|(target, expected_platform)| {
+            match selects_expected_platform(manifest, resource, track, target, expected_platform) {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(target.as_str())),
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+
+        if !missing.is_empty() {
+            return Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest resource `{resource}` track `{track}` is missing required platform(s): {}",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_public_portable_track(
+    manifest: &ArtifactManifest,
+    resource: &ResourceName,
+    track: &TrackName,
+) -> crate::Result<()> {
+    match manifest.select_latest(resource, track, TargetPlatform::DarwinArm64) {
+        Ok(selection) if selection.artifact().platform() == ArtifactPlatform::Any => Ok(()),
+        Ok(_) | Err(ResourcesError::NoInstallableArtifact { .. }) => {
+            Err(crate::ReleaseError::GeneratedManifestInvalid {
+                reason: format!(
+                    "public stable manifest resource `{resource}` track `{track}` is missing required portable platform: any",
+                ),
+            })
+        }
+        Err(error) => Err(generated_manifest_error(error)),
+    }
+}
+
+fn selects_expected_platform(
+    manifest: &ArtifactManifest,
+    resource: &ResourceName,
+    track: &TrackName,
+    target: TargetPlatform,
+    expected_platform: ArtifactPlatform,
+) -> crate::Result<bool> {
+    match manifest.select_latest(resource, track, target) {
+        Ok(selection) => Ok(selection.artifact().platform() == expected_platform),
+        Err(ResourcesError::NoInstallableArtifact { .. }) => Ok(false),
+        Err(error) => Err(generated_manifest_error(error)),
+    }
+}
+
+fn generated_manifest_error(error: ResourcesError) -> crate::ReleaseError {
+    crate::ReleaseError::GeneratedManifestInvalid {
+        reason: error.to_string(),
+    }
+}
+
+fn validate_publication_object_keys(
+    request: &PublicationRequest,
+    candidates: &[CandidatePublication],
+) -> crate::Result<()> {
+    let mut seen = BTreeMap::new();
+    record_publication_object_key(
+        &mut seen,
+        &request.versioned_manifest_key,
+        "versioned manifest",
+    )?;
+    record_publication_object_key(&mut seen, &request.stable_manifest_key, "stable manifest")?;
+
+    for candidate in candidates {
+        record_publication_object_key(
+            &mut seen,
+            &candidate.archive_object_key,
+            "candidate archive",
+        )?;
+        record_publication_object_key(
+            &mut seen,
+            &candidate.record_object_key,
+            "candidate release record",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn record_publication_object_key(
+    seen: &mut BTreeMap<String, String>,
+    object_key: &str,
+    purpose: &str,
+) -> crate::Result<()> {
+    if let Some(existing) = seen.insert(object_key.to_string(), purpose.to_string()) {
+        Err(crate::ReleaseError::InvalidPublicationInput {
+            path: object_key.to_string(),
+            reason: format!("publication object key collides between `{existing}` and `{purpose}`"),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_publication_local_paths(

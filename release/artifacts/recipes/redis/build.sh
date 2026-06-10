@@ -106,6 +106,9 @@ reject_unmanaged_macho_runtime_path() {
   case "$runtime_path" in
     /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/*)
       ;;
+    @loader_path | @executable_path)
+      [ "$metadata_kind" = "rpath" ] || die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path"
+      ;;
     *) die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path" ;;
   esac
 }
@@ -220,8 +223,7 @@ validate_macho_binary "$source_dir/src/redis-server"
 validate_macho_binary "$source_dir/src/redis-cli"
 cp "$source_dir/src/redis-server" "$root_dir/bin/redis-server"
 cp "$source_dir/src/redis-cli" "$root_dir/bin/redis-cli"
-sign_macho_binary "$root_dir/bin/redis-server"
-sign_macho_binary "$root_dir/bin/redis-cli"
+pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
 cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
 cp "$recipe_dir/NOTICE" "$root_dir/NOTICE"
 write_third_party_notices "$root_dir/THIRD-PARTY-NOTICES"

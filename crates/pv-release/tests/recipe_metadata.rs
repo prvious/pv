@@ -9,6 +9,7 @@ use pv_release::recipe::{
     composer_recipe_env, php_recipe_env,
 };
 use resources::{ArtifactPlatform, ResourceName};
+use std::collections::BTreeSet;
 
 #[test]
 fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
@@ -114,6 +115,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
 
     assert_eq!(php.default_track().as_str(), "8.4");
     assert_eq!(php.tracks().len(), 3);
+    assert_php_staticphp_build_extensions(&php);
     assert_eq!(composer.track().as_str(), "2");
     assert_eq!(composer.platform().as_str(), "any");
     assert_eq!(redis.default_track().as_str(), "8.2");
@@ -584,6 +586,53 @@ fn assert_default_track(
         Some(expected_track)
     );
     Ok(())
+}
+
+fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
+    let actual = php
+        .build_extensions()
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let required = [
+        "bcmath",
+        "ctype",
+        "curl",
+        "dom",
+        "fileinfo",
+        "filter",
+        "iconv",
+        "intl",
+        "libxml",
+        "mbstring",
+        "openssl",
+        "pcntl",
+        "pdo",
+        "pdo_mysql",
+        "pdo_pgsql",
+        "pdo_sqlite",
+        "phar",
+        "posix",
+        "redis",
+        "session",
+        "simplexml",
+        "sodium",
+        "sqlite3",
+        "tokenizer",
+        "xml",
+        "xmlreader",
+        "xmlwriter",
+        "zip",
+        "zlib",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let missing = required.difference(&actual).collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "PHP build_extensions missing StaticPHP inputs for PV required extensions: {missing:?}"
+    );
 }
 
 #[expect(

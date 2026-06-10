@@ -63,7 +63,7 @@ unzip -q "$source_archive" -d "$extract_dir"
 cp "$extract_dir/rustfs" "$root_dir/bin/rustfs"
 chmod 755 "$root_dir/bin/rustfs"
 validate_macho_binary "$root_dir/bin/rustfs" "$PV_PLATFORM" "$RUSTFS_DEPLOYMENT_TARGET"
-sign_macho_binary "$root_dir/bin/rustfs"
+pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
 cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
 {
   cat "$recipe_dir/NOTICE"

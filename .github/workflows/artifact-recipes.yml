@@ -20,14 +20,15 @@ on:
       track:
         description: "Track to build: all; PHP/all supports 8.2, 8.3, 8.4; resource tracks: composer 2, redis 8.2, mysql 8.4, postgres 18, mailpit 1, rustfs 1"
         required: true
-        default: "all"
+        default: "8.4"
         type: string
       platform:
-        description: "Artifact platform"
+        description: "Artifact platform: all, darwin-arm64, darwin-amd64"
         required: true
         default: "darwin-arm64"
         type: choice
         options:
+          - all
           - darwin-arm64
           - darwin-amd64
 
@@ -36,7 +37,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # StaticPHP v3 currently fails the FrankenPHP macOS Intel link step, and
+        # PHP 8.3 patching is unstable. Keep the default publication proof on the
+        # known-good arm64/PHP 8.4 lane; explicit darwin-amd64 dispatch remains
+        # available only for diagnostics until upstream v3 is fixed.
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
       - name: Checkout
@@ -49,7 +59,7 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
         run: |
           set -eu
 
@@ -72,6 +82,29 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Classify selected artifacts
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+
+          include_composer=false
+          case "$PV_RECIPE_RESOURCE" in
+            all | composer)
+              include_composer=true
+              ;;
+          esac
+
+          if [ "$PV_RECIPE_RESOURCE" = all ] \
+            && [ "$PV_RECIPE_INPUT_PLATFORM" = all ] \
+            && [ "$PV_RECIPE_PLATFORM" != darwin-arm64 ]; then
+            include_composer=false
+          fi
+
+          printf 'PV_INCLUDE_COMPOSER=%s\n' "$include_composer" >>"${GITHUB_ENV:?}"
 
       - name: Install PHP runtime dependency
         if: ${{ inputs.resource == 'all' || inputs.resource == 'php' || inputs.resource == 'composer' }}
@@ -134,7 +167,8 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_COMMIT: ${{ github.sha }}
@@ -156,7 +190,6 @@ jobs:
           case "$PV_RECIPE_RESOURCE" in
             all)
               build_php_family=true
-              build_composer=true
               build_redis=true
               build_mysql=true
               build_postgres=true
@@ -185,6 +218,7 @@ jobs:
               build_rustfs=true
               ;;
           esac
+          build_composer=$PV_INCLUDE_COMPOSER
 
           case "$PV_RECIPE_TRACK" in
             all)
@@ -239,12 +273,27 @@ jobs:
               release/artifacts/recipes/rustfs/build.sh
           fi
 
+          # StaticPHP's Go module cache can leave read-only files under work/.
+          # Restore user write permission before pruning non-uploaded build scratch.
+          if [ -d "$PV_ARTIFACT_OUT_DIR/work" ]; then
+            chmod -R u+w "$PV_ARTIFACT_OUT_DIR/work"
+          fi
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Upload StaticPHP failure logs
+        if: ${{ failure() && (inputs.resource == 'all' || inputs.resource == 'php') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-staticphp-logs-${{ matrix.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-artifacts/work/**/staticphp/log/*.log
+          if-no-files-found: ignore
 
       - name: Generate manifest from records
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
@@ -272,7 +321,9 @@ jobs:
             all)
               write_default_track php "$php_default_track"
               write_default_track frankenphp "$php_default_track"
-              write_default_track composer 2
+              if [ "$PV_INCLUDE_COMPOSER" = true ]; then
+                write_default_track composer 2
+              fi
               write_default_track redis 8.2
               write_default_track mysql 8.4
               write_default_track postgres 18
@@ -313,7 +364,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ inputs.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json

@@ -77,6 +77,39 @@ jobs:
               ;;
           esac
 
+      - name: Validate source recipe run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          PUBLICATION_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          source_run_json="$RUNNER_TEMP/pv-source-run.json"
+          gh run view "$SOURCE_RUN_ID" \
+            --json conclusion,headSha,name,status,url,workflowName \
+            --jq '{conclusion, headSha, name, status, url, workflowName}' \
+            > "$source_run_json"
+
+          run_name=$(jq -r '.name // ""' "$source_run_json")
+          workflow_name=$(jq -r '.workflowName // ""' "$source_run_json")
+          status=$(jq -r '.status // ""' "$source_run_json")
+          conclusion=$(jq -r '.conclusion // ""' "$source_run_json")
+          head_sha=$(jq -r '.headSha // ""' "$source_run_json")
+          url=$(jq -r '.url // ""' "$source_run_json")
+
+          if [ "$workflow_name" != "Artifact Recipes" ] && [ "$run_name" != "Artifact Recipes" ]; then
+            printf '%s\n' "source run must be an Artifact Recipes workflow run: $url" >&2
+            exit 1
+          fi
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            printf '%s\n' "source Artifact Recipes run must be completed successfully: $url" >&2
+            exit 1
+          fi
+          if [ "$head_sha" != "$PUBLICATION_HEAD_SHA" ]; then
+            printf '%s\n' "source Artifact Recipes run must use this commit: expected $PUBLICATION_HEAD_SHA, got $head_sha" >&2
+            exit 1
+          fi
+
       - name: Download source recipe artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -144,26 +177,26 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/pv-publication-stage"
 
-          ensure_object_absent() {
-            object_key=$1
-            error_file="$RUNNER_TEMP/pv-head-object.err"
-            if aws s3api head-object --bucket "$R2_BUCKET" --key "$object_key" --endpoint-url "$R2_ENDPOINT" > /dev/null 2>"$error_file"; then
-              printf '%s\n' "immutable object already exists: $object_key" >&2
-              exit 1
-            fi
-            if grep -Eq '\(404\)|Not Found|NotFound|NoSuchKey' "$error_file"; then
-              return 0
-            fi
-            printf '%s\n' "failed to confirm immutable object absence: $object_key" >&2
-            cat "$error_file" >&2
-            exit 1
-          }
-
           upload_immutable_object() {
             local_path=$1
             object_key=$2
-            ensure_object_absent "$object_key"
-            aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"
+            error_file="$RUNNER_TEMP/pv-put-object.err"
+            if aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --body "$local_path" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --if-none-match '*' \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'PreconditionFailed|Precondition Failed|412' "$error_file"; then
+              printf '%s\n' "immutable object already exists: $object_key" >&2
+              exit 1
+            fi
+            printf '%s\n' "failed to upload immutable object: $object_key" >&2
+            cat "$error_file" >&2
+            exit 1
           }
 
           upload_rows="$RUNNER_TEMP/pv-immutable-uploads.tsv"
@@ -176,6 +209,34 @@ jobs:
           while IFS=$'\t' read -r local_path object_key; do
             upload_immutable_object "$local_path" "$object_key"
           done < "$upload_rows"
+
+      - name: Upload versioned manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-publication-stage"
+
+          upload_immutable_object() {
+            local_path=$1
+            object_key=$2
+            error_file="$RUNNER_TEMP/pv-put-object.err"
+            if aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --body "$local_path" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --if-none-match '*' \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'PreconditionFailed|Precondition Failed|412' "$error_file"; then
+              printf '%s\n' "immutable object already exists: $object_key" >&2
+              exit 1
+            fi
+            printf '%s\n' "failed to upload immutable object: $object_key" >&2
+            cat "$error_file" >&2
+            exit 1
+          }
 
           local_path=$(jq -e -r '.versioned_manifest.local_path' publication-plan.json)
           object_key=$(jq -e -r '.versioned_manifest.object_key' publication-plan.json)
@@ -192,4 +253,10 @@ jobs:
             printf '%s\n' "stable manifest object key must be manifest.json" >&2
             exit 1
           fi
-          aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json \
+            > /dev/null

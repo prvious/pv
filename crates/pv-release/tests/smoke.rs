@@ -91,17 +91,17 @@ esac
 set -eu
 case "${1:-}" in
   php-cli)
-    case "${2:-}" in
-      -v)
-        printf '%s\n' 'php-cli -v' >>"$PV_FRANKENPHP_LOG"
-        printf '%s\n' 'PHP 8.4.20 (cli)'
-        ;;
-      -m)
-        printf '%s\n' 'php-cli -m' >>"$PV_FRANKENPHP_LOG"
-        printf '%s\n' 'json'
-        ;;
-      *) exit 99 ;;
-    esac
+    [ "${2:-}" = "-r" ] || exit 99
+    code=${3:-}
+    if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
+      printf '%s\n' 'php-cli -r version' >>"$PV_FRANKENPHP_LOG"
+      printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
+      printf '%s\n' 'php-cli -r extensions' >>"$PV_FRANKENPHP_LOG"
+      printf '%s\n' 'json'
+    else
+      exit 99
+    fi
     ;;
   php-server)
     shift
@@ -146,7 +146,10 @@ printf '%s\n' 'pv-frankenphp-ok'
 
     assert!(status.success(), "smoke hook exited with {status}");
     let frankenphp_log = read_file(&frankenphp_log)?;
-    assert!(frankenphp_log.starts_with("php-cli -v\nphp-cli -m\nphp-server 127.0.0.1:"));
+    assert!(
+        frankenphp_log
+            .starts_with("php-cli -r version\nphp-cli -r extensions\nphp-server 127.0.0.1:")
+    );
     assert!(
         !frankenphp_log.contains("php-server 127.0.0.1:48123\n"),
         "smoke hook should not use the old fixed loopback port: {frankenphp_log}"
@@ -205,7 +208,7 @@ esac
 }
 
 #[test]
-fn php_smoke_rejects_unexpected_extensions() -> Result<()> {
+fn php_smoke_allows_extra_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
     let artifact_bin = artifact_root.join("bin");
@@ -231,7 +234,11 @@ esac
         .env("PV_UPSTREAM_VERSION", "8.4.20")
         .output()?;
 
-    assert_debug_snapshot!(command_output_summary(&output));
+    assert!(
+        output.status.success(),
+        "smoke hook failed: {}",
+        command_output_debug(&output)
+    );
 
     Ok(())
 }
@@ -304,7 +311,7 @@ fn php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot()
     );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -404,14 +411,8 @@ fn redis_build_recipe_signs_binaries_and_requires_third_party_notices() -> Resul
         "archive=redis-8.2.7-pv1-darwin-arm64.tar.gz record=redis-8.2.7-pv1-darwin-arm64.json smoke=smoke.sh\n"
     );
     assert_eq!(
-        run.codesign_log,
-        format!(
-            "argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
-argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
-argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n\
-argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n",
-            run.out_dir, run.out_dir, run.out_dir, run.out_dir
-        )
+        codesigned_file_names(&run.codesign_log),
+        ["redis-cli".to_string(), "redis-server".to_string()]
     );
 
     assert!(
@@ -842,6 +843,7 @@ fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
     let artifact_lib = artifact_root.join("lib");
     let artifact_plugin = artifact_lib.join("plugin");
     let artifact_postgresql = artifact_lib.join("postgresql");
+    let openssl_prefix = tempdir.path().join("openssl@3");
     let install_name_log = tempdir.path().join("install-name.log");
     let harness = tempdir.path().join("rewrite-harness.sh");
     let common =
@@ -857,6 +859,7 @@ fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
         &artifact_lib.join("libmysqlclient.dylib"),
         "mach-o fixture\n",
     )?;
+    write_file(&artifact_lib.join("libssl.3.dylib"), "mach-o fixture\n")?;
     write_file(&artifact_plugin.join("auth.so"), "mach-o fixture\n")?;
     write_file(
         &artifact_postgresql.join("extension.so"),
@@ -872,7 +875,7 @@ set -eu
 
 # shellcheck source=/dev/null
 . "$PV_TEST_COMMON_SH"
-rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
+rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR" "$PV_TEST_OPENSSL_PREFIX"
 "#,
     )?;
 
@@ -883,6 +886,7 @@ rewrite_macho_install_names "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_INSTALL_DIR"
         .env("PV_TEST_COMMON_SH", &common)
         .env("PV_TEST_INSTALL_DIR", install_dir)
         .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+        .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
         .output()?;
 
     assert!(
@@ -1027,6 +1031,61 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
+fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke()?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.archive_exists,
+        "MySQL archive should be written after CMake build and archive validation"
+    );
+    assert!(run.record_json.is_some(), "MySQL record was not written");
+    assert_eq!(
+        run.validate_log,
+        "archive=mysql-8.4.9-pv1-darwin-arm64.tar.gz record=mysql-8.4.9-pv1-darwin-arm64.json smoke=smoke.sh\n"
+    );
+    let cmake_log = run.cmake_log.replace(&run.openssl_prefix, "<openssl>");
+    let cmake_log = cmake_log.replace(&run.bison_executable, "<bison>");
+    let openssl_build_log = run
+        .openssl_build_log
+        .replace(&run.openssl_prefix, "<openssl>");
+    assert!(
+        openssl_build_log.contains("configure-target=darwin64-arm64-cc deployment=13.0"),
+        "MySQL recipe should configure its OpenSSL dependency for arm64 macOS 13: {openssl_build_log}"
+    );
+    assert!(
+        openssl_build_log.contains("make=[-j][1]"),
+        "MySQL recipe should build OpenSSL before configuring MySQL: {openssl_build_log}"
+    );
+    assert!(
+        openssl_build_log.contains("make=[install_sw]"),
+        "MySQL recipe should install the recipe-built OpenSSL prefix before configuring MySQL: {openssl_build_log}"
+    );
+    assert!(
+        cmake_log.contains("[-DWITH_SSL=<openssl>]"),
+        "MySQL CMake invocation should use the recipe-built OpenSSL prefix: {cmake_log}"
+    );
+    assert!(
+        !cmake_log.contains("OPENSSL_USE_STATIC_LIBS"),
+        "MySQL CMake invocation should let WITH_SSL select the recipe-built OpenSSL libraries: {cmake_log}"
+    );
+    assert!(
+        cmake_log.contains("[-DBISON_EXECUTABLE=<bison>]"),
+        "MySQL CMake invocation should use a Homebrew Bison executable: {cmake_log}"
+    );
+    assert!(
+        !cmake_log.contains("[-DWITH_SSL=bundled]"),
+        "MySQL 8.4 rejects WITH_SSL=bundled: {cmake_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
@@ -1049,6 +1108,49 @@ fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
         !postgres_build.contains("PV_MACOSX_DEPLOYMENT_TARGET"),
         "Postgres build recipe should not allow caller-controlled deployment targets"
     );
+
+    Ok(())
+}
+
+#[test]
+fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
+    let mut summaries = Vec::new();
+    for recipe in BackingBuildRecipe::all() {
+        let run = run_backing_build_recipe_signing_smoke(recipe)?;
+        assert!(
+            run.output.status.success(),
+            "{} build recipe failed: {}",
+            recipe.resource,
+            command_output_debug(&run.output)
+        );
+        assert!(
+            run.archive_exists,
+            "{} build recipe did not write an archive",
+            recipe.resource
+        );
+        assert!(
+            run.record_json.is_some(),
+            "{} build recipe did not write a record",
+            recipe.resource
+        );
+        let expected_signed_files = recipe
+            .signed_files
+            .iter()
+            .map(|file_name| (*file_name).to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            run.signed_files, expected_signed_files,
+            "{} build recipe did not ad-hoc sign the expected payloads",
+            recipe.resource
+        );
+        summaries.push((
+            recipe.resource,
+            run.signed_files,
+            run.validate_log.replace(&run.out_dir, "<out>"),
+        ));
+    }
+
+    assert_debug_snapshot!(summaries);
 
     Ok(())
 }
@@ -1227,10 +1329,31 @@ fn php_pair_build_smoke_rejects_runner_rpath_on_frankenphp_binary() -> Result<()
 }
 
 #[test]
+fn php_pair_build_smoke_removes_unmanaged_frankenphp_rpath_before_validation() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        frankenphp_macho_rpaths: "@loader_path/../lib\n/usr/local/lib",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(run.deleted_rpath_log, "/usr/local/lib\n");
+    assert!(
+        run.frankenphp_archive_exists,
+        "FrankenPHP archive should be written after the unmanaged rpath is removed"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_accepts_system_and_relative_macho_runtime_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         macho_libraries: "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2503.1.0)\n\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@loader_path/../lib/libz.dylib (compatibility version 1.0.0, current version 1.3.1)",
-        macho_rpaths: "@loader_path/../lib\n@executable_path/../lib",
+        macho_rpaths: "@loader_path\n@loader_path/../lib\n@executable_path\n@executable_path/../lib",
         ..default_build_recipe_options()
     })?;
 
@@ -1257,6 +1380,7 @@ struct BuildRecipeRun {
     spc_log: String,
     curl_log: String,
     validate_log: String,
+    deleted_rpath_log: String,
     php_archive_exists: bool,
     frankenphp_archive_exists: bool,
 }
@@ -1272,7 +1396,6 @@ struct ComposerBuildRecipeRun {
 }
 
 struct RedisBuildRecipeRun {
-    out_dir: String,
     output: Output,
     record_json: Option<String>,
     validate_log: String,
@@ -1281,9 +1404,40 @@ struct RedisBuildRecipeRun {
     archive_exists: bool,
 }
 
-struct BackingBuildRecipeRun {
+struct MysqlBuildRecipeRun {
     output: Output,
     record_json: Option<String>,
+    bison_executable: String,
+    cmake_log: String,
+    openssl_build_log: String,
+    openssl_prefix: String,
+    validate_log: String,
+    archive_exists: bool,
+}
+
+#[derive(Clone, Copy)]
+struct BackingBuildRecipe {
+    resource: &'static str,
+    track: &'static str,
+    upstream_version: &'static str,
+    artifact_version: &'static str,
+    platform: &'static str,
+    source_kind: BackingSourceKind,
+    signed_files: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+enum BackingSourceKind {
+    Redis,
+    TarGzBinary,
+    ZipBinary,
+}
+
+struct BackingBuildRecipeRun {
+    out_dir: String,
+    output: Output,
+    record_json: Option<String>,
+    signed_files: Vec<String>,
     validate_log: String,
     archive_exists: bool,
 }
@@ -1307,6 +1461,47 @@ struct BackingBuildRecipeOptions<'a> {
     macho_minos: &'a str,
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
+}
+
+impl BackingBuildRecipe {
+    fn all() -> [Self; 3] {
+        [
+            Self {
+                resource: "redis",
+                track: "8.2",
+                upstream_version: "8.2.1",
+                artifact_version: "8.2.1-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::Redis,
+                signed_files: &["redis-cli", "redis-server"],
+            },
+            Self {
+                resource: "mailpit",
+                track: "1",
+                upstream_version: "1.30.1",
+                artifact_version: "1.30.1-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::TarGzBinary,
+                signed_files: &["mailpit"],
+            },
+            Self {
+                resource: "rustfs",
+                track: "1",
+                upstream_version: "1.0.0-beta.7",
+                artifact_version: "1.0.0-beta.7-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::ZipBinary,
+                signed_files: &["rustfs"],
+            },
+        ]
+    }
+
+    fn artifact_basename(self) -> String {
+        format!(
+            "{}-{}-{}",
+            self.resource, self.artifact_version, self.platform
+        )
+    }
 }
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
@@ -1416,13 +1611,110 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
         .join(format!("{artifact_basename}.json"));
 
     Ok(RedisBuildRecipeRun {
-        out_dir: out_dir.to_string(),
         output,
         record_json: read_optional_file(&record)?,
         validate_log: read_file(&validate_log)?,
         codesign_log: read_file(&codesign_log)?,
         archive_entries,
         archive_exists,
+    })
+}
+
+fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join("mysql-source.tar.gz");
+    let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
+    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
+    let openssl_prefix = out_dir
+        .join("work")
+        .join(artifact_basename)
+        .join("openssl-3.5.7");
+    let bison_prefix = tempdir.path().join("bison");
+    let bison_executable = bison_prefix.join("bin/bison");
+    let curl_log = tempdir.path().join("curl.log");
+    let cmake_log = tempdir.path().join("cmake.log");
+    let openssl_build_log = tempdir.path().join("openssl-build.log");
+    let validate_log = tempdir.path().join("validate.log");
+    let codesign_log = tempdir.path().join("codesign.log");
+
+    create_dir_all(&fake_bin)?;
+    write_source_archive(&source_archive, "mysql-source")?;
+    write_openssl_source_archive(&openssl_source_archive)?;
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_brew(&fake_bin.join("brew"))?;
+    write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_mysql_make(&fake_bin.join("make"))?;
+    write_fake_openssl_perl(&fake_bin.join("perl"))?;
+    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_file(&curl_log, "")?;
+    write_file(&cmake_log, "")?;
+    write_file(&openssl_build_log, "")?;
+    write_file(&validate_log, "")?;
+    write_file(&codesign_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/mysql/build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_TEST_CMAKE_LOG", &cmake_log)
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_OPENSSL_BUILD_LOG", &openssl_build_log)
+        .env("PV_TEST_BISON_EXECUTABLE", &bison_executable)
+        .env("PV_TEST_BISON_PREFIX", &bison_prefix)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "")
+        .env(
+            "PV_MYSQL_OPENSSL_SOURCE_URL",
+            "https://sources.example.test/openssl.tar.gz",
+        )
+        .env(
+            "PV_MYSQL_OPENSSL_SOURCE_SHA256",
+            file_sha256(&openssl_source_archive)?,
+        )
+        .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
+        .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
+        .env("PV_TEST_RESOURCE", "mysql")
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env("PV_TEST_UPSTREAM_VERSION", "8.4.9")
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .output()?;
+
+    let artifact_version = "8.4.9-pv1";
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join("mysql")
+        .join("8.4")
+        .join(artifact_version)
+        .join("darwin-arm64")
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(MysqlBuildRecipeRun {
+        output,
+        record_json: read_optional_file(&record)?,
+        bison_executable: bison_executable.to_string(),
+        cmake_log: read_file(&cmake_log)?,
+        openssl_build_log: read_file(&openssl_build_log)?,
+        openssl_prefix: openssl_prefix.to_string(),
+        validate_log: read_file(&validate_log)?,
+        archive_exists: path_exists(&archive),
     })
 }
 
@@ -1517,8 +1809,10 @@ fn run_backing_build_recipe_smoke(
         .join(format!("{artifact_basename}.json"));
 
     Ok(BackingBuildRecipeRun {
+        out_dir: out_dir.to_string(),
         output,
         record_json: read_optional_file(&record)?,
+        signed_files: codesigned_file_names(&read_file(&codesign_log)?),
         validate_log: read_file(&validate_log)?,
         archive_exists: path_exists(&archive),
     })
@@ -1578,6 +1872,78 @@ fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
     })
 }
 
+fn run_backing_build_recipe_signing_smoke(
+    recipe: BackingBuildRecipe,
+) -> Result<BackingBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join(format!("{}-source", recipe.resource));
+    let curl_log = tempdir.path().join("curl.log");
+    let sign_log = tempdir.path().join("codesign.log");
+    let validate_log = tempdir.path().join("validate.log");
+
+    create_dir_all(&fake_bin)?;
+    write_backing_source_archive(&source_archive, recipe)?;
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_make(&fake_bin.join("make"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_uname(&fake_bin.join("uname"))?;
+    write_fake_unzip(&fake_bin.join("unzip"))?;
+    write_file(&curl_log, "")?;
+    write_file(&sign_log, "")?;
+    write_file(&validate_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes")
+        .join(recipe.resource)
+        .join("build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", recipe.platform)
+        .env("PV_RECIPE_TRACK", recipe.track)
+        .env("PV_TEST_ARTIFACT_VERSION", recipe.artifact_version)
+        .env("PV_TEST_CODESIGN_LOG", &sign_log)
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "")
+        .env("PV_TEST_RESOURCE", recipe.resource)
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env("PV_TEST_UPSTREAM_VERSION", recipe.upstream_version)
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .output()?;
+
+    let artifact_basename = recipe.artifact_basename();
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join(recipe.resource)
+        .join(recipe.track)
+        .join(recipe.artifact_version)
+        .join(recipe.platform)
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(BackingBuildRecipeRun {
+        out_dir: out_dir.to_string(),
+        output,
+        record_json: read_optional_file(&record)?,
+        signed_files: codesigned_file_names(&read_file(&sign_log)?),
+        validate_log: read_file(&validate_log)?,
+        archive_exists: path_exists(&archive),
+    })
+}
+
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
     BuildRecipeOptions {
         lipo_archs: "arm64",
@@ -1602,16 +1968,23 @@ fn run_php_build_recipe_smoke_with_options(
     let curl_log = tempdir.path().join("curl.log");
     let spc_log = tempdir.path().join("spc.log");
     let validate_log = tempdir.path().join("validate.log");
+    let deleted_rpath_log = tempdir.path().join("deleted-rpaths.log");
+    let install_name_log = tempdir.path().join("install-name.log");
+    let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "frankenphp-source")?;
     write_source_archive(&php_source_archive, "php-source")?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
+    write_file(&deleted_rpath_log, "")?;
+    write_file(&install_name_log, "")?;
+    write_file(&removed_rpaths_log, "")?;
     write_file(&spc_log, "")?;
     write_file(&validate_log, "")?;
 
@@ -1639,11 +2012,14 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_MACHO_MINOS", options.macho_minos)
         .env("PV_TEST_MACHO_RPATHS", options.macho_rpaths)
         .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
+        .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
         .env("PV_TEST_PHP_SOURCE_ARCHIVE", &php_source_archive)
         .env(
             "PV_TEST_PHP_SOURCE_SHA256",
             file_sha256(&php_source_archive)?,
         )
+        .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
         .env(
@@ -1699,6 +2075,7 @@ fn run_php_build_recipe_smoke_with_options(
         spc_log: read_file(&spc_log)?,
         curl_log: read_file(&curl_log)?,
         validate_log: read_file(&validate_log)?,
+        deleted_rpath_log: read_file(&deleted_rpath_log)?,
         php_archive_exists: path_exists(&php_archive),
         frankenphp_archive_exists: path_exists(&frankenphp_archive),
     })
@@ -2317,8 +2694,55 @@ case "$url" in
   https://sources.example.test/php.tar.gz)
     cp "$PV_TEST_PHP_SOURCE_ARCHIVE" "$output"
     ;;
+  https://sources.example.test/openssl.tar.gz)
+    cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
+    ;;
   *)
     cp "$PV_TEST_SOURCE_ARCHIVE" "$output"
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_brew(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  --prefix)
+    case "${2:-}" in
+      bison)
+        printf '%s\n' "$PV_TEST_BISON_PREFIX"
+        ;;
+      openssl@3)
+        printf '%s\n' "$PV_TEST_OPENSSL_PREFIX"
+        ;;
+      *)
+        exit 78
+        ;;
+    esac
+    ;;
+  install)
+    case "${2:-}" in
+      bison)
+        mkdir -p "$PV_TEST_BISON_PREFIX/bin"
+        printf '#!/bin/sh\n' >"$PV_TEST_BISON_EXECUTABLE"
+        chmod 755 "$PV_TEST_BISON_EXECUTABLE"
+        ;;
+      openssl@3)
+        mkdir -p "$PV_TEST_OPENSSL_PREFIX/include/openssl"
+        printf '%s\n' 'openssl fixture' >"$PV_TEST_OPENSSL_PREFIX/include/openssl/ssl.h"
+        ;;
+      *)
+        exit 78
+        ;;
+    esac
+    ;;
+  *)
+    exit 78
     ;;
 esac
 "#,
@@ -2611,6 +3035,10 @@ EOF
     if [ -n "$macho_rpaths" ]; then
       load_command=2
       printf '%s\n' "$macho_rpaths" | while IFS= read -r macho_rpath; do
+        if [ -n "${PV_TEST_REMOVED_RPATHS_LOG:-}" ] \
+          && grep -Fqx "$binary|$macho_rpath" "$PV_TEST_REMOVED_RPATHS_LOG"; then
+          continue
+        fi
         cat <<EOF
 Load command $load_command
           cmd LC_RPATH
@@ -2625,6 +3053,221 @@ EOF
     exit 78
     ;;
 esac
+"#,
+    )
+}
+
+fn write_fake_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+build_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      shift
+      build_dir=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$build_dir" ] || exit 78
+mkdir -p "$build_dir/src"
+cat >"$build_dir/src/redis-server" <<'EOF'
+redis-server fixture
+EOF
+cat >"$build_dir/src/redis-cli" <<'EOF'
+redis-cli fixture
+EOF
+chmod 755 "$build_dir/src/redis-server" "$build_dir/src/redis-cli"
+"#,
+    )
+}
+
+fn write_fake_mysql_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'make=' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+done
+printf '\n' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+
+[ -f .pv-openssl-prefix ] || exit 78
+case "${1:-}" in
+  install_sw)
+    openssl_prefix=$(cat .pv-openssl-prefix)
+    mkdir -p "$openssl_prefix/include/openssl" "$openssl_prefix/lib"
+    printf '%s\n' 'openssl fixture' >"$openssl_prefix/include/openssl/ssl.h"
+    printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.3.dylib"
+    printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.3.dylib"
+    ;;
+  -j)
+    [ -n "${2:-}" ] || exit 78
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_openssl_perl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+configure_script=${1:-}
+shift || true
+[ "${configure_script##*/}" = "Configure" ] || exit 78
+
+configure_target=${1:-}
+shift || true
+prefix=
+for arg in "$@"; do
+  case "$arg" in
+    --prefix=*)
+      prefix=${arg#--prefix=}
+      ;;
+  esac
+done
+
+[ -n "$configure_target" ] || exit 78
+[ -n "$prefix" ] || exit 78
+[ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79
+
+printf 'configure-target=%s deployment=%s prefix=%s\n' \
+  "$configure_target" \
+  "$MACOSX_DEPLOYMENT_TARGET" \
+  "$prefix" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+printf '%s\n' "$prefix" >.pv-openssl-prefix
+"#,
+    )
+}
+
+fn write_fake_mysql_cmake(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'argv=' >>"$PV_TEST_CMAKE_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_CMAKE_LOG"
+done
+printf '\n' >>"$PV_TEST_CMAKE_LOG"
+
+case "${1:-}" in
+  -S)
+    build_dir=
+    install_dir=
+    bison_executable=
+    with_ssl=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -B)
+          shift
+          build_dir=${1:-}
+          ;;
+        -DCMAKE_INSTALL_PREFIX=*)
+          install_dir=${1#-DCMAKE_INSTALL_PREFIX=}
+          ;;
+        -DBISON_EXECUTABLE=*)
+          bison_executable=${1#-DBISON_EXECUTABLE=}
+          ;;
+        -DWITH_SSL=*)
+          with_ssl=${1#-DWITH_SSL=}
+          ;;
+      esac
+      shift
+    done
+    [ -n "$build_dir" ] || exit 78
+    [ -n "$install_dir" ] || exit 78
+    [ "$bison_executable" = "$PV_TEST_BISON_EXECUTABLE" ] || exit 81
+    [ "$with_ssl" = "$PV_TEST_OPENSSL_PREFIX" ] || exit 82
+    mkdir -p "$build_dir"
+    printf '%s\n' "$install_dir" >"$build_dir/install-prefix"
+    ;;
+  --build)
+    [ -n "${2:-}" ] || exit 78
+    ;;
+  --install)
+    build_dir=${2:-}
+    [ -n "$build_dir" ] || exit 78
+    install_dir=$(cat "$build_dir/install-prefix")
+    mkdir -p "$install_dir/bin" "$install_dir/lib"
+    for binary in mysqld mysql mysqladmin; do
+      printf '%s fixture\n' "$binary" >"$install_dir/bin/$binary"
+      chmod 755 "$install_dir/bin/$binary"
+    done
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+[ "${1:-}" = "-n" ] || exit 78
+[ "${2:-}" = "hw.ncpu" ] || exit 78
+printf '%s\n' 1
+"#,
+    )
+}
+
+fn write_fake_uname(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  -s) printf '%s\n' Darwin ;;
+  -m) printf '%s\n' arm64 ;;
+  *) exit 78 ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_unzip(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+extract_dir=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d)
+      shift
+      extract_dir=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ -n "$extract_dir" ] || exit 78
+mkdir -p "$extract_dir"
+cat >"$extract_dir/rustfs" <<'EOF'
+rustfs fixture
+EOF
+chmod 755 "$extract_dir/rustfs"
 "#,
     )
 }
@@ -2664,13 +3307,17 @@ case "$mode" in
       */lib/libmysqlclient.dylib)
         printf '%s/lib/libmysqlclient.dylib\n' "$PV_TEST_INSTALL_DIR"
         ;;
+      */lib/libssl.3.dylib)
+        printf '%s/lib/libssl.3.dylib\n' "$PV_TEST_OPENSSL_PREFIX"
+        ;;
     esac
     ;;
   -L)
     case "$binary" in
-      */bin/mysql | */lib/libmysqlclient.dylib | */lib/plugin/auth.so | */lib/postgresql/extension.so)
+      */bin/mysql | */lib/libmysqlclient.dylib | */lib/libssl.3.dylib | */lib/plugin/auth.so | */lib/postgresql/extension.so)
         printf '%s:\n' "$binary"
         printf '\t%s/lib/libmysqlclient.dylib (compatibility version 1.0.0, current version 1.0.0)\n' "$PV_TEST_INSTALL_DIR"
+        printf '\t%s/lib/libssl.3.dylib (compatibility version 3.0.0, current version 3.6.2)\n' "$PV_TEST_OPENSSL_PREFIX"
         ;;
       *)
         exit 1
@@ -2696,6 +3343,11 @@ for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_INSTALL_NAME_LOG"
 done
 printf '\n' >>"$PV_TEST_INSTALL_NAME_LOG"
+
+if [ "${1:-}" = "-delete_rpath" ]; then
+  printf '%s\n' "${2:-}" >>"$PV_TEST_DELETED_RPATH_LOG"
+  printf '%s|%s\n' "${3:-}" "${2:-}" >>"$PV_TEST_REMOVED_RPATHS_LOG"
+fi
 "#,
     )
 }
@@ -2780,27 +3432,6 @@ esac
     )
 }
 
-fn write_fake_make(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -C)
-      shift
-      cd "$1"
-      ;;
-  esac
-  shift
-done
-mkdir -p src
-printf '%s\n' '#!/bin/sh' >src/redis-server
-printf '%s\n' '#!/bin/sh' >src/redis-cli
-"#,
-    )
-}
-
 fn write_fake_codesign(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -2830,56 +3461,6 @@ exit 0
     )
 }
 
-fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-[ "${1:-}" = "-n" ] || exit 78
-[ "${2:-}" = "hw.ncpu" ] || exit 78
-printf '%s\n' 4
-"#,
-    )
-}
-
-fn write_fake_uname(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-case "${1:-}" in
-  -s) printf '%s\n' Darwin ;;
-  -m) printf '%s\n' arm64 ;;
-  *) exit 78 ;;
-esac
-"#,
-    )
-}
-
-fn write_fake_unzip(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-
-destination=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -d)
-      shift
-      destination=${1:-}
-      ;;
-  esac
-  shift
-done
-
-[ -n "$destination" ] || exit 78
-mkdir -p "$destination"
-printf '%s\n' '#!/bin/sh' >"$destination/$PV_TEST_BINARY_NAME"
-"#,
-    )
-}
-
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -2895,6 +3476,56 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     header.set_mode(0o644);
     header.set_cksum();
     builder.append(&header, content as &[u8])?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "openssl-source/Configure",
+        b"openssl configure\n",
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+fn write_backing_source_archive(path: &Utf8Path, recipe: BackingBuildRecipe) -> Result<()> {
+    match recipe.source_kind {
+        BackingSourceKind::Redis => write_redis_source_archive(path),
+        BackingSourceKind::TarGzBinary => {
+            write_single_file_archive(path, recipe.resource, b"binary fixture")
+        }
+        BackingSourceKind::ZipBinary => write_file(path, "zip fixture\n"),
+    }
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_single_file_archive(path: &Utf8Path, entry_path: &str, content: &[u8]) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_path(entry_path)?;
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder.append(&header, content)?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
@@ -3019,6 +3650,20 @@ fn file_sha256(path: &Utf8Path) -> Result<String> {
     hasher.update(&bytes);
 
     Ok(HEXLOWER.encode(&hasher.finalize()))
+}
+
+fn codesigned_file_names(sign_log: &str) -> Vec<String> {
+    let mut file_names = Vec::new();
+    for line in sign_log.lines() {
+        if let Some((_prefix, path)) = line.rsplit_once('[') {
+            let path = path.trim_end_matches(']');
+            if let Some(file_name) = Utf8Path::new(path).file_name() {
+                file_names.push(file_name.to_string());
+            }
+        }
+    }
+    file_names.sort();
+    file_names
 }
 
 #[derive(Debug, PartialEq, Eq)]

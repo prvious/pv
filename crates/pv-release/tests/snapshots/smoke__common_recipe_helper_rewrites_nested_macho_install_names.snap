@@ -7,5 +7,12 @@ expression: rewrites
     "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/../libmysqlclient.dylib][<tmp>/artifact/lib/plugin/auth.so]",
     "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/../libmysqlclient.dylib][<tmp>/artifact/lib/postgresql/extension.so]",
     "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/libmysqlclient.dylib][<tmp>/artifact/lib/libmysqlclient.dylib]",
+    "argv=[-change][<install>/lib/libmysqlclient.dylib][@loader_path/libmysqlclient.dylib][<tmp>/artifact/lib/libssl.3.dylib]",
+    "argv=[-change][<tmp>/openssl@3/lib/libssl.3.dylib][@loader_path/../lib/libssl.3.dylib][<tmp>/artifact/bin/mysql]",
+    "argv=[-change][<tmp>/openssl@3/lib/libssl.3.dylib][@loader_path/../libssl.3.dylib][<tmp>/artifact/lib/plugin/auth.so]",
+    "argv=[-change][<tmp>/openssl@3/lib/libssl.3.dylib][@loader_path/../libssl.3.dylib][<tmp>/artifact/lib/postgresql/extension.so]",
+    "argv=[-change][<tmp>/openssl@3/lib/libssl.3.dylib][@loader_path/libssl.3.dylib][<tmp>/artifact/lib/libmysqlclient.dylib]",
+    "argv=[-change][<tmp>/openssl@3/lib/libssl.3.dylib][@loader_path/libssl.3.dylib][<tmp>/artifact/lib/libssl.3.dylib]",
     "argv=[-id][@loader_path/libmysqlclient.dylib][<tmp>/artifact/lib/libmysqlclient.dylib]",
+    "argv=[-id][@loader_path/libssl.3.dylib][<tmp>/artifact/lib/libssl.3.dylib]",
 ]

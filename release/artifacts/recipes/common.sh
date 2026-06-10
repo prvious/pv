@@ -51,17 +51,26 @@ pv_recipe_macho_loader_prefix() {
 
 rewrite_macho_install_names() {
   root_dir=$1
-  install_dir=$2
+  shift
 
   need install_name_tool
   need find
   need otool
+  [ "$#" -gt 0 ] || die "missing install root for Mach-O install-name rewrite"
 
   if [ -d "$root_dir/lib" ]; then
     find "$root_dir/lib" -type f -name '*.dylib' -exec sh -c '
       set -e
-      install_dir=$1
+      root_count=$1
       shift
+      root_index=0
+      install_roots=
+      while [ "$root_index" -lt "$root_count" ]; do
+        install_roots="$install_roots
+$1"
+        root_index=$((root_index + 1))
+        shift
+      done
       for library do
         install_name=$(
           otool -D "$library" 2>/dev/null | {
@@ -70,13 +79,16 @@ rewrite_macho_install_names() {
             printf "%s\n" "$line"
           }
         )
-        case "$install_name" in
-          "$install_dir"/lib/*)
-            install_name_tool -id "@loader_path/${install_name##*/}" "$library" || exit 1
-            ;;
-        esac
+        printf "%s\n" "$install_roots" | while IFS= read -r install_root; do
+          [ -n "$install_root" ] || continue
+          case "$install_name" in
+            "$install_root"/lib/*)
+              install_name_tool -id "@loader_path/${install_name##*/}" "$library" || exit 1
+              ;;
+          esac
+        done
       done
-    ' sh "$install_dir" {} +
+    ' sh "$#" "$@" {} +
   fi
 
   for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
@@ -85,11 +97,13 @@ rewrite_macho_install_names() {
       otool -L "$macho" >/dev/null 2>&1 || continue
       loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
       otool -L "$macho" | while read -r linked _; do
-        case "$linked" in
-          "$install_dir"/lib/*)
-            install_name_tool -change "$linked" "$loader_prefix/${linked##*/}" "$macho" || exit 1
-            ;;
-        esac
+        for install_root in "$@"; do
+          case "$linked" in
+            "$install_root"/lib/*)
+              install_name_tool -change "$linked" "$loader_prefix/${linked##*/}" "$macho" || exit 1
+              ;;
+          esac
+        done
       done
     done
   done
@@ -179,6 +193,9 @@ reject_unmanaged_macho_runtime_path() {
 
   case "$runtime_path" in
     /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/*)
+      ;;
+    @loader_path | @executable_path)
+      [ "$metadata_kind" = "rpath" ] || die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path"
       ;;
     *) die "$binary Mach-O $metadata_kind references unmanaged runtime path $runtime_path" ;;
   esac

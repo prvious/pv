@@ -12,9 +12,15 @@ RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-mysql}
 BUILD_JOBS=${PV_BUILD_JOBS:-}
+BISON_EXECUTABLE=${PV_MYSQL_BISON_EXECUTABLE:-}
+OPENSSL_PREFIX=${PV_MYSQL_OPENSSL_PREFIX:-}
+OPENSSL_VERSION=${PV_MYSQL_OPENSSL_VERSION:-3.5.7}
+OPENSSL_SOURCE_URL=${PV_MYSQL_OPENSSL_SOURCE_URL:-"https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"}
+OPENSSL_SOURCE_SHA256=${PV_MYSQL_OPENSSL_SOURCE_SHA256:-a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8}
 DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
 
+need brew
 need cargo
 need cmake
 need curl
@@ -22,6 +28,7 @@ need dirname
 need find
 need git
 need make
+need perl
 need readlink
 need shasum
 need tar
@@ -39,20 +46,33 @@ if [ -z "$BUILD_JOBS" ]; then
   BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || printf '%s\n' 2)
 fi
 
+if [ -z "$BISON_EXECUTABLE" ]; then
+  BISON_PREFIX=$(brew --prefix bison 2>/dev/null || true)
+  if [ -z "$BISON_PREFIX" ] || [ ! -x "$BISON_PREFIX/bin/bison" ]; then
+    brew install bison
+    BISON_PREFIX=$(brew --prefix bison)
+  fi
+  BISON_EXECUTABLE="$BISON_PREFIX/bin/bison"
+fi
+[ -x "$BISON_EXECUTABLE" ] || die "Bison executable not found: $BISON_EXECUTABLE"
+
 download_source() {
   source_archive=$1
+  source_url=$2
+  source_sha256=$3
 
   mkdir -p "$(dirname "$source_archive")"
   curl -L --fail --show-error --silent \
     --retry 3 --retry-delay 2 --retry-all-errors \
     --connect-timeout 20 --max-time 1200 \
-    "$PV_SOURCE_URL" -o "$source_archive"
-  require_sha256 "$source_archive" "$PV_SOURCE_SHA256"
+    "$source_url" -o "$source_archive"
+  require_sha256 "$source_archive" "$source_sha256"
 }
 
 extract_source() {
-  source_archive=$1
-  source_extract_dir=$2
+  source_name=$1
+  source_archive=$2
+  source_extract_dir=$3
 
   rm -rf "$source_extract_dir"
   mkdir -p "$source_extract_dir"
@@ -65,9 +85,50 @@ extract_source() {
     source_entry_count=$((source_entry_count + 1))
     source_dir=$source_entry
   done
-  [ "$source_entry_count" -eq 1 ] || die "MySQL source archive must contain exactly one top-level source directory"
-  [ -d "$source_dir" ] || die "MySQL source archive top-level entry is not a directory"
+  [ "$source_entry_count" -eq 1 ] || die "$source_name source archive must contain exactly one top-level source directory"
+  [ -d "$source_dir" ] || die "$source_name source archive top-level entry is not a directory"
   printf '%s\n' "$source_dir"
+}
+
+openssl_configure_target_for_platform() {
+  case "$1" in
+    darwin-arm64) printf '%s\n' darwin64-arm64-cc ;;
+    darwin-amd64) printf '%s\n' darwin64-x86_64-cc ;;
+    *) die "unsupported MySQL artifact platform: $1" ;;
+  esac
+}
+
+build_openssl_dependency() {
+  openssl_prefix=$1
+  openssl_source_archive=$2
+  openssl_source_extract_dir=$3
+
+  rm -rf "$openssl_prefix"
+  download_source "$openssl_source_archive" "$OPENSSL_SOURCE_URL" "$OPENSSL_SOURCE_SHA256"
+  openssl_source_dir=$(extract_source OpenSSL "$openssl_source_archive" "$openssl_source_extract_dir")
+  openssl_configure_target=$(openssl_configure_target_for_platform "$PLATFORM")
+
+  (
+    cd "$openssl_source_dir"
+    # MySQL consumes OpenSSL through CMake imported targets; shared libs keep
+    # those locations concrete while this recipe controls the macOS target.
+    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+      perl ./Configure "$openssl_configure_target" no-tests \
+      --prefix="$openssl_prefix" \
+      --openssldir="$openssl_prefix/ssl"
+    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make -j "$BUILD_JOBS"
+    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make install_sw
+  )
+
+  validate_openssl_prefix "$openssl_prefix"
+}
+
+validate_openssl_prefix() {
+  openssl_prefix=$1
+
+  [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
 }
 
 copy_install_tree() {
@@ -96,7 +157,7 @@ copy_install_tree() {
       mv "$tmp" "$path" || exit 1
     done
   ' sh {} +
-  rewrite_macho_install_names "$root_dir" "$install_dir"
+  rewrite_macho_install_names "$root_dir" "$install_dir" "$OPENSSL_PREFIX"
   pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
   for binary in mysqld mysql mysqladmin; do
     [ -x "$root_dir/bin/$binary" ] || die "MySQL artifact missing bin/$binary"
@@ -129,20 +190,29 @@ source_extract_dir="$OUT_DIR/sources/mysql-$PV_UPSTREAM_VERSION-source"
 build_dir="$work_dir/build"
 install_dir="$work_dir/install"
 root_dir="$work_dir/$artifact_basename"
+openssl_source_archive="$OUT_DIR/sources/openssl-$OPENSSL_VERSION.tar.gz"
+openssl_source_extract_dir="$OUT_DIR/sources/openssl-$OPENSSL_VERSION-source"
 archive="$OUT_DIR/$artifact_basename.tar.gz"
 record=$(artifact_record_path "$RECORD_DIR" mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
 object_key=$(artifact_object_key mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
 
 rm -rf "$work_dir"
 mkdir -p "$work_dir" "$OUT_DIR"
-download_source "$source_archive"
-source_dir=$(extract_source "$source_archive" "$source_extract_dir")
+if [ -z "$OPENSSL_PREFIX" ]; then
+  OPENSSL_PREFIX="$work_dir/openssl-$OPENSSL_VERSION"
+  build_openssl_dependency "$OPENSSL_PREFIX" "$openssl_source_archive" "$openssl_source_extract_dir"
+else
+  validate_openssl_prefix "$OPENSSL_PREFIX"
+fi
+download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
+source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")
 
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 cmake -S "$source_dir" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$install_dir" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+  -DBISON_EXECUTABLE="$BISON_EXECUTABLE" \
   -DINSTALL_LAYOUT=STANDALONE \
   -DMYSQL_DATADIR="$install_dir/data" \
   -DWITH_EDITLINE=bundled \
@@ -151,7 +221,7 @@ cmake -S "$source_dir" -B "$build_dir" \
   -DWITH_NDB=OFF \
   -DWITH_PROTOBUF=bundled \
   -DWITH_ROUTER=OFF \
-  -DWITH_SSL=bundled \
+  -DWITH_SSL="$OPENSSL_PREFIX" \
   -DWITH_UNIT_TESTS=OFF \
   -DWITH_ZLIB=bundled \
   -DWITH_ZSTD=bundled
