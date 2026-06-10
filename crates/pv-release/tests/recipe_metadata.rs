@@ -179,6 +179,58 @@ fn committed_recipe_metadata_parses() -> Result<()> {
 }
 
 #[test]
+fn committed_redis_recipe_collects_current_notice_inputs() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/redis/build.sh"))?;
+    let notice_inputs = build_script
+        .lines()
+        .filter_map(redis_notice_input)
+        .collect::<Vec<_>>();
+
+    assert_snapshot!(notice_inputs.join("\n"), @r###"
+    deps/hiredis/COPYING
+    deps/lua/COPYRIGHT
+    deps/hdr_histogram/LICENSE.txt
+    deps/hdr_histogram/COPYING.txt
+    deps/fpconv/LICENSE.txt
+    src/fast_float_strtod.c
+    deps/linenoise/README.markdown
+    deps/jemalloc/COPYING
+    deps/tre/LICENSE
+    deps/xxhash/LICENSE
+    "###);
+
+    Ok(())
+}
+
+#[test]
+fn committed_mysql_recipe_pins_boost_for_compatibility_track() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
+    let boost_lines = build_script
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("BOOST_")
+                || line.contains("DOWNLOAD_BOOST")
+                || line.contains("WITH_BOOST")
+        })
+        .collect::<Vec<_>>();
+
+    assert_snapshot!(boost_lines.join("\n"), @r###"
+    BOOST_PREFIX=${PV_MYSQL_BOOST_PREFIX:-}
+    BOOST_SOURCE_URL=${PV_MYSQL_BOOST_SOURCE_URL:-"https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2"}
+    BOOST_SOURCE_SHA256=${PV_MYSQL_BOOST_SOURCE_SHA256:-fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854}
+    if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
+    download_source "$boost_source_archive" "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
+    BOOST_PREFIX=$(extract_source Boost "$boost_source_archive" "$boost_source_extract_dir")
+    set -- "$@" -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$BOOST_PREFIX"
+    "###);
+
+    Ok(())
+}
+
+#[test]
 fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let wrong_resource =
         VALID_REDIS_TOML.replace("resources = [\"redis\"]", "resources = [\"mysql\"]");
@@ -650,6 +702,18 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
     );
 }
 
+fn redis_notice_input(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if !line.starts_with("append_redis_legal_") {
+        return None;
+    }
+
+    let mut quoted = line.split('"').skip(1);
+    quoted.next()?;
+    quoted.next()?;
+    quoted.next()
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "release tooling tests write local recipe metadata"
@@ -657,6 +721,14 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
 fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
     std::fs::write(path, content)?;
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests read repository-local recipe metadata"
+)]
+fn read_file(path: &Utf8Path) -> Result<String> {
+    Ok(std::fs::read_to_string(path)?)
 }
 
 const VALID_PHP_TOML: &str = r#"

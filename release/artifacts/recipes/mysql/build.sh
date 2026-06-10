@@ -17,6 +17,9 @@ OPENSSL_PREFIX=${PV_MYSQL_OPENSSL_PREFIX:-}
 OPENSSL_VERSION=${PV_MYSQL_OPENSSL_VERSION:-3.5.7}
 OPENSSL_SOURCE_URL=${PV_MYSQL_OPENSSL_SOURCE_URL:-"https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"}
 OPENSSL_SOURCE_SHA256=${PV_MYSQL_OPENSSL_SOURCE_SHA256:-a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8}
+BOOST_PREFIX=${PV_MYSQL_BOOST_PREFIX:-}
+BOOST_SOURCE_URL=${PV_MYSQL_BOOST_SOURCE_URL:-"https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2"}
+BOOST_SOURCE_SHA256=${PV_MYSQL_BOOST_SOURCE_SHA256:-fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854}
 DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
 
@@ -76,7 +79,10 @@ extract_source() {
 
   rm -rf "$source_extract_dir"
   mkdir -p "$source_extract_dir"
-  tar -xzf "$source_archive" -C "$source_extract_dir"
+  case "$source_archive" in
+    *.tar.bz2 | *.tbz2) tar -xjf "$source_archive" -C "$source_extract_dir" ;;
+    *) tar -xzf "$source_archive" -C "$source_extract_dir" ;;
+  esac
 
   source_entry_count=0
   source_dir=
@@ -192,6 +198,8 @@ install_dir="$work_dir/install"
 root_dir="$work_dir/$artifact_basename"
 openssl_source_archive="$OUT_DIR/sources/openssl-$OPENSSL_VERSION.tar.gz"
 openssl_source_extract_dir="$OUT_DIR/sources/openssl-$OPENSSL_VERSION-source"
+boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tar.bz2"
+boost_source_extract_dir="$OUT_DIR/sources/boost-1.77.0-source"
 archive="$OUT_DIR/$artifact_basename.tar.gz"
 record=$(artifact_record_path "$RECORD_DIR" mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
 object_key=$(artifact_object_key mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
@@ -206,9 +214,13 @@ else
 fi
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")
+if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
+  download_source "$boost_source_archive" "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
+  BOOST_PREFIX=$(extract_source Boost "$boost_source_archive" "$boost_source_extract_dir")
+fi
 
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
-cmake -S "$source_dir" -B "$build_dir" \
+set -- \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$install_dir" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
@@ -225,6 +237,10 @@ cmake -S "$source_dir" -B "$build_dir" \
   -DWITH_UNIT_TESTS=OFF \
   -DWITH_ZLIB=bundled \
   -DWITH_ZSTD=bundled
+if [ "$PV_TRACK" = "8.0" ]; then
+  set -- "$@" -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$BOOST_PREFIX"
+fi
+cmake -S "$source_dir" -B "$build_dir" "$@"
 cmake --build "$build_dir" --parallel "$BUILD_JOBS"
 cmake --install "$build_dir"
 

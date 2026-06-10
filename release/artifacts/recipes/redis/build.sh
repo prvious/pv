@@ -171,6 +171,19 @@ append_redis_legal_file() {
   cat "$source_path"
 }
 
+append_redis_legal_header() {
+  source_path=$1
+  label=$2
+
+  [ -f "$source_path" ] || die "missing Redis third-party legal file: $source_path"
+  printf '\n%s\n' "==== $label ===="
+  awk '
+    /^\/\*/ { in_comment = 1 }
+    in_comment { print }
+    in_comment && /\*\// { exit }
+  ' "$source_path"
+}
+
 write_third_party_notices() {
   output=$1
 
@@ -182,9 +195,11 @@ write_third_party_notices() {
     append_redis_legal_file "$source_dir/deps/hdr_histogram/LICENSE.txt" "deps/hdr_histogram/LICENSE.txt"
     append_redis_legal_file "$source_dir/deps/hdr_histogram/COPYING.txt" "deps/hdr_histogram/COPYING.txt"
     append_redis_legal_file "$source_dir/deps/fpconv/LICENSE.txt" "deps/fpconv/LICENSE.txt"
-    append_redis_legal_file "$source_dir/deps/fast_float/README.md" "deps/fast_float/README.md"
+    append_redis_legal_header "$source_dir/src/fast_float_strtod.c" "src/fast_float_strtod.c"
     append_redis_legal_file "$source_dir/deps/linenoise/README.markdown" "deps/linenoise/README.markdown"
     append_redis_legal_file "$source_dir/deps/jemalloc/COPYING" "deps/jemalloc/COPYING"
+    append_redis_legal_file "$source_dir/deps/tre/LICENSE" "deps/tre/LICENSE"
+    append_redis_legal_file "$source_dir/deps/xxhash/LICENSE" "deps/xxhash/LICENSE"
   } >"$output"
 }
 
