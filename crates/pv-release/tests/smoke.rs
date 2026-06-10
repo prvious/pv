@@ -463,6 +463,7 @@ fn redis_build_recipe_signs_binaries_and_requires_third_party_notices() -> Resul
 fn redis_build_recipe_does_not_publish_outputs_before_archive_validation() -> Result<()> {
     let run = run_redis_build_recipe_smoke(RedisBuildRecipeOptions {
         validate_archive_failure: true,
+        ..default_redis_build_recipe_options()
     })?;
 
     assert!(
@@ -482,6 +483,35 @@ fn redis_build_recipe_does_not_publish_outputs_before_archive_validation() -> Re
         String::from_utf8_lossy(&run.output.stdout),
         "",
         "archive path should not be printed before validation succeeds"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_build_recipe_rejects_missing_third_party_legal_header() -> Result<()> {
+    let run = run_redis_build_recipe_smoke(RedisBuildRecipeOptions {
+        include_fast_float_legal_header: false,
+        ..default_redis_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "Redis build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        stderr.contains("missing Redis legal header"),
+        "Redis build recipe should report the missing legal header: {stderr}"
+    );
+    assert!(
+        run.record_json.is_none(),
+        "Redis record should not be written when legal notice collection fails"
+    );
+    assert!(
+        !run.archive_exists,
+        "Redis archive should not be written when legal notice collection fails"
     );
 
     Ok(())
@@ -1571,6 +1601,7 @@ struct BuildRecipeOptions<'a> {
 
 struct RedisBuildRecipeOptions {
     validate_archive_failure: bool,
+    include_fast_float_legal_header: bool,
 }
 
 struct BackingBuildRecipeOptions<'a> {
@@ -1714,6 +1745,7 @@ fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
 fn default_redis_build_recipe_options() -> RedisBuildRecipeOptions {
     RedisBuildRecipeOptions {
         validate_archive_failure: false,
+        include_fast_float_legal_header: true,
     }
 }
 
@@ -1728,7 +1760,10 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     let codesign_log = tempdir.path().join("codesign.log");
 
     create_dir_all(&fake_bin)?;
-    write_redis_source_archive(&source_archive)?;
+    write_redis_source_archive_with_options(
+        &source_archive,
+        options.include_fast_float_legal_header,
+    )?;
     write_fake_redis_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
@@ -3864,6 +3899,17 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     reason = "release tooling tests create source tarball fixtures directly"
 )]
 fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
+    write_redis_source_archive_with_options(path, true)
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_redis_source_archive_with_options(
+    path: &Utf8Path,
+    include_fast_float_legal_header: bool,
+) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
@@ -3902,7 +3948,11 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
     append_archive_file(
         &mut builder,
         "redis-source/src/fast_float_strtod.c",
-        b"/*\nfast_float notice\n*/\n",
+        if include_fast_float_legal_header {
+            b"/*\nfast_float notice\n*/\n".as_slice()
+        } else {
+            b"double fast_float_strtod(void) { return 0.0; }\n".as_slice()
+        },
     )?;
     append_archive_file(
         &mut builder,

@@ -176,12 +176,16 @@ append_redis_legal_header() {
   label=$2
 
   [ -f "$source_path" ] || die "missing Redis third-party legal file: $source_path"
-  printf '\n%s\n' "==== $label ===="
-  awk '
-    /^\/\*/ { in_comment = 1 }
+  legal_header=$(awk '
+    /^[[:space:]]*\/\*/ { in_comment = 1 }
     in_comment { print }
-    in_comment && /\*\// { exit }
-  ' "$source_path"
+    in_comment && /\*\// { found = 1; exit }
+    END { if (!found) exit 1 }
+  ' "$source_path") || die "missing Redis legal header in: $source_path"
+  [ -n "$legal_header" ] || die "missing Redis legal header in: $source_path"
+
+  printf '\n%s\n' "==== $label ===="
+  printf '%s\n' "$legal_header"
 }
 
 write_third_party_notices() {
