@@ -18,14 +18,14 @@ on:
           - mailpit
           - rustfs
       track:
-        description: "Track to build: all; PHP/all supports 8.2, 8.3, 8.4; resource tracks: composer 2, redis 8.2, mysql 8.4, postgres 18, mailpit 1, rustfs 1"
+        description: "Track to build: all; PHP 8.3/8.4/8.5; MySQL 8.0/8.4/9.7; Postgres 17/18; Redis 8.8; Composer 2; Mailpit 1; RustFS 1"
         required: true
-        default: "8.4"
+        default: "all"
         type: string
       platform:
         description: "Artifact platform: all, darwin-arm64, darwin-amd64"
         required: true
-        default: "darwin-arm64"
+        default: "all"
         type: choice
         options:
           - all
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   validate:
-    name: Validate Inputs and Recipes
+    name: validate
     runs-on: macos-14
 
     steps:
@@ -61,12 +61,12 @@ jobs:
           esac
 
           case "$PV_RECIPE_RESOURCE:$PV_RECIPE_TRACK" in
-            all:all | all:8.2 | all:8.3 | all:8.4) ;;
-            php:all | php:8.2 | php:8.3 | php:8.4) ;;
+            all:all) ;;
+            php:all | php:8.3 | php:8.4 | php:8.5) ;;
             composer:all | composer:2) ;;
-            redis:all | redis:8.2) ;;
-            mysql:all | mysql:8.4) ;;
-            postgres:all | postgres:18) ;;
+            redis:all | redis:8.8) ;;
+            mysql:all | mysql:8.0 | mysql:8.4 | mysql:9.7) ;;
+            postgres:all | postgres:17 | postgres:18) ;;
             mailpit:all | mailpit:1) ;;
             rustfs:all | rustfs:1) ;;
             *)
@@ -100,7 +100,7 @@ jobs:
             --base-url https://artifacts.example.test
 
   build-php:
-    name: Build PHP and FrankenPHP ${{ matrix.platform }}
+    name: "php & frankenphp ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
@@ -108,9 +108,9 @@ jobs:
       fail-fast: false
       matrix:
         # StaticPHP v3 currently fails the FrankenPHP macOS Intel link step, and
-        # PHP 8.3 patching is unstable. Keep the default publication proof on the
-        # known-good arm64/PHP 8.4 lane; explicit darwin-amd64 dispatch remains
-        # available only for diagnostics until upstream v3 is fixed.
+        # explicit darwin-amd64 dispatch remains available only for diagnostics
+        # until upstream v3 is fixed.
+        track: ${{ fromJSON(inputs.track == 'all' && '["8.3","8.4","8.5"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -153,7 +153,7 @@ jobs:
 
       - name: Build PHP and FrankenPHP artifacts
         env:
-          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -166,24 +166,7 @@ jobs:
           rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
           mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
 
-          case "$PV_RECIPE_TRACK" in
-            all)
-              php_track_list='8.2
-          8.3
-          8.4'
-              ;;
-            *)
-              php_track_list=$PV_RECIPE_TRACK
-              ;;
-          esac
-
-          while IFS= read -r track; do
-            [ -n "$track" ] || continue
-            PV_RECIPE_TRACK="$track" \
-              release/artifacts/recipes/php/build.sh
-          done <<PHP_TRACKS
-          $php_track_list
-          PHP_TRACKS
+          release/artifacts/recipes/php/build.sh
 
           # StaticPHP's Go module cache can leave read-only files under work/.
           # Restore user write permission before pruning non-uploaded build scratch.
@@ -202,26 +185,21 @@ jobs:
 
       - name: Generate manifest from records
         env:
-          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
         run: |
           set -eu
 
-          php_default_track=$PV_RECIPE_TRACK
-          if [ "$php_default_track" = all ]; then
-            php_default_track=8.4
-          fi
-
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "php"
-          default_track = "$php_default_track"
+          default_track = "$PV_RECIPE_TRACK"
 
           [[resource]]
           name = "frankenphp"
-          default_track = "$php_default_track"
+          default_track = "$PV_RECIPE_TRACK"
 
           DEFAULT_TRACKS
 
@@ -235,7 +213,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-php-${{ inputs.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-php-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -243,14 +221,15 @@ jobs:
           if-no-files-found: error
 
   build-composer:
-    name: Build Composer ${{ matrix.platform }}
+    name: "composer ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'composer' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+        track: ${{ fromJSON(inputs.track == 'all' && '["2"]' || format('["{0}"]', inputs.track)) }}
+        platform: [any]
 
     steps:
       - name: Checkout
@@ -267,7 +246,8 @@ jobs:
 
       - name: Build Composer artifact
         env:
-          PV_RECIPE_PLATFORM: any
+          PV_RECIPE_TRACK: ${{ matrix.track }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_COMMIT: ${{ github.sha }}
@@ -278,8 +258,7 @@ jobs:
           rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
           mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
 
-          PV_RECIPE_TRACK=2 \
-            PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
+          PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
             release/artifacts/recipes/composer/build.sh
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
@@ -295,7 +274,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "composer"
-          default_track = "2"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -309,7 +288,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-composer-2-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-composer-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -317,13 +296,14 @@ jobs:
           if-no-files-found: error
 
   build-redis:
-    name: Build Redis ${{ matrix.platform }}
+    name: "redis ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'redis' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["8.8"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -335,7 +315,7 @@ jobs:
 
       - name: Build Redis artifact
         env:
-          PV_RECIPE_TRACK: 8.2
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -362,7 +342,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "redis"
-          default_track = "8.2"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -376,7 +356,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-redis-8.2-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-redis-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -384,13 +364,14 @@ jobs:
           if-no-files-found: error
 
   build-mysql:
-    name: Build MySQL ${{ matrix.platform }}
+    name: "mysql ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'mysql' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["8.0","8.4","9.7"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -402,7 +383,7 @@ jobs:
 
       - name: Build MySQL artifact
         env:
-          PV_RECIPE_TRACK: 8.4
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -429,7 +410,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "mysql"
-          default_track = "8.4"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -443,7 +424,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-mysql-8.4-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-mysql-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -451,13 +432,14 @@ jobs:
           if-no-files-found: error
 
   build-postgres:
-    name: Build Postgres ${{ matrix.platform }}
+    name: "postgres ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["17","18"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -469,7 +451,7 @@ jobs:
 
       - name: Build Postgres artifact
         env:
-          PV_RECIPE_TRACK: 18
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -496,7 +478,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "postgres"
-          default_track = "18"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -510,7 +492,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-postgres-18-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-postgres-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -518,13 +500,14 @@ jobs:
           if-no-files-found: error
 
   build-mailpit:
-    name: Build Mailpit ${{ matrix.platform }}
+    name: "mailpit ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'mailpit' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["1"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -536,7 +519,7 @@ jobs:
 
       - name: Build Mailpit artifact
         env:
-          PV_RECIPE_TRACK: 1
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -563,7 +546,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "mailpit"
-          default_track = "1"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -577,7 +560,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-mailpit-1-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-mailpit-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
@@ -585,13 +568,14 @@ jobs:
           if-no-files-found: error
 
   build-rustfs:
-    name: Build RustFS ${{ matrix.platform }}
+    name: "rustfs ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'rustfs' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["1"]' || format('["{0}"]', inputs.track)) }}
         platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
@@ -603,7 +587,7 @@ jobs:
 
       - name: Build RustFS artifact
         env:
-          PV_RECIPE_TRACK: 1
+          PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -630,7 +614,7 @@ jobs:
           cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
           name = "rustfs"
-          default_track = "1"
+          default_track = "${{ matrix.track }}"
 
           DEFAULT_TRACKS
 
@@ -644,7 +628,7 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-rustfs-1-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-rustfs-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json

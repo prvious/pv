@@ -20,6 +20,7 @@ pub struct PublicationRequest {
     pub base_url: String,
     pub versioned_manifest_key: String,
     pub stable_manifest_key: String,
+    pub required_native_platforms: Vec<ArtifactPlatform>,
 }
 
 #[derive(Debug)]
@@ -54,6 +55,8 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
     validate_publication_key(&request.versioned_manifest_key)?;
     validate_publication_key(&request.stable_manifest_key)?;
     validate_stable_manifest_key(&request.stable_manifest_key)?;
+    let required_native_platforms =
+        validate_required_native_platforms(&request.required_native_platforms)?;
 
     let candidate_records = load_release_record_files(&request.candidate_records)?;
     let published_records = load_release_record_files(&request.published_records)?;
@@ -110,6 +113,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
         &defaults,
         &published_records,
         &candidate_records,
+        &required_native_platforms,
     )?;
     stage_immutable_uploads(request, &candidates)?;
     let tempdir = Utf8TempDir::new().map_err(|error| filesystem_error(&request.stage, error))?;
@@ -136,7 +140,7 @@ pub fn prepare_publication(request: &PublicationRequest) -> crate::Result<()> {
             reason: error.to_string(),
         }
     })?;
-    validate_public_manifest_platform_matrix(&manifest)?;
+    validate_public_manifest_platform_matrix(&manifest, &required_native_platforms)?;
 
     let stable_manifest_path = request.stage.join(&request.stable_manifest_key);
     write(&stable_manifest_path, &manifest_json)?;
@@ -158,6 +162,7 @@ fn validate_default_release_record_platform_matrix(
     defaults: &ManifestDefaults,
     published_records: &[ReleaseRecordFile],
     candidate_records: &[ReleaseRecordFile],
+    required_native_platforms: &[ArtifactPlatform],
 ) -> crate::Result<()> {
     let mut platforms_by_default = BTreeMap::<(String, String), BTreeSet<ArtifactPlatform>>::new();
     for record_file in published_records.iter().chain(candidate_records) {
@@ -193,8 +198,9 @@ fn validate_default_release_record_platform_matrix(
             });
         }
 
-        let missing = [ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64]
-            .into_iter()
+        let missing = required_native_platforms
+            .iter()
+            .copied()
             .filter(|platform| {
                 !platforms
                     .map(|platforms| platforms.contains(platform))
@@ -216,26 +222,37 @@ fn validate_default_release_record_platform_matrix(
     Ok(())
 }
 
-fn validate_public_manifest_platform_matrix(manifest: &ArtifactManifest) -> crate::Result<()> {
+fn validate_public_manifest_platform_matrix(
+    manifest: &ArtifactManifest,
+    required_native_platforms: &[ArtifactPlatform],
+) -> crate::Result<()> {
     for (resource, track) in manifest.resource_tracks() {
         if resource.as_str() == "composer" {
             validate_public_portable_track(manifest, resource, track)?;
             continue;
         }
 
-        let missing = [
-            (TargetPlatform::DarwinArm64, ArtifactPlatform::DarwinArm64),
-            (TargetPlatform::DarwinAmd64, ArtifactPlatform::DarwinAmd64),
-        ]
-        .into_iter()
-        .filter_map(|(target, expected_platform)| {
-            match selects_expected_platform(manifest, resource, track, target, expected_platform) {
-                Ok(true) => None,
-                Ok(false) => Some(Ok(target.as_str())),
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect::<crate::Result<Vec<_>>>()?;
+        let missing = required_native_platforms
+            .iter()
+            .copied()
+            .filter_map(|expected_platform| {
+                let target = match target_platform_for_native_artifact(expected_platform) {
+                    Ok(target) => target,
+                    Err(error) => return Some(Err(error)),
+                };
+                match selects_expected_platform(
+                    manifest,
+                    resource,
+                    track,
+                    target,
+                    expected_platform,
+                ) {
+                    Ok(true) => None,
+                    Ok(false) => Some(Ok(target.as_str())),
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
 
         if !missing.is_empty() {
             return Err(crate::ReleaseError::GeneratedManifestInvalid {
@@ -248,6 +265,42 @@ fn validate_public_manifest_platform_matrix(manifest: &ArtifactManifest) -> crat
     }
 
     Ok(())
+}
+
+fn target_platform_for_native_artifact(
+    platform: ArtifactPlatform,
+) -> crate::Result<TargetPlatform> {
+    match platform {
+        ArtifactPlatform::DarwinArm64 => Ok(TargetPlatform::DarwinArm64),
+        ArtifactPlatform::DarwinAmd64 => Ok(TargetPlatform::DarwinAmd64),
+        ArtifactPlatform::Any => Err(crate::ReleaseError::InvalidPublicationInput {
+            path: "required-native-platform".to_string(),
+            reason: "`any` is portable metadata, not a native publication platform".to_string(),
+        }),
+    }
+}
+
+fn validate_required_native_platforms(
+    required_native_platforms: &[ArtifactPlatform],
+) -> crate::Result<Vec<ArtifactPlatform>> {
+    let platforms = required_native_platforms
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if platforms.is_empty() {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: "required-native-platform".to_string(),
+            reason: "at least one required native platform must be configured".to_string(),
+        });
+    }
+    if platforms.contains(&ArtifactPlatform::Any) {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: "required-native-platform".to_string(),
+            reason: "`any` is portable metadata, not a native publication platform".to_string(),
+        });
+    }
+
+    Ok(platforms.into_iter().collect())
 }
 
 fn validate_public_portable_track(

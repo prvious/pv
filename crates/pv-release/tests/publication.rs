@@ -7,7 +7,7 @@ use flate2::write::GzEncoder;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::publication::{PublicationRequest, prepare_publication};
-use resources::ArtifactManifest;
+use resources::{ArtifactManifest, ArtifactPlatform};
 use sha2::{Digest, Sha256};
 use tar::{Builder, Header};
 
@@ -92,6 +92,10 @@ default_track = "8.2"
         base_url: "https://artifacts.example.test".to_string(),
         versioned_manifest_key: "manifests/runs/123456789/manifest.json".to_string(),
         stable_manifest_key: "manifest.json".to_string(),
+        required_native_platforms: vec![
+            ArtifactPlatform::DarwinArm64,
+            ArtifactPlatform::DarwinAmd64,
+        ],
     })?;
 
     assert!(path_exists(&stage.join(
@@ -163,6 +167,25 @@ fn publication_stage_merges_published_records_revocations_and_candidates() -> Re
 }
 
 #[test]
+fn publication_stage_allows_configured_native_platform_subset() -> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_candidate_for_platform("darwin-arm64")?;
+
+    prepare_publication(&fixture.request_with_required_native_platforms(
+        "manifests/runs/123456789/manifest.json",
+        "manifest.json",
+        vec![ArtifactPlatform::DarwinArm64],
+    ))?;
+
+    let stable_manifest = read_file(&fixture.stage().join("manifest.json"))?;
+    ArtifactManifest::parse(&stable_manifest)?;
+
+    assert_snapshot!(stable_manifest);
+
+    Ok(())
+}
+
+#[test]
 fn publication_stage_rejects_missing_archive_before_manifest_write() -> Result<()> {
     let tempdir = tempdir()?;
     let source_archives = tempdir.path().join("source-archives");
@@ -206,6 +229,10 @@ default_track = "8.2"
         base_url: "https://artifacts.example.test".to_string(),
         versioned_manifest_key: "manifests/runs/123456789/manifest.json".to_string(),
         stable_manifest_key: "manifest.json".to_string(),
+        required_native_platforms: vec![
+            ArtifactPlatform::DarwinArm64,
+            ArtifactPlatform::DarwinAmd64,
+        ],
     }))?;
 
     assert_debug_snapshot!(publication_error_summary(error, tempdir.path()));
@@ -445,6 +472,19 @@ default_track = "8.2"
         versioned_manifest_key: &str,
         stable_manifest_key: &str,
     ) -> PublicationRequest {
+        self.request_with_required_native_platforms(
+            versioned_manifest_key,
+            stable_manifest_key,
+            vec![ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64],
+        )
+    }
+
+    fn request_with_required_native_platforms(
+        &self,
+        versioned_manifest_key: &str,
+        stable_manifest_key: &str,
+        required_native_platforms: Vec<ArtifactPlatform>,
+    ) -> PublicationRequest {
         PublicationRequest {
             source_archives: self.source_archives.clone(),
             candidate_records: self.candidate_records.clone(),
@@ -455,6 +495,7 @@ default_track = "8.2"
             base_url: "https://artifacts.example.test".to_string(),
             versioned_manifest_key: versioned_manifest_key.to_string(),
             stable_manifest_key: stable_manifest_key.to_string(),
+            required_native_platforms,
         }
     }
 

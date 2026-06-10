@@ -11,7 +11,19 @@ notice_files = ["NOTICE"]
 payload_paths = ["bin/mysqld", "bin/mysql", "bin/mysqladmin"]
 
 [[tracks]]
+name = "8.0"
+upstream_version = "8.0.46"
+source_url = "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46.tar.gz"
+source_sha256 = "e0d1a98ae5188c6a4efed74c74ff28115d4b791bc9d591a78e14d20aded67344"
+
+[[tracks]]
 name = "8.4"
 upstream_version = "8.4.9"
 source_url = "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz"
 source_sha256 = "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b"
+
+[[tracks]]
+name = "9.7"
+upstream_version = "9.7.0"
+source_url = "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.0.tar.gz"
+source_sha256 = "74b574babc56b0ecb632abd359d213c6794ecf442ae44928bfc581fb3d62306d"

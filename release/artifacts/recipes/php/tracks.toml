@@ -1,6 +1,6 @@
 [recipe]
 resources = ["php", "frankenphp"]
-default_track = "8.4"
+default_track = "8.5"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
@@ -76,15 +76,9 @@ expected_extensions = [
 ]
 
 [frankenphp]
-version = "1.12.3"
-source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz"
-source_sha256 = "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363"
-
-[[tracks]]
-name = "8.2"
-php_version = "8.2.31"
-php_source_url = "https://www.php.net/distributions/php-8.2.31.tar.gz"
-php_source_sha256 = "083c2f61cc5f527eb293c4c468a91af46a9678785957e023b2796a9db290d870"
+version = "1.12.4"
+source_url = "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz"
+source_sha256 = "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
 
 [[tracks]]
 name = "8.3"
@@ -94,6 +88,12 @@ php_source_sha256 = "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbd
 
 [[tracks]]
 name = "8.4"
-php_version = "8.4.20"
-php_source_url = "https://www.php.net/distributions/php-8.4.20.tar.gz"
-php_source_sha256 = "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d"
+php_version = "8.4.22"
+php_source_url = "https://www.php.net/distributions/php-8.4.22.tar.gz"
+php_source_sha256 = "a012c2c9724baf214a70b41b40a7e130906b8855e54268afa5bc4ae17bc9d823"
+
+[[tracks]]
+name = "8.5"
+php_version = "8.5.7"
+php_source_url = "https://www.php.net/distributions/php-8.5.7.tar.gz"
+php_source_sha256 = "e5eba93fd6dd3241d0e61e932eb99a3783b40568553fb0e511b660ecd863a049"

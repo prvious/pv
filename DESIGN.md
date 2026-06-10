@@ -367,7 +367,7 @@ For a given PHP track, standalone PHP and FrankenPHP must use the exact same PHP
 
 PV v1 ships one PHP build flavor per PHP track. Xdebug is not included in the default v1 PHP build. Extra-extension flavors, such as builds with `xdebug`, `imagick`, `swoole`, or `mongodb`, are out of v1 scope until PV deliberately designs multi-flavor PHP artifacts.
 
-PV builds its own FrankenPHP artifacts for the PHP tracks it supports because upstream FrankenPHP releases do not provide the exact PV-required build matrix. The initial PV-managed FrankenPHP/PHP tracks are `8.2`, `8.3`, and `8.4`.
+PV builds its own FrankenPHP artifacts for the PHP tracks it supports because upstream FrankenPHP releases do not provide the exact PV-required build matrix. The initial PV-managed FrankenPHP/PHP tracks are `8.3`, `8.4`, and `8.5`, with `8.5` as the manifest default track.
 
 PV v1 does not support custom PHP ini settings in Project config.
 
@@ -650,6 +650,8 @@ The artifact manifest defines resource-specific update tracks. Project config ve
 
 Examples: MySQL `8.0` tracks update within `8.0.x`, MySQL `8.4` tracks update within `8.4.x`, PostgreSQL `17` tracks update within `17.x`, and PostgreSQL `18` tracks update within `18.x`.
 
+The initial v1 Managed Resource artifact track set is PHP/FrankenPHP `8.3`, `8.4`, and `8.5`; MySQL `8.0`, `8.4`, and `9.7`; Postgres `17` and `18`; Redis `8.8`; Composer `2`; Mailpit `1`; and RustFS `1`. Manifest defaults are PHP/FrankenPHP `8.5`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only, not a default.
+
 Install commands and Project config versions resolve to the latest artifact in the requested track. "Latest" means the non-revoked artifact with the newest `published_at` timestamp after platform selection. If two candidate artifacts for the same resource, track, and platform have the same `published_at`, the manifest is ambiguous and invalid. For example, `pv mysql:install 8.0` installs the latest available MySQL artifact in the `8.0` track.
 
 `latest` is accepted as a version alias that resolves to the manifest's default track for that Managed Resource. PV stores the resolved track, not `latest`, so existing Projects do not float when manifest defaults change later.
@@ -711,6 +713,8 @@ Strict byte-for-byte reproducible Managed Resource builds are not a v1 requireme
 The artifact release pipeline must pass adapter-specific smoke tests before publishing a Managed Resource artifact. Redis starts `redis-server`, checks `redis-cli ping` returns `PONG`, and stops cleanly. Postgres runs `initdb`, starts `postgres`, runs `psql SELECT 1`, and stops cleanly. MySQL initializes a temporary data directory, starts the server, connects as admin, runs `SELECT 1`, and stops cleanly. Mailpit starts the server, checks the HTTP UI and SMTP port bind, and stops cleanly. RustFS starts the server, checks S3 API readiness, creates or lists a test bucket, and stops cleanly. FrankenPHP/PHP runs `php -v`, verifies the expected PHP version and required fixed extension set, serves a tiny PHP site through FrankenPHP over loopback, and stops cleanly. PHP extension validation verifies that every PV-required v1 extension is compiled into both standalone PHP and FrankenPHP; extra compiled extensions do not fail publication.
 
 Artifact object upload and public artifact availability are separate steps. The release pipeline may upload immutable candidate artifact archives after they pass their own build checks, but PV clients only see artifacts referenced by the published artifact manifest. The public manifest references only artifacts that passed required smoke tests. Partial manifest publication is allowed only for intentionally supported platforms/resources; public v1 should not mark a resource track generally available until both `darwin-arm64` and `darwin-amd64` artifacts pass.
+
+While StaticPHP v3 Intel FrankenPHP builds remain deferred, Artifact Publication may be configured for an Apple Silicon-only initial preview. That preview gate must be explicit in release workflow inputs and must not be treated as completion of the intended public v1 native platform matrix.
 
 Artifact manifest publication is atomic from the client's perspective. The release pipeline generates and validates a complete manifest, uploads it under a versioned immutable key, then updates the stable manifest entrypoint last. PV clients must never observe a half-written manifest. If the storage backend cannot provide sufficiently atomic replacement for the stable manifest object, the stable entrypoint may be a small index file that points to the current versioned manifest.
 

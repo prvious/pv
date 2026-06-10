@@ -1,6 +1,7 @@
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
+use resources::ArtifactPlatform;
 use std::io::{self, Write};
 
 use crate::publication::PublicationRequest;
@@ -52,6 +53,8 @@ enum Command {
         versioned_manifest_key: String,
         #[arg(long)]
         stable_manifest_key: String,
+        #[arg(long = "required-native-platform")]
+        required_native_platforms: Vec<String>,
     },
     GenerateRecipeFixtures {
         #[arg(long)]
@@ -174,6 +177,7 @@ pub fn run() -> anyhow::Result<()> {
             base_url,
             versioned_manifest_key,
             stable_manifest_key,
+            required_native_platforms,
         } => crate::publication::prepare_publication(&PublicationRequest {
             source_archives,
             candidate_records,
@@ -184,6 +188,7 @@ pub fn run() -> anyhow::Result<()> {
             base_url,
             versioned_manifest_key,
             stable_manifest_key,
+            required_native_platforms: parse_required_native_platforms(required_native_platforms)?,
         })
         .context("failed to stage publication"),
         Command::GenerateRecipeFixtures {
@@ -333,6 +338,22 @@ fn default_legal_files(values: Vec<String>, default: &str) -> Vec<String> {
     } else {
         values
     }
+}
+
+fn parse_required_native_platforms(values: Vec<String>) -> anyhow::Result<Vec<ArtifactPlatform>> {
+    let values = if values.is_empty() {
+        vec!["darwin-arm64".to_string(), "darwin-amd64".to_string()]
+    } else {
+        values
+    };
+
+    values
+        .into_iter()
+        .map(|value| {
+            ArtifactPlatform::new(&value)
+                .with_context(|| format!("invalid required native platform `{value}`"))
+        })
+        .collect()
 }
 
 fn backing_recipe_paths(
@@ -651,6 +672,7 @@ mod tests {
                 base_url,
                 versioned_manifest_key,
                 stable_manifest_key,
+                required_native_platforms,
             } => {
                 assert_eq!(source_archives, Utf8PathBuf::from("source-archives"));
                 assert_eq!(candidate_records, Utf8PathBuf::from("candidate-records"));
@@ -670,6 +692,11 @@ mod tests {
                     "manifests/runs/123456789/manifest.json"
                 );
                 assert_eq!(stable_manifest_key, "manifest.json");
+                assert_eq!(required_native_platforms, Vec::<String>::new());
+                assert_eq!(
+                    parse_required_native_platforms(required_native_platforms)?,
+                    vec![ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64]
+                );
                 Ok(())
             }
             command => bail!("parsed unexpected command: {command:?}"),

@@ -12,6 +12,11 @@ on:
         required: true
         default: "manifests/runs"
         type: string
+      required_native_platforms:
+        description: "Comma-separated native platforms required in the public manifest"
+        required: true
+        default: "darwin-arm64"
+        type: string
 
 permissions:
   actions: read
@@ -59,9 +64,10 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
+          REQUIRED_NATIVE_PLATFORMS: ${{ inputs.required_native_platforms }}
         run: |
           set -eu
-          for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_MANIFEST_KEY VERSIONED_MANIFEST_PREFIX; do
+          for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_MANIFEST_KEY VERSIONED_MANIFEST_PREFIX REQUIRED_NATIVE_PLATFORMS; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
               printf '%s\n' "missing publication configuration: $name" >&2
@@ -76,6 +82,19 @@ jobs:
               exit 1
               ;;
           esac
+
+          old_ifs=$IFS
+          IFS=,
+          for platform in $REQUIRED_NATIVE_PLATFORMS; do
+            case "$platform" in
+              darwin-arm64 | darwin-amd64) ;;
+              *)
+                printf '%s\n' "unsupported required native platform: $platform" >&2
+                exit 1
+                ;;
+            esac
+          done
+          IFS=$old_ifs
 
       - name: Validate source recipe run
         env:
@@ -134,15 +153,22 @@ jobs:
             --endpoint-url "$R2_ENDPOINT"
 
       - name: Stage publication
+        shell: bash
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
+          REQUIRED_NATIVE_PLATFORMS: ${{ inputs.required_native_platforms }}
         run: |
           set -eu
           download_dir="$RUNNER_TEMP/pv-publication-download"
           candidate_records="$RUNNER_TEMP/pv-publication-records"
           stage="$RUNNER_TEMP/pv-publication-stage"
           versioned_manifest_key="$VERSIONED_MANIFEST_PREFIX/$SOURCE_RUN_ID/manifest.json"
+          required_platform_args=()
+          IFS=',' read -ra required_platforms <<< "$REQUIRED_NATIVE_PLATFORMS"
+          for platform in "${required_platforms[@]}"; do
+            required_platform_args+=(--required-native-platform "$platform")
+          done
 
           rm -rf "$candidate_records" "$stage"
           mkdir -p "$candidate_records"
@@ -169,7 +195,8 @@ jobs:
             --stage "$stage" \
             --base-url "$R2_PUBLIC_BASE_URL" \
             --versioned-manifest-key "$versioned_manifest_key" \
-            --stable-manifest-key "$STABLE_MANIFEST_KEY"
+            --stable-manifest-key "$STABLE_MANIFEST_KEY" \
+            "${required_platform_args[@]}"
 
       - name: Upload immutable artifacts, records, and versioned manifest
         shell: bash

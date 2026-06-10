@@ -113,13 +113,28 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     let defaults =
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
-    assert_eq!(php.default_track().as_str(), "8.4");
+    assert_eq!(php.default_track().as_str(), "8.5");
     assert_eq!(php.tracks().len(), 3);
+    assert_eq!(
+        php.tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.php_version()))
+            .collect::<Vec<_>>(),
+        vec![("8.3", "8.3.31"), ("8.4", "8.4.22"), ("8.5", "8.5.7")]
+    );
     assert_php_staticphp_build_extensions(&php);
     assert_eq!(composer.track().as_str(), "2");
     assert_eq!(composer.platform().as_str(), "any");
-    assert_eq!(redis.default_track().as_str(), "8.2");
+    assert_eq!(redis.default_track().as_str(), "8.8");
     assert_eq!(redis.tracks().len(), 1);
+    assert_eq!(
+        redis
+            .tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.upstream_version()))
+            .collect::<Vec<_>>(),
+        vec![("8.8", "8.8.0")]
+    );
     assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
     assert_eq!(mysql.default_track().as_str(), "8.4");
     assert_eq!(
@@ -132,7 +147,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             .iter()
             .map(|track| (track.name().as_str(), track.upstream_version()))
             .collect::<Vec<_>>(),
-        vec![("8.4", "8.4.9")]
+        vec![("8.0", "8.0.46"), ("8.4", "8.4.9"), ("9.7", "9.7.0")]
     );
     assert_eq!(postgres.default_track().as_str(), "18");
     assert_eq!(
@@ -145,16 +160,16 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             .iter()
             .map(|track| (track.name().as_str(), track.upstream_version()))
             .collect::<Vec<_>>(),
-        vec![("18", "18.3")]
+        vec![("17", "17.10"), ("18", "18.4")]
     );
     assert_eq!(mailpit.default_track().as_str(), "1");
     assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);
     assert_eq!(rustfs.default_track().as_str(), "1");
     assert_eq!(rustfs.payload_paths(), ["bin/rustfs"]);
-    assert_default_track(&defaults, "php", "8.4")?;
-    assert_default_track(&defaults, "frankenphp", "8.4")?;
+    assert_default_track(&defaults, "php", "8.5")?;
+    assert_default_track(&defaults, "frankenphp", "8.5")?;
     assert_default_track(&defaults, "composer", "2")?;
-    assert_default_track(&defaults, "redis", "8.2")?;
+    assert_default_track(&defaults, "redis", "8.8")?;
     assert_default_track(&defaults, "mysql", "8.4")?;
     assert_default_track(&defaults, "postgres", "18")?;
     assert_default_track(&defaults, "mailpit", "1")?;
