@@ -36,17 +36,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # StaticPHP v3 currently fails the FrankenPHP macOS Intel link step, and
-        # PHP 8.3 patching is unstable. Keep the default publication proof on the
-        # known-good arm64/PHP 8.4 lane; explicit darwin-amd64 dispatch remains
-        # available only for diagnostics until upstream v3 is fixed.
-        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+  validate:
+    name: Validate Inputs and Recipes
+    runs-on: macos-14
 
     steps:
       - name: Checkout
@@ -59,12 +51,12 @@ jobs:
         env:
           PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
         run: |
           set -eu
 
           case "$PV_RECIPE_PLATFORM" in
-            darwin-arm64 | darwin-amd64) ;;
+            all | darwin-arm64 | darwin-amd64) ;;
             *) printf '%s\n' "unsupported platform: $PV_RECIPE_PLATFORM" >&2; exit 1 ;;
           esac
 
@@ -82,62 +74,6 @@ jobs:
               exit 1
               ;;
           esac
-
-      - name: Classify selected artifacts
-        env:
-          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
-          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
-          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
-        run: |
-          set -eu
-
-          include_composer=false
-          case "$PV_RECIPE_RESOURCE" in
-            all | composer)
-              include_composer=true
-              ;;
-          esac
-
-          if [ "$PV_RECIPE_RESOURCE" = all ] \
-            && [ "$PV_RECIPE_INPUT_PLATFORM" = all ] \
-            && [ "$PV_RECIPE_PLATFORM" != darwin-arm64 ]; then
-            include_composer=false
-          fi
-
-          printf 'PV_INCLUDE_COMPOSER=%s\n' "$include_composer" >>"${GITHUB_ENV:?}"
-
-      - name: Install PHP runtime dependency
-        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' || inputs.resource == 'composer' }}
-        run: |
-          set -eu
-          brew update
-          brew install php
-
-      - name: Install StaticPHP CLI
-        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
-        run: |
-          set -eu
-          runner_architecture=$(uname -m)
-          case "$runner_architecture" in
-            arm64) static_php_architecture=aarch64 ;;
-            x86_64) static_php_architecture=x86_64 ;;
-            *)
-              printf '%s\n' "unsupported StaticPHP CLI architecture: $runner_architecture" >&2
-              exit 1
-              ;;
-          esac
-
-          mkdir -p "${RUNNER_TEMP:?}/pv-tools"
-          curl -L --fail --show-error --silent \
-            --retry 3 --retry-delay 2 --retry-all-errors \
-            --connect-timeout 20 --max-time 600 \
-            "https://dl.static-php.dev/v3/spc-bin/nightly/spc-macos-$static_php_architecture" \
-            -o "$RUNNER_TEMP/pv-tools/spc"
-          chmod +x "$RUNNER_TEMP/pv-tools/spc"
-          "$RUNNER_TEMP/pv-tools/spc" --version
-          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--build-frankenphp' >/dev/null
-          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--dl-custom-local' >/dev/null
-          printf '%s\n' "$RUNNER_TEMP/pv-tools" >>"${GITHUB_PATH:?}"
 
       - name: Validate recipe metadata
         run: |
@@ -163,11 +99,61 @@ jobs:
             --output "$fixtures_dir/manifest.json" \
             --base-url https://artifacts.example.test
 
-      - name: Build selected artifacts
+  build-php:
+    name: Build PHP and FrankenPHP ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # StaticPHP v3 currently fails the FrankenPHP macOS Intel link step, and
+        # PHP 8.3 patching is unstable. Keep the default publication proof on the
+        # known-good arm64/PHP 8.4 lane; explicit darwin-amd64 dispatch remains
+        # available only for diagnostics until upstream v3 is fixed.
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install PHP runtime dependency
+        run: |
+          set -eu
+          brew update
+          brew install php
+
+      - name: Install StaticPHP CLI
+        run: |
+          set -eu
+          runner_architecture=$(uname -m)
+          case "$runner_architecture" in
+            arm64) static_php_architecture=aarch64 ;;
+            x86_64) static_php_architecture=x86_64 ;;
+            *)
+              printf '%s\n' "unsupported StaticPHP CLI architecture: $runner_architecture" >&2
+              exit 1
+              ;;
+          esac
+
+          mkdir -p "${RUNNER_TEMP:?}/pv-tools"
+          curl -L --fail --show-error --silent \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 \
+            "https://dl.static-php.dev/v3/spc-bin/nightly/spc-macos-$static_php_architecture" \
+            -o "$RUNNER_TEMP/pv-tools/spc"
+          chmod +x "$RUNNER_TEMP/pv-tools/spc"
+          "$RUNNER_TEMP/pv-tools/spc" --version
+          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--build-frankenphp' >/dev/null
+          "$RUNNER_TEMP/pv-tools/spc" build:php --help | grep -- '--dl-custom-local' >/dev/null
+          printf '%s\n' "$RUNNER_TEMP/pv-tools" >>"${GITHUB_PATH:?}"
+
+      - name: Build PHP and FrankenPHP artifacts
         env:
-          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
@@ -180,46 +166,6 @@ jobs:
           rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
           mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
 
-          build_php_family=false
-          build_composer=false
-          build_redis=false
-          build_mysql=false
-          build_postgres=false
-          build_mailpit=false
-          build_rustfs=false
-          case "$PV_RECIPE_RESOURCE" in
-            all)
-              build_php_family=true
-              build_redis=true
-              build_mysql=true
-              build_postgres=true
-              build_mailpit=true
-              build_rustfs=true
-              ;;
-            php)
-              build_php_family=true
-              ;;
-            composer)
-              build_composer=true
-              ;;
-            redis)
-              build_redis=true
-              ;;
-            mysql)
-              build_mysql=true
-              ;;
-            postgres)
-              build_postgres=true
-              ;;
-            mailpit)
-              build_mailpit=true
-              ;;
-            rustfs)
-              build_rustfs=true
-              ;;
-          esac
-          build_composer=$PV_INCLUDE_COMPOSER
-
           case "$PV_RECIPE_TRACK" in
             all)
               php_track_list='8.2
@@ -231,47 +177,13 @@ jobs:
               ;;
           esac
 
-          if [ "$build_php_family" = true ]; then
-            while IFS= read -r track; do
-              [ -n "$track" ] || continue
-              PV_RECIPE_TRACK="$track" \
-                release/artifacts/recipes/php/build.sh
-            done <<PHP_TRACKS
+          while IFS= read -r track; do
+            [ -n "$track" ] || continue
+            PV_RECIPE_TRACK="$track" \
+              release/artifacts/recipes/php/build.sh
+          done <<PHP_TRACKS
           $php_track_list
           PHP_TRACKS
-          fi
-
-          if [ "$build_composer" = true ]; then
-            PV_RECIPE_TRACK=2 \
-              PV_RECIPE_PLATFORM=any \
-              PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
-              release/artifacts/recipes/composer/build.sh
-          fi
-
-          if [ "$build_redis" = true ]; then
-            PV_RECIPE_TRACK=8.2 \
-              release/artifacts/recipes/redis/build.sh
-          fi
-
-          if [ "$build_mysql" = true ]; then
-            PV_RECIPE_TRACK=8.4 \
-              release/artifacts/recipes/mysql/build.sh
-          fi
-
-          if [ "$build_postgres" = true ]; then
-            PV_RECIPE_TRACK=18 \
-              release/artifacts/recipes/postgres/build.sh
-          fi
-
-          if [ "$build_mailpit" = true ]; then
-            PV_RECIPE_TRACK=1 \
-              release/artifacts/recipes/mailpit/build.sh
-          fi
-
-          if [ "$build_rustfs" = true ]; then
-            PV_RECIPE_TRACK=1 \
-              release/artifacts/recipes/rustfs/build.sh
-          fi
 
           # StaticPHP's Go module cache can leave read-only files under work/.
           # Restore user write permission before pruning non-uploaded build scratch.
@@ -281,7 +193,7 @@ jobs:
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
 
       - name: Upload StaticPHP failure logs
-        if: ${{ failure() && (inputs.resource == 'all' || inputs.resource == 'php') }}
+        if: ${{ failure() }}
         uses: actions/upload-artifact@v7
         with:
           name: pv-artifact-recipes-staticphp-logs-${{ matrix.platform }}-${{ github.run_id }}
@@ -290,10 +202,7 @@ jobs:
 
       - name: Generate manifest from records
         env:
-          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
           PV_RECIPE_TRACK: ${{ inputs.track }}
-          PV_RECIPE_INPUT_PLATFORM: ${{ inputs.platform }}
-          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
@@ -305,54 +214,16 @@ jobs:
             php_default_track=8.4
           fi
 
-          write_default_track() {
-            resource=$1
-            track=$2
-            cat >>"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACK
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
           [[resource]]
-          name = "$resource"
-          default_track = "$track"
+          name = "php"
+          default_track = "$php_default_track"
 
-          DEFAULT_TRACK
-          }
+          [[resource]]
+          name = "frankenphp"
+          default_track = "$php_default_track"
 
-          : >"$PV_MANIFEST_DEFAULTS"
-          case "$PV_RECIPE_RESOURCE" in
-            all)
-              write_default_track php "$php_default_track"
-              write_default_track frankenphp "$php_default_track"
-              if [ "$PV_INCLUDE_COMPOSER" = true ]; then
-                write_default_track composer 2
-              fi
-              write_default_track redis 8.2
-              write_default_track mysql 8.4
-              write_default_track postgres 18
-              write_default_track mailpit 1
-              write_default_track rustfs 1
-              ;;
-            php)
-              write_default_track php "$php_default_track"
-              write_default_track frankenphp "$php_default_track"
-              ;;
-            composer)
-              write_default_track composer 2
-              ;;
-            redis)
-              write_default_track redis 8.2
-              ;;
-            mysql)
-              write_default_track mysql 8.4
-              ;;
-            postgres)
-              write_default_track postgres 18
-              ;;
-            mailpit)
-              write_default_track mailpit 1
-              ;;
-            rustfs)
-              write_default_track rustfs 1
-              ;;
-          esac
+          DEFAULT_TRACKS
 
           cargo run -p pv-release -- generate-manifest \
             --records "$PV_ARTIFACT_RECORD_DIR" \
@@ -364,7 +235,416 @@ jobs:
       - name: Upload artifact archives and records
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-${{ inputs.resource }}-${{ inputs.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-php-${{ inputs.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-composer:
+    name: Build Composer ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'composer' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install PHP runtime dependency
+        run: |
+          set -eu
+          brew update
+          brew install php
+
+      - name: Build Composer artifact
+        env:
+          PV_RECIPE_PLATFORM: any
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          PV_RECIPE_TRACK=2 \
+            PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
+            release/artifacts/recipes/composer/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "composer"
+          default_track = "2"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-composer-2-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-redis:
+    name: Build Redis ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'redis' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Redis artifact
+        env:
+          PV_RECIPE_TRACK: 8.2
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/redis/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "redis"
+          default_track = "8.2"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-redis-8.2-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-mysql:
+    name: Build MySQL ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'mysql' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build MySQL artifact
+        env:
+          PV_RECIPE_TRACK: 8.4
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/mysql/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "mysql"
+          default_track = "8.4"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-mysql-8.4-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-postgres:
+    name: Build Postgres ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Postgres artifact
+        env:
+          PV_RECIPE_TRACK: 18
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/postgres/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "postgres"
+          default_track = "18"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-postgres-18-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-mailpit:
+    name: Build Mailpit ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'mailpit' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Mailpit artifact
+        env:
+          PV_RECIPE_TRACK: 1
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/mailpit/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "mailpit"
+          default_track = "1"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-mailpit-1-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-rustfs:
+    name: Build RustFS ${{ matrix.platform }}
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'rustfs' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build RustFS artifact
+        env:
+          PV_RECIPE_TRACK: 1
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/rustfs/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "rustfs"
+          default_track = "1"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-rustfs-1-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
