@@ -314,6 +314,7 @@ Basic status can start earlier, but release-ready status needs at least one real
 | PV-115 | Add SQL Managed Resource artifact recipes                  | Story   | PV-110                                         | MySQL/Postgres public artifacts | Recipes prefer wrapping official MySQL/Postgres binaries when suitable, otherwise build from source, then smoke-test init/start/query/stop.                                                                 |
 | PV-116 | Add Mailpit and RustFS artifact recipes                    | Story   | PV-110                                         | Mailpit/RustFS public artifacts | Recipes prefer wrapping official upstream binaries, package normalized artifacts, and smoke-test Mailpit HTTP/SMTP plus RustFS S3 readiness.                                                                |
 | PV-117 | Publish initial Managed Resource artifact matrix           | Task    | PV-111, PV-112, PV-113, PV-114, PV-115, PV-116 | release candidate               | The public artifact manifest contains the default setup install set for supported macOS platforms, with Composer as `platform: "any"` and native resources as `darwin-arm64`/`darwin-amd64`.                |
+| PV-118 | Implement artifact manifest endpoint selection             | Enabler | PV-043, PV-117                                 | staging dogfood                 | CLI and daemon use one artifact manifest endpoint source; staging builds can target the staging manifest while production builds keep the stable manifest default.                                           |
 
 Installer endpoint/server-side generation can be represented by generated artifacts in-repo first. The actual website/server implementation is explicitly outside this code roadmap until distribution work begins.
 
@@ -333,6 +334,8 @@ Managed Resource artifact recipe work is a release/distribution lane. It can run
 ## Suggested PR Sequence
 
 This sequence keeps the critical path moving while allowing parallel branches after the adapter foundation lands. The `Implements` column is the concrete package mapping; if a PR becomes too large, split it on `PV-xxx` package boundaries and update this table.
+
+After PR 21 and artifact publication, the first internal usability blocker is artifact manifest endpoint selection. PR 22A unlocks staging dogfood by ensuring the CLI and daemon use the same staging or production artifact manifest endpoint before the larger self-update work begins.
 
 | PR     | Content                                                                                                          | Implements                                                     | Depends On                                          | Can Be Parallel?                          | Done       |
 | ------ | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------- | ---------- |
@@ -360,11 +363,16 @@ This sequence keeps the critical path moving while allowing parallel branches af
 | PR 19  | Postgres adapter                                                                                                 | PV-081                                                         | PR 7, PR 9                                          | Yes                                       | Yes (#276) |
 | PR 20  | RustFS adapter                                                                                                   | PV-084                                                         | PR 7, PR 9                                          | Yes                                       | Yes (#274) |
 | PR 21  | Status, logs, doctor, jobs, JSON outputs                                                                         | PV-090, PV-091, PV-092, PV-093, PV-094, PV-095                 | PR 8, PR 13, and at least one of PR 14 or PR 16-20  | Yes, staged                               | Yes (#279) |
-| PR 22  | Self-update, update checks, Managed Resource update orchestration, installer contract, PV app release metadata   | PV-100, PV-101, PV-102, PV-103, PV-104, PV-105, PV-106, PV-107 | PR 7, PR 13; PV-105 needs at least one real adapter | Yes, after update lock foundations        | No         |
-| PR 23  | Artifact release metadata, manifest generation tooling, packaging/validation harness                             | PV-108, PV-109, PV-110                                         | PR 6A                                               | Yes, can overlap PR 6B-6C and PR 14-22    | Yes (#255) |
+| PR 22A | Staging/production artifact manifest endpoint selection for CLI and daemon                                       | PV-118                                                         | PR 6B, PR 13, PR 21, PR 25                          | No, unlocks staging dogfood               | No         |
+| PR 22B | PV app update manifest parser, self-update release layout, and update filesystem lock                            | PV-100, PV-101, PV-102                                         | PR 22A, PR 13                                       | No                                        | No         |
+| PR 22C | `pv update --check` for PV app and installed Managed Resource update availability, including JSON                | PV-104                                                         | PR 22B, PR 7, PR 13, and at least one real adapter   | Yes, after PR 22B                         | No         |
+| PR 22D | PV application self-update, daemon restart coordination, migration health check, and rollback                    | PV-103                                                         | PR 22B, PR 13                                       | No                                        | No         |
+| PR 22E | Managed Resource update orchestration for installed tracks after the PV application update phase                 | PV-105                                                         | PR 22C, PR 22D, PR 7, and at least one real adapter  | No                                        | No         |
+| PR 22F | Generated installer script contract and PV app release metadata generation                                       | PV-106, PV-107                                                 | PR 22B, PR 13                                       | Yes, after PR 22B                         | No         |
+| PR 23  | Artifact release metadata, manifest generation tooling, packaging/validation harness                             | PV-108, PV-109, PV-110                                         | PR 6A                                               | Yes, can overlap PR 6B-6C and PR 14-22F   | Yes (#255) |
 | PR 24  | PHP/FrankenPHP and Composer artifact recipes                                                                     | PV-112, PV-113                                                 | PR 23                                               | Yes, blocks public setup artifacts        | Yes (#257) |
 | PR 25  | Artifact publication workflow and backing Managed Resource artifact recipes                                      | PV-111, PV-114, PV-115, PV-116, PV-117                         | PR 23, PR 24                                        | Yes, can split per resource               | Yes (#265, #266, #267, #268, #269, #278) |
-| PR 26  | End-to-end hardening and release candidate validation                                                            | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125                 | PR 14-25                                            | No                                        | No         |
+| PR 26  | End-to-end hardening and release candidate validation                                                            | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125                 | PR 14-21, PR 22A-22F, PR 23-25                      | No                                        | No         |
 
 ## First Usable MVP Cut
 
@@ -390,7 +398,7 @@ Excluded from first demo:
 - `pv update`
 - Full `pv doctor`
 
-This keeps the first demo focused on proving the control plane, daemon, system integration, Project model, and Gateway path.
+This keeps the first demo focused on proving the control plane, daemon, system integration, Project model, and Gateway path. After PR 22A, the same cut becomes internally dogfoodable against the staging artifact manifest when staging artifacts are published.
 
 ## Parallel Managed Resource Plan
 
