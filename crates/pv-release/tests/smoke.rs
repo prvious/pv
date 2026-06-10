@@ -3894,10 +3894,6 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     Ok(())
 }
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "release tooling tests create source tarball fixtures directly"
-)]
 fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
     write_redis_source_archive_with_options(path, true)
 }
