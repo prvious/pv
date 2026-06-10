@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE='rustfs'
+PV_TRACK='1'
+PV_PLATFORM='darwin-amd64'
+PV_UPSTREAM_VERSION='1.0.0-beta.7'
+PV_ARTIFACT_VERSION='1.0.0-beta.7-pv1'
+PV_SOURCE_URL='https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-x86_64-v1.0.0-beta.7.zip'
+PV_SOURCE_SHA256='b45cd47c3b3c903ab31b2b6d936be474d5ee64527a40271e7817dd6c961d5387'
+PV_MINIMUM_PV_VERSION='0.1.0'
+PV_PV_BUILD_REVISION='pv1'

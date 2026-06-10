@@ -1,0 +1,70 @@
+---
+source: crates/pv-release/tests/recipe_fixtures.rs
+expression: backing_summaries
+---
+[
+    BackingFixtureSummary {
+        track: "1",
+        upstream_version: "1.0.0-beta.7",
+        artifact_version: "1.0.0-beta.7-pv1",
+        platform: "darwin-amd64",
+        object_key: "resources/rustfs/1/1.0.0-beta.7-pv1/darwin-amd64/rustfs-1.0.0-beta.7-pv1-darwin-amd64.tar.gz",
+        record_key: "resources/rustfs/1/1.0.0-beta.7-pv1/darwin-amd64/rustfs-1.0.0-beta.7-pv1-darwin-amd64.json",
+        source_url: "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-x86_64-v1.0.0-beta.7.zip",
+        source_sha256: "b45cd47c3b3c903ab31b2b6d936be474d5ee64527a40271e7817dd6c961d5387",
+        recipe: "release/artifacts/recipes/rustfs/recipe.toml",
+        archive_entries: [
+            "rustfs-1.0.0-beta.7-pv1-darwin-amd64/LICENSE",
+            "rustfs-1.0.0-beta.7-pv1-darwin-amd64/NOTICE",
+            "rustfs-1.0.0-beta.7-pv1-darwin-amd64/bin/rustfs",
+        ],
+    },
+    BackingFixtureSummary {
+        track: "1",
+        upstream_version: "1.0.0-beta.7",
+        artifact_version: "1.0.0-beta.7-pv1",
+        platform: "darwin-arm64",
+        object_key: "resources/rustfs/1/1.0.0-beta.7-pv1/darwin-arm64/rustfs-1.0.0-beta.7-pv1-darwin-arm64.tar.gz",
+        record_key: "resources/rustfs/1/1.0.0-beta.7-pv1/darwin-arm64/rustfs-1.0.0-beta.7-pv1-darwin-arm64.json",
+        source_url: "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-aarch64-v1.0.0-beta.7.zip",
+        source_sha256: "8ff8db2068db450b22c4dbaa86b7abcf35110307f8e036aa83db387f540a2b53",
+        recipe: "release/artifacts/recipes/rustfs/recipe.toml",
+        archive_entries: [
+            "rustfs-1.0.0-beta.7-pv1-darwin-arm64/LICENSE",
+            "rustfs-1.0.0-beta.7-pv1-darwin-arm64/NOTICE",
+            "rustfs-1.0.0-beta.7-pv1-darwin-arm64/bin/rustfs",
+        ],
+    },
+    BackingFixtureSummary {
+        track: "1",
+        upstream_version: "1.30.1",
+        artifact_version: "1.30.1-pv1",
+        platform: "darwin-amd64",
+        object_key: "resources/mailpit/1/1.30.1-pv1/darwin-amd64/mailpit-1.30.1-pv1-darwin-amd64.tar.gz",
+        record_key: "resources/mailpit/1/1.30.1-pv1/darwin-amd64/mailpit-1.30.1-pv1-darwin-amd64.json",
+        source_url: "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz",
+        source_sha256: "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974",
+        recipe: "release/artifacts/recipes/mailpit/recipe.toml",
+        archive_entries: [
+            "mailpit-1.30.1-pv1-darwin-amd64/LICENSE",
+            "mailpit-1.30.1-pv1-darwin-amd64/NOTICE",
+            "mailpit-1.30.1-pv1-darwin-amd64/bin/mailpit",
+        ],
+    },
+    BackingFixtureSummary {
+        track: "1",
+        upstream_version: "1.30.1",
+        artifact_version: "1.30.1-pv1",
+        platform: "darwin-arm64",
+        object_key: "resources/mailpit/1/1.30.1-pv1/darwin-arm64/mailpit-1.30.1-pv1-darwin-arm64.tar.gz",
+        record_key: "resources/mailpit/1/1.30.1-pv1/darwin-arm64/mailpit-1.30.1-pv1-darwin-arm64.json",
+        source_url: "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-arm64.tar.gz",
+        source_sha256: "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be2",
+        recipe: "release/artifacts/recipes/mailpit/recipe.toml",
+        archive_entries: [
+            "mailpit-1.30.1-pv1-darwin-arm64/LICENSE",
+            "mailpit-1.30.1-pv1-darwin-arm64/NOTICE",
+            "mailpit-1.30.1-pv1-darwin-arm64/bin/mailpit",
+        ],
+    },
+]

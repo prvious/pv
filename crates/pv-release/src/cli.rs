@@ -131,6 +131,10 @@ enum Command {
         #[arg(long)]
         redis: Option<Utf8PathBuf>,
         #[arg(long)]
+        mailpit: Option<Utf8PathBuf>,
+        #[arg(long)]
+        rustfs: Option<Utf8PathBuf>,
+        #[arg(long)]
         resource: String,
         #[arg(long)]
         track: String,
@@ -260,14 +264,20 @@ pub fn run() -> anyhow::Result<()> {
             php,
             composer,
             redis,
+            mailpit,
+            rustfs,
             resource,
             track,
             platform,
         } => {
             let env = print_recipe_env(
-                php.as_deref(),
-                composer.as_deref(),
-                redis.as_deref(),
+                RecipeEnvPaths {
+                    php: php.as_deref(),
+                    composer: composer.as_deref(),
+                    redis: redis.as_deref(),
+                    mailpit: mailpit.as_deref(),
+                    rustfs: rustfs.as_deref(),
+                },
                 &resource,
                 &track,
                 &platform,
@@ -278,6 +288,15 @@ pub fn run() -> anyhow::Result<()> {
                 .context("failed to write recipe environment to stdout")
         }
     }
+}
+
+#[derive(Default)]
+struct RecipeEnvPaths<'a> {
+    php: Option<&'a Utf8Path>,
+    composer: Option<&'a Utf8Path>,
+    redis: Option<&'a Utf8Path>,
+    mailpit: Option<&'a Utf8Path>,
+    rustfs: Option<&'a Utf8Path>,
 }
 
 fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
@@ -333,23 +352,27 @@ fn backing_recipe_paths(
 }
 
 fn print_recipe_env(
-    php: Option<&Utf8Path>,
-    composer: Option<&Utf8Path>,
-    redis: Option<&Utf8Path>,
+    paths: RecipeEnvPaths<'_>,
     resource: &str,
     track: &str,
     platform: &str,
 ) -> anyhow::Result<String> {
-    match (php, composer, redis) {
-        (Some(php), None, None) => {
+    match (
+        paths.php,
+        paths.composer,
+        paths.redis,
+        paths.mailpit,
+        paths.rustfs,
+    ) {
+        (Some(php), None, None, None, None) => {
             let context = format!("failed to print PHP recipe environment for `{php}`");
             crate::recipe::php_recipe_env(php, resource, track, platform).context(context)
         }
-        (None, Some(composer), None) => {
+        (None, Some(composer), None, None, None) => {
             let context = format!("failed to print Composer recipe environment for `{composer}`");
             crate::recipe::composer_recipe_env(composer, resource, track, platform).context(context)
         }
-        (None, None, Some(redis)) => {
+        (None, None, Some(redis), None, None) => {
             let context = format!("failed to print Redis recipe environment for `{redis}`");
             crate::recipe::backing_recipe_env(
                 redis,
@@ -360,9 +383,29 @@ fn print_recipe_env(
             )
             .context(context)
         }
-        _ => {
-            anyhow::bail!("print-recipe-env requires exactly one of --php, --composer, or --redis")
+        (None, None, None, Some(mailpit), None) => {
+            let context = format!("failed to print Mailpit recipe environment for `{mailpit}`");
+            crate::recipe::backing_recipe_env(
+                mailpit,
+                BackingRecipeKind::Mailpit,
+                resource,
+                track,
+                platform,
+            )
+            .context(context)
         }
+        (None, None, None, None, Some(rustfs)) => {
+            let context = format!("failed to print RustFS recipe environment for `{rustfs}`");
+            crate::recipe::backing_recipe_env(
+                rustfs,
+                BackingRecipeKind::Rustfs,
+                resource,
+                track,
+                platform,
+            )
+            .context(context)
+        }
+        _ => anyhow::bail!("print-recipe-env requires exactly one recipe metadata path"),
     }
 }
 
@@ -842,6 +885,8 @@ mod tests {
                 php,
                 composer,
                 redis,
+                mailpit,
+                rustfs,
                 resource,
                 track,
                 platform,
@@ -854,6 +899,8 @@ mod tests {
                     ))
                 );
                 assert_eq!(redis, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(rustfs, None);
                 assert_eq!(resource, "composer");
                 assert_eq!(track, "2");
                 assert_eq!(platform, "any");
@@ -883,6 +930,8 @@ mod tests {
                 php,
                 composer,
                 redis,
+                mailpit,
+                rustfs,
                 resource,
                 track,
                 platform,
@@ -895,6 +944,8 @@ mod tests {
                 );
                 assert_eq!(composer, None);
                 assert_eq!(redis, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(rustfs, None);
                 assert_eq!(resource, "php");
                 assert_eq!(track, "8.4");
                 assert_eq!(platform, "darwin-arm64");
@@ -924,6 +975,8 @@ mod tests {
                 php,
                 composer,
                 redis,
+                mailpit,
+                rustfs,
                 resource,
                 track,
                 platform,
@@ -936,8 +989,100 @@ mod tests {
                         "release/artifacts/recipes/redis/recipe.toml"
                     ))
                 );
+                assert_eq!(mailpit, None);
+                assert_eq!(rustfs, None);
                 assert_eq!(resource, "redis");
                 assert_eq!(track, "8.2");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_mailpit_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--mailpit",
+            "release/artifacts/recipes/mailpit/recipe.toml",
+            "--resource",
+            "mailpit",
+            "--track",
+            "1",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                redis,
+                mailpit,
+                rustfs,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(php, None);
+                assert_eq!(composer, None);
+                assert_eq!(redis, None);
+                assert_eq!(
+                    mailpit,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/mailpit/recipe.toml"
+                    ))
+                );
+                assert_eq!(rustfs, None);
+                assert_eq!(resource, "mailpit");
+                assert_eq!(track, "1");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_rustfs_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--rustfs",
+            "release/artifacts/recipes/rustfs/recipe.toml",
+            "--resource",
+            "rustfs",
+            "--track",
+            "1",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                redis,
+                mailpit,
+                rustfs,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(php, None);
+                assert_eq!(composer, None);
+                assert_eq!(redis, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(
+                    rustfs,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/rustfs/recipe.toml"
+                    ))
+                );
+                assert_eq!(resource, "rustfs");
+                assert_eq!(track, "1");
                 assert_eq!(platform, "darwin-arm64");
                 Ok(())
             }
@@ -950,16 +1095,19 @@ mod tests {
         let php = Utf8Path::new("release/artifacts/recipes/php/tracks.toml");
         let composer = Utf8Path::new("release/artifacts/recipes/composer/composer.toml");
         let redis = Utf8Path::new("release/artifacts/recipes/redis/recipe.toml");
+        let mailpit = Utf8Path::new("release/artifacts/recipes/mailpit/recipe.toml");
 
         assert!(
-            print_recipe_env(None, None, None, "php", "8.4", "darwin-arm64").is_err(),
+            print_recipe_env(RecipeEnvPaths::default(), "php", "8.4", "darwin-arm64").is_err(),
             "missing metadata path must be rejected"
         );
         assert!(
             print_recipe_env(
-                Some(php),
-                Some(composer),
-                None,
+                RecipeEnvPaths {
+                    php: Some(php),
+                    composer: Some(composer),
+                    ..RecipeEnvPaths::default()
+                },
                 "php",
                 "8.4",
                 "darwin-arm64"
@@ -968,7 +1116,31 @@ mod tests {
             "multiple metadata paths must be rejected"
         );
         assert!(
-            print_recipe_env(Some(php), None, Some(redis), "redis", "8.2", "darwin-arm64").is_err(),
+            print_recipe_env(
+                RecipeEnvPaths {
+                    php: Some(php),
+                    redis: Some(redis),
+                    ..RecipeEnvPaths::default()
+                },
+                "redis",
+                "8.2",
+                "darwin-arm64"
+            )
+            .is_err(),
+            "multiple metadata paths must be rejected"
+        );
+        assert!(
+            print_recipe_env(
+                RecipeEnvPaths {
+                    redis: Some(redis),
+                    mailpit: Some(mailpit),
+                    ..RecipeEnvPaths::default()
+                },
+                "redis",
+                "8.2",
+                "darwin-arm64"
+            )
+            .is_err(),
             "multiple metadata paths must be rejected"
         );
     }

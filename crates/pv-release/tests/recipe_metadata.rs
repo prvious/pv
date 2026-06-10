@@ -8,7 +8,7 @@ use pv_release::recipe::{
     BackingRecipe, BackingRecipeKind, ComposerRecipe, PhpRecipe, backing_recipe_env,
     composer_recipe_env, php_recipe_env,
 };
-use resources::ResourceName;
+use resources::{ArtifactPlatform, ResourceName};
 
 #[test]
 fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
@@ -31,6 +31,22 @@ fn backing_recipe_metadata_parses_common_shape() -> Result<()> {
         BackingRecipeKind::Redis,
         VALID_REDIS_TOML,
     )?;
+    let track_sources = recipe
+        .tracks()
+        .iter()
+        .map(|track| {
+            let source = track.source_for_platform(
+                Utf8Path::new("redis/recipe.toml"),
+                ArtifactPlatform::DarwinArm64,
+            )?;
+            Ok((
+                track.name().as_str(),
+                track.upstream_version(),
+                source.source_url(),
+                source.source_sha256().as_str(),
+            ))
+        })
+        .collect::<pv_release::Result<Vec<_>>>()?;
 
     assert_debug_snapshot!((
         recipe.kind(),
@@ -41,16 +57,7 @@ fn backing_recipe_metadata_parses_common_shape() -> Result<()> {
             .iter()
             .map(|platform| platform.as_str())
             .collect::<Vec<_>>(),
-        recipe
-            .tracks()
-            .iter()
-            .map(|track| (
-                track.name().as_str(),
-                track.upstream_version(),
-                track.source_url(),
-                track.source_sha256().as_str(),
-            ))
-            .collect::<Vec<_>>(),
+        track_sources,
         recipe.payload_paths(),
     ));
 
@@ -86,6 +93,14 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         &workspace_root.join("release/artifacts/recipes/redis/recipe.toml"),
         BackingRecipeKind::Redis,
     )?;
+    let mailpit = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml"),
+        BackingRecipeKind::Mailpit,
+    )?;
+    let rustfs = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml"),
+        BackingRecipeKind::Rustfs,
+    )?;
     let defaults =
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
@@ -96,10 +111,16 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_eq!(redis.default_track().as_str(), "8.2");
     assert_eq!(redis.tracks().len(), 1);
     assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
+    assert_eq!(mailpit.default_track().as_str(), "1");
+    assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);
+    assert_eq!(rustfs.default_track().as_str(), "1");
+    assert_eq!(rustfs.payload_paths(), ["bin/rustfs"]);
     assert_default_track(&defaults, "php", "8.4")?;
     assert_default_track(&defaults, "frankenphp", "8.4")?;
     assert_default_track(&defaults, "composer", "2")?;
     assert_default_track(&defaults, "redis", "8.2")?;
+    assert_default_track(&defaults, "mailpit", "1")?;
+    assert_default_track(&defaults, "rustfs", "1")?;
 
     Ok(())
 }
@@ -129,6 +150,23 @@ fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let bad_source_sha256 = VALID_REDIS_TOML.replace(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "bad",
+    );
+    let missing_platform_source = VALID_MAILPIT_TOML.replace(
+        r#"
+[[tracks.sources]]
+platform = "darwin-amd64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
+source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"
+"#,
+        "",
+    );
+    let duplicate_platform_source =
+        VALID_MAILPIT_TOML.replace("platform = \"darwin-amd64\"", "platform = \"darwin-arm64\"");
+    let unsupported_platform_source =
+        VALID_MAILPIT_TOML.replace("platform = \"darwin-amd64\"", "platform = \"any\"");
+    let mixed_common_and_platform_sources = VALID_MAILPIT_TOML.replace(
+        "upstream_version = \"1.30.1\"\n\n[[tracks.sources]]",
+        "upstream_version = \"1.30.1\"\nsource_url = \"https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-arm64.tar.gz\"\nsource_sha256 = \"1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be2\"\n\n[[tracks.sources]]",
     );
 
     assert_debug_snapshot!((
@@ -166,6 +204,26 @@ fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
             Utf8Path::new("bad-source-sha256.toml"),
             BackingRecipeKind::Redis,
             &bad_source_sha256,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("missing-platform-source.toml"),
+            BackingRecipeKind::Mailpit,
+            &missing_platform_source,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("duplicate-platform-source.toml"),
+            BackingRecipeKind::Mailpit,
+            &duplicate_platform_source,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("unsupported-platform-source.toml"),
+            BackingRecipeKind::Mailpit,
+            &unsupported_platform_source,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("mixed-common-and-platform-sources.toml"),
+            BackingRecipeKind::Mailpit,
+            &mixed_common_and_platform_sources,
         ),
     ));
 
@@ -370,6 +428,41 @@ fn print_recipe_env_redis() -> Result<()> {
 }
 
 #[test]
+fn print_backing_recipe_env_mailpit() -> Result<()> {
+    let tempdir = tempdir()?;
+    let mailpit = tempdir.path().join("recipe.toml");
+    write_file(&mailpit, VALID_MAILPIT_TOML)?;
+
+    let env = backing_recipe_env(
+        &mailpit,
+        BackingRecipeKind::Mailpit,
+        "mailpit",
+        "1",
+        "darwin-arm64",
+    )?;
+
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
+fn print_backing_recipe_env_rustfs() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
+
+    let env = backing_recipe_env(
+        &rustfs,
+        BackingRecipeKind::Rustfs,
+        "rustfs",
+        "1",
+        "darwin-amd64",
+    )?;
+
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
 fn print_composer_recipe_env_quotes_shell_values() -> Result<()> {
     let tempdir = tempdir()?;
     let composer = tempdir.path().join("composer.toml");
@@ -498,4 +591,32 @@ name = "8.2"
 upstream_version = "8.2.1"
 source_url = "https://download.redis.io/releases/redis-8.2.1.tar.gz"
 source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#;
+
+const VALID_MAILPIT_TOML: &str = r#"
+[recipe]
+resources = ["mailpit"]
+default_track = "1"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/mailpit"]
+
+[[tracks]]
+name = "1"
+upstream_version = "1.30.1"
+
+[[tracks.sources]]
+platform = "darwin-arm64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-arm64.tar.gz"
+source_sha256 = "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be2"
+
+[[tracks.sources]]
+platform = "darwin-amd64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
+source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"
 "#;

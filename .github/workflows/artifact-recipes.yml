@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       resource:
-        description: "Resource to build: all, php, composer, redis"
+        description: "Resource to build: all, php, composer, redis, mailpit, rustfs"
         required: true
         default: "all"
         type: choice
@@ -13,8 +13,10 @@ on:
           - php
           - composer
           - redis
+          - mailpit
+          - rustfs
       track:
-        description: "Track to build: all, 8.2, 8.3, 8.4, 2"
+        description: "Track to build: all, 8.2, 8.3, 8.4, 2, 1"
         required: true
         default: "all"
         type: string
@@ -59,6 +61,8 @@ jobs:
             php:all | php:8.2 | php:8.3 | php:8.4) ;;
             composer:all | composer:2) ;;
             redis:all | redis:8.2) ;;
+            mailpit:all | mailpit:1) ;;
+            rustfs:all | rustfs:1) ;;
             *)
               printf '%s\n' "unsupported resource/track combination: $PV_RECIPE_RESOURCE/$PV_RECIPE_TRACK" >&2
               exit 1
@@ -107,6 +111,8 @@ jobs:
             --php release/artifacts/recipes/php/tracks.toml \
             --composer release/artifacts/recipes/composer/composer.toml \
             --redis release/artifacts/recipes/redis/recipe.toml \
+            --mailpit release/artifacts/recipes/mailpit/recipe.toml \
+            --rustfs release/artifacts/recipes/rustfs/recipe.toml \
             --archives "$fixtures_dir/archives" \
             --records "$fixtures_dir/records" \
             --pv-commit "$(git rev-parse HEAD)" \
@@ -137,11 +143,15 @@ jobs:
           build_php_family=false
           build_composer=false
           build_redis=false
+          build_mailpit=false
+          build_rustfs=false
           case "$PV_RECIPE_RESOURCE" in
             all)
               build_php_family=true
               build_composer=true
               build_redis=true
+              build_mailpit=true
+              build_rustfs=true
               ;;
             php)
               build_php_family=true
@@ -151,6 +161,12 @@ jobs:
               ;;
             redis)
               build_redis=true
+              ;;
+            mailpit)
+              build_mailpit=true
+              ;;
+            rustfs)
+              build_rustfs=true
               ;;
           esac
 
@@ -185,6 +201,16 @@ jobs:
           if [ "$build_redis" = true ]; then
             PV_RECIPE_TRACK=8.2 \
               release/artifacts/recipes/redis/build.sh
+          fi
+
+          if [ "$build_mailpit" = true ]; then
+            PV_RECIPE_TRACK=1 \
+              release/artifacts/recipes/mailpit/build.sh
+          fi
+
+          if [ "$build_rustfs" = true ]; then
+            PV_RECIPE_TRACK=1 \
+              release/artifacts/recipes/rustfs/build.sh
           fi
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
@@ -222,6 +248,8 @@ jobs:
               write_default_track frankenphp "$php_default_track"
               write_default_track composer 2
               write_default_track redis 8.2
+              write_default_track mailpit 1
+              write_default_track rustfs 1
               ;;
             php)
               write_default_track php "$php_default_track"
@@ -232,6 +260,12 @@ jobs:
               ;;
             redis)
               write_default_track redis 8.2
+              ;;
+            mailpit)
+              write_default_track mailpit 1
+              ;;
+            rustfs)
+              write_default_track rustfs 1
               ;;
           esac
 

@@ -71,6 +71,12 @@ pub struct BackingArtifact {
 pub struct BackingTrack {
     name: TrackName,
     upstream_version: String,
+    sources: Vec<BackingSource>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackingSource {
+    platform: Option<ArtifactPlatform>,
     source_url: String,
     source_sha256: Sha256Digest,
 }
@@ -224,6 +230,16 @@ struct RawBackingArtifact {
 struct RawBackingTrack {
     name: String,
     upstream_version: String,
+    source_url: Option<String>,
+    source_sha256: Option<String>,
+    #[serde(default)]
+    sources: Vec<RawBackingSource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBackingSource {
+    platform: String,
     source_url: String,
     source_sha256: String,
 }
@@ -333,7 +349,7 @@ impl BackingRecipe {
         )?;
 
         let artifact = BackingArtifact::from_raw(path, raw.artifact)?;
-        let tracks = parse_backing_tracks(path, raw.tracks)?;
+        let tracks = parse_backing_tracks(path, &header.platforms, raw.tracks)?;
         validate_default_track_exists(
             path,
             &header.default_track,
@@ -373,6 +389,47 @@ impl BackingTrack {
         &self.upstream_version
     }
 
+    pub fn source_for_platform(
+        &self,
+        path: &Utf8Path,
+        platform: ArtifactPlatform,
+    ) -> crate::Result<&BackingSource> {
+        self.sources
+            .iter()
+            .find(|source| match source.platform {
+                Some(candidate) => candidate == platform,
+                None => true,
+            })
+            .ok_or_else(|| {
+                invalid(
+                    path,
+                    format!(
+                        "backing recipe track `{}` has no source for platform `{platform}`",
+                        self.name
+                    ),
+                )
+            })
+    }
+
+    fn from_raw(
+        path: &Utf8Path,
+        name: TrackName,
+        platforms: &[ArtifactPlatform],
+        raw: RawBackingTrack,
+    ) -> crate::Result<Self> {
+        let upstream_version =
+            require_non_empty(path, "upstream_version", &raw.upstream_version)?.to_string();
+        let sources = parse_backing_sources(path, platforms, raw)?;
+
+        Ok(Self {
+            name,
+            upstream_version,
+            sources,
+        })
+    }
+}
+
+impl BackingSource {
     pub fn source_url(&self) -> &str {
         &self.source_url
     }
@@ -381,18 +438,24 @@ impl BackingTrack {
         &self.source_sha256
     }
 
-    fn from_raw(path: &Utf8Path, name: TrackName, raw: RawBackingTrack) -> crate::Result<Self> {
-        let upstream_version =
-            require_non_empty(path, "upstream_version", &raw.upstream_version)?.to_string();
-        let source_url = parse_https_url(path, "source_url", raw.source_url)?;
-        let source_sha256 = Sha256Digest::new(raw.source_sha256)
-            .map_err(|error| invalid_identity(path, "source_sha256", error))?;
-
+    fn common(path: &Utf8Path, source_url: String, source_sha256: String) -> crate::Result<Self> {
         Ok(Self {
-            name,
-            upstream_version,
-            source_url,
-            source_sha256,
+            platform: None,
+            source_url: parse_https_url(path, "source_url", source_url)?,
+            source_sha256: Sha256Digest::new(source_sha256)
+                .map_err(|error| invalid_identity(path, "source_sha256", error))?,
+        })
+    }
+
+    fn platform_specific(path: &Utf8Path, raw: RawBackingSource) -> crate::Result<Self> {
+        Ok(Self {
+            platform: Some(
+                ArtifactPlatform::new(&raw.platform)
+                    .map_err(|error| invalid_identity(path, "sources.platform", error))?,
+            ),
+            source_url: parse_https_url(path, "sources.source_url", raw.source_url)?,
+            source_sha256: Sha256Digest::new(raw.source_sha256)
+                .map_err(|error| invalid_identity(path, "sources.source_sha256", error))?,
         })
     }
 }
@@ -702,28 +765,38 @@ impl ComposerTrack {
     }
 }
 
-pub fn composer_recipe_env(
-    composer: &Utf8Path,
+pub fn backing_recipe_env(
+    recipe: &Utf8Path,
+    kind: BackingRecipeKind,
     resource: &str,
     track: &str,
     platform: &str,
 ) -> crate::Result<String> {
-    let recipe = ComposerRecipe::load(composer)?;
-    validate_composer_recipe_request(&recipe, resource, track, platform)?;
+    let recipe = BackingRecipe::load(recipe, kind)?;
+    let track = validate_backing_recipe_track(&recipe, track)?;
+    let platform = validate_backing_recipe_platform(&recipe, platform)?;
+    validate_request_value(
+        recipe.path(),
+        kind.recipe_kind(),
+        "resource",
+        resource,
+        recipe.resource().as_str(),
+    )?;
 
-    let upstream_version = recipe.upstream_version();
+    let source = track.source_for_platform(recipe.path(), platform)?;
+    let upstream_version = track.upstream_version();
     let pv_build_revision = recipe.pv_build_revision();
     let artifact_version = format!("{upstream_version}-{pv_build_revision}");
-    let source_url = recipe.source_url();
-    let source_sha256 = recipe.source_sha256().as_str();
+    let source_url = source.source_url();
+    let source_sha256 = source.source_sha256().as_str();
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
 
     shell_assignments(
         recipe.path(),
         &[
-            ("PV_RESOURCE", "resource", "composer"),
-            ("PV_TRACK", "track", "2"),
-            ("PV_PLATFORM", "platform", "any"),
+            ("PV_RESOURCE", "resource", recipe.resource().as_str()),
+            ("PV_TRACK", "track", track.name().as_str()),
+            ("PV_PLATFORM", "platform", platform.as_str()),
             ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
             (
                 "PV_ARTIFACT_VERSION",
@@ -746,31 +819,28 @@ pub fn composer_recipe_env(
     )
 }
 
-pub fn backing_recipe_env(
-    backing: &Utf8Path,
-    kind: BackingRecipeKind,
+pub fn composer_recipe_env(
+    composer: &Utf8Path,
     resource: &str,
     track: &str,
     platform: &str,
 ) -> crate::Result<String> {
-    let recipe = BackingRecipe::load(backing, kind)?;
-    validate_backing_recipe_resource(&recipe, resource)?;
-    let track = validate_backing_recipe_track(&recipe, track)?;
-    let platform = validate_backing_recipe_platform(&recipe, platform)?;
+    let recipe = ComposerRecipe::load(composer)?;
+    validate_composer_recipe_request(&recipe, resource, track, platform)?;
 
-    let upstream_version = track.upstream_version();
+    let upstream_version = recipe.upstream_version();
     let pv_build_revision = recipe.pv_build_revision();
     let artifact_version = format!("{upstream_version}-{pv_build_revision}");
-    let source_url = track.source_url();
-    let source_sha256 = track.source_sha256().as_str();
+    let source_url = recipe.source_url();
+    let source_sha256 = recipe.source_sha256().as_str();
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
 
     shell_assignments(
         recipe.path(),
         &[
-            ("PV_RESOURCE", "resource", recipe.resource().as_str()),
-            ("PV_TRACK", "track", track.name().as_str()),
-            ("PV_PLATFORM", "platform", platform.as_str()),
+            ("PV_RESOURCE", "resource", "composer"),
+            ("PV_TRACK", "track", "2"),
+            ("PV_PLATFORM", "platform", "any"),
             ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
             (
                 "PV_ARTIFACT_VERSION",
@@ -1023,16 +1093,6 @@ fn validate_composer_recipe_request(
     )
 }
 
-fn validate_backing_recipe_resource(recipe: &BackingRecipe, resource: &str) -> crate::Result<()> {
-    validate_request_value(
-        recipe.path(),
-        recipe.kind().recipe_kind(),
-        "resource",
-        resource,
-        recipe.resource().as_str(),
-    )
-}
-
 fn validate_backing_recipe_track<'a>(
     recipe: &'a BackingRecipe,
     track: &str,
@@ -1165,6 +1225,7 @@ fn parse_php_tracks(path: &Utf8Path, values: Vec<RawPhpTrack>) -> crate::Result<
 
 fn parse_backing_tracks(
     path: &Utf8Path,
+    platforms: &[ArtifactPlatform],
     values: Vec<RawBackingTrack>,
 ) -> crate::Result<Vec<BackingTrack>> {
     let mut names = Vec::with_capacity(values.len());
@@ -1180,11 +1241,71 @@ fn parse_backing_tracks(
 
     let mut tracks = Vec::with_capacity(values.len());
     for (name, value) in names.into_iter().zip(values) {
-        let track = BackingTrack::from_raw(path, name, value)?;
+        let track = BackingTrack::from_raw(path, name, platforms, value)?;
         tracks.push(track);
     }
 
     Ok(tracks)
+}
+
+fn parse_backing_sources(
+    path: &Utf8Path,
+    platforms: &[ArtifactPlatform],
+    raw: RawBackingTrack,
+) -> crate::Result<Vec<BackingSource>> {
+    match (raw.source_url, raw.source_sha256, raw.sources.is_empty()) {
+        (Some(source_url), Some(source_sha256), true) => Ok(vec![BackingSource::common(
+            path,
+            source_url,
+            source_sha256,
+        )?]),
+        (None, None, false) => {
+            let mut sources = Vec::with_capacity(raw.sources.len());
+            let mut seen = BTreeSet::new();
+            for raw_source in raw.sources {
+                let source = BackingSource::platform_specific(path, raw_source)?;
+                let Some(platform) = source.platform else {
+                    return Err(invalid(path, "backing source platform is required"));
+                };
+                if !platforms.contains(&platform) {
+                    return Err(invalid(
+                        path,
+                        format!("sources.platform `{platform}` is not listed in recipe.platforms"),
+                    ));
+                }
+                if !seen.insert(platform) {
+                    return Err(invalid(
+                        path,
+                        format!("duplicate source for platform `{platform}`"),
+                    ));
+                }
+                sources.push(source);
+            }
+
+            for platform in platforms {
+                if !seen.contains(platform) {
+                    return Err(invalid(
+                        path,
+                        format!("missing source for platform `{platform}`"),
+                    ));
+                }
+            }
+
+            Ok(sources)
+        }
+        (Some(_), None, _) | (None, Some(_), _) => Err(invalid(
+            path,
+            "source_url and source_sha256 must be provided together",
+        )),
+        (Some(_), Some(_), false) => Err(invalid(
+            path,
+            "track-level source_url/source_sha256 cannot be combined with sources",
+        )),
+        (None, None, true) => Err(invalid(
+            path,
+            "backing recipe track must define source_url/source_sha256 or sources",
+        )),
+    }
 }
 
 fn validate_exact_resources(

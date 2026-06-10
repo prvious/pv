@@ -1,0 +1,25 @@
+[recipe]
+resources = ["rustfs"]
+default_track = "1"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/rustfs"]
+
+[[tracks]]
+name = "1"
+upstream_version = "1.0.0-beta.7"
+
+[[tracks.sources]]
+platform = "darwin-arm64"
+source_url = "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-aarch64-v1.0.0-beta.7.zip"
+source_sha256 = "8ff8db2068db450b22c4dbaa86b7abcf35110307f8e036aa83db387f540a2b53"
+
+[[tracks.sources]]
+platform = "darwin-amd64"
+source_url = "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-x86_64-v1.0.0-beta.7.zip"
+source_sha256 = "b45cd47c3b3c903ab31b2b6d936be474d5ee64527a40271e7817dd6c961d5387"
