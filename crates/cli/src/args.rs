@@ -518,6 +518,6 @@ pub(crate) struct JobsArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ListArgs {
-    #[arg(long, help = "Print linked Projects as JSON")]
+    #[arg(long, help = "Print command output as JSON")]
     pub(crate) json: bool,
 }

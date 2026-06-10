@@ -249,17 +249,25 @@ fn daemon_socket_check(
         _ => "pv daemon:enable",
     };
 
-    if state::fs::path_exists(&paths.daemon_socket()) {
+    if !state::fs::path_exists(&paths.daemon_socket()) {
         return Ok(
-            DoctorCheck::pass("Daemon socket", "daemon socket path is present")
+            DoctorCheck::fail("Daemon socket", "daemon socket is missing", repair)
                 .with_detail(format!("path: {}", paths.daemon_socket())),
         );
     }
 
-    Ok(
-        DoctorCheck::fail("Daemon socket", "daemon socket is missing", repair)
-            .with_detail(format!("path: {}", paths.daemon_socket())),
-    )
+    match daemon::health_blocking(paths.clone()) {
+        Ok(()) => Ok(
+            DoctorCheck::pass("Daemon socket", "daemon answered health check")
+                .with_detail(format!("path: {}", paths.daemon_socket())),
+        ),
+        Err(error) => Ok(DoctorCheck::fail(
+            "Daemon socket",
+            "daemon socket is present but daemon did not answer health check",
+            repair,
+        )
+        .with_detail(format!("path: {}; error: {error}", paths.daemon_socket()))),
+    }
 }
 
 fn dns_check(paths: &PvPaths) -> DoctorCheck {

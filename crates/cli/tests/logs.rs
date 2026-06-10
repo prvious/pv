@@ -121,6 +121,25 @@ fn logs_gateway_uses_combined_fallback() -> anyhow::Result<()> {
 }
 
 #[test]
+fn logs_worker_latest_uses_global_default_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    let mut database = Database::open(&paths)?;
+    database.record_global_php_default_track("8.4")?;
+    write_log(&paths.worker_log("8.4"), "worker ready\n")?;
+
+    let output = run_pv(&["logs", "--worker", "latest"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn logs_resource_alias_infers_single_installed_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

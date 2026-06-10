@@ -209,7 +209,7 @@ where
 fn start_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String, DaemonError> {
     let mut database = Database::open(paths)?;
     let job = database.start_job("reconcile", scope)?;
-    structured_log::job_started(paths, &job.id, "reconcile", scope)?;
+    structured_log::job_started(paths, &job.id, "reconcile", scope);
 
     Ok(job.id)
 }
@@ -270,9 +270,9 @@ async fn complete_reconciliation_job(
             "reconcile",
             &scope.to_string(),
             &error_message,
-        )?;
+        );
     } else if let Ok(summary) = &result {
-        structured_log::job_completed(paths, job_id, "reconcile", &scope.to_string(), summary)?;
+        structured_log::job_completed(paths, job_id, "reconcile", &scope.to_string(), summary);
     }
 
     result
@@ -508,9 +508,9 @@ pub(crate) fn record_background_reconciliation_error(
     }
 
     let job = database.start_job("reconcile", scope)?;
-    structured_log::job_started(paths, &job.id, "reconcile", scope)?;
+    structured_log::job_started(paths, &job.id, "reconcile", scope);
     database.fail_job(&job.id, &error_message)?;
-    structured_log::job_failed(paths, &job.id, "reconcile", scope, &error_message)?;
+    structured_log::job_failed(paths, &job.id, "reconcile", scope, &error_message);
 
     Ok(())
 }
@@ -524,7 +524,7 @@ async fn run_invalid_reconciliation_scope_job(
     let mut database = Database::open(&paths)?;
     let job = database.start_job("reconcile", scope)?;
     let error = format!("invalid reconciliation scope `{scope}`: {parse_error}");
-    structured_log::job_started(&paths, &job.id, "reconcile", scope)?;
+    structured_log::job_started(&paths, &job.id, "reconcile", scope);
 
     let stream_is_open = async {
         write_line(
@@ -548,7 +548,7 @@ async fn run_invalid_reconciliation_scope_job(
     .is_ok();
 
     database.fail_job(&job.id, &error)?;
-    structured_log::job_failed(&paths, &job.id, "reconcile", scope, &error)?;
+    structured_log::job_failed(&paths, &job.id, "reconcile", scope, &error);
 
     if stream_is_open {
         write_line(
@@ -573,7 +573,7 @@ async fn run_started_job(
     let mut database = Database::open(&paths)?;
     let job = database.start_job(kind, scope)?;
     let summary = "stub job completed";
-    structured_log::job_started(&paths, &job.id, kind, scope)?;
+    structured_log::job_started(&paths, &job.id, kind, scope);
 
     let stream_is_open = async {
         write_line(
@@ -607,7 +607,7 @@ async fn run_started_job(
     if kind != "reconcile" || scope.parse::<ReconciliationScope>().is_err() {
         let error = format!("unsupported daemon job `{kind}` with scope `{scope}`");
         database.fail_job(&job.id, &error)?;
-        structured_log::job_failed(&paths, &job.id, kind, scope, &error)?;
+        structured_log::job_failed(&paths, &job.id, kind, scope, &error);
 
         if stream_is_open {
             write_line(
@@ -624,7 +624,7 @@ async fn run_started_job(
     }
 
     database.complete_job(&job.id, summary)?;
-    structured_log::job_completed(&paths, &job.id, kind, scope, summary)?;
+    structured_log::job_completed(&paths, &job.id, kind, scope, summary);
     if !stream_is_open {
         return Ok(());
     }
@@ -661,6 +661,7 @@ async fn run_started_job(
 mod tests {
     use std::io;
 
+    use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use state::{Database, JobStatus, PvPaths, StateError};
     use tokio::io::duplex;
@@ -779,6 +780,31 @@ mod tests {
     }
 
     #[test]
+    fn background_reconciliation_error_persists_when_structured_log_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let error = crate::DaemonError::Io(io::Error::other("background task failed"));
+        Database::open(&paths)?;
+        create_directory(&paths.daemon_log())?;
+
+        record_background_reconciliation_error(&paths, "project:project_1", &error)?;
+
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == "project:project_1")
+            .ok_or_else(|| anyhow::anyhow!("missing background failure job"))?;
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(
+            job.error.as_deref(),
+            Some("I/O error: background task failed")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn foreground_reconciliation_result_takes_precedence_over_accepted_write_error() {
         let result = foreground_reconciliation_result(
             Err(crate::DaemonError::Io(io::Error::other(
@@ -853,5 +879,15 @@ mod tests {
                 job.job_id()
             )),
         }
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "daemon jobs tests create fixture directories"
+    )]
+    fn create_directory(path: &Utf8Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(path)?;
+
+        Ok(())
     }
 }

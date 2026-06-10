@@ -5,52 +5,41 @@ use state::PvPaths;
 
 use crate::DaemonError;
 
-pub(crate) fn daemon_started(paths: &PvPaths) -> Result<(), DaemonError> {
-    append(
+pub(crate) fn daemon_started(paths: &PvPaths) {
+    append_best_effort(
         paths,
         "info",
         "daemon",
         "daemon_started",
         "daemon started",
         &[],
-    )
+    );
 }
 
-pub(crate) fn daemon_stopped(paths: &PvPaths) -> Result<(), DaemonError> {
-    append(
+pub(crate) fn daemon_stopped(paths: &PvPaths) {
+    append_best_effort(
         paths,
         "info",
         "daemon",
         "daemon_stopped",
         "daemon stopped",
         &[],
-    )
+    );
 }
 
-pub(crate) fn job_started(
-    paths: &PvPaths,
-    job_id: &str,
-    kind: &str,
-    scope: &str,
-) -> Result<(), DaemonError> {
-    append(
+pub(crate) fn job_started(paths: &PvPaths, job_id: &str, kind: &str, scope: &str) {
+    append_best_effort(
         paths,
         "info",
         "reconciliation",
         "job_started",
         "job started",
         &[("job_id", job_id), ("kind", kind), ("scope", scope)],
-    )
+    );
 }
 
-pub(crate) fn job_completed(
-    paths: &PvPaths,
-    job_id: &str,
-    kind: &str,
-    scope: &str,
-    summary: &str,
-) -> Result<(), DaemonError> {
-    append(
+pub(crate) fn job_completed(paths: &PvPaths, job_id: &str, kind: &str, scope: &str, summary: &str) {
+    append_best_effort(
         paths,
         "info",
         "reconciliation",
@@ -62,17 +51,11 @@ pub(crate) fn job_completed(
             ("scope", scope),
             ("summary", summary),
         ],
-    )
+    );
 }
 
-pub(crate) fn job_failed(
-    paths: &PvPaths,
-    job_id: &str,
-    kind: &str,
-    scope: &str,
-    error: &str,
-) -> Result<(), DaemonError> {
-    append(
+pub(crate) fn job_failed(paths: &PvPaths, job_id: &str, kind: &str, scope: &str, error: &str) {
+    append_best_effort(
         paths,
         "error",
         "reconciliation",
@@ -84,7 +67,18 @@ pub(crate) fn job_failed(
             ("scope", scope),
             ("error", error),
         ],
-    )
+    );
+}
+
+fn append_best_effort(
+    paths: &PvPaths,
+    level: &str,
+    target: &str,
+    event: &str,
+    message: &str,
+    fields: &[(&str, &str)],
+) {
+    let _append_result = append(paths, level, target, event, message, fields);
 }
 
 fn append(

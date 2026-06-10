@@ -24,7 +24,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use client::{
-    CompletedJob, SubmittedJob, run_job_blocking, submit_job_blocking, wait_until_healthy_blocking,
+    CompletedJob, SubmittedJob, health_blocking, run_job_blocking, submit_job_blocking,
+    wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::DaemonError;
@@ -67,7 +68,7 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
-        structured_log::daemon_started(&paths)?;
+        structured_log::daemon_started(&paths);
         ipc::prepare_endpoint(&paths).await?;
         let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
         let listener = match ipc::bind(&paths) {
@@ -105,7 +106,7 @@ impl RunningDaemon {
         dns_result?;
         let task_result = join_result?;
         task_result?;
-        let _log_result = structured_log::daemon_stopped(&self.paths);
+        structured_log::daemon_stopped(&self.paths);
 
         Ok(())
     }
@@ -151,7 +152,7 @@ async fn wait_for_shutdown(
             dns_result?;
             let task_result = join_result?;
             task_result?;
-            let _log_result = structured_log::daemon_stopped(&paths);
+            structured_log::daemon_stopped(&paths);
 
             Ok(())
         }
@@ -162,7 +163,7 @@ async fn wait_for_shutdown(
             dns_result?;
             let result = task_result?;
             if result.is_ok() {
-                let _log_result = structured_log::daemon_stopped(&paths);
+                structured_log::daemon_stopped(&paths);
             }
             result
         }
@@ -176,7 +177,7 @@ async fn wait_for_shutdown(
             task_result?;
             let result = dns_result;
             if result.is_ok() {
-                let _log_result = structured_log::daemon_stopped(&paths);
+                structured_log::daemon_stopped(&paths);
             }
             result
         }

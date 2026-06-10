@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Style};
 use camino::{Utf8Path, Utf8PathBuf};
+use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{Database, PvPaths, StateError};
 
 use crate::args::LogsArgs;
@@ -88,10 +89,12 @@ fn select_sources(args: &LogsArgs, paths: &PvPaths) -> Result<LogSelection, Exec
     }
 
     if let Some(worker) = &args.worker {
+        let worker = resolve_worker_track(paths, worker)?;
+
         return Ok(LogSelection {
             sources: vec![LogSource {
                 label: format!("worker:{worker}"),
-                active_path: paths.worker_log(worker),
+                active_path: paths.worker_log(&worker),
             }],
             empty_message: format!("No logs exist for PHP worker track {worker}"),
         });
@@ -158,7 +161,9 @@ fn gateway_sources(paths: &PvPaths) -> Vec<LogSource> {
 }
 
 fn installed_worker_sources(paths: &PvPaths) -> Result<Vec<LogSource>, ExecuteError> {
-    let database = Database::open(paths)?;
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Ok(Vec::new());
+    };
     let mut tracks = BTreeSet::new();
 
     for state in database.runtime_observed_states()? {
@@ -177,7 +182,9 @@ fn installed_worker_sources(paths: &PvPaths) -> Result<Vec<LogSource>, ExecuteEr
 }
 
 fn installed_resource_sources(paths: &PvPaths) -> Result<Vec<LogSource>, ExecuteError> {
-    let database = Database::open(paths)?;
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Ok(Vec::new());
+    };
 
     Ok(database
         .managed_resource_tracks()?
@@ -198,7 +205,12 @@ fn resolve_resource_track(
         return Ok(track.to_string());
     }
 
-    let database = Database::open(paths)?;
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Err(CliError::MissingLogResourceTrack {
+            resource: resource_name.to_string(),
+        }
+        .into());
+    };
     let tracks = database
         .managed_resource_tracks()?
         .into_iter()
@@ -218,6 +230,24 @@ fn resolve_resource_track(
         }
         .into()),
     }
+}
+
+fn resolve_worker_track(paths: &PvPaths, worker: &str) -> Result<String, ExecuteError> {
+    if !TrackSelector::is_reserved_alias(worker) {
+        return Ok(worker.to_string());
+    }
+
+    if let Some(database) = Database::open_read_only(paths)?
+        && let Some(track) = database.global_php_default_track()?
+    {
+        return Ok(track);
+    }
+
+    let php = ResourceName::new("php")?;
+    let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+    let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
+
+    Ok(track.as_str().to_string())
 }
 
 fn write_initial_tail(

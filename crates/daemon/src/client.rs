@@ -62,6 +62,15 @@ pub fn wait_until_healthy_blocking(paths: PvPaths) -> Result<(), DaemonError> {
     runtime.block_on(wait_until_healthy(paths))
 }
 
+pub fn health_blocking(paths: PvPaths) -> Result<(), DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+
+    runtime.block_on(health(paths))
+}
+
 async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<SubmittedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 

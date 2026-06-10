@@ -8,6 +8,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
+use platform::LaunchAgentConfig;
 use state::{
     Database, ManagedResourceTrackInstallInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
 };
@@ -70,14 +71,38 @@ impl Environment for TestEnvironment {
 fn status_reports_disabled_daemon_without_setup() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
 
     let output = run_pv(&["status"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert!(!state::fs::path_exists(paths.root()));
     assert_status_snapshot(
         "status_reports_disabled_daemon_without_setup",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn status_reports_current_launch_agent_with_stale_socket_as_down() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_current_launch_agent(&paths, &environment)?;
+    write_file(&paths.daemon_socket(), "")?;
+
+    let output = run_pv(&["status"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_status_snapshot(
+        "status_reports_current_launch_agent_with_stale_socket_as_down",
         tempdir.path(),
         output,
     );
@@ -196,6 +221,32 @@ fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {
         RuntimeObservedStatus::Running,
         Some("Managed Resource runtime is ready"),
     )?;
+
+    Ok(())
+}
+
+fn seed_current_launch_agent(paths: &PvPaths, environment: &TestEnvironment) -> anyhow::Result<()> {
+    let launch_agent = LaunchAgentConfig::new(
+        "/bin/pv",
+        paths.launchd_stdout_log(),
+        paths.launchd_stderr_log(),
+    );
+    let path = Utf8Path::from_path(&environment.launch_agent_path)
+        .ok_or_else(|| anyhow::anyhow!("launch agent path is not UTF-8"))?;
+    platform::write_launch_agent_file(path, &launch_agent)?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI status tests create fixture files"
+)]
+fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)?;
 
     Ok(())
 }

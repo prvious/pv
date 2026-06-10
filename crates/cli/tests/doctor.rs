@@ -1,7 +1,10 @@
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, BufRead as _, Write as _};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
@@ -76,8 +79,10 @@ fn doctor_passes_when_required_checks_pass() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     seed_required_checks(&paths, &environment, true)?;
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
 
     let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
@@ -97,7 +102,6 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     seed_required_checks(&paths, &environment, true)?;
-    state::fs::delete_file(&paths.daemon_socket())?;
     let mut database = Database::open(&paths)?;
     let job = database.start_job("reconcile", "system")?;
     database.fail_job(&job.id, "Gateway failed to start")?;
@@ -117,14 +121,38 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
 }
 
 #[test]
+fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    write_file(&paths.daemon_socket(), "")?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_doctor_snapshot(
+        "doctor_fails_when_daemon_socket_is_stale",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn doctor_warnings_do_not_fail() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     seed_required_checks(&paths, &environment, false)?;
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
 
     let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
@@ -187,7 +215,6 @@ fn seed_required_checks(
         paths.launchd_stderr_log(),
     );
     platform::write_launch_agent_file(&environment.launch_agent_path_utf8()?, &launch_agent)?;
-    write_file(&paths.daemon_socket(), "")?;
     state::fs::write_sensitive_file(
         &paths.resolver_config(),
         &ResolverConfig::new(35353).render(),
@@ -206,6 +233,54 @@ fn seed_required_checks(
     }
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI doctor tests bind a fixture daemon health socket"
+)]
+fn spawn_health_server(
+    socket_path: &Utf8Path,
+) -> anyhow::Result<thread::JoinHandle<anyhow::Result<()>>> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let listener = UnixListener::bind(socket_path.as_std_path())?;
+    let handle = thread::spawn(move || -> anyhow::Result<()> {
+        listener.set_nonblocking(true)?;
+        let started_at = Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _address)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if started_at.elapsed() >= Duration::from_secs(1) {
+                        return Ok(());
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let mut request = String::new();
+        let mut reader = io::BufReader::new(stream.try_clone()?);
+        reader.read_line(&mut request)?;
+        writeln!(
+            stream,
+            "{{\"type\":\"response\",\"protocol_version\":{},\"status\":\"ok\",\"message\":\"daemon healthy\"}}",
+            daemon::PROTOCOL_VERSION
+        )?;
+
+        Ok(())
+    });
+
+    Ok(handle)
+}
+
+fn join_health_server(handle: thread::JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
+    handle
+        .join()
+        .map_err(|error| anyhow::anyhow!("health server thread panicked: {error:?}"))?
 }
 
 #[expect(

@@ -58,12 +58,14 @@ impl Environment for TestEnvironment {
 fn jobs_lists_empty_history() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
 
     let output = run_pv(&["jobs"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert!(!state::fs::path_exists(paths.root()));
     assert_debug_snapshot!(output);
 
     Ok(())

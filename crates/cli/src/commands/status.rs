@@ -55,18 +55,27 @@ struct StatusSnapshot {
 impl StatusSnapshot {
     fn read(environment: &impl Environment) -> Result<Self, ExecuteError> {
         let paths = pv_paths(environment)?;
-        let database = Database::open(&paths)?;
+        let database = Database::open_read_only(&paths)?;
         let daemon = DaemonStatus::read(environment, &paths)?;
         let integrations = IntegrationStatuses::read(&paths);
-        let runtime_states = database.runtime_observed_states()?;
-        let managed_resources = managed_resource_statuses(&database, &runtime_states)?;
+        let runtime_states = match &database {
+            Some(database) => database.runtime_observed_states()?,
+            None => Vec::new(),
+        };
+        let managed_resources = match &database {
+            Some(database) => managed_resource_statuses(database, &runtime_states)?,
+            None => Vec::new(),
+        };
         let runtimes = runtime_statuses(&runtime_states);
-        let recent_errors = database
-            .recent_jobs()?
-            .into_iter()
-            .filter(|job| job.status == JobStatus::Failed)
-            .map(JobStatusSummary::from_job)
-            .collect::<Vec<_>>();
+        let recent_errors = match &database {
+            Some(database) => database
+                .recent_jobs()?
+                .into_iter()
+                .filter(|job| job.status == JobStatus::Failed)
+                .map(JobStatusSummary::from_job)
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
         let has_failure = daemon.failure
             || managed_resources.iter().any(|resource| resource.failure)
             || runtimes.iter().any(|runtime| runtime.failure)
@@ -159,17 +168,24 @@ impl DaemonStatus {
         let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
         let launch_agent_status = launch_agent_status(&launch_agent);
         let socket_exists = state::fs::path_exists(&paths.daemon_socket());
-        let socket = if socket_exists { "present" } else { "missing" };
-        let state = match (&launch_agent, socket_exists) {
-            (LaunchAgentFileState::Missing { .. }, false) => "disabled",
-            (LaunchAgentFileState::Current { .. }, true) => "running",
-            (LaunchAgentFileState::Current { .. }, false) => "down",
-            (LaunchAgentFileState::Missing { .. }, true) => "socket-only",
-            (LaunchAgentFileState::Stale { .. }, _) => "repair-required",
-            (LaunchAgentFileState::Conflict { .. }, _) => "repair-required",
-            (LaunchAgentFileState::Unreadable { .. }, _) => "unknown",
+        let socket = if !socket_exists {
+            "missing"
+        } else if daemon::health_blocking(paths.clone()).is_ok() {
+            "healthy"
+        } else {
+            "unhealthy"
         };
-        let failure = matches!(state, "down" | "repair-required");
+        let state = match &launch_agent {
+            LaunchAgentFileState::Missing { .. } if socket == "missing" => "disabled",
+            LaunchAgentFileState::Missing { .. } if socket == "healthy" => "socket-only",
+            LaunchAgentFileState::Missing { .. } => "socket-stale",
+            LaunchAgentFileState::Current { .. } if socket == "healthy" => "running",
+            LaunchAgentFileState::Current { .. } => "down",
+            LaunchAgentFileState::Stale { .. } => "repair-required",
+            LaunchAgentFileState::Conflict { .. } => "repair-required",
+            LaunchAgentFileState::Unreadable { .. } => "unknown",
+        };
+        let failure = matches!(state, "down" | "repair-required" | "socket-stale");
 
         Ok(Self {
             state,

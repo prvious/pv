@@ -16,8 +16,10 @@ pub(crate) fn run(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
-    let jobs = database.recent_jobs()?;
+    let jobs = match Database::open_read_only(&paths)? {
+        Some(database) => database.recent_jobs()?,
+        None => Vec::new(),
+    };
 
     if args.json {
         serde_json::to_writer(&mut *stdout, &JobsJson::from_records(&jobs))?;
