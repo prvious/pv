@@ -13,21 +13,43 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(".github/workflows/artifact-recipes.yml"))?;
     let summary = format!(
-        "track_default={}\nplatform_default={}\nplatform_matrices={:?}\nstaticphp_comment_present={}\nstaticphp_work_cleanup_restores_write_permission={}",
+        "track_default={}\nplatform_default={}\nplatform_description={}\nplatform_matrices={:?}\nstaticphp_comment_present={}\nstaticphp_work_cleanup_restores_write_permission={}",
         input_default(&workflow, "track").unwrap_or(""),
         input_default(&workflow, "platform").unwrap_or(""),
+        input_description(&workflow, "platform").unwrap_or(""),
         platform_matrices(&workflow),
         workflow.contains("StaticPHP v3"),
         workflow.contains("chmod -R u+w \"$PV_ARTIFACT_OUT_DIR/work\""),
     );
 
-    assert_snapshot!(summary, @r###"
+    assert_snapshot!(summary, @r#"
     track_default=all
     platform_default=all
+    platform_description=Artifact platform: all uses the current preview matrix (currently darwin-arm64); choose darwin-arm64 or darwin-amd64 explicitly for one platform
     platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
     staticphp_comment_present=true
     staticphp_work_cleanup_restores_write_permission=true
-    "###);
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn release_artifacts_readme_documents_current_recipe_validation() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let readme = read_file(&workspace_root.join("release/artifacts/README.md"))?;
+    let summary = format!(
+        "uses_current_recipe_count_wording={}\nshellchecks_all_recipe_scripts={}",
+        !readme.contains("Both recipe TOML files"),
+        readme.contains(
+            "shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/*/*.sh"
+        ),
+    );
+
+    assert_snapshot!(summary, @"
+    uses_current_recipe_count_wording=true
+    shellchecks_all_recipe_scripts=true
+    ");
 
     Ok(())
 }
@@ -50,7 +72,7 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
             .matches("${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}")
             .count(),
         workflow.contains(
-            "pv-artifact-recipes-staticphp-logs-${{ matrix.platform }}-${{ github.run_id }}"
+            "pv-artifact-recipes-staticphp-logs-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}"
         ),
     );
 
@@ -61,7 +83,7 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     manifest_upload_paths=7
     record_upload_paths=7
     recipe_track_envs=8
-    track_upload_names=7
+    track_upload_names=8
     staticphp_failure_logs=true
     "###);
 
@@ -91,16 +113,22 @@ fn artifact_publication_defaults_to_preview_native_platform_gate() -> Result<()>
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(".github/workflows/artifact-publication.yml"))?;
     let summary = format!(
-        "required_native_platforms_default={}\npasses_required_native_platforms={}\nvalidates_required_native_platforms={}",
+        "required_native_platforms_default={}\npasses_required_native_platforms={}\nvalidates_required_native_platforms={}\ntrims_required_native_platforms={}\nrejects_empty_required_native_platforms={}",
         input_default(&workflow, "required_native_platforms").unwrap_or(""),
         workflow.contains("--required-native-platform"),
         workflow.contains("unsupported required native platform"),
+        workflow
+            .matches("trimmed_platform=$(trim_required_platform \"$platform\")")
+            .count(),
+        workflow.contains("required native platform entries must be non-empty"),
     );
 
     assert_snapshot!(summary, @r###"
     required_native_platforms_default=darwin-arm64
     passes_required_native_platforms=true
     validates_required_native_platforms=true
+    trims_required_native_platforms=2
+    rejects_empty_required_native_platforms=true
     "###);
 
     Ok(())
@@ -125,6 +153,31 @@ fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
                 continue;
             };
             return default_value.trim_matches('"').into();
+        }
+    }
+
+    None
+}
+
+fn input_description<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
+    let input_header = format!("      {input}:");
+    let mut in_input = false;
+
+    for line in workflow.lines() {
+        if line == input_header {
+            in_input = true;
+            continue;
+        }
+
+        if in_input && line.starts_with("      ") && !line.starts_with("        ") {
+            return None;
+        }
+
+        if in_input {
+            let Some(description) = line.strip_prefix("        description: ") else {
+                continue;
+            };
+            return description.trim_matches('"').into();
         }
     }
 

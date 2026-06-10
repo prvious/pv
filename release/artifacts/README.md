@@ -34,7 +34,7 @@ cargo run -p pv-release -- validate-archive \
 
 ## Recipes
 
-Both recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
+Recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
 
 `recipes/php/tracks.toml` is the data source for paired PHP and FrankenPHP artifact builds. Each selected PHP track/platform is built once with StaticPHP v3, producing both the standalone `php` binary and the matched `frankenphp` binary from the same buildroot. The recipe pins PHP tracks `8.3`, `8.4`, and `8.5`; source URLs; checksums; the expected extension set; the macOS deployment target; and the FrankenPHP source version used by the pair.
 
@@ -49,7 +49,7 @@ The backing resource recipes cover MySQL tracks `8.0`, `8.4`, and `9.7`; Postgre
 Run the cheap recipe checks from the repository root:
 
 ```shell
-shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh
+shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/*/*.sh
 ```
 
 ```shell

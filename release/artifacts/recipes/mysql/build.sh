@@ -164,8 +164,14 @@ copy_install_tree() {
         *) source=$(dirname "$path")/$target ;;
       esac
       if [ ! -e "$source" ]; then
-        rm "$path" || exit 1
-        continue
+        case "$path" in
+          */lib/plugin/authentication_fido_client.so)
+            rm "$path" || exit 1
+            continue
+            ;;
+        esac
+        printf "%s\n" "broken MySQL install symlink: $path -> $target" >&2
+        exit 1
       fi
       tmp=$path.pv-copy.$$
       rm "$path" || exit 1
@@ -220,12 +226,26 @@ boost_source_extract_dir="$OUT_DIR/sources/boost-1.77.0-source"
 archive="$OUT_DIR/$artifact_basename.tar.gz"
 record=$(artifact_record_path "$RECORD_DIR" mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
 object_key=$(artifact_object_key mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
+record_openssl_source_input=false
+record_boost_source_input=false
+
+write_mysql_record() {
+  set -- "$record" mysql "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/mysql/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
+  if [ "$record_openssl_source_input" = true ]; then
+    set -- "$@" --source-input openssl "$OPENSSL_SOURCE_URL" "$OPENSSL_SOURCE_SHA256"
+  fi
+  if [ "$record_boost_source_input" = true ]; then
+    set -- "$@" --source-input boost "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
+  fi
+  write_record "$@"
+}
 
 rm -rf "$work_dir"
 mkdir -p "$work_dir" "$OUT_DIR"
 if [ -z "$OPENSSL_PREFIX" ]; then
   OPENSSL_PREFIX="$work_dir/openssl-$OPENSSL_VERSION"
   build_openssl_dependency "$OPENSSL_PREFIX" "$openssl_source_archive" "$openssl_source_extract_dir"
+  record_openssl_source_input=true
 else
   validate_openssl_prefix "$OPENSSL_PREFIX"
 fi
@@ -235,6 +255,7 @@ apply_mysql_source_patches "$source_dir"
 if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
   download_source "$boost_source_archive" "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
   BOOST_PREFIX=$(extract_source Boost "$boost_source_archive" "$boost_source_extract_dir")
+  record_boost_source_input=true
 fi
 
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
@@ -264,7 +285,7 @@ cmake --install "$build_dir"
 
 copy_install_tree "$install_dir" "$root_dir"
 COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
-write_record "$record" mysql "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/mysql/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
+write_mysql_record
 
 PV_UPSTREAM_VERSION="$PV_UPSTREAM_VERSION" \
   cargo run -p pv-release -- validate-archive --archive "$archive" --record "$record" --smoke-hook "$recipe_dir/smoke.sh"

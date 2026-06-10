@@ -1104,6 +1104,15 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
         !cmake_log.contains("[-DWITH_SSL=bundled]"),
         "MySQL 8.4 rejects WITH_SSL=bundled: {cmake_log}"
     );
+    assert_debug_snapshot!(mysql_record_source_inputs(&run)?, @r#"
+    Array [
+        Object {
+            "name": String("openssl"),
+            "source_sha256": String("8505c910292123009b4f1327adb5ae9935c04bb05780d1436998953efe501ed4"),
+            "source_url": String("https://sources.example.test/openssl.tar.gz"),
+        },
+    ]
+    "#);
 
     Ok(())
 }
@@ -1112,6 +1121,7 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
 fn mysql_build_recipe_prunes_broken_optional_plugin_symlinks() -> Result<()> {
     let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
         install_broken_plugin_symlink: true,
+        ..MysqlBuildRecipeOptions::default()
     })?;
 
     assert!(
@@ -1122,6 +1132,49 @@ fn mysql_build_recipe_prunes_broken_optional_plugin_symlinks() -> Result<()> {
     assert!(
         run.archive_exists,
         "MySQL archive should still be written when an optional plugin symlink is broken"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mysql_80_build_recipe_records_boost_source_input() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        track: "8.0",
+        upstream_version: "8.0.46",
+        ..MysqlBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL 8.0 build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_debug_snapshot!(mysql_record_source_inputs(&run)?);
+
+    Ok(())
+}
+
+#[test]
+fn mysql_build_recipe_rejects_unknown_broken_symlinks() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        install_broken_required_symlink: true,
+        ..MysqlBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "MySQL build recipe should reject unknown broken symlinks: {}",
+        command_output_debug(&run.output)
+    );
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        stderr.contains("broken MySQL install symlink"),
+        "MySQL build recipe should report the broken symlink path: {stderr}"
+    );
+    assert!(
+        !run.archive_exists,
+        "MySQL archive should not be written after an unknown broken symlink"
     );
 
     Ok(())
@@ -1458,7 +1511,21 @@ struct MysqlBuildRecipeRun {
 }
 
 struct MysqlBuildRecipeOptions {
+    track: &'static str,
+    upstream_version: &'static str,
     install_broken_plugin_symlink: bool,
+    install_broken_required_symlink: bool,
+}
+
+impl Default for MysqlBuildRecipeOptions {
+    fn default() -> Self {
+        Self {
+            track: "8.4",
+            upstream_version: "8.4.9",
+            install_broken_plugin_symlink: false,
+            install_broken_required_symlink: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1730,9 +1797,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
 }
 
 fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
-    run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
-        install_broken_plugin_symlink: false,
-    })
+    run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions::default())
 }
 
 fn run_mysql_build_recipe_smoke_with_options(
@@ -1744,10 +1809,11 @@ fn run_mysql_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
+    let boost_source_archive = tempdir.path().join("boost-source.tar.gz");
+    let artifact_basename = format!("mysql-{}-pv1-darwin-arm64", options.upstream_version);
     let openssl_prefix = out_dir
         .join("work")
-        .join(artifact_basename)
+        .join(&artifact_basename)
         .join("openssl-3.5.7");
     let bison_prefix = tempdir.path().join("bison");
     let bison_executable = bison_prefix.join("bin/bison");
@@ -1760,6 +1826,7 @@ fn run_mysql_build_recipe_smoke_with_options(
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_openssl_source_archive(&openssl_source_archive)?;
+    write_source_archive(&boost_source_archive, "boost-source")?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
     write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
@@ -1786,7 +1853,7 @@ fn run_mysql_build_recipe_smoke_with_options(
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
         .env("PV_RECIPE_PLATFORM", "darwin-arm64")
-        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_RECIPE_TRACK", options.track)
         .env("PV_TEST_CMAKE_LOG", &cmake_log)
         .env("PV_TEST_CODESIGN_LOG", &codesign_log)
         .env("PV_TEST_CURL_LOG", &curl_log)
@@ -1806,6 +1873,14 @@ fn run_mysql_build_recipe_smoke_with_options(
             },
         )
         .env(
+            "PV_TEST_MYSQL_INSTALL_BROKEN_REQUIRED_SYMLINK",
+            if options.install_broken_required_symlink {
+                "1"
+            } else {
+                ""
+            },
+        )
+        .env(
             "PV_MYSQL_OPENSSL_SOURCE_URL",
             "https://sources.example.test/openssl.tar.gz",
         )
@@ -1813,21 +1888,30 @@ fn run_mysql_build_recipe_smoke_with_options(
             "PV_MYSQL_OPENSSL_SOURCE_SHA256",
             file_sha256(&openssl_source_archive)?,
         )
+        .env(
+            "PV_MYSQL_BOOST_SOURCE_URL",
+            "https://sources.example.test/boost.tar.gz",
+        )
+        .env(
+            "PV_MYSQL_BOOST_SOURCE_SHA256",
+            file_sha256(&boost_source_archive)?,
+        )
+        .env("PV_TEST_BOOST_SOURCE_ARCHIVE", &boost_source_archive)
         .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
         .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
         .env("PV_TEST_RESOURCE", "mysql")
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
-        .env("PV_TEST_UPSTREAM_VERSION", "8.4.9")
+        .env("PV_TEST_UPSTREAM_VERSION", options.upstream_version)
         .env("PV_TEST_VALIDATE_LOG", &validate_log)
         .output()?;
 
-    let artifact_version = "8.4.9-pv1";
+    let artifact_version = format!("{}-pv1", options.upstream_version);
     let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
     let record = record_dir
         .join("mysql")
-        .join("8.4")
-        .join(artifact_version)
+        .join(options.track)
+        .join(&artifact_version)
         .join("darwin-arm64")
         .join(format!("{artifact_basename}.json"));
 
@@ -2261,6 +2345,13 @@ fn build_recipe_record_provenance(record_json: Option<&str>) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("build recipe record did not contain provenance"))
 }
 
+fn mysql_record_source_inputs(run: &MysqlBuildRecipeRun) -> Result<Value> {
+    Ok(build_recipe_record_provenance(run.record_json.as_deref())?
+        .get("source_inputs")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new())))
+}
+
 fn build_recipe_notice_source_lines(notice: Option<&str>) -> Result<Vec<&str>> {
     let notice = notice.ok_or_else(|| anyhow::anyhow!("build recipe did not produce NOTICE"))?;
     Ok(notice
@@ -2622,6 +2713,8 @@ EOF
       recipe=
       pv_commit=
       build_run_id=
+      source_inputs_json=
+      source_input_count=0
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --record)
@@ -2652,22 +2745,38 @@ EOF
             shift
             build_run_id=${1:-}
             ;;
+          --source-input)
+            shift
+            input_name=${1:-}
+            shift
+            input_url=${1:-}
+            shift
+            input_sha256=${1:-}
+            input_json="      {\"name\": \"$input_name\", \"source_url\": \"$input_url\", \"source_sha256\": \"$input_sha256\"}"
+            if [ "$source_input_count" -eq 0 ]; then
+              source_inputs_json=$input_json
+            else
+              source_inputs_json="$source_inputs_json,
+$input_json"
+            fi
+            source_input_count=$((source_input_count + 1))
+            ;;
         esac
         shift
       done
       mkdir -p "$(dirname "$record")"
-      cat >"$record" <<EOF
-{
-  "object_key": "$object_key",
-  "provenance": {
-    "source_url": "$source_url",
-    "source_sha256": "$source_sha256",
-    "recipe": "$recipe",
-    "pv_commit": "$pv_commit",
-    "build_run_id": "$build_run_id"
-  }
-}
-EOF
+      {
+        printf '{\n  "object_key": "%s",\n  "provenance": {\n' "$object_key"
+        printf '    "source_url": "%s",\n' "$source_url"
+        printf '    "source_sha256": "%s",\n' "$source_sha256"
+        if [ "$source_input_count" -gt 0 ]; then
+          printf '    "source_inputs": [\n%s\n    ],\n' "$source_inputs_json"
+        fi
+        printf '    "recipe": "%s",\n' "$recipe"
+        printf '    "pv_commit": "%s",\n' "$pv_commit"
+        printf '    "build_run_id": "%s"\n' "$build_run_id"
+        printf '  }\n}\n'
+      } >"$record"
       ;;
     validate-archive)
       archive=
@@ -2850,6 +2959,9 @@ case "$url" in
     ;;
   https://sources.example.test/openssl.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
+    ;;
+  https://sources.example.test/boost.tar.gz)
+    cp "$PV_TEST_BOOST_SOURCE_ARCHIVE" "$output"
     ;;
   *)
     cp "$PV_TEST_SOURCE_ARCHIVE" "$output"
@@ -3365,6 +3477,9 @@ case "${1:-}" in
     if [ -n "${PV_TEST_MYSQL_INSTALL_BROKEN_PLUGIN_SYMLINK:-}" ]; then
       mkdir -p "$install_dir/lib/plugin"
       ln -s ../../lib/libfido2.1.dylib "$install_dir/lib/plugin/authentication_fido_client.so"
+    fi
+    if [ -n "${PV_TEST_MYSQL_INSTALL_BROKEN_REQUIRED_SYMLINK:-}" ]; then
+      ln -s missing-libmysqlclient.dylib "$install_dir/lib/libmysqlclient-required.dylib"
     fi
     ;;
   *)

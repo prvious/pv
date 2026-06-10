@@ -23,7 +23,7 @@ on:
         default: "all"
         type: string
       platform:
-        description: "Artifact platform: all, darwin-arm64, darwin-amd64"
+        description: "Artifact platform: all uses the current preview matrix (currently darwin-arm64); choose darwin-arm64 or darwin-amd64 explicitly for one platform"
         required: true
         default: "all"
         type: choice
@@ -179,7 +179,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
         with:
-          name: pv-artifact-recipes-staticphp-logs-${{ matrix.platform }}-${{ github.run_id }}
+          name: pv-artifact-recipes-staticphp-logs-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: ${{ runner.temp }}/pv-artifacts/work/**/staticphp/log/*.log
           if-no-files-found: ignore
 

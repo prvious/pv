@@ -1,0 +1,16 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: mysql_record_source_inputs(&run)?
+---
+Array [
+    Object {
+        "name": String("openssl"),
+        "source_sha256": String("8505c910292123009b4f1327adb5ae9935c04bb05780d1436998953efe501ed4"),
+        "source_url": String("https://sources.example.test/openssl.tar.gz"),
+    },
+    Object {
+        "name": String("boost"),
+        "source_sha256": String("e8cab47b41f0433fe4db0cc298ca85ff9a65056102b6db96b80ee44ae3a74591"),
+        "source_url": String("https://sources.example.test/boost.tar.gz"),
+    },
+]

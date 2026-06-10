@@ -5,7 +5,7 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 # shellcheck source=/dev/null
 . "$ROOT/release/artifacts/recipes/common.sh"
 
-TRACK=${PV_RECIPE_TRACK:-8.4}
+TRACK=${PV_RECIPE_TRACK:-8.5}
 PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}

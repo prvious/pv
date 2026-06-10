@@ -7,7 +7,7 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
-TRACK=${PV_RECIPE_TRACK:-8.2}
+TRACK=${PV_RECIPE_TRACK:-8.8}
 PLATFORM=${PV_RECIPE_PLATFORM:-}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-redis}

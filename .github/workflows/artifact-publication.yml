@@ -83,18 +83,28 @@ jobs:
               ;;
           esac
 
-          old_ifs=$IFS
-          IFS=,
-          for platform in $REQUIRED_NATIVE_PLATFORMS; do
-            case "$platform" in
+          trim_required_platform() {
+            printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+          }
+
+          remaining_platforms="$REQUIRED_NATIVE_PLATFORMS,"
+          while [ -n "$remaining_platforms" ]; do
+            platform=${remaining_platforms%%,*}
+            remaining_platforms=${remaining_platforms#*,}
+            trimmed_platform=$(trim_required_platform "$platform")
+            if [ -z "$trimmed_platform" ]; then
+              printf '%s\n' "required native platform entries must be non-empty" >&2
+              exit 1
+            fi
+
+            case "$trimmed_platform" in
               darwin-arm64 | darwin-amd64) ;;
               *)
-                printf '%s\n' "unsupported required native platform: $platform" >&2
+                printf '%s\n' "unsupported required native platform: $trimmed_platform" >&2
                 exit 1
                 ;;
             esac
           done
-          IFS=$old_ifs
 
       - name: Validate source recipe run
         env:
@@ -164,10 +174,21 @@ jobs:
           candidate_records="$RUNNER_TEMP/pv-publication-records"
           stage="$RUNNER_TEMP/pv-publication-stage"
           versioned_manifest_key="$VERSIONED_MANIFEST_PREFIX/$SOURCE_RUN_ID/manifest.json"
+          trim_required_platform() {
+            printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+          }
+
           required_platform_args=()
-          IFS=',' read -ra required_platforms <<< "$REQUIRED_NATIVE_PLATFORMS"
-          for platform in "${required_platforms[@]}"; do
-            required_platform_args+=(--required-native-platform "$platform")
+          remaining_platforms="$REQUIRED_NATIVE_PLATFORMS,"
+          while [ -n "$remaining_platforms" ]; do
+            platform=${remaining_platforms%%,*}
+            remaining_platforms=${remaining_platforms#*,}
+            trimmed_platform=$(trim_required_platform "$platform")
+            if [ -z "$trimmed_platform" ]; then
+              printf '%s\n' "required native platform entries must be non-empty" >&2
+              exit 1
+            fi
+            required_platform_args+=(--required-native-platform "$trimmed_platform")
           done
 
           rm -rf "$candidate_records" "$stage"
