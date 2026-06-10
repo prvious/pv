@@ -10,9 +10,10 @@ use resources::{
     ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
     UreqResourceHttpClient,
 };
+use serde::Serialize;
 use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 
-use crate::args::{PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
+use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
@@ -152,6 +153,7 @@ pub(crate) fn uninstall(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
@@ -160,9 +162,16 @@ pub(crate) fn list(
     let php = ResourceName::new("php")?;
     let commands = resource_commands(&paths, environment);
     let tracks = commands.list(Some(&php))?;
-    let mut output = Output::new(stdout, OutputMode::plain());
 
     if tracks.is_empty() {
+        if args.json {
+            serde_json::to_writer(&mut *stdout, &PhpListOutput { tracks: Vec::new() })?;
+            writeln!(stdout)?;
+
+            return Ok(ExitCode::SUCCESS);
+        }
+
+        let mut output = Output::new(stdout, OutputMode::plain());
         output.line("No PHP tracks installed")?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -170,6 +179,27 @@ pub(crate) fn list(
     let default_track = effective_global_php_default_track(&paths, &database)?;
     let project_counts = php_project_selection_counts(&database, default_track.as_deref())?;
 
+    if args.json {
+        let tracks = tracks
+            .iter()
+            .map(|track| {
+                let track_name = track.track().as_str();
+                PhpListTrack {
+                    track: track_name.to_string(),
+                    default: default_track.as_deref() == Some(track_name),
+                    projects: project_counts.get(track_name).copied().unwrap_or(0),
+                    version: track.installed_version().as_str().to_string(),
+                    path: track.current_artifact_path().to_string(),
+                }
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_writer(&mut *stdout, &PhpListOutput { tracks })?;
+        writeln!(stdout)?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut output = Output::new(stdout, OutputMode::plain());
     output.line("Track  Default  Projects  Version  Path")?;
     for track in tracks {
         let default_marker = if default_track.as_deref() == Some(track.track().as_str()) {
@@ -193,6 +223,20 @@ pub(crate) fn list(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Serialize)]
+struct PhpListOutput {
+    tracks: Vec<PhpListTrack>,
+}
+
+#[derive(Serialize)]
+struct PhpListTrack {
+    track: String,
+    default: bool,
+    projects: i64,
+    version: String,
+    path: String,
 }
 
 pub(crate) fn shim(

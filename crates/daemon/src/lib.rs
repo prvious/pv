@@ -9,6 +9,7 @@ mod managed_resources;
 mod project_env;
 mod reconciliation;
 mod server;
+mod structured_log;
 mod supervisor;
 mod watcher;
 
@@ -66,6 +67,7 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
+        structured_log::daemon_started(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
         let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
         let listener = match ipc::bind(&paths) {
@@ -103,6 +105,7 @@ impl RunningDaemon {
         dns_result?;
         let task_result = join_result?;
         task_result?;
+        let _log_result = structured_log::daemon_stopped(&self.paths);
 
         Ok(())
     }
@@ -148,6 +151,7 @@ async fn wait_for_shutdown(
             dns_result?;
             let task_result = join_result?;
             task_result?;
+            let _log_result = structured_log::daemon_stopped(&paths);
 
             Ok(())
         }
@@ -156,7 +160,11 @@ async fn wait_for_shutdown(
             let socket_result = ipc::remove_endpoint(&paths);
             socket_result?;
             dns_result?;
-            task_result?
+            let result = task_result?;
+            if result.is_ok() {
+                let _log_result = structured_log::daemon_stopped(&paths);
+            }
+            result
         }
         dns_result = dns.wait_for_completion() => {
             let _ = shutdown.send(());
@@ -166,7 +174,11 @@ async fn wait_for_shutdown(
             socket_result?;
             let task_result = join_result?;
             task_result?;
-            dns_result
+            let result = dns_result;
+            if result.is_ok() {
+                let _log_result = structured_log::daemon_stopped(&paths);
+            }
+            result
         }
     }
 }
@@ -289,6 +301,35 @@ mod tests {
 
         assert!(matches!(result, Err(DaemonError::Task(error)) if error.is_cancelled()));
         assert!(!paths.daemon_socket().exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_start_and_shutdown_write_structured_daemon_log() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let daemon = RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
+        daemon.shutdown().await?;
+
+        let content = state::fs::read_to_string(&paths.daemon_log())?;
+        let events = content
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| event["event"] == "daemon_started")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event["event"] == "daemon_stopped")
+        );
+        assert!(events.iter().all(|event| event["target"] == "daemon"));
 
         Ok(())
     }

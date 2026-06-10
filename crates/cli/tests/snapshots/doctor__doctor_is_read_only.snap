@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/doctor.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV doctor\n[fail] State layout: missing ~/.pv state directory\n  path: <tempdir>/home/.pv\n  repair: `pv setup`\n[fail] Database: pv.db is missing\n  path: <tempdir>/home/.pv/pv.db\n  repair: `pv setup`\n[fail] Daemon LaunchAgent: LaunchAgent is missing\n  path: <tempdir>/home/Library/LaunchAgents/com.prvious.pv.daemon.plist\n  repair: `pv daemon:enable`\n[fail] Daemon socket: daemon socket is missing\n  path: <tempdir>/home/.pv/run/pv.sock\n  repair: `pv daemon:enable`\n[fail] DNS config: prepared resolver config is missing\n  path: <tempdir>/home/.pv/config/resolver/test\n  repair: `pv dns:install`\n[fail] Port redirect config: prepared pf config is missing\n  path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  repair: `pv ports:install`\n[fail] Local CA files: local CA files are missing\n  certificate: <tempdir>/home/.pv/certificates/ca.pem; private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  repair: `pv ca:trust`\n[warn] Recent jobs: skipped because pv.db is missing\n  repair: `pv setup`\n[warn] Runtime states: skipped because pv.db is missing\n  repair: `pv setup`\n[warn] Artifact manifest cache: cached artifact manifest is missing\n  path: <tempdir>/home/.pv/downloads/manifest.json\n  repair: `pv setup`\nSummary: 0 passed, 3 warning(s), 7 failed\n",
+    stderr: "",
+}

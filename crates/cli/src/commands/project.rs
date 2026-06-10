@@ -8,12 +8,13 @@ use config::{
     ResourceEnvContext,
 };
 use resources::{ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector};
+use serde::Serialize;
 use state::{
     Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
     ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectRecord, PvPaths, StateError,
 };
 
-use crate::args::{LinkArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
+use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
@@ -179,12 +180,25 @@ pub(crate) fn env(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let projects = database.projects()?;
+
+    if args.json {
+        let projects = projects
+            .into_iter()
+            .map(|project| project_list_item(&database, project))
+            .collect::<Result<Vec<_>, _>>()?;
+        serde_json::to_writer(&mut *stdout, &ProjectListOutput { projects })?;
+        writeln!(stdout)?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let mut output = Output::new(stdout, OutputMode::plain());
 
     if projects.is_empty() {
@@ -456,6 +470,34 @@ struct ProjectListStatus {
     env_detail: Option<String>,
 }
 
+#[derive(Serialize)]
+struct ProjectListOutput {
+    projects: Vec<ProjectListItem>,
+}
+
+#[derive(Serialize)]
+struct ProjectListItem {
+    id: String,
+    hostname: String,
+    additional_hostnames: Vec<String>,
+    php: String,
+    status: &'static str,
+    env: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env_detail: Option<String>,
+    resources: Vec<ProjectListResource>,
+    path: String,
+    config_path: String,
+}
+
+#[derive(Serialize)]
+struct ProjectListResource {
+    resource: String,
+    track: String,
+}
+
 enum ProjectStatus {
     ConfigInvalid,
     Unknown,
@@ -538,6 +580,37 @@ fn project_list_status(
         env,
         config_error: None,
         env_detail,
+    })
+}
+
+fn project_list_item(
+    database: &Database,
+    project: ProjectRecord,
+) -> Result<ProjectListItem, ExecuteError> {
+    let status = project_list_status(database, &project)?;
+    let resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| ProjectListResource {
+            resource: resource.resource_name,
+            track: resource.track,
+        })
+        .collect();
+
+    Ok(ProjectListItem {
+        id: project.id,
+        hostname: project.primary_hostname,
+        additional_hostnames: project.additional_hostnames,
+        php: project
+            .desired_php_track
+            .unwrap_or_else(|| "default".to_string()),
+        status: status.project.as_str(),
+        env: status.env.as_str(),
+        config_error: status.config_error,
+        env_detail: status.env_detail,
+        resources,
+        path: project.path.to_string(),
+        config_path: project.config_path.to_string(),
     })
 }
 

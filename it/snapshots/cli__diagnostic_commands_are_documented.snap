@@ -1,0 +1,41 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Show whole-system PV status\n\nUsage: pv status [OPTIONS]\n\nOptions:\n      --json      Print whole-system status as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Show PV logs\n\nUsage: pv logs [OPTIONS]\n\nOptions:\n  -n, --lines <LINES>       Number of recent lines to show [default: 100]\n      --no-color            Disable colored output\n  -f, --follow              Stream new log lines after the initial tail\n      --all                 Include every PV-owned log stream\n      --gateway             Show Gateway logs\n      --worker <php-track>  Show logs for a PHP worker track\n      --resource <name>     Show logs for a Managed Resource\n      --track <track>       Managed Resource track for --resource\n  -h, --help                Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Run read-only PV diagnostics\n\nUsage: pv doctor [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "List recent daemon jobs\n\nUsage: pv jobs [OPTIONS]\n\nOptions:\n      --json      Print recent daemon jobs as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "List linked Projects\n\nUsage: pv list [OPTIONS]\n\nOptions:\n      --json      Print linked Projects as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

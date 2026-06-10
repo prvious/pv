@@ -234,6 +234,36 @@ fn daemon_lifecycle_commands_are_documented_without_running_them() -> Result<()>
 }
 
 #[test]
+fn diagnostic_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["status", "--help"])?,
+        run_pv(&["logs", "--help"])?,
+        run_pv(&["doctor", "--help"])?,
+        run_pv(&["jobs", "--help"])?,
+        run_pv(&["list", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn diagnostic_command_options_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["status", "--json", "--help"])?,
+        run_pv(&["logs", "--follow", "-n", "0", "--all", "--help"])?,
+        run_pv(&["logs", "--resource", "pg", "--track", "latest", "--help"])?,
+        run_pv(&["doctor", "--help"])?,
+        run_pv(&["jobs", "--json", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
 

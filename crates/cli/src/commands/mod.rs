@@ -12,7 +12,10 @@ mod completions;
 mod composer;
 mod daemon;
 mod dns;
+mod doctor;
 mod env;
+mod jobs;
+mod logs;
 mod mailpit;
 mod mysql;
 mod php;
@@ -22,6 +25,7 @@ mod project;
 mod redis;
 mod rustfs;
 mod setup;
+mod status;
 
 pub(crate) fn execute(
     cli: Cli,
@@ -53,12 +57,16 @@ pub(crate) fn execute(
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),
         Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),
-        Command::List => project::list(environment, stdout),
+        Command::Status(args) => status::run(args, environment, stdout),
+        Command::Logs(args) => logs::run(args, cli.no_color, environment, stdout),
+        Command::Doctor(args) => doctor::run(args, environment, stdout),
+        Command::Jobs(args) => jobs::run(args, environment, stdout),
+        Command::List(args) => project::list(args, environment, stdout),
         Command::PhpUse(args) => php::use_track(args, environment, stdout),
         Command::PhpInstall(args) => php::install(args, environment, stdout),
         Command::PhpUpdate => php::update(environment, stdout),
         Command::PhpUninstall(args) => php::uninstall(args, environment, stdout),
-        Command::PhpList => php::list(environment, stdout),
+        Command::PhpList(args) => php::list(args, environment, stdout),
         Command::ComposerInstall => composer::install(environment, stdout),
         Command::ComposerUpdate => composer::update(environment, stdout),
         Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
@@ -69,12 +77,14 @@ pub(crate) fn execute(
         Command::MailpitUninstall(args) | Command::MailUninstall(args) => {
             mailpit::uninstall(args, environment, stdout)
         }
-        Command::MailpitList | Command::MailList => mailpit::list(environment, stdout),
+        Command::MailpitList(args) | Command::MailList(args) => {
+            mailpit::list(args, environment, stdout)
+        }
         Command::MailpitOpen | Command::MailOpen => mailpit::open(environment, stdout),
         Command::RedisInstall(args) => redis::install(args, environment, stdout),
         Command::RedisUpdate => redis::update(environment, stdout),
         Command::RedisUninstall(args) => redis::uninstall(args, environment, stdout),
-        Command::RedisList => redis::list(environment, stdout),
+        Command::RedisList(args) => redis::list(args, environment, stdout),
         Command::RustfsInstall(args) | Command::S3Install(args) => {
             rustfs::install(args, environment, stdout)
         }
@@ -82,12 +92,14 @@ pub(crate) fn execute(
         Command::RustfsUninstall(args) | Command::S3Uninstall(args) => {
             rustfs::uninstall(args, environment, stdout)
         }
-        Command::RustfsList | Command::S3List => rustfs::list(environment, stdout),
+        Command::RustfsList(args) | Command::S3List(args) => {
+            rustfs::list(args, environment, stdout)
+        }
         Command::RustfsOpen | Command::S3Open => rustfs::open(environment, stdout),
         Command::MysqlInstall(args) => mysql::install(args, environment, stdout),
         Command::MysqlUpdate => mysql::update(environment, stdout),
         Command::MysqlUninstall(args) => mysql::uninstall(args, environment, stdout),
-        Command::MysqlList => mysql::list(environment, stdout),
+        Command::MysqlList(args) => mysql::list(args, environment, stdout),
         Command::PostgresInstall(args) | Command::PgInstall(args) => {
             postgres::install(args, environment, stdout)
         }
@@ -95,7 +107,9 @@ pub(crate) fn execute(
         Command::PostgresUninstall(args) | Command::PgUninstall(args) => {
             postgres::uninstall(args, environment, stdout)
         }
-        Command::PostgresList | Command::PgList => postgres::list(environment, stdout),
+        Command::PostgresList(args) | Command::PgList(args) => {
+            postgres::list(args, environment, stdout)
+        }
     }
 }
 

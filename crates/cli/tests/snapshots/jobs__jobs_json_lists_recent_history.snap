@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "{\"jobs\":[{\"id\":\"job_000003\",\"kind\":\"install\",\"scope\":\"resource:redis:7\",\"status\":\"running\",\"started_at\":\"<timestamp>\",\"finished_at\":null,\"summary\":null,\"error\":null},{\"id\":\"job_000002\",\"kind\":\"reconcile\",\"scope\":\"project:acme\",\"status\":\"failed\",\"started_at\":\"<timestamp>\",\"finished_at\":\"<timestamp>\",\"summary\":null,\"error\":\"Gateway failed to start\"},{\"id\":\"job_000001\",\"kind\":\"setup\",\"scope\":\"system\",\"status\":\"succeeded\",\"started_at\":\"<timestamp>\",\"finished_at\":\"<timestamp>\",\"summary\":\"Installed default resources\",\"error\":null}]}\n",
+    stderr: "",
+}

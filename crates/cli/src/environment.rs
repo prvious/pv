@@ -17,6 +17,10 @@ pub trait Environment {
 
     fn stdin_is_terminal(&self) -> bool;
 
+    fn stdout_is_terminal(&self) -> bool {
+        false
+    }
+
     fn read_line(&self) -> io::Result<String>;
 
     fn open_url(&self, url: &str) -> io::Result<()>;
@@ -174,6 +178,10 @@ impl Environment for ProcessEnvironment {
 
     fn stdin_is_terminal(&self) -> bool {
         io::stdin().is_terminal()
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        io::stdout().is_terminal()
     }
 
     fn read_line(&self) -> io::Result<String> {

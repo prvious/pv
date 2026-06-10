@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -83,6 +84,10 @@ pub fn open_append_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
 
 pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
     read_utf8_file(path)
+}
+
+pub fn read_dir_paths(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, StateError> {
+    read_dir_utf8_paths(path)
 }
 
 pub fn modified_at(path: &Utf8Path) -> Result<Option<SystemTime>, StateError> {
@@ -323,8 +328,35 @@ fn owner_uid(path: &Utf8Path) -> Result<u32, StateError> {
     Ok(metadata.uid())
 }
 
-pub(crate) fn path_exists(path: &Utf8Path) -> bool {
+pub fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct directory reads"
+)]
+fn read_dir_utf8_paths(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, StateError> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(StateError::filesystem(path.to_path_buf(), source)),
+    };
+    let mut paths = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+        let path = entry.path();
+        let path = Utf8PathBuf::from_path_buf(path).map_err(|path| {
+            StateError::filesystem(
+                path.to_string_lossy().as_ref(),
+                io::Error::new(io::ErrorKind::InvalidData, "path is not valid UTF-8"),
+            )
+        })?;
+        paths.push(path);
+    }
+
+    Ok(paths)
 }
 
 fn display_path(paths: &PvPaths, path: &Utf8Path) -> String {

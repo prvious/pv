@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/status.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV status\nOverall: failed\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nRecent errors:\n  job_000001 reconcile project:acme failed: Gateway failed to start\n",
+    stderr: "",
+}

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::args::{RedisInstallArgs, RedisUninstallArgs};
+use crate::args::{ListArgs, RedisInstallArgs, RedisUninstallArgs};
 use crate::commands::artifact_resource::{self, ArtifactResourceCommandSpec};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
@@ -43,8 +43,9 @@ pub(crate) fn uninstall(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::list(SPEC, environment, stdout)
+    artifact_resource::list(SPEC, args, environment, stdout)
 }

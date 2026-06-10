@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/logs.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "No log files found for gateway\n",
+    stderr: "",
+}

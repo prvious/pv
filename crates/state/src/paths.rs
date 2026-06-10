@@ -86,6 +86,18 @@ impl PvPaths {
         &self.logs
     }
 
+    pub fn daemon_log(&self) -> Utf8PathBuf {
+        self.logs().join("daemon.log")
+    }
+
+    pub fn launchd_stdout_log(&self) -> Utf8PathBuf {
+        self.logs().join("launchd.out.log")
+    }
+
+    pub fn launchd_stderr_log(&self) -> Utf8PathBuf {
+        self.logs().join("launchd.err.log")
+    }
+
     pub fn downloads(&self) -> &Utf8Path {
         &self.downloads
     }
@@ -143,6 +155,14 @@ impl PvPaths {
 
     pub fn gateway_log(&self) -> Utf8PathBuf {
         self.logs().join("gateway/gateway.log")
+    }
+
+    pub fn gateway_access_log(&self) -> Utf8PathBuf {
+        self.logs().join("gateway/access.log")
+    }
+
+    pub fn gateway_error_log(&self) -> Utf8PathBuf {
+        self.logs().join("gateway/error.log")
     }
 
     pub fn worker_log(&self, php_track: &str) -> Utf8PathBuf {

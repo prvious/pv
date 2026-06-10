@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 use crate::{PvPaths, StateError, fs, migrations};
 
@@ -410,6 +412,17 @@ struct PortIdentity {
 impl Database {
     pub fn open(paths: &PvPaths) -> Result<Self, StateError> {
         Self::open_with_migrations(paths, migrations::DEFAULT_MIGRATIONS)
+    }
+
+    pub fn open_read_only(paths: &PvPaths) -> Result<Option<Self>, StateError> {
+        if !fs::database_exists(paths) {
+            return Ok(None);
+        }
+
+        let connection = Connection::open_with_flags(paths.db(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        configure_read_connection(&connection)?;
+
+        Ok(Some(Self { connection }))
     }
 
     pub(crate) fn open_with_migrations(
@@ -3548,9 +3561,15 @@ fn describe_port_identity(
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {
+    configure_read_connection(connection)?;
+    connection.pragma_update(None, "journal_mode", "WAL")?;
+
+    Ok(())
+}
+
+fn configure_read_connection(connection: &Connection) -> Result<(), StateError> {
     connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
 
     Ok(())
 }

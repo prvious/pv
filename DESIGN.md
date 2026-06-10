@@ -1110,11 +1110,15 @@ If the daemon has not reconciled a Project yet, the Project still appears with p
 
 The status output should include daemon state, Gateway state, DNS resolver state, `pf` redirect state, CA trust, installed Managed Resources, and any failed or pending Projects. It should not duplicate the full `pv list` Project table.
 
+`pv status` derives aggregate health from existing current state in v1: PV-owned files, LaunchAgent registration, socket health, SQLite state, runtime observed state, Project env observed state, recent jobs, installed Managed Resource tracks, port assignments, DNS, `pf`, CA, and read-only platform inspectors. PV does not need separate persisted aggregate system-health or Project-health subjects for the first status implementation.
+
 `pv status` shows the log directory and a summary of the most recent daemon or reconciliation errors without dumping full logs by default.
 
 `pv status` may show Managed Resource health and ports, but it must not print credentials or secrets.
 
-`pv logs` shows daemon logs by default. Daemon logs include structured daemon logs plus LaunchAgent stdout/stderr logs so startup failures are visible. Flags may include `--follow`, `--gateway`, `--worker <php-track>`, and `--all` for broader log streams.
+`pv status` distinguishes daemon states from PV-owned plist state, read-only `launchd` state, and socket health. If PV owns a LaunchAgent plist, status may use a read-only `launchctl print` inspection to distinguish loaded, running, and down states, but the lifecycle model remains `pv daemon:enable`, `pv daemon:disable`, and `pv daemon:restart`.
+
+`pv logs` shows daemon logs by default. Daemon logs include the structured PV daemon log, such as `~/.pv/logs/daemon.log`, plus LaunchAgent stdout/stderr logs so startup failures are visible before structured daemon logging initializes. Flags may include `--follow`, `--gateway`, `--worker <php-track>`, and `--all` for broader log streams.
 
 `pv logs` shows the last 100 lines by default. Users can change the number of lines with `-n <lines>`.
 
@@ -1128,11 +1132,11 @@ When showing the last N lines, `pv logs` includes recent rotated log files if th
 
 When `pv logs --follow` streams multiple files, PV prefixes each line with the source, such as `daemon`, `launchd:stdout`, or `launchd:stderr`.
 
-`pv logs` may colorize source prefixes when output is an interactive TTY. Color is disabled automatically when output is piped or `NO_COLOR` is set.
+`pv logs` may colorize source prefixes when output is an interactive TTY. Color is disabled automatically when output is piped, `NO_COLOR` is set, or the global `--no-color` flag is used. Log output may also apply minimal severity color for obvious level words: `error` and `fatal` as red, `warn` and `warning` as yellow, and `debug` and `trace` as dim text. The words remain present in the output.
 
 `pv logs --all --follow` includes every PV-owned log stream, including daemon, LaunchAgent, Gateway, Project-serving workers, and Managed Resource logs, with source prefixes.
 
-`pv logs --gateway` shows both Gateway access and error logs by default. When following both streams, PV prefixes lines with sources such as `gateway:access` and `gateway:error`.
+`pv logs --gateway` shows both Gateway access and error logs by default when split Gateway logs exist. When following both streams, PV prefixes lines with sources such as `gateway:access` and `gateway:error`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
 
 `pv logs --worker <php-track>` accepts explicit PHP tracks and `latest`. `latest` resolves to the manifest default PHP track. If the resolved track has no log file, PV prints a clear message that no logs exist for that PHP track.
 
@@ -1144,11 +1148,13 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 
 `pv logs --resource` accepts the same aliases as resource command namespaces, such as `pg`, `mail`, and `s3`, and normalizes them internally to canonical names: `postgres`, `mailpit`, and `rustfs`.
 
-`pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands.
+`pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 
-Read/status commands support `--json` output in v1, including `pv status`, `pv list`, `pv project:env`, `pv jobs`, `pv update --check`, and Managed Resource list commands. Mutating progress-stream commands do not need JSON output in v1 unless it is cheap to provide.
+Read/status commands support `--json` output in v1, including `pv status`, `pv list`, `pv project:env`, `pv jobs`, `pv update --check`, and Managed Resource list commands. Mutating progress-stream commands do not need JSON output in v1 unless it is cheap to provide. JSON output should use minimal command-specific objects and arrays that map directly to the command output; v1 does not require envelope metadata such as `schema_version` or CLI version fields unless a later automation contract needs them.
+
+`pv update --check --json` belongs to the self-update and update-orchestration slice even though it is part of the v1 JSON surface. Diagnostics work should not change update-check behavior.
 
 `pv status --json` and broad status/list JSON outputs do not include secrets. `pv project:env --json` includes actual generated env values, including secrets, because it is the explicit Project env command.
 
