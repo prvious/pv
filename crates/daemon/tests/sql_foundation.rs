@@ -13,6 +13,10 @@ use state::{
 use daemon::DaemonError;
 
 // The SQL module is daemon-local; include it here so tests do not make it public.
+#[expect(
+    dead_code,
+    reason = "The harness includes daemon-local SQL production hooks but exercises test doubles"
+)]
 #[path = "../src/managed_resources/sql.rs"]
 mod sql;
 

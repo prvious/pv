@@ -1,0 +1,48 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "Err(\n    ReadinessTimedOut {\n        check: \"async:sql:postgres:admin\",\n        timeout_ms: 100,\n        last_error: Some(\n            \"deadline has elapsed\",\n        ),\n    },\n)",
+    None,
+    ManagedResourceTrackRecord {
+        resource_name: "postgres",
+        track: "16",
+        desired_state: Installed,
+        installed_version: Some(
+            "16.0-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/postgres/16/releases/16.0-pv1",
+        ),
+        env: {
+            "host": "127.0.0.1",
+            "password": "<postgres_password>",
+            "port": "<postgres_port>",
+            "url": "postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>",
+            "username": "pv_root",
+        },
+        usage_count: 1,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "postgres",
+                track: "16",
+            },
+            status: Failed,
+            message: Some(
+                "readiness check `async:sql:postgres:admin` timed out after 100ms; last error: Some(\"deadline has elapsed\")",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+    RuntimeFilePresence {
+        pid: false,
+        metadata: false,
+        config: false,
+    },
+)

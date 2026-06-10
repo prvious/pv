@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "MySQL and Postgres adapter PRs consume the shared SQL foundation"
-)]
-
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgSslMode};
 use state::{

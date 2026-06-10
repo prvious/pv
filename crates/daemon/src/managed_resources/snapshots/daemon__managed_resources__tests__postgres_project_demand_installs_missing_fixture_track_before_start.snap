@@ -1,0 +1,74 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "# >>> PV MANAGED\nDATABASE_URL=postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>/acme_test_app_db\nDB_DATABASE=acme_test_app_db\nDB_HOST=127.0.0.1\nDB_PASSWORD=<postgres_password>\nDB_PORT=<postgres_port>\nDB_USERNAME=pv_root\nPGHOST=127.0.0.1\nPGPASSWORD=<postgres_password>\nPGPORT=<postgres_port>\nPGUSER=pv_root\n# <<< PV MANAGED\n",
+    ManagedResourceTrackRecord {
+        resource_name: "postgres",
+        track: "16",
+        desired_state: Installed,
+        installed_version: Some(
+            "16.0-pv1",
+        ),
+        current_artifact_path: Some(
+            "<tempdir>/home/.pv/resources/postgres/16/releases/16.0-pv1",
+        ),
+        env: {
+            "host": "127.0.0.1",
+            "password": "<postgres_password>",
+            "port": "<postgres_port>",
+            "url": "postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>",
+            "username": "pv_root",
+        },
+        usage_count: 1,
+        removal_prune: false,
+        removal_force: false,
+        updated_at: "<timestamp>",
+    },
+    [
+        PortAssignment {
+            owner: Resource {
+                name: "postgres",
+                track: "16",
+                port: "postgres",
+            },
+            port: <postgres_port>,
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "postgres",
+            track: "16",
+            allocation_name: "app-db",
+            generated_name: "acme_test_app_db",
+            env: {
+                "database": "acme_test_app_db",
+                "host": "127.0.0.1",
+                "password": "<postgres_password>",
+                "port": "<postgres_port>",
+                "url": "postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>/acme_test_app_db",
+                "username": "pv_root",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    [
+        RuntimeObservedStateRecord {
+            subject: Resource {
+                name: "postgres",
+                track: "16",
+            },
+            status: Running,
+            message: Some(
+                "Managed Resource runtime is ready",
+            ),
+            observed_at: "<timestamp>",
+        },
+    ],
+)

@@ -194,6 +194,24 @@ fn mysql_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn postgres_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["postgres:install", "--help"])?,
+        run_pv(&["postgres:update", "--help"])?,
+        run_pv(&["postgres:uninstall", "--help"])?,
+        run_pv(&["postgres:list", "--help"])?,
+        run_pv(&["pg:install", "--help"])?,
+        run_pv(&["pg:update", "--help"])?,
+        run_pv(&["pg:uninstall", "--help"])?,
+        run_pv(&["pg:list", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 

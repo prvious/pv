@@ -497,6 +497,70 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(postgres:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- Postgres track to install:_default' \
+&& ret=0
+;;
+(postgres:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(postgres:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- Postgres track to uninstall:_default' \
+&& ret=0
+;;
+(postgres:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(pg:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- Postgres track to install:_default' \
+&& ret=0
+;;
+(pg:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(pg:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- Postgres track to uninstall:_default' \
+&& ret=0
+;;
+(pg:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -565,6 +629,14 @@ _pv_commands() {
 'mysql:update:Update installed MySQL tracks' \
 'mysql:uninstall:Uninstall a MySQL track' \
 'mysql:list:List installed MySQL tracks' \
+'postgres:install:Install a Postgres track' \
+'postgres:update:Update installed Postgres tracks' \
+'postgres:uninstall:Uninstall a Postgres track' \
+'postgres:list:List installed Postgres tracks' \
+'pg:install:Install a Postgres track' \
+'pg:update:Update installed Postgres tracks' \
+'pg:uninstall:Uninstall a Postgres track' \
+'pg:list:List installed Postgres tracks' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -728,6 +800,26 @@ _pv__subcmd__open_commands() {
     local commands; commands=()
     _describe -t commands 'pv open commands' commands "$@"
 }
+(( $+functions[_pv__subcmd__pg:install_commands] )) ||
+_pv__subcmd__pg:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv pg:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__pg:list_commands] )) ||
+_pv__subcmd__pg:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv pg:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__pg:uninstall_commands] )) ||
+_pv__subcmd__pg:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv pg:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__pg:update_commands] )) ||
+_pv__subcmd__pg:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv pg:update commands' commands "$@"
+}
 (( $+functions[_pv__subcmd__php:install_commands] )) ||
 _pv__subcmd__php:install_commands() {
     local commands; commands=()
@@ -767,6 +859,26 @@ _pv__subcmd__ports:status_commands() {
 _pv__subcmd__ports:uninstall_commands() {
     local commands; commands=()
     _describe -t commands 'pv ports:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__postgres:install_commands] )) ||
+_pv__subcmd__postgres:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv postgres:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__postgres:list_commands] )) ||
+_pv__subcmd__postgres:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv postgres:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__postgres:uninstall_commands] )) ||
+_pv__subcmd__postgres:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv postgres:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__postgres:update_commands] )) ||
+_pv__subcmd__postgres:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv postgres:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__project:env_commands] )) ||
 _pv__subcmd__project:env_commands() {

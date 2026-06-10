@@ -17,6 +17,7 @@ mod mailpit;
 mod mysql;
 mod php;
 mod ports;
+mod postgres;
 mod project;
 mod redis;
 mod rustfs;
@@ -87,6 +88,14 @@ pub(crate) fn execute(
         Command::MysqlUpdate => mysql::update(environment, stdout),
         Command::MysqlUninstall(args) => mysql::uninstall(args, environment, stdout),
         Command::MysqlList => mysql::list(environment, stdout),
+        Command::PostgresInstall(args) | Command::PgInstall(args) => {
+            postgres::install(args, environment, stdout)
+        }
+        Command::PostgresUpdate | Command::PgUpdate => postgres::update(environment, stdout),
+        Command::PostgresUninstall(args) | Command::PgUninstall(args) => {
+            postgres::uninstall(args, environment, stdout)
+        }
+        Command::PostgresList | Command::PgList => postgres::list(environment, stdout),
     }
 }
 
