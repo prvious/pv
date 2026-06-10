@@ -262,6 +262,7 @@ fn spawn_health_server(
                 Err(error) => return Err(error.into()),
             }
         };
+        stream.set_nonblocking(false)?;
         let mut request = String::new();
         let mut reader = io::BufReader::new(stream.try_clone()?);
         reader.read_line(&mut request)?;

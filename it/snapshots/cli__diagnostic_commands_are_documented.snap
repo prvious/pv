@@ -35,7 +35,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "List linked Projects\n\nUsage: pv list [OPTIONS]\n\nOptions:\n      --json      Print linked Projects as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "List linked Projects\n\nUsage: pv list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
 ]

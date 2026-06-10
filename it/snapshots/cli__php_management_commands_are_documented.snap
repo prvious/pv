@@ -35,7 +35,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "List installed PHP tracks\n\nUsage: pv php:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "List installed PHP tracks\n\nUsage: pv php:list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
 ]
