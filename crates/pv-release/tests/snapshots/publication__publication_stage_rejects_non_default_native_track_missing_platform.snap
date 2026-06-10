@@ -5,5 +5,5 @@ expression: "publication_error_summary(error, fixture.root())"
 (
     "GeneratedManifestInvalid",
     "",
-    "public stable manifest resource `redis` track `7.2` is missing required platform(s): darwin-amd64",
+    "public stable manifest resource `redis` track `7.2` is missing required platform(s): darwin-arm64",
 )

@@ -1,0 +1,38 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: stable_manifest
+---
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "redis",
+      "default_track": "8.2",
+      "tracks": [
+        {
+          "name": "8.2",
+          "artifacts": [
+            {
+              "artifact_version": "8.2.1-pv1",
+              "upstream_version": "8.2.1",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+              "sha256": "26e01fca2beb69ba45de378cb135e7980432dc03148450f8806f43ea6f13d5ac",
+              "size": 181,
+              "published_at": "2026-06-08T12:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.2.1.tar.gz",
+                "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "recipe": "release/artifacts/recipes/redis/build.sh",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "123456789"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

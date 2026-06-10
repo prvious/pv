@@ -9,6 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::defaults::ManifestDefaults;
 use crate::record::ReleaseRecord;
 
+const REQUIRED_NATIVE_PUBLICATION_PLATFORMS: &[(TargetPlatform, ArtifactPlatform)] = &[
+    // StaticPHP v3 currently blocks reliable FrankenPHP publication for Intel
+    // macOS. Keep public preview publication Apple Silicon-only until that
+    // upstream build path is stable enough to publish darwin-amd64 artifacts.
+    (TargetPlatform::DarwinArm64, ArtifactPlatform::DarwinArm64),
+];
+
 #[derive(Clone, Debug)]
 pub struct PublicationRequest {
     pub source_archives: Utf8PathBuf,
@@ -193,8 +200,9 @@ fn validate_default_release_record_platform_matrix(
             });
         }
 
-        let missing = [ArtifactPlatform::DarwinArm64, ArtifactPlatform::DarwinAmd64]
-            .into_iter()
+        let missing = REQUIRED_NATIVE_PUBLICATION_PLATFORMS
+            .iter()
+            .map(|(_target, platform)| *platform)
             .filter(|platform| {
                 !platforms
                     .map(|platforms| platforms.contains(platform))
@@ -223,19 +231,22 @@ fn validate_public_manifest_platform_matrix(manifest: &ArtifactManifest) -> crat
             continue;
         }
 
-        let missing = [
-            (TargetPlatform::DarwinArm64, ArtifactPlatform::DarwinArm64),
-            (TargetPlatform::DarwinAmd64, ArtifactPlatform::DarwinAmd64),
-        ]
-        .into_iter()
-        .filter_map(|(target, expected_platform)| {
-            match selects_expected_platform(manifest, resource, track, target, expected_platform) {
-                Ok(true) => None,
-                Ok(false) => Some(Ok(target.as_str())),
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect::<crate::Result<Vec<_>>>()?;
+        let missing = REQUIRED_NATIVE_PUBLICATION_PLATFORMS
+            .iter()
+            .filter_map(|(target, expected_platform)| {
+                match selects_expected_platform(
+                    manifest,
+                    resource,
+                    track,
+                    *target,
+                    *expected_platform,
+                ) {
+                    Ok(true) => None,
+                    Ok(false) => Some(Ok(target.as_str())),
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
 
         if !missing.is_empty() {
             return Err(crate::ReleaseError::GeneratedManifestInvalid {

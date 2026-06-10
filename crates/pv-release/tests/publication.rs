@@ -324,22 +324,33 @@ fn publication_stage_rejects_stable_manifest_key_outside_manifest_entrypoint() -
 }
 
 #[test]
-fn publication_stage_rejects_public_manifest_missing_native_platform_before_write() -> Result<()> {
+fn publication_stage_allows_arm64_only_native_preview() -> Result<()> {
     let fixture = PublicationFixture::new()?;
     fixture.write_candidate_for_platform("darwin-arm64")?;
 
-    let error = publication_error(prepare_publication(
+    prepare_publication(
         &fixture.request_with_keys("manifests/runs/123456789/manifest.json", "manifest.json"),
-    ))?;
+    )?;
 
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
+    let versioned_manifest = read_file(
+        &fixture
+            .stage()
+            .join("manifests/runs/123456789/manifest.json"),
+    )?;
+    let stable_manifest = read_file(&fixture.stage().join("manifest.json"))?;
+    ArtifactManifest::parse(&versioned_manifest)?;
+    ArtifactManifest::parse(&stable_manifest)?;
+    assert_eq!(versioned_manifest, stable_manifest);
+    assert!(path_exists(&fixture.stage().join(
+        "archives/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz"
+    )));
+    assert_snapshot!(stable_manifest);
 
     Ok(())
 }
 
 #[test]
-fn publication_stage_rejects_public_manifest_with_only_revoked_native_platform() -> Result<()> {
+fn publication_stage_rejects_public_manifest_with_revoked_arm64_platform() -> Result<()> {
     let fixture = PublicationFixture::new()?;
     fixture.write_published_record_for_platform(
         "8.2.1",
@@ -347,13 +358,7 @@ fn publication_stage_rejects_public_manifest_with_only_revoked_native_platform()
         "2026-06-08T12:00:00Z",
         "darwin-arm64",
     )?;
-    fixture.write_published_record_for_platform(
-        "8.2.1",
-        "pv1",
-        "2026-06-08T12:00:00Z",
-        "darwin-amd64",
-    )?;
-    fixture.write_published_revocation_for_platform("8.2.1-pv1", "darwin-amd64")?;
+    fixture.write_published_revocation_for_platform("8.2.1-pv1", "darwin-arm64")?;
 
     let error = publication_error(prepare_publication(
         &fixture.request_with_keys("manifests/runs/123456789/manifest.json", "manifest.json"),
@@ -374,7 +379,7 @@ fn publication_stage_rejects_non_default_native_track_missing_platform() -> Resu
         "7.2.5",
         "pv1",
         "2026-06-08T11:00:00Z",
-        "darwin-arm64",
+        "darwin-amd64",
         b"redis-old-track",
     )?;
 
