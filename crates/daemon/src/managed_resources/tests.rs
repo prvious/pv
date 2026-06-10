@@ -84,7 +84,7 @@ async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_030)?;
+    reserve_postgres_port(&paths, 19_060)?;
 
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
@@ -115,7 +115,7 @@ async fn postgres_project_demand_installs_missing_fixture_track_before_start() -
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_postgres_cached_fixture(&paths, tempdir.path())?;
-    reserve_postgres_port(&paths, 19_031)?;
+    reserve_postgres_port(&paths, 19_061)?;
 
     reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
         &paths,
@@ -196,7 +196,7 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_034)?;
+    reserve_postgres_port(&paths, 19_064)?;
 
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let data_config = state::fs::read_to_string(
@@ -227,7 +227,7 @@ async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_032)?;
+    reserve_postgres_port(&paths, 19_062)?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_env_context(
@@ -284,7 +284,7 @@ async fn postgres_reconciliation_retries_with_initialized_password_after_config_
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_035)?;
+    reserve_postgres_port(&paths, 19_065)?;
     let config_parent_blocker = paths.config().join("resources");
     state::fs::write_sensitive_file(&config_parent_blocker, "not a directory")?;
 
@@ -365,7 +365,7 @@ async fn postgres_reconciliation_records_generated_env_when_readiness_fails_afte
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     seed_unready_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_033)?;
+    reserve_postgres_port(&paths, 19_063)?;
 
     let result =
         reconcile_project_env_with_unready_postgres_runtime_catalog(&paths, &project.id).await;
