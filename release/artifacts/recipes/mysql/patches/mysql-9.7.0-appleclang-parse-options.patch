@@ -1,6 +1,15 @@
 diff --git a/libs/mysql/strconv/decode/parse_options.h b/libs/mysql/strconv/decode/parse_options.h
 --- a/libs/mysql/strconv/decode/parse_options.h
 +++ b/libs/mysql/strconv/decode/parse_options.h
+@@ -95,6 +95,8 @@ template <detail::Is_compound_parse_options_tuple Tuple_tp>
+ struct Compound_parse_options {
+   using Tuple_t = Tuple_tp;
+   Tuple_t m_tuple;
++  Compound_parse_options() = default;
++  explicit Compound_parse_options(Tuple_t tuple) : m_tuple(tuple) {}
+   static constexpr bool has_format = detail::Format_count<Tuple_t> > 0;
+   static constexpr bool has_repeat = detail::Repeat_count<Tuple_t> > 0;
+   static constexpr bool has_checker = detail::Checker_count<Tuple_t> > 0;
 @@ -189,15 +189,15 @@ inline auto make_compound_parse_options() {
  }
  template <Is_format Format_t>

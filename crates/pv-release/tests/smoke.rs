@@ -3589,8 +3589,8 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
     )?;
     append_archive_file(
         &mut builder,
-        "redis-source/deps/fast_float/README.md",
-        b"fast_float notice\n",
+        "redis-source/src/fast_float_strtod.c",
+        b"/*\nfast_float notice\n*/\n",
     )?;
     append_archive_file(
         &mut builder,
@@ -3601,6 +3601,16 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
         &mut builder,
         "redis-source/deps/jemalloc/COPYING",
         b"jemalloc license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/tre/LICENSE",
+        b"tre license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/xxhash/LICENSE",
+        b"xxhash license\n",
     )?;
 
     let encoder = builder.into_inner()?;
