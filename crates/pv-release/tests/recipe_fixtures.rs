@@ -6,7 +6,7 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::archive::validate_archive;
 use pv_release::fixture::generate_recipe_fixtures_with_backing;
 use pv_release::manifest::generate_manifest_file_with_defaults;
-use pv_release::recipe::BackingRecipeKind;
+use pv_release::recipe::{BackingRecipe, BackingRecipeKind};
 use pv_release::record::{ReleaseRecord, load_release_records};
 use resources::ArtifactManifest;
 use tar::Archive;
@@ -43,12 +43,19 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let manifest = tempdir.path().join("manifest.json");
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
+    let redis = workspace_root.join("release/artifacts/recipes/redis/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
 
     create_dir_all(&revocations)?;
-    pv_release::fixture::generate_recipe_fixtures(
+    let redis_recipe = BackingRecipe::load(&redis, BackingRecipeKind::Redis)?;
+    let Some(redis_track) = redis_recipe.tracks().first() else {
+        bail!("committed Redis recipe should define a track");
+    };
+    let redis_upstream_version = redis_track.upstream_version().to_string();
+    generate_recipe_fixtures_with_backing(
         &php,
         &composer,
+        &[(BackingRecipeKind::Redis, redis.clone())],
         &archives,
         &records,
         "0123456789abcdef0123456789abcdef01234567",
@@ -101,6 +108,18 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
             ArchiveRoot::new("php", "8.3", "darwin-arm64", "php-8.3.31-pv1-darwin-arm64"),
             ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.20-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.20-pv1-darwin-arm64"),
+            ArchiveRoot::new(
+                "redis",
+                "8.2",
+                "darwin-amd64",
+                &format!("redis-{redis_upstream_version}-pv1-darwin-amd64"),
+            ),
+            ArchiveRoot::new(
+                "redis",
+                "8.2",
+                "darwin-arm64",
+                &format!("redis-{redis_upstream_version}-pv1-darwin-arm64"),
+            ),
         ],
     );
     generate_manifest_file_with_defaults(

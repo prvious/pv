@@ -16,6 +16,10 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "pv-release parses CLI subcommands once at process startup"
+)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -112,6 +116,10 @@ enum Command {
         minimum_pv_version: String,
         #[arg(long)]
         published_at: String,
+        #[arg(long = "license-file")]
+        license_files: Vec<String>,
+        #[arg(long = "notice-file")]
+        notice_files: Vec<String>,
         #[arg(long = "source-input", num_args = 3, value_names = ["NAME", "URL", "SHA256"])]
         source_inputs: Vec<String>,
     },
@@ -120,6 +128,8 @@ enum Command {
         php: Option<Utf8PathBuf>,
         #[arg(long)]
         composer: Option<Utf8PathBuf>,
+        #[arg(long)]
+        redis: Option<Utf8PathBuf>,
         #[arg(long)]
         resource: String,
         #[arg(long)]
@@ -216,10 +226,14 @@ pub fn run() -> anyhow::Result<()> {
             build_run_id,
             minimum_pv_version,
             published_at,
+            license_files,
+            notice_files,
             source_inputs,
         } => {
             let context = format!("failed to write release record `{record}`");
             let source_inputs = parse_source_inputs(&source_inputs)?;
+            let license_files = default_legal_files(license_files, "LICENSE");
+            let notice_files = default_legal_files(notice_files, "NOTICE");
             crate::record_writer::write_release_record(&WriteReleaseRecordRequest {
                 record,
                 archive,
@@ -236,6 +250,8 @@ pub fn run() -> anyhow::Result<()> {
                 build_run_id,
                 minimum_pv_version,
                 published_at,
+                license_files,
+                notice_files,
                 source_inputs,
             })
             .context(context)
@@ -243,6 +259,7 @@ pub fn run() -> anyhow::Result<()> {
         Command::PrintRecipeEnv {
             php,
             composer,
+            redis,
             resource,
             track,
             platform,
@@ -250,6 +267,7 @@ pub fn run() -> anyhow::Result<()> {
             let env = print_recipe_env(
                 php.as_deref(),
                 composer.as_deref(),
+                redis.as_deref(),
                 &resource,
                 &track,
                 &platform,
@@ -278,6 +296,14 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
     }
 
     Ok(source_inputs)
+}
+
+fn default_legal_files(values: Vec<String>, default: &str) -> Vec<String> {
+    if values.is_empty() {
+        vec![default.to_string()]
+    } else {
+        values
+    }
 }
 
 fn backing_recipe_paths(
@@ -309,21 +335,33 @@ fn backing_recipe_paths(
 fn print_recipe_env(
     php: Option<&Utf8Path>,
     composer: Option<&Utf8Path>,
+    redis: Option<&Utf8Path>,
     resource: &str,
     track: &str,
     platform: &str,
 ) -> anyhow::Result<String> {
-    match (php, composer) {
-        (Some(php), None) => {
+    match (php, composer, redis) {
+        (Some(php), None, None) => {
             let context = format!("failed to print PHP recipe environment for `{php}`");
             crate::recipe::php_recipe_env(php, resource, track, platform).context(context)
         }
-        (None, Some(composer)) => {
+        (None, Some(composer), None) => {
             let context = format!("failed to print Composer recipe environment for `{composer}`");
             crate::recipe::composer_recipe_env(composer, resource, track, platform).context(context)
         }
-        (None, None) | (Some(_), Some(_)) => {
-            anyhow::bail!("print-recipe-env requires exactly one of --php or --composer")
+        (None, None, Some(redis)) => {
+            let context = format!("failed to print Redis recipe environment for `{redis}`");
+            crate::recipe::backing_recipe_env(
+                redis,
+                BackingRecipeKind::Redis,
+                resource,
+                track,
+                platform,
+            )
+            .context(context)
+        }
+        _ => {
+            anyhow::bail!("print-recipe-env requires exactly one of --php, --composer, or --redis")
         }
     }
 }
@@ -704,6 +742,12 @@ mod tests {
             "0.1.0",
             "--published-at",
             "2026-06-08T12:00:00Z",
+            "--license-file",
+            "LICENSE",
+            "--notice-file",
+            "NOTICE",
+            "--notice-file",
+            "THIRD-PARTY-NOTICES",
             "--source-input",
             "frankenphp",
             "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
@@ -731,6 +775,8 @@ mod tests {
                 build_run_id,
                 minimum_pv_version,
                 published_at,
+                license_files,
+                notice_files,
                 source_inputs,
             } => {
                 assert_eq!(record, Utf8PathBuf::from("record.json"));
@@ -757,6 +803,8 @@ mod tests {
                 assert_eq!(build_run_id, "local-test");
                 assert_eq!(minimum_pv_version, "0.1.0");
                 assert_eq!(published_at, "2026-06-08T12:00:00Z");
+                assert_eq!(license_files, vec!["LICENSE"]);
+                assert_eq!(notice_files, vec!["NOTICE", "THIRD-PARTY-NOTICES"]);
                 assert_eq!(
                     source_inputs,
                     vec![
@@ -793,6 +841,7 @@ mod tests {
             Command::PrintRecipeEnv {
                 php,
                 composer,
+                redis,
                 resource,
                 track,
                 platform,
@@ -804,6 +853,7 @@ mod tests {
                         "release/artifacts/recipes/composer/composer.toml"
                     ))
                 );
+                assert_eq!(redis, None);
                 assert_eq!(resource, "composer");
                 assert_eq!(track, "2");
                 assert_eq!(platform, "any");
@@ -832,6 +882,7 @@ mod tests {
             Command::PrintRecipeEnv {
                 php,
                 composer,
+                redis,
                 resource,
                 track,
                 platform,
@@ -843,8 +894,50 @@ mod tests {
                     ))
                 );
                 assert_eq!(composer, None);
+                assert_eq!(redis, None);
                 assert_eq!(resource, "php");
                 assert_eq!(track, "8.4");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_redis_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--redis",
+            "release/artifacts/recipes/redis/recipe.toml",
+            "--resource",
+            "redis",
+            "--track",
+            "8.2",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                redis,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(php, None);
+                assert_eq!(composer, None);
+                assert_eq!(
+                    redis,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/redis/recipe.toml"
+                    ))
+                );
+                assert_eq!(resource, "redis");
+                assert_eq!(track, "8.2");
                 assert_eq!(platform, "darwin-arm64");
                 Ok(())
             }
@@ -856,13 +949,26 @@ mod tests {
     fn print_recipe_env_rejects_missing_or_multiple_metadata_paths() {
         let php = Utf8Path::new("release/artifacts/recipes/php/tracks.toml");
         let composer = Utf8Path::new("release/artifacts/recipes/composer/composer.toml");
+        let redis = Utf8Path::new("release/artifacts/recipes/redis/recipe.toml");
 
         assert!(
-            print_recipe_env(None, None, "php", "8.4", "darwin-arm64").is_err(),
+            print_recipe_env(None, None, None, "php", "8.4", "darwin-arm64").is_err(),
             "missing metadata path must be rejected"
         );
         assert!(
-            print_recipe_env(Some(php), Some(composer), "php", "8.4", "darwin-arm64").is_err(),
+            print_recipe_env(
+                Some(php),
+                Some(composer),
+                None,
+                "php",
+                "8.4",
+                "darwin-arm64"
+            )
+            .is_err(),
+            "multiple metadata paths must be rejected"
+        );
+        assert!(
+            print_recipe_env(Some(php), None, Some(redis), "redis", "8.2", "darwin-arm64").is_err(),
             "multiple metadata paths must be rejected"
         );
     }

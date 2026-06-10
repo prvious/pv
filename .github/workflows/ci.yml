@@ -40,7 +40,7 @@ jobs:
         run: cargo shear
 
       - name: Check artifact recipe scripts
-        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh
+        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh
 
       - name: Validate artifact recipe metadata and fixtures
         run: |
@@ -48,6 +48,7 @@ jobs:
           cargo run -p pv-release -- generate-recipe-fixtures \
             --php release/artifacts/recipes/php/tracks.toml \
             --composer release/artifacts/recipes/composer/composer.toml \
+            --redis release/artifacts/recipes/redis/recipe.toml \
             --archives /tmp/pv-recipe-fixtures/archives \
             --records /tmp/pv-recipe-fixtures/records \
             --pv-commit "$(git rev-parse HEAD)" \

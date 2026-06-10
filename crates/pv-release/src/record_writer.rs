@@ -21,6 +21,8 @@ pub struct WriteReleaseRecordRequest {
     pub build_run_id: String,
     pub minimum_pv_version: String,
     pub published_at: String,
+    pub license_files: Vec<String>,
+    pub notice_files: Vec<String>,
     pub source_inputs: Vec<SourceInputRequest>,
 }
 
@@ -44,8 +46,8 @@ struct ReleaseRecordJson<'a> {
     size: u64,
     published_at: &'a str,
     minimum_pv_version: &'a str,
-    license_files: [&'static str; 1],
-    notice_files: [&'static str; 1],
+    license_files: &'a [String],
+    notice_files: &'a [String],
     provenance: ProvenanceJson<'a>,
 }
 
@@ -90,8 +92,8 @@ pub fn write_release_record(request: &WriteReleaseRecordRequest) -> crate::Resul
         size,
         published_at: &request.published_at,
         minimum_pv_version: &request.minimum_pv_version,
-        license_files: ["LICENSE"],
-        notice_files: ["NOTICE"],
+        license_files: &request.license_files,
+        notice_files: &request.notice_files,
         provenance: ProvenanceJson {
             source_url: &request.source_url,
             source_sha256: &request.source_sha256,

@@ -385,6 +385,179 @@ fn composer_build_smoke_uses_platform_suffixed_archive_name() -> Result<()> {
 }
 
 #[test]
+fn redis_build_recipe_signs_binaries_and_requires_third_party_notices() -> Result<()> {
+    let run = run_redis_build_recipe_smoke(default_redis_build_recipe_options())?;
+
+    assert!(
+        run.output.status.success(),
+        "Redis build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.archive_exists,
+        "Redis archive was not written: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(run.record_json.is_some(), "Redis record was not written");
+    assert_eq!(
+        run.validate_log,
+        "archive=redis-8.2.7-pv1-darwin-arm64.tar.gz record=redis-8.2.7-pv1-darwin-arm64.json smoke=smoke.sh\n"
+    );
+    assert_eq!(
+        run.codesign_log,
+        format!(
+            "argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
+argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-server]\n\
+argv=[--force][--sign][-][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n\
+argv=[--verify][{}/work/redis-8.2.7-pv1-darwin-arm64/redis-8.2.7-pv1-darwin-arm64/bin/redis-cli]\n",
+            run.out_dir, run.out_dir, run.out_dir, run.out_dir
+        )
+    );
+
+    assert!(
+        run.archive_entries
+            .contains(&"redis-8.2.7-pv1-darwin-arm64/THIRD-PARTY-NOTICES".to_string()),
+        "Redis archive should contain third-party legal notices: {:?}",
+        run.archive_entries
+    );
+
+    let record_json = run
+        .record_json
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Redis build recipe did not write a record"))?;
+    let record: Value = serde_json::from_str(record_json)?;
+    assert_eq!(record["license_files"], serde_json::json!(["LICENSE"]));
+    assert_eq!(
+        record["notice_files"],
+        serde_json::json!(["NOTICE", "THIRD-PARTY-NOTICES"])
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_build_recipe_does_not_publish_outputs_before_archive_validation() -> Result<()> {
+    let run = run_redis_build_recipe_smoke(RedisBuildRecipeOptions {
+        validate_archive_failure: true,
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "Redis build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.record_json.is_none(),
+        "Redis record should not be written before archive validation succeeds"
+    );
+    assert!(
+        !run.archive_exists,
+        "Redis archive should not be written before archive validation succeeds"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.output.stdout),
+        "",
+        "archive path should not be printed before validation succeeds"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_smoke_prints_server_log_on_startup_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_executable(
+        &artifact_bin.join("redis-server"),
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' 'redis startup exploded' >&2
+exit 71
+"#,
+    )?;
+    write_executable(
+        &artifact_bin.join("redis-cli"),
+        r#"#!/bin/sh
+set -eu
+exit 72
+"#,
+    )?;
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+
+    let output = StdCommand::new(redis_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Redis smoke should fail: {}",
+        command_output_debug(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("redis startup exploded"),
+        "Redis smoke should print redis-server output on failure: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_smoke_kills_server_when_shutdown_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_executable(
+        &artifact_bin.join("redis-server"),
+        r#"#!/bin/sh
+set -eu
+exec /bin/sleep 5
+"#,
+    )?;
+    write_executable(
+        &artifact_bin.join("redis-cli"),
+        r#"#!/bin/sh
+set -eu
+exit 72
+"#,
+    )?;
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+    let started = Instant::now();
+    let output = StdCommand::new(redis_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "Redis smoke should fail when redis-cli never returns PONG: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "Redis smoke should kill the server instead of waiting for it to exit"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         lipo_archs: "x86_64",
@@ -602,6 +775,16 @@ struct ComposerBuildRecipeRun {
     legacy_archive_exists: bool,
 }
 
+struct RedisBuildRecipeRun {
+    out_dir: String,
+    output: Output,
+    record_json: Option<String>,
+    validate_log: String,
+    codesign_log: String,
+    archive_entries: Vec<String>,
+    archive_exists: bool,
+}
+
 struct BuildRecipeOptions<'a> {
     lipo_archs: &'a str,
     macho_minos: &'a str,
@@ -610,6 +793,10 @@ struct BuildRecipeOptions<'a> {
     frankenphp_macho_libraries: &'a str,
     frankenphp_macho_rpaths: &'a str,
     validate_archive_failure_resource: &'a str,
+}
+
+struct RedisBuildRecipeOptions {
+    validate_archive_failure: bool,
 }
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
@@ -621,8 +808,98 @@ fn composer_smoke_hook() -> camino::Utf8PathBuf {
         .join("../../release/artifacts/recipes/composer/smoke.sh")
 }
 
+fn redis_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/redis/smoke.sh")
+}
+
 fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
     run_php_build_recipe_smoke_with_options(default_build_recipe_options())
+}
+
+fn default_redis_build_recipe_options() -> RedisBuildRecipeOptions {
+    RedisBuildRecipeOptions {
+        validate_archive_failure: false,
+    }
+}
+
+fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<RedisBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join("redis-source.tar.gz");
+    let curl_log = tempdir.path().join("curl.log");
+    let validate_log = tempdir.path().join("validate.log");
+    let codesign_log = tempdir.path().join("codesign.log");
+
+    create_dir_all(&fake_bin)?;
+    write_redis_source_archive(&source_archive)?;
+    write_fake_redis_cargo(&fake_bin.join("cargo"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_make(&fake_bin.join("make"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_uname(&fake_bin.join("uname"))?;
+    write_file(&curl_log, "")?;
+    write_file(&validate_log, "")?;
+    write_file(&codesign_log, "")?;
+
+    let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/redis/build.sh");
+    let output = StdCommand::new(build_script)
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+        .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+        .env("PV_BUILD_RUN_ID", "local-test")
+        .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_TRACK", "8.2")
+        .env("PV_TEST_CURL_LOG", &curl_log)
+        .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+        .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env(
+            "PV_TEST_VALIDATE_ARCHIVE_FAILURE",
+            if options.validate_archive_failure {
+                "1"
+            } else {
+                ""
+            },
+        )
+        .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "")
+        .output()?;
+
+    let artifact_version = "8.2.7-pv1";
+    let artifact_basename = "redis-8.2.7-pv1-darwin-arm64";
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let archive_exists = path_exists(&archive);
+    let archive_entries = if archive_exists {
+        archive_entries(&archive)?
+    } else {
+        Vec::new()
+    };
+    let record = record_dir
+        .join("redis")
+        .join("8.2")
+        .join(artifact_version)
+        .join("darwin-arm64")
+        .join(format!("{artifact_basename}.json"));
+
+    Ok(RedisBuildRecipeRun {
+        out_dir: out_dir.to_string(),
+        output,
+        record_json: read_optional_file(&record)?,
+        validate_log: read_file(&validate_log)?,
+        codesign_log: read_file(&codesign_log)?,
+        archive_entries,
+        archive_exists,
+    })
 }
 
 fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
@@ -1015,6 +1292,154 @@ fi
     )
 }
 
+fn write_fake_redis_cargo(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+json_array() {
+  first=true
+  printf '['
+  for value in "$@"; do
+    if [ "$first" = true ]; then
+      first=false
+    else
+      printf ', '
+    fi
+    printf '"%s"' "$value"
+  done
+  printf ']'
+}
+
+if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
+  case "$5" in
+    print-recipe-env)
+      cat <<EOF
+PV_RESOURCE=redis
+PV_TRACK=$PV_RECIPE_TRACK
+PV_PLATFORM=$PV_RECIPE_PLATFORM
+PV_UPSTREAM_VERSION=8.2.7
+PV_ARTIFACT_VERSION=8.2.7-pv1
+PV_SOURCE_URL=https://sources.example.test/redis.tar.gz
+PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
+PV_PV_BUILD_REVISION=pv1
+PV_MINIMUM_PV_VERSION=0.1.0
+EOF
+      ;;
+    write-release-record)
+      record=
+      object_key=
+      source_url=
+      source_sha256=
+      recipe=
+      pv_commit=
+      build_run_id=
+      license_files=
+      notice_files=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --object-key)
+            shift
+            object_key=${1:-}
+            ;;
+          --source-url)
+            shift
+            source_url=${1:-}
+            ;;
+          --source-sha256)
+            shift
+            source_sha256=${1:-}
+            ;;
+          --recipe)
+            shift
+            recipe=${1:-}
+            ;;
+          --pv-commit)
+            shift
+            pv_commit=${1:-}
+            ;;
+          --build-run-id)
+            shift
+            build_run_id=${1:-}
+            ;;
+          --license-file)
+            shift
+            license_files="${license_files}${license_files:+
+}${1:-}"
+            ;;
+          --notice-file)
+            shift
+            notice_files="${notice_files}${notice_files:+
+}${1:-}"
+            ;;
+        esac
+        shift
+      done
+      [ -n "$license_files" ] || license_files=LICENSE
+      [ -n "$notice_files" ] || notice_files=NOTICE
+      set -- $license_files
+      license_json=$(json_array "$@")
+      set -- $notice_files
+      notice_json=$(json_array "$@")
+      mkdir -p "$(dirname "$record")"
+      {
+        printf '{\n'
+        printf '  "object_key": "%s",\n' "$object_key"
+        printf '  "license_files": %s,\n' "$license_json"
+        printf '  "notice_files": %s,\n' "$notice_json"
+        printf '  "provenance": {\n'
+        printf '    "source_url": "%s",\n' "$source_url"
+        printf '    "source_sha256": "%s",\n' "$source_sha256"
+        printf '    "recipe": "%s",\n' "$recipe"
+        printf '    "pv_commit": "%s",\n' "$pv_commit"
+        printf '    "build_run_id": "%s"\n' "$build_run_id"
+        printf '  }\n}\n'
+      } >"$record"
+      ;;
+    validate-archive)
+      archive=
+      record=
+      smoke_hook=
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --archive)
+            shift
+            archive=${1:-}
+            ;;
+          --record)
+            shift
+            record=${1:-}
+            ;;
+          --smoke-hook)
+            shift
+            smoke_hook=${1:-}
+            ;;
+        esac
+        shift
+      done
+      printf 'archive=%s record=%s smoke=%s\n' \
+        "${archive##*/}" \
+        "${record##*/}" \
+        "${smoke_hook##*/}" >>"$PV_TEST_VALIDATE_LOG"
+      if [ -n "$PV_TEST_VALIDATE_ARCHIVE_FAILURE" ]; then
+        printf 'validate-archive failed for %s\n' "${archive##*/}" >&2
+        exit 79
+      fi
+      ;;
+    *) exit 77 ;;
+  esac
+else
+  exit 77
+fi
+"#,
+    )
+}
+
 fn write_fake_composer_cargo(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -1272,6 +1697,67 @@ esac
     )
 }
 
+fn write_fake_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      shift
+      cd "$1"
+      ;;
+  esac
+  shift
+done
+mkdir -p src
+printf '%s\n' '#!/bin/sh' >src/redis-server
+printf '%s\n' '#!/bin/sh' >src/redis-cli
+"#,
+    )
+}
+
+fn write_fake_codesign(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+printf 'argv=' >>"$PV_TEST_CODESIGN_LOG"
+for arg in "$@"; do
+  printf '[%s]' "$arg" >>"$PV_TEST_CODESIGN_LOG"
+done
+printf '\n' >>"$PV_TEST_CODESIGN_LOG"
+"#,
+    )
+}
+
+fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+[ "${1:-}" = "-n" ] || exit 78
+[ "${2:-}" = "hw.ncpu" ] || exit 78
+printf '%s\n' 4
+"#,
+    )
+}
+
+fn write_fake_uname(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+case "${1:-}" in
+  -s) printf '%s\n' Darwin ;;
+  -m) printf '%s\n' arm64 ;;
+  *) exit 78 ;;
+esac
+"#,
+    )
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -1291,6 +1777,99 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     let encoder = builder.into_inner()?;
     encoder.finish()?;
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "redis-source/src/redis-server",
+        b"redis-server\n",
+    )?;
+    append_archive_file(&mut builder, "redis-source/src/redis-cli", b"redis-cli\n")?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/hiredis/COPYING",
+        b"hiredis license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/lua/COPYRIGHT",
+        b"lua license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/hdr_histogram/LICENSE.txt",
+        b"hdr histogram bsd license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/hdr_histogram/COPYING.txt",
+        b"hdr histogram cc0 license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/fpconv/LICENSE.txt",
+        b"fpconv license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/fast_float/README.md",
+        b"fast_float notice\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/linenoise/README.markdown",
+        b"linenoise notice\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/jemalloc/COPYING",
+        b"jemalloc license\n",
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+fn append_archive_file<W: std::io::Write>(
+    builder: &mut Builder<W>,
+    path: &str,
+    content: &[u8],
+) -> Result<()> {
+    let mut header = Header::new_gnu();
+    header.set_path(path)?;
+    header.set_size(content.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder.append(&header, content)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests inspect archive contents"
+)]
+fn archive_entries(path: &Utf8Path) -> Result<Vec<String>> {
+    let file = std::fs::File::open(path)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = Vec::new();
+
+    for entry in archive.entries()? {
+        let entry = entry?;
+        entries.push(entry.path()?.to_string_lossy().into_owned());
+    }
+
+    Ok(entries)
 }
 
 #[expect(

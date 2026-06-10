@@ -173,6 +173,12 @@ struct RawRecipeHeader {
     notice_files: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+enum LegalFilePolicy {
+    ExactStandard,
+    StandardPlusAdditional,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPhpSettings {
@@ -309,7 +315,8 @@ impl BackingRecipe {
         kind: BackingRecipeKind,
         raw: RawBackingRecipe,
     ) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header =
+            RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::StandardPlusAdditional)?;
         let resource = ResourceName::new(kind.resource_name())
             .map_err(|error| invalid_identity(path, "resource", error))?;
         validate_exact_resources(
@@ -458,7 +465,7 @@ impl PhpRecipe {
     }
 
     fn from_raw(path: &Utf8Path, raw: RawPhpRecipe) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header = RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::ExactStandard)?;
         validate_exact_resources(
             path,
             "PHP recipe",
@@ -492,7 +499,11 @@ impl PhpRecipe {
 }
 
 impl RecipeHeader {
-    fn from_raw(path: &Utf8Path, raw: RawRecipeHeader) -> crate::Result<Self> {
+    fn from_raw(
+        path: &Utf8Path,
+        raw: RawRecipeHeader,
+        legal_file_policy: LegalFilePolicy,
+    ) -> crate::Result<Self> {
         let resources = parse_resource_list(path, raw.resources)?;
         let default_track = TrackName::new(raw.default_track)
             .map_err(|error| invalid_identity(path, "default_track", error))?;
@@ -503,8 +514,16 @@ impl RecipeHeader {
             require_non_empty(path, "pv_build_revision", &raw.pv_build_revision)?.to_string();
         validate_relative_file_list(path, "license_files", &raw.license_files)?;
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
-        validate_exact_file_list(path, "license_files", &raw.license_files, &["LICENSE"])?;
-        validate_exact_file_list(path, "notice_files", &raw.notice_files, &["NOTICE"])?;
+        match legal_file_policy {
+            LegalFilePolicy::ExactStandard => {
+                validate_exact_file_list(path, "license_files", &raw.license_files, &["LICENSE"])?;
+                validate_exact_file_list(path, "notice_files", &raw.notice_files, &["NOTICE"])?;
+            }
+            LegalFilePolicy::StandardPlusAdditional => {
+                validate_required_file(path, "license_files", &raw.license_files, "LICENSE")?;
+                validate_required_file(path, "notice_files", &raw.notice_files, "NOTICE")?;
+            }
+        }
 
         Ok(Self {
             resources,
@@ -633,7 +652,7 @@ impl ComposerRecipe {
     }
 
     fn from_raw(path: &Utf8Path, raw: RawComposerRecipe) -> crate::Result<Self> {
-        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let header = RecipeHeader::from_raw(path, raw.recipe, LegalFilePolicy::ExactStandard)?;
         validate_exact_resources(path, "Composer recipe", &header.resources, &["composer"])?;
         validate_exact_platforms(path, "Composer recipe", &header.platforms, &["any"])?;
 
@@ -705,6 +724,53 @@ pub fn composer_recipe_env(
             ("PV_RESOURCE", "resource", "composer"),
             ("PV_TRACK", "track", "2"),
             ("PV_PLATFORM", "platform", "any"),
+            ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
+            (
+                "PV_ARTIFACT_VERSION",
+                "artifact_version",
+                artifact_version.as_str(),
+            ),
+            ("PV_SOURCE_URL", "source_url", source_url),
+            ("PV_SOURCE_SHA256", "source_sha256", source_sha256),
+            (
+                "PV_MINIMUM_PV_VERSION",
+                "minimum_pv_version",
+                minimum_pv_version,
+            ),
+            (
+                "PV_PV_BUILD_REVISION",
+                "pv_build_revision",
+                pv_build_revision,
+            ),
+        ],
+    )
+}
+
+pub fn backing_recipe_env(
+    backing: &Utf8Path,
+    kind: BackingRecipeKind,
+    resource: &str,
+    track: &str,
+    platform: &str,
+) -> crate::Result<String> {
+    let recipe = BackingRecipe::load(backing, kind)?;
+    validate_backing_recipe_resource(&recipe, resource)?;
+    let track = validate_backing_recipe_track(&recipe, track)?;
+    let platform = validate_backing_recipe_platform(&recipe, platform)?;
+
+    let upstream_version = track.upstream_version();
+    let pv_build_revision = recipe.pv_build_revision();
+    let artifact_version = format!("{upstream_version}-{pv_build_revision}");
+    let source_url = track.source_url();
+    let source_sha256 = track.source_sha256().as_str();
+    let minimum_pv_version = recipe.minimum_pv_version().as_str();
+
+    shell_assignments(
+        recipe.path(),
+        &[
+            ("PV_RESOURCE", "resource", recipe.resource().as_str()),
+            ("PV_TRACK", "track", track.name().as_str()),
+            ("PV_PLATFORM", "platform", platform.as_str()),
             ("PV_UPSTREAM_VERSION", "upstream_version", upstream_version),
             (
                 "PV_ARTIFACT_VERSION",
@@ -934,18 +1000,93 @@ fn validate_composer_recipe_request(
     track: &str,
     platform: &str,
 ) -> crate::Result<()> {
-    validate_request_value(recipe.path(), "resource", resource, "composer")?;
-    validate_request_value(recipe.path(), "track", track, recipe.track().as_str())?;
     validate_request_value(
         recipe.path(),
+        "Composer recipe",
+        "resource",
+        resource,
+        "composer",
+    )?;
+    validate_request_value(
+        recipe.path(),
+        "Composer recipe",
+        "track",
+        track,
+        recipe.track().as_str(),
+    )?;
+    validate_request_value(
+        recipe.path(),
+        "Composer recipe",
         "platform",
         platform,
         recipe.platform().as_str(),
     )
 }
 
+fn validate_backing_recipe_resource(recipe: &BackingRecipe, resource: &str) -> crate::Result<()> {
+    validate_request_value(
+        recipe.path(),
+        recipe.kind().recipe_kind(),
+        "resource",
+        resource,
+        recipe.resource().as_str(),
+    )
+}
+
+fn validate_backing_recipe_track<'a>(
+    recipe: &'a BackingRecipe,
+    track: &str,
+) -> crate::Result<&'a BackingTrack> {
+    recipe
+        .tracks()
+        .iter()
+        .find(|candidate| candidate.name().as_str() == track)
+        .ok_or_else(|| {
+            let expected = recipe
+                .tracks()
+                .iter()
+                .map(|track| track.name().as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "{} track must be one of {}, got `{track}`",
+                    recipe.kind().recipe_kind(),
+                    format_expected_values(&expected)
+                ),
+            )
+        })
+}
+
+fn validate_backing_recipe_platform(
+    recipe: &BackingRecipe,
+    platform: &str,
+) -> crate::Result<ArtifactPlatform> {
+    recipe
+        .platforms()
+        .iter()
+        .copied()
+        .find(|candidate| candidate.as_str() == platform)
+        .ok_or_else(|| {
+            let expected = recipe
+                .platforms()
+                .iter()
+                .map(|platform| platform.as_str())
+                .collect::<BTreeSet<_>>();
+            invalid(
+                recipe.path(),
+                format!(
+                    "{} platform must be one of {}, got `{platform}`",
+                    recipe.kind().recipe_kind(),
+                    format_expected_values(&expected)
+                ),
+            )
+        })
+}
+
 fn validate_request_value(
     path: &Utf8Path,
+    recipe_kind: &str,
     field: &str,
     actual: &str,
     expected: &str,
@@ -955,7 +1096,7 @@ fn validate_request_value(
     } else {
         Err(invalid(
             path,
-            format!("Composer recipe {field} must be `{expected}`, got `{actual}`"),
+            format!("{recipe_kind} {field} must be `{expected}`, got `{actual}`"),
         ))
     }
 }
@@ -1282,6 +1423,19 @@ fn validate_exact_file_list(
                 .join(", ")
         ),
     ))
+}
+
+fn validate_required_file(
+    path: &Utf8Path,
+    field: &str,
+    values: &[String],
+    required: &str,
+) -> crate::Result<()> {
+    if values.iter().any(|value| value == required) {
+        return Ok(());
+    }
+
+    Err(invalid(path, format!("{field} must include `{required}`")))
 }
 
 fn relative_path_is_valid(value: &str) -> bool {

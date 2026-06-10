@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       resource:
-        description: "Resource to build: all, php, composer"
+        description: "Resource to build: all, php, composer, redis"
         required: true
         default: "all"
         type: choice
@@ -12,6 +12,7 @@ on:
           - all
           - php
           - composer
+          - redis
       track:
         description: "Track to build: all, 8.2, 8.3, 8.4, 2"
         required: true
@@ -57,13 +58,22 @@ jobs:
             all:all | all:8.2 | all:8.3 | all:8.4) ;;
             php:all | php:8.2 | php:8.3 | php:8.4) ;;
             composer:all | composer:2) ;;
+            redis:all | redis:8.2) ;;
             *)
               printf '%s\n' "unsupported resource/track combination: $PV_RECIPE_RESOURCE/$PV_RECIPE_TRACK" >&2
               exit 1
               ;;
           esac
 
-      - name: Install release tooling dependencies
+      - name: Install PHP runtime dependency
+        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' || inputs.resource == 'composer' }}
+        run: |
+          set -eu
+          brew update
+          brew install php
+
+      - name: Install StaticPHP CLI
+        if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
         run: |
           set -eu
           runner_architecture=$(uname -m)
@@ -76,8 +86,6 @@ jobs:
               ;;
           esac
 
-          brew update
-          brew install shellcheck php
           mkdir -p "${RUNNER_TEMP:?}/pv-tools"
           curl -L --fail --show-error --silent \
             --retry 3 --retry-delay 2 --retry-all-errors \
@@ -98,6 +106,7 @@ jobs:
           cargo run -p pv-release -- generate-recipe-fixtures \
             --php release/artifacts/recipes/php/tracks.toml \
             --composer release/artifacts/recipes/composer/composer.toml \
+            --redis release/artifacts/recipes/redis/recipe.toml \
             --archives "$fixtures_dir/archives" \
             --records "$fixtures_dir/records" \
             --pv-commit "$(git rev-parse HEAD)" \
@@ -127,16 +136,21 @@ jobs:
 
           build_php_family=false
           build_composer=false
+          build_redis=false
           case "$PV_RECIPE_RESOURCE" in
             all)
               build_php_family=true
               build_composer=true
+              build_redis=true
               ;;
             php)
               build_php_family=true
               ;;
             composer)
               build_composer=true
+              ;;
+            redis)
+              build_redis=true
               ;;
           esac
 
@@ -166,6 +180,11 @@ jobs:
               PV_RECIPE_PLATFORM=any \
               PV_COMPOSER_SMOKE_PHP="$(command -v php)" \
               release/artifacts/recipes/composer/build.sh
+          fi
+
+          if [ "$build_redis" = true ]; then
+            PV_RECIPE_TRACK=8.2 \
+              release/artifacts/recipes/redis/build.sh
           fi
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
@@ -202,6 +221,7 @@ jobs:
               write_default_track php "$php_default_track"
               write_default_track frankenphp "$php_default_track"
               write_default_track composer 2
+              write_default_track redis 8.2
               ;;
             php)
               write_default_track php "$php_default_track"
@@ -209,6 +229,9 @@ jobs:
               ;;
             composer)
               write_default_track composer 2
+              ;;
+            redis)
+              write_default_track redis 8.2
               ;;
           esac
 

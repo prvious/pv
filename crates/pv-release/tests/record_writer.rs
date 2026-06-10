@@ -37,6 +37,8 @@ fn release_record_writer_serializes_metadata_and_source_inputs() -> Result<()> {
         build_run_id: "run\"with\\escaping".to_string(),
         minimum_pv_version: "0.1.0".to_string(),
         published_at: "2026-06-08T12:00:00Z".to_string(),
+        license_files: vec!["LICENSE".to_string()],
+        notice_files: vec!["NOTICE".to_string()],
         source_inputs: vec![SourceInputRequest {
             name: "composer".to_string(),
             source_url:
@@ -53,6 +55,47 @@ fn release_record_writer_serializes_metadata_and_source_inputs() -> Result<()> {
     assert_eq!(parsed.provenance().build_run_id(), "run\"with\\escaping");
     assert_eq!(parsed.provenance().source_inputs().len(), 1);
     assert_snapshot!(json);
+    Ok(())
+}
+
+#[test]
+fn release_record_writer_serializes_custom_legal_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let archive = tempdir.path().join("redis-8.2.7-pv1-darwin-arm64.tar.gz");
+    let record = tempdir
+        .path()
+        .join("records/redis/8.2/8.2.7-pv1/darwin-arm64/redis-8.2.7-pv1-darwin-arm64.json");
+    write_file(&archive, b"artifact bytes")?;
+
+    write_release_record(&WriteReleaseRecordRequest {
+        record: record.clone(),
+        archive,
+        resource: "redis".to_string(),
+        track: "8.2".to_string(),
+        upstream_version: "8.2.7".to_string(),
+        pv_build_revision: "pv1".to_string(),
+        platform: "darwin-arm64".to_string(),
+        object_key:
+            "resources/redis/8.2/8.2.7-pv1/darwin-arm64/redis-8.2.7-pv1-darwin-arm64.tar.gz"
+                .to_string(),
+        source_url: "https://download.redis.io/releases/redis-8.2.7.tar.gz".to_string(),
+        source_sha256: "afaae66030c193b06720a714ba7a558136b82689027536e0e24f53908c18cbe9"
+            .to_string(),
+        recipe: "release/artifacts/recipes/redis/build.sh".to_string(),
+        pv_commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+        build_run_id: "local-test".to_string(),
+        minimum_pv_version: "0.1.0".to_string(),
+        published_at: "2026-06-08T12:00:00Z".to_string(),
+        license_files: vec!["LICENSE".to_string()],
+        notice_files: vec!["NOTICE".to_string(), "THIRD-PARTY-NOTICES".to_string()],
+        source_inputs: Vec::new(),
+    })?;
+
+    let json = read_to_string(&record)?;
+    let parsed = ReleaseRecord::from_json(&record, &json)?;
+
+    assert_eq!(parsed.license_files(), ["LICENSE"]);
+    assert_eq!(parsed.notice_files(), ["NOTICE", "THIRD-PARTY-NOTICES"]);
     Ok(())
 }
 

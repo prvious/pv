@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE='redis'
+PV_TRACK='8.2'
+PV_PLATFORM='darwin-arm64'
+PV_UPSTREAM_VERSION='8.2.1'
+PV_ARTIFACT_VERSION='8.2.1-pv1'
+PV_SOURCE_URL='https://download.redis.io/releases/redis-8.2.1.tar.gz'
+PV_SOURCE_SHA256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+PV_MINIMUM_PV_VERSION='0.1.0'
+PV_PV_BUILD_REVISION='pv1'
