@@ -263,6 +263,8 @@ fn committed_mysql_recipe_applies_appleclang_patch_for_current_track() -> Result
     assert!(patch.contains("Compound_parse_options(std::tuple<Format_t>(format))"));
     assert!(patch.contains("Compound_parse_options(std::tuple<Repeat_t>(repeat))"));
     assert!(patch.contains("Compound_parse_options(std::tuple<Checker_t>(checker))"));
+    assert!(patch.contains("Resolve_column(const Key_column_info *key_column_info,"));
+    assert!(patch.contains("deferred_resolve(deferred_resolve_value)"));
 
     Ok(())
 }

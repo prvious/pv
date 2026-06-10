@@ -163,6 +163,10 @@ copy_install_tree() {
         /*) source=$target ;;
         *) source=$(dirname "$path")/$target ;;
       esac
+      if [ ! -e "$source" ]; then
+        rm "$path" || exit 1
+        continue
+      fi
       tmp=$path.pv-copy.$$
       rm "$path" || exit 1
       cp -p "$source" "$tmp" || exit 1

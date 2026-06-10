@@ -1109,6 +1109,25 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
 }
 
 #[test]
+fn mysql_build_recipe_prunes_broken_optional_plugin_symlinks() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        install_broken_plugin_symlink: true,
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.archive_exists,
+        "MySQL archive should still be written when an optional plugin symlink is broken"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
@@ -1438,6 +1457,10 @@ struct MysqlBuildRecipeRun {
     archive_exists: bool,
 }
 
+struct MysqlBuildRecipeOptions {
+    install_broken_plugin_symlink: bool,
+}
+
 #[derive(Clone, Copy)]
 struct BackingBuildRecipe {
     resource: &'static str,
@@ -1707,6 +1730,14 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
 }
 
 fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
+    run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        install_broken_plugin_symlink: false,
+    })
+}
+
+fn run_mysql_build_recipe_smoke_with_options(
+    options: MysqlBuildRecipeOptions,
+) -> Result<MysqlBuildRecipeRun> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
     let out_dir = tempdir.path().join("out");
@@ -1766,6 +1797,14 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .env("PV_TEST_MACHO_LIBRARIES", "")
         .env("PV_TEST_MACHO_MINOS", "13.0")
         .env("PV_TEST_MACHO_RPATHS", "")
+        .env(
+            "PV_TEST_MYSQL_INSTALL_BROKEN_PLUGIN_SYMLINK",
+            if options.install_broken_plugin_symlink {
+                "1"
+            } else {
+                ""
+            },
+        )
         .env(
             "PV_MYSQL_OPENSSL_SOURCE_URL",
             "https://sources.example.test/openssl.tar.gz",
@@ -3323,6 +3362,10 @@ case "${1:-}" in
       printf '%s fixture\n' "$binary" >"$install_dir/bin/$binary"
       chmod 755 "$install_dir/bin/$binary"
     done
+    if [ -n "${PV_TEST_MYSQL_INSTALL_BROKEN_PLUGIN_SYMLINK:-}" ]; then
+      mkdir -p "$install_dir/lib/plugin"
+      ln -s ../../lib/libfido2.1.dylib "$install_dir/lib/plugin/authentication_fido_client.so"
+    fi
     ;;
   *)
     exit 78

@@ -29,3 +29,20 @@ diff --git a/libs/mysql/strconv/decode/parse_options.h b/libs/mysql/strconv/deco
  }
  auto make_compound_parse_options(const Is_compound_parse_options auto &opt) {
    return opt;
+ }
+diff --git a/sql/json_duality_view/dml.cc b/sql/json_duality_view/dml.cc
+--- a/sql/json_duality_view/dml.cc
++++ b/sql/json_duality_view/dml.cc
+@@ -620,6 +620,12 @@ struct Resolve_column {
+   const Key_column_info *kci = nullptr;
+   Json_dom *value = nullptr;
+   bool deferred_resolve = false;
++  Resolve_column() = default;
++  Resolve_column(const Key_column_info *key_column_info, Json_dom *json_value,
++                 bool deferred_resolve_value)
++      : kci(key_column_info),
++        value(json_value),
++        deferred_resolve(deferred_resolve_value) {}
+ };
+
+ [[maybe_unused]] static std::ostream &operator<<(std::ostream &os,
