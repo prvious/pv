@@ -10,7 +10,10 @@ pub struct RuntimeArtifactAdapter {
 }
 
 impl RuntimeArtifactAdapter {
-    fn new(resource_name: ResourceName, executable_relative_path: impl Into<Utf8PathBuf>) -> Self {
+    pub fn new(
+        resource_name: ResourceName,
+        executable_relative_path: impl Into<Utf8PathBuf>,
+    ) -> Self {
         Self {
             resource_name,
             executable_relative_path: executable_relative_path.into(),
@@ -79,6 +82,13 @@ pub fn rustfs_adapter() -> Result<RuntimeArtifactAdapter> {
     Ok(RuntimeArtifactAdapter::new(
         ResourceName::new("rustfs")?,
         "bin/rustfs",
+    ))
+}
+
+pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("mysql")?,
+        "bin/mysqld",
     ))
 }
 

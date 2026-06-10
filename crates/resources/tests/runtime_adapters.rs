@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use camino_tempfile::tempdir;
 use resources::{
     ResourceAdapter, ResourcesError, composer_adapter, frankenphp_adapter, mailpit_adapter,
-    php_adapter, rustfs_adapter,
+    mysql_adapter, php_adapter, rustfs_adapter,
 };
 use state::fs::write_sensitive_file;
 
@@ -82,6 +82,21 @@ fn rustfs_adapter_validates_expected_executable_layout() -> Result<()> {
 }
 
 #[test]
+fn mysql_adapter_validates_expected_executable_layout() -> Result<()> {
+    let tempdir = tempdir()?;
+    let release = tempdir.path();
+    let adapter = mysql_adapter()?;
+    let executable_path = release.join("bin/mysqld");
+    write_sensitive_file(&executable_path, "mysqld executable")?;
+
+    adapter.validate_installation(release)?;
+
+    assert_eq!(adapter.executable_path(release), executable_path);
+
+    Ok(())
+}
+
+#[test]
 fn runtime_adapters_reject_missing_executables() -> Result<()> {
     let tempdir = tempdir()?;
     let release = tempdir.path();
@@ -97,6 +112,7 @@ fn runtime_adapters_reject_missing_executables() -> Result<()> {
     )?;
     assert_missing_executable_error(mailpit_adapter()?.validate_installation(release), "mailpit")?;
     assert_missing_executable_error(rustfs_adapter()?.validate_installation(release), "rustfs")?;
+    assert_missing_executable_error(mysql_adapter()?.validate_installation(release), "mysql")?;
 
     Ok(())
 }
@@ -110,6 +126,7 @@ fn runtime_adapters_reject_directory_executable_paths() -> Result<()> {
     create_dir(&release.join("composer.phar"))?;
     create_dir(&release.join("bin/mailpit"))?;
     create_dir(&release.join("bin/rustfs"))?;
+    create_dir(&release.join("bin/mysqld"))?;
 
     assert_missing_executable_error(php_adapter()?.validate_installation(release), "php")?;
     assert_missing_executable_error(
@@ -122,6 +139,7 @@ fn runtime_adapters_reject_directory_executable_paths() -> Result<()> {
     )?;
     assert_missing_executable_error(mailpit_adapter()?.validate_installation(release), "mailpit")?;
     assert_missing_executable_error(rustfs_adapter()?.validate_installation(release), "rustfs")?;
+    assert_missing_executable_error(mysql_adapter()?.validate_installation(release), "mysql")?;
 
     Ok(())
 }

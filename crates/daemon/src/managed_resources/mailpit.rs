@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use state::{EnvContextValues, PvPaths};
 
 use crate::managed_resources::{
-    ManagedResourceArtifactAdapter, ManagedResourcePortSpec, ManagedResourceReadiness,
-    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
+    ManagedResourcePortSpec, ManagedResourceReadiness, ManagedResourceRuntimeAdapter,
+    ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
 use crate::{DaemonError, ProcessSpec, ReadinessCheck};
 
@@ -35,8 +35,8 @@ impl ManagedResourceRuntimeAdapter for MailpitRuntimeAdapter {
         Self::NAME
     }
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError> {
-        ManagedResourceArtifactAdapter::new(Self::NAME, "bin/mailpit")
+    fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError> {
+        resources::mailpit_adapter().map_err(Into::into)
     }
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec] {

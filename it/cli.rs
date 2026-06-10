@@ -180,6 +180,20 @@ fn rustfs_commands_are_documented() -> Result<()> {
 }
 
 #[test]
+fn mysql_commands_are_documented() -> Result<()> {
+    let output = [
+        run_pv(&["mysql:install", "--help"])?,
+        run_pv(&["mysql:update", "--help"])?,
+        run_pv(&["mysql:uninstall", "--help"])?,
+        run_pv(&["mysql:list", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 

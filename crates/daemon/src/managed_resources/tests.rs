@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use resources::{ResourceName, RuntimeArtifactAdapter};
 use serde::Deserialize;
 use state::{
     Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
@@ -1365,6 +1366,50 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
 }
 
 #[tokio::test]
+async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let mut database = Database::open(&paths)?;
+
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let hook_events = cloned_hook_events(&hook_events)?;
+
+    assert!(
+        hook_events.contains(&"build_process_spec:persisted_env".to_string()),
+        "expected managed resource env to be persisted before runtime spec/build side effects: {hook_events:#?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readiness() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -1809,10 +1854,10 @@ fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntim
             target_platform: super::current_target_platform(),
         },
         InvalidDefaultPortRuntimeAdapter {
-            artifact_adapter: super::ManagedResourceArtifactAdapter::new(
-                "mailpit",
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
-            )?,
+            ),
         },
     ))
 }
@@ -2822,17 +2867,17 @@ done
 
 #[derive(Clone, Debug)]
 struct AsyncSqlHookRuntimeAdapter {
-    artifact_adapter: super::ManagedResourceArtifactAdapter,
+    artifact_adapter: RuntimeArtifactAdapter,
     hook_events: Arc<Mutex<Vec<String>>>,
 }
 
 impl AsyncSqlHookRuntimeAdapter {
     fn new(hook_events: Arc<Mutex<Vec<String>>>) -> Result<Self> {
         Ok(Self {
-            artifact_adapter: super::ManagedResourceArtifactAdapter::new(
-                "mysql",
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mysql")?,
                 "bin/pv-fake-sql",
-            )?,
+            ),
             hook_events,
         })
     }
@@ -2843,9 +2888,7 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
         "mysql"
     }
 
-    fn artifact_adapter(
-        &self,
-    ) -> Result<super::ManagedResourceArtifactAdapter, crate::DaemonError> {
+    fn artifact_adapter(&self) -> Result<RuntimeArtifactAdapter, crate::DaemonError> {
         Ok(self.artifact_adapter.clone())
     }
 
@@ -2862,6 +2905,17 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
         context: &super::ManagedResourceRuntimeContext,
     ) -> Result<crate::ProcessSpec, crate::DaemonError> {
         let config_path = paths.resource_runtime_config(&context.resource_name, &context.track);
+        let track_env_persisted = Database::open(paths)?
+            .managed_resource_track(&context.resource_name, &context.track)?
+            .env
+            .contains_key("host");
+        let event = if track_env_persisted {
+            "build_process_spec:persisted_env"
+        } else {
+            "build_process_spec:missing_env"
+        };
+
+        push_hook_event(&self.hook_events, event)?;
         state::fs::write_sensitive_file(&config_path, "{}")?;
 
         Ok(crate::ProcessSpec {
@@ -3578,7 +3632,7 @@ fn regex_literal(value: &str) -> String {
 
 #[derive(Clone, Debug)]
 struct InvalidDefaultPortRuntimeAdapter {
-    artifact_adapter: super::ManagedResourceArtifactAdapter,
+    artifact_adapter: RuntimeArtifactAdapter,
 }
 
 impl ManagedResourceRuntimeAdapter for InvalidDefaultPortRuntimeAdapter {
@@ -3586,7 +3640,7 @@ impl ManagedResourceRuntimeAdapter for InvalidDefaultPortRuntimeAdapter {
         "mailpit"
     }
 
-    fn artifact_adapter(&self) -> Result<super::ManagedResourceArtifactAdapter, DaemonError> {
+    fn artifact_adapter(&self) -> Result<RuntimeArtifactAdapter, DaemonError> {
         Ok(self.artifact_adapter.clone())
     }
 

@@ -14,6 +14,7 @@ mod daemon;
 mod dns;
 mod env;
 mod mailpit;
+mod mysql;
 mod php;
 mod ports;
 mod project;
@@ -82,6 +83,10 @@ pub(crate) fn execute(
         }
         Command::RustfsList | Command::S3List => rustfs::list(environment, stdout),
         Command::RustfsOpen | Command::S3Open => rustfs::open(environment, stdout),
+        Command::MysqlInstall(args) => mysql::install(args, environment, stdout),
+        Command::MysqlUpdate => mysql::update(environment, stdout),
+        Command::MysqlUninstall(args) => mysql::uninstall(args, environment, stdout),
+        Command::MysqlList => mysql::list(environment, stdout),
     }
 }
 

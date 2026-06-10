@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod fake;
 mod mailpit;
+pub(crate) mod mysql;
+#[cfg(test)]
+mod mysql_tests;
 mod redis;
 mod rustfs;
 pub(crate) mod sql;
@@ -14,11 +17,8 @@ use std::net::TcpListener;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use camino::{Utf8Path, Utf8PathBuf};
-use resources::{
-    ManagedResourceCommands, ResourceAdapter, ResourceName, ResourcesError, TrackName,
-    TrackSelector,
-};
+use camino::Utf8Path;
+use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     PortRequest, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
@@ -37,6 +37,8 @@ const RESOURCE_START_ATTEMPTS: usize = 10;
 const RESERVED_RESOURCE_PORT_NAME: &str = "default";
 
 pub(crate) type ManagedResourceReadinessFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
+pub(crate) type ManagedResourcePreparationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
 pub(crate) type ManagedResourceAllocationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
@@ -59,10 +61,6 @@ pub(crate) struct ManagedResourceRuntimeContext {
 
 pub(crate) enum ManagedResourceReadiness {
     TcpHttp(ReadinessCheck),
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
-    )]
     Async(AsyncManagedResourceReadiness),
 }
 
@@ -72,10 +70,6 @@ pub(crate) struct AsyncManagedResourceReadiness {
 }
 
 impl ManagedResourceReadiness {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "SQL adapter PRs construct async SQL readiness")
-    )]
     pub(crate) fn async_check(
         name: impl Into<String>,
         check: impl Fn() -> ManagedResourceReadinessFuture<'static> + Send + Sync + 'static,
@@ -93,52 +87,20 @@ impl From<ReadinessCheck> for ManagedResourceReadiness {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ManagedResourceArtifactAdapter {
-    resource_name: ResourceName,
-    executable_relative_path: Utf8PathBuf,
-}
-
-impl ManagedResourceArtifactAdapter {
-    pub(crate) fn new(
-        resource_name: &str,
-        executable_relative_path: impl Into<Utf8PathBuf>,
-    ) -> Result<Self, DaemonError> {
-        Ok(Self {
-            resource_name: ResourceName::new(resource_name)?,
-            executable_relative_path: executable_relative_path.into(),
-        })
-    }
-
-    pub(crate) fn executable_path(&self, release: &Utf8Path) -> Utf8PathBuf {
-        release.join(&self.executable_relative_path)
-    }
-}
-
-impl ResourceAdapter for ManagedResourceArtifactAdapter {
-    fn resource_name(&self) -> &ResourceName {
-        &self.resource_name
-    }
-
-    fn validate_installation(&self, root: &Utf8Path) -> resources::Result<()> {
-        let executable_path = self.executable_path(root);
-        if path_is_file(&executable_path)? {
-            return Ok(());
-        }
-
-        Err(ResourcesError::InvalidArtifactLayout {
-            resource: self.resource_name.as_str().to_string(),
-            reason: format!("missing executable `{}`", self.executable_relative_path),
-        })
-    }
-}
-
 pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
     fn resource_name(&self) -> &'static str;
 
-    fn artifact_adapter(&self) -> Result<ManagedResourceArtifactAdapter, DaemonError>;
+    fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError>;
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec];
+
+    fn prepare_runtime<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        _context: &'a ManagedResourceRuntimeContext,
+    ) -> ManagedResourcePreparationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn build_process_spec(
         &self,
@@ -195,6 +157,10 @@ impl ManagedResourceRuntimeCatalog {
         let redis = redis::RedisRuntimeAdapter::new();
         adapters.insert(redis.resource_name(), Box::new(redis));
         adapters.insert("rustfs", Box::new(rustfs::RustfsRuntimeAdapter));
+        adapters.insert(
+            mysql::RESOURCE_NAME,
+            Box::new(mysql::MysqlRuntimeAdapter::new()),
+        );
 
         Self {
             adapters,
@@ -400,21 +366,22 @@ struct ResourceRuntimeAttempt<'a> {
 impl ResourceRuntimeAttempt<'_> {
     async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
         let env = self.adapter.resource_env(context)?;
-        let context = ManagedResourceRuntimeContext {
-            env: env.clone(),
-            ..context.clone()
-        };
-        let spec = self.adapter.build_process_spec(self.paths, &context)?;
-        let readiness = self.adapter.readiness(&context)?;
-        let readiness_timeout = adapter_readiness_timeout(self.adapter);
-
-        start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
-
         self.database.record_managed_resource_track_env_context(
             &self.resource.resource_name,
             &self.resource.track,
             &env,
         )?;
+        let context = ManagedResourceRuntimeContext {
+            env: env.clone(),
+            ..context.clone()
+        };
+        let spec = self.adapter.build_process_spec(self.paths, &context)?;
+        self.adapter.prepare_runtime(self.paths, &context).await?;
+        let readiness = self.adapter.readiness(&context)?;
+        let readiness_timeout = adapter_readiness_timeout(self.adapter);
+
+        start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
+
         let allocations =
             desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
@@ -511,7 +478,7 @@ fn installed_track(
 fn install_missing_track_blocking(
     paths: PvPaths,
     install_options: ManagedResourceInstallOptions,
-    adapter: ManagedResourceArtifactAdapter,
+    adapter: resources::RuntimeArtifactAdapter,
     resource_name: String,
     track: String,
 ) -> Result<(), DaemonError> {
@@ -862,21 +829,6 @@ fn delete_optional_file(path: &Utf8Path) -> Result<(), DaemonError> {
 
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind((RESOURCE_HOST, port)).is_ok()
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Managed Resource artifact validation owns direct filesystem metadata checks"
-)]
-fn path_is_file(path: &Utf8Path) -> resources::Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file()),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(ResourcesError::Filesystem {
-            path: path.to_string(),
-            reason: source.to_string(),
-        }),
-    }
 }
 
 fn current_target_platform() -> resources::TargetPlatform {

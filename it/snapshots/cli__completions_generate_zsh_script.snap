@@ -465,6 +465,38 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(mysql:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- MySQL track to install:_default' \
+&& ret=0
+;;
+(mysql:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(mysql:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- MySQL track to uninstall:_default' \
+&& ret=0
+;;
+(mysql:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -529,6 +561,10 @@ _pv_commands() {
 's3:uninstall:Uninstall a RustFS track (S3 alias)' \
 's3:list:List installed RustFS tracks (S3 alias)' \
 's3:open:Open the running RustFS console (S3 alias)' \
+'mysql:install:Install a MySQL track' \
+'mysql:update:Update installed MySQL tracks' \
+'mysql:uninstall:Uninstall a MySQL track' \
+'mysql:list:List installed MySQL tracks' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -666,6 +702,26 @@ _pv__subcmd__mailpit:uninstall_commands() {
 _pv__subcmd__mailpit:update_commands() {
     local commands; commands=()
     _describe -t commands 'pv mailpit:update commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mysql:install_commands] )) ||
+_pv__subcmd__mysql:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mysql:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mysql:list_commands] )) ||
+_pv__subcmd__mysql:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mysql:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mysql:uninstall_commands] )) ||
+_pv__subcmd__mysql:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mysql:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__mysql:update_commands] )) ||
+_pv__subcmd__mysql:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv mysql:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__open_commands] )) ||
 _pv__subcmd__open_commands() {
