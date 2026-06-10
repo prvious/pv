@@ -1,0 +1,116 @@
+---
+source: crates/cli/tests/list_json.rs
+expression: snapshot
+---
+{
+    "mail:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/mailpit/1/artifact"),
+                "projects": Number(0),
+                "resource": String("mailpit"),
+                "status": String("not-running"),
+                "track": String("1"),
+                "version": String("1.20.0-pv1"),
+            },
+        ],
+    },
+    "mailpit:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/mailpit/1/artifact"),
+                "projects": Number(0),
+                "resource": String("mailpit"),
+                "status": String("not-running"),
+                "track": String("1"),
+                "version": String("1.20.0-pv1"),
+            },
+        ],
+    },
+    "mysql:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/mysql/8.0/artifact"),
+                "ports": Object {
+                    "tcp": Number(3306),
+                },
+                "projects": Number(0),
+                "resource": String("mysql"),
+                "status": String("running"),
+                "track": String("8.0"),
+                "version": String("8.0.36-pv1"),
+            },
+        ],
+    },
+    "pg:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/postgres/16/artifact"),
+                "projects": Number(0),
+                "resource": String("postgres"),
+                "status": String("not-running"),
+                "track": String("16"),
+                "version": String("16.4-pv1"),
+            },
+        ],
+    },
+    "php:list": Object {
+        "tracks": Array [
+            Object {
+                "default": Bool(false),
+                "path": String("<tempdir>/home/.pv/resources/php/8.4/artifact"),
+                "projects": Number(0),
+                "track": String("8.4"),
+                "version": String("8.4.8-pv1"),
+            },
+        ],
+    },
+    "postgres:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/postgres/16/artifact"),
+                "projects": Number(0),
+                "resource": String("postgres"),
+                "status": String("not-running"),
+                "track": String("16"),
+                "version": String("16.4-pv1"),
+            },
+        ],
+    },
+    "redis:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/redis/7/artifact"),
+                "projects": Number(0),
+                "resource": String("redis"),
+                "status": String("not-running"),
+                "track": String("7"),
+                "version": String("7.2.5-pv1"),
+            },
+        ],
+    },
+    "rustfs:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/rustfs/1/artifact"),
+                "projects": Number(0),
+                "resource": String("rustfs"),
+                "status": String("not-running"),
+                "track": String("1"),
+                "version": String("1.0.0-pv1"),
+            },
+        ],
+    },
+    "s3:list": Object {
+        "tracks": Array [
+            Object {
+                "path": String("<tempdir>/home/.pv/resources/rustfs/1/artifact"),
+                "projects": Number(0),
+                "resource": String("rustfs"),
+                "status": String("not-running"),
+                "track": String("1"),
+                "version": String("1.0.0-pv1"),
+            },
+        ],
+    },
+}

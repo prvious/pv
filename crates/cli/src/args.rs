@@ -109,8 +109,20 @@ pub(crate) enum Command {
     )]
     ProjectEnv(ProjectEnvArgs),
 
+    #[command(name = "status", about = "Show whole-system PV status")]
+    Status(StatusArgs),
+
+    #[command(name = "logs", about = "Show PV logs")]
+    Logs(LogsArgs),
+
+    #[command(name = "doctor", about = "Run read-only PV diagnostics")]
+    Doctor(DoctorArgs),
+
+    #[command(name = "jobs", about = "List recent daemon jobs")]
+    Jobs(JobsArgs),
+
     #[command(name = "list", about = "List linked Projects")]
-    List,
+    List(ListArgs),
 
     #[command(name = "php:use", about = "Set the PHP track")]
     PhpUse(PhpUseArgs),
@@ -125,7 +137,7 @@ pub(crate) enum Command {
     PhpUninstall(PhpUninstallArgs),
 
     #[command(name = "php:list", about = "List installed PHP tracks")]
-    PhpList,
+    PhpList(ListArgs),
 
     #[command(name = "composer:install", about = "Install Composer track 2")]
     ComposerInstall,
@@ -146,7 +158,7 @@ pub(crate) enum Command {
     MailpitUninstall(MailpitUninstallArgs),
 
     #[command(name = "mailpit:list", about = "List installed Mailpit tracks")]
-    MailpitList,
+    MailpitList(ListArgs),
 
     #[command(name = "mailpit:open", about = "Open the running Mailpit dashboard")]
     MailpitOpen,
@@ -161,7 +173,7 @@ pub(crate) enum Command {
     MailUninstall(MailpitUninstallArgs),
 
     #[command(name = "mail:list", about = "List installed Mailpit tracks")]
-    MailList,
+    MailList(ListArgs),
 
     #[command(name = "mail:open", about = "Open the running Mailpit dashboard")]
     MailOpen,
@@ -176,7 +188,7 @@ pub(crate) enum Command {
     RedisUninstall(RedisUninstallArgs),
 
     #[command(name = "redis:list", about = "List installed Redis tracks")]
-    RedisList,
+    RedisList(ListArgs),
 
     #[command(name = "rustfs:install", about = "Install a RustFS track")]
     RustfsInstall(RustfsInstallArgs),
@@ -188,7 +200,7 @@ pub(crate) enum Command {
     RustfsUninstall(RustfsUninstallArgs),
 
     #[command(name = "rustfs:list", about = "List installed RustFS tracks")]
-    RustfsList,
+    RustfsList(ListArgs),
 
     #[command(name = "rustfs:open", about = "Open the running RustFS console")]
     RustfsOpen,
@@ -206,7 +218,7 @@ pub(crate) enum Command {
     S3Uninstall(RustfsUninstallArgs),
 
     #[command(name = "s3:list", about = "List installed RustFS tracks (S3 alias)")]
-    S3List,
+    S3List(ListArgs),
 
     #[command(name = "s3:open", about = "Open the running RustFS console (S3 alias)")]
     S3Open,
@@ -221,7 +233,7 @@ pub(crate) enum Command {
     MysqlUninstall(MysqlUninstallArgs),
 
     #[command(name = "mysql:list", about = "List installed MySQL tracks")]
-    MysqlList,
+    MysqlList(ListArgs),
 
     #[command(name = "postgres:install", about = "Install a Postgres track")]
     PostgresInstall(PostgresInstallArgs),
@@ -233,7 +245,7 @@ pub(crate) enum Command {
     PostgresUninstall(PostgresUninstallArgs),
 
     #[command(name = "postgres:list", about = "List installed Postgres tracks")]
-    PostgresList,
+    PostgresList(ListArgs),
 
     #[command(name = "pg:install", about = "Install a Postgres track")]
     PgInstall(PostgresInstallArgs),
@@ -245,7 +257,7 @@ pub(crate) enum Command {
     PgUninstall(PostgresUninstallArgs),
 
     #[command(name = "pg:list", about = "List installed Postgres tracks")]
-    PgList,
+    PgList(ListArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -445,4 +457,67 @@ pub(crate) struct ProjectEnvArgs {
 
     #[arg(value_name = "hostname", help = "Project hostname to render env for")]
     pub(crate) hostname: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct StatusArgs {
+    #[arg(long, help = "Print whole-system status as JSON")]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct LogsArgs {
+    #[arg(
+        short = 'n',
+        long = "lines",
+        default_value_t = 100,
+        allow_hyphen_values = true,
+        help = "Number of recent lines to show"
+    )]
+    pub(crate) lines: i64,
+
+    #[arg(
+        short = 'f',
+        long,
+        help = "Stream new log lines after the initial tail"
+    )]
+    pub(crate) follow: bool,
+
+    #[arg(long, help = "Include every PV-owned log stream")]
+    pub(crate) all: bool,
+
+    #[arg(long, help = "Show Gateway logs")]
+    pub(crate) gateway: bool,
+
+    #[arg(
+        long,
+        value_name = "php-track",
+        help = "Show logs for a PHP worker track"
+    )]
+    pub(crate) worker: Option<String>,
+
+    #[arg(long, value_name = "name", help = "Show logs for a Managed Resource")]
+    pub(crate) resource: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "track",
+        help = "Managed Resource track for --resource"
+    )]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct DoctorArgs {}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct JobsArgs {
+    #[arg(long, help = "Print recent daemon jobs as JSON")]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct ListArgs {
+    #[arg(long, help = "Print command output as JSON")]
+    pub(crate) json: bool,
 }

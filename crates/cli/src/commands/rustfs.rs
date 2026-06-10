@@ -6,7 +6,7 @@ use std::time::Duration;
 use camino::Utf8PathBuf;
 use state::{Database, PortOwner, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError};
 
-use crate::args::{RustfsInstallArgs, RustfsUninstallArgs};
+use crate::args::{ListArgs, RustfsInstallArgs, RustfsUninstallArgs};
 use crate::commands::artifact_resource::{self, ArtifactResourceCommandSpec};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
@@ -46,10 +46,11 @@ pub(crate) fn uninstall(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::list(spec(), environment, stdout)
+    artifact_resource::list(spec(), args, environment, stdout)
 }
 
 pub(crate) fn open(

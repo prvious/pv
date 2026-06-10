@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError};
 
-use crate::args::{MailpitInstallArgs, MailpitUninstallArgs};
+use crate::args::{ListArgs, MailpitInstallArgs, MailpitUninstallArgs};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
@@ -50,10 +50,11 @@ pub(crate) fn uninstall(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    super::artifact_resource::list(SPEC, environment, stdout)
+    super::artifact_resource::list(SPEC, args, environment, stdout)
 }
 
 pub(crate) fn open(

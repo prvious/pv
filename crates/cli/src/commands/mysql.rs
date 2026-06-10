@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::args::{MysqlInstallArgs, MysqlUninstallArgs};
+use crate::args::{ListArgs, MysqlInstallArgs, MysqlUninstallArgs};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
 
@@ -38,10 +38,11 @@ pub(crate) fn uninstall(
 }
 
 pub(crate) fn list(
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::list(spec(), environment, stdout)
+    artifact_resource::list(spec(), args, environment, stdout)
 }
 
 fn spec() -> ArtifactResourceCommandSpec {

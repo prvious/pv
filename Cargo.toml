@@ -23,6 +23,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+anstyle = "1.0.14"
 anyhow = "1"
 aws-sdk-s3 = { version = "1.135.0", default-features = false, features = ["rustls", "rt-tokio", "http-1x"] }
 assert_cmd = "2"
@@ -38,6 +39,7 @@ flate2 = "1.1.9"
 hickory-proto = "0.26.1"
 home = "0"
 insta = { version = "1", features = ["filters"] }
+linemux = "0.3.0"
 netstat = { package = "netstat-esr", version = "0.8.1" }
 object_store = { version = "0.13.2", default-features = false, features = ["aws"] }
 rcgen = { version = "0.14.8", features = ["x509-parser"] }

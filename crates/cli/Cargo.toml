@@ -8,6 +8,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+anstyle = { workspace = true }
 anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
@@ -15,11 +16,14 @@ clap_complete = { workspace = true }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
+linemux = { workspace = true }
 platform = { path = "../platform" }
 resources = { path = "../resources" }
+serde = { workspace = true }
 serde_json = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }

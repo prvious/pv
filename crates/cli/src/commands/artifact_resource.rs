@@ -9,8 +9,10 @@ use resources::{
     ResourceHttpClient, ResourceKind, ResourceName, TargetPlatform, TrackName, TrackSelector,
     UreqResourceHttpClient,
 };
+use serde::Serialize;
 use state::{PortAssignment, PortOwner, PvPaths, RuntimeObservedStatus, StateError};
 
+use crate::args::ListArgs;
 use crate::environment::Environment;
 use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
@@ -110,6 +112,7 @@ pub(crate) fn uninstall(
 
 pub(crate) fn list(
     spec: ArtifactResourceCommandSpec,
+    args: ListArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
@@ -117,8 +120,21 @@ pub(crate) fn list(
     let resource_name = ResourceName::new(spec.resource_name)?;
     let commands = resource_commands(&paths, environment);
     let tracks = commands.list(Some(&resource_name))?;
-    let mut output = Output::new(stdout, OutputMode::plain());
     let descriptor = resources::registry::resolve_canonical(spec.resource_name)?;
+
+    if args.json {
+        let tracks = if descriptor.kind() == ResourceKind::BackingService {
+            backing_resource_json_tracks(&paths, spec.resource_name, &tracks)?
+        } else {
+            resource_json_tracks(&tracks)
+        };
+        serde_json::to_writer(&mut *stdout, &ResourceListOutput { tracks })?;
+        writeln!(stdout)?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let mut output = Output::new(stdout, OutputMode::plain());
 
     if tracks.is_empty() {
         output.line(&format!("No {} tracks installed", spec.display_name))?;
@@ -186,25 +202,15 @@ fn write_backing_resource_list(
     tracks: &[ManagedResourceTrack],
     output: &mut Output<'_, impl Write>,
 ) -> Result<(), ExecuteError> {
-    let database = state::Database::open(paths)?;
-    let runtime_statuses = database
-        .runtime_observed_states()?
-        .into_iter()
-        .filter_map(|state| match state.subject {
-            state::RuntimeSubject::Resource { name, track } if name == resource_name => {
-                Some((track, state.status))
-            }
-            _ => None,
-        })
-        .collect::<BTreeMap<_, _>>();
-    let assignments = database.assigned_ports()?;
+    let observation = backing_resource_observation(paths, resource_name)?;
 
     output.line("Track  Status  Ports  Projects  Version  Path")?;
     for track in tracks {
         let track_name = track.track().as_str();
-        let status = runtime_statuses.get(track_name).copied();
+        let status = observation.runtime_statuses.get(track_name).copied();
         let ports = if status == Some(RuntimeObservedStatus::Running) {
-            backing_resource_ports(&assignments, resource_name, track_name)
+            let ports = backing_resource_ports(&observation.assignments, resource_name, track_name);
+            format_backing_resource_ports(&ports)
         } else {
             "-".to_string()
         };
@@ -223,12 +229,104 @@ fn write_backing_resource_list(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct ResourceListOutput {
+    tracks: Vec<ResourceListTrack>,
+}
+
+#[derive(Serialize)]
+struct ResourceListTrack {
+    resource: String,
+    track: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    ports: BTreeMap<String, u16>,
+    projects: i64,
+    version: String,
+    path: String,
+}
+
+struct BackingResourceObservation {
+    runtime_statuses: BTreeMap<String, RuntimeObservedStatus>,
+    assignments: Vec<PortAssignment>,
+}
+
+fn backing_resource_json_tracks(
+    paths: &PvPaths,
+    resource_name: &str,
+    tracks: &[ManagedResourceTrack],
+) -> Result<Vec<ResourceListTrack>, ExecuteError> {
+    let observation = backing_resource_observation(paths, resource_name)?;
+
+    Ok(tracks
+        .iter()
+        .map(|track| {
+            let track_name = track.track().as_str();
+            let status = observation.runtime_statuses.get(track_name).copied();
+            let ports = if status == Some(RuntimeObservedStatus::Running) {
+                backing_resource_ports(&observation.assignments, resource_name, track_name)
+            } else {
+                BTreeMap::new()
+            };
+
+            resource_json_track(track, Some(runtime_status_label(status)), ports)
+        })
+        .collect())
+}
+
+fn resource_json_tracks(tracks: &[ManagedResourceTrack]) -> Vec<ResourceListTrack> {
+    tracks
+        .iter()
+        .map(|track| resource_json_track(track, None, BTreeMap::new()))
+        .collect()
+}
+
+fn resource_json_track(
+    track: &ManagedResourceTrack,
+    status: Option<&'static str>,
+    ports: BTreeMap<String, u16>,
+) -> ResourceListTrack {
+    ResourceListTrack {
+        resource: track.resource_name().as_str().to_string(),
+        track: track.track().as_str().to_string(),
+        status,
+        ports,
+        projects: track.usage_count(),
+        version: track.installed_version().as_str().to_string(),
+        path: track.current_artifact_path().to_string(),
+    }
+}
+
+fn backing_resource_observation(
+    paths: &PvPaths,
+    resource_name: &str,
+) -> Result<BackingResourceObservation, ExecuteError> {
+    let database = state::Database::open(paths)?;
+    let runtime_statuses = database
+        .runtime_observed_states()?
+        .into_iter()
+        .filter_map(|state| match state.subject {
+            state::RuntimeSubject::Resource { name, track } if name == resource_name => {
+                Some((track, state.status))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let assignments = database.assigned_ports()?;
+
+    Ok(BackingResourceObservation {
+        runtime_statuses,
+        assignments,
+    })
+}
+
 fn backing_resource_ports(
     assignments: &[PortAssignment],
     resource_name: &str,
     track: &str,
-) -> String {
-    let ports = assignments
+) -> BTreeMap<String, u16> {
+    assignments
         .iter()
         .filter_map(|assignment| match &assignment.owner {
             PortOwner::Resource {
@@ -240,14 +338,16 @@ fn backing_resource_ports(
             }
             _ => None,
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect()
+}
 
+fn format_backing_resource_ports(ports: &BTreeMap<String, u16>) -> String {
     if ports.is_empty() {
         return "-".to_string();
     }
 
     ports
-        .into_iter()
+        .iter()
         .map(|(name, port)| format!("{name}={port}"))
         .collect::<Vec<_>>()
         .join(",")
@@ -488,7 +588,12 @@ mod tests {
         )?;
         let mut stdout = Vec::new();
 
-        let exit_code = list(mailpit_spec(), &environment, &mut stdout)?;
+        let exit_code = list(
+            mailpit_spec(),
+            ListArgs { json: false },
+            &environment,
+            &mut stdout,
+        )?;
 
         assert_eq!(exit_code, ExitCode::SUCCESS);
         with_tempdir_filters(tempdir.path(), || {

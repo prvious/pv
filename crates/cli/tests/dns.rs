@@ -235,6 +235,37 @@ fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Resu
 }
 
 #[test]
+fn daemon_fixture_waits_for_delayed_health_request() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let paths = pv_paths(&tempdir.path().join("home"));
+    let daemon = DaemonFixture::start(&paths)?;
+    let mut client = UnixStream::connect(paths.daemon_socket().as_std_path())?;
+
+    thread::sleep(Duration::from_millis(50));
+    writeln!(
+        client,
+        r#"{{"protocol_version":{},"command":"health"}}"#,
+        daemon::PROTOCOL_VERSION
+    )?;
+    let mut response = String::new();
+    let mut reader = BufReader::new(client);
+    reader.read_line(&mut response)?;
+
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(
+        daemon_requests,
+        vec![format!(
+            r#"{{"protocol_version":{},"command":"health"}}"#,
+            daemon::PROTOCOL_VERSION
+        )]
+    );
+    assert!(response.contains(r#""status":"ok""#));
+
+    Ok(())
+}
+
+#[test]
 fn dns_install_reports_non_pv_owned_system_resolver_conflict() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -522,7 +553,11 @@ fn accept_with_timeout(
 
     loop {
         match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
+            Ok((stream, address)) => {
+                stream.set_nonblocking(false)?;
+
+                return Ok((stream, address));
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if started_at.elapsed() > Duration::from_secs(3) {
                     return Err(anyhow::anyhow!(

@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "ID  Kind  Scope  Status  Started  Finished  Summary\njob_000003  install  resource:redis:7  running  <timestamp>  -  -\njob_000002  reconcile  project:acme  failed  <timestamp>  <timestamp>  Gateway failed to start\njob_000001  setup  system  succeeded  <timestamp>  <timestamp>  Installed default resources\n",
+    stderr: "",
+}

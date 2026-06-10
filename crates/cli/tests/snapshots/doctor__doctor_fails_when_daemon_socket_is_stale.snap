@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/doctor.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV doctor\n[pass] State layout: 9 PV-owned directories have user-only permissions\n[pass] Database: read-only open succeeded; 7 migrations applied\n[pass] Daemon LaunchAgent: PV-owned LaunchAgent is installed\n  path: <tempdir>/home/Library/LaunchAgents/com.prvious.pv.daemon.plist\n[fail] Daemon socket: daemon socket is present but daemon did not answer health check\n  path: <tempdir>/home/.pv/run/pv.sock; error: I/O error: Socket operation on non-socket (os error 38)\n  repair: `pv daemon:restart`\n[pass] DNS config: system resolver uses port 35353\n[pass] Port redirect config: system pf config and active redirects are current\n[pass] Local CA trust: system trust matches fingerprint <fingerprint>\n[pass] Recent jobs: no failed jobs in recent history\n[pass] Runtime states: no degraded or failed runtime observations\n[pass] Artifact manifest cache: cached manifest is present\n  path: <tempdir>/home/.pv/downloads/manifest.json\nSummary: 9 passed, 0 warning(s), 1 failed\n",
+    stderr: "",
+}

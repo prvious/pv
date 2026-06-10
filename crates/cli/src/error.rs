@@ -42,6 +42,15 @@ pub enum CliError {
 
     #[error("Composer track 2 is not installed.\nRun `pv composer:install` to install it.")]
     MissingComposer,
+
+    #[error("log line count must be zero or greater")]
+    InvalidLogLineCount,
+
+    #[error("multiple {resource} tracks are installed; pass --track with one of: {tracks}")]
+    AmbiguousLogResourceTrack { resource: String, tracks: String },
+
+    #[error("no installed {resource} tracks were found; pass --track explicitly")]
+    MissingLogResourceTrack { resource: String },
 }
 
 #[derive(Debug, Error)]

@@ -28,7 +28,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "List installed Postgres tracks\n\nUsage: pv postgres:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "List installed Postgres tracks\n\nUsage: pv postgres:list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
@@ -56,7 +56,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "List installed Postgres tracks\n\nUsage: pv pg:list [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "List installed Postgres tracks\n\nUsage: pv pg:list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
 ]

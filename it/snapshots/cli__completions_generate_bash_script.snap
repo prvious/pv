@@ -62,14 +62,23 @@ _pv() {
             pv,dns:uninstall)
                 cmd="pv__subcmd__dns:uninstall"
                 ;;
+            pv,doctor)
+                cmd="pv__subcmd__doctor"
+                ;;
             pv,env)
                 cmd="pv__subcmd__env"
+                ;;
+            pv,jobs)
+                cmd="pv__subcmd__jobs"
                 ;;
             pv,link)
                 cmd="pv__subcmd__link"
                 ;;
             pv,list)
                 cmd="pv__subcmd__list"
+                ;;
+            pv,logs)
+                cmd="pv__subcmd__logs"
                 ;;
             pv,mail:install)
                 cmd="pv__subcmd__mail:install"
@@ -218,6 +227,9 @@ _pv() {
             pv,shim:php)
                 cmd="pv__subcmd__shim:php"
                 ;;
+            pv,status)
+                cmd="pv__subcmd__status"
+                ;;
             pv,uninstall)
                 cmd="pv__subcmd__uninstall"
                 ;;
@@ -231,7 +243,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open redis:install redis:update redis:uninstall redis:list rustfs:install rustfs:update rustfs:uninstall rustfs:list rustfs:open s3:install s3:update s3:uninstall s3:list s3:open mysql:install mysql:update mysql:uninstall mysql:list postgres:install postgres:update postgres:uninstall postgres:list pg:install pg:update pg:uninstall pg:list"
+            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link unlink open project:env status logs doctor jobs list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open redis:install redis:update redis:uninstall redis:list rustfs:install rustfs:update rustfs:uninstall rustfs:list rustfs:open s3:install s3:update s3:uninstall s3:list s3:open mysql:install mysql:update mysql:uninstall mysql:list postgres:install postgres:update postgres:uninstall postgres:list pg:install pg:update pg:uninstall pg:list"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -440,6 +452,20 @@ _pv() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        pv__subcmd__doctor)
+            opts="-h --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         pv__subcmd__env)
             opts="-h --shell --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -451,6 +477,20 @@ _pv() {
                     COMPREPLY=($(compgen -W "bash fish zsh" -- "${cur}"))
                     return 0
                     ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__jobs)
+            opts="-h --json --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
                 *)
                     COMPREPLY=()
                     ;;
@@ -477,12 +517,46 @@ _pv() {
             return 0
             ;;
         pv__subcmd__list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__logs)
+            opts="-n -f -h --lines --follow --all --gateway --worker --resource --track --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --lines)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -n)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --worker)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --track)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -505,7 +579,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__mail:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -575,7 +649,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__mailpit:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -645,7 +719,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__mysql:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -715,7 +789,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__pg:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -771,7 +845,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__php:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -883,7 +957,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__postgres:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -953,7 +1027,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__redis:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1009,7 +1083,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__rustfs:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1079,7 +1153,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__s3:list)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1164,6 +1238,20 @@ _pv() {
             ;;
         pv__subcmd__shim:php)
             opts="--no-color [args]..."
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__status)
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

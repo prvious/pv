@@ -1,0 +1,26 @@
+---
+source: crates/cli/tests/list_json.rs
+expression: snapshot
+---
+Object {
+    "projects": Array [
+        Object {
+            "additional_hostnames": Array [
+                String("api.acme.test"),
+            ],
+            "config_path": String("<tempdir>/acme/pv.yml"),
+            "env": String("none"),
+            "hostname": String("acme.test"),
+            "id": String("<project-id>"),
+            "path": String("<tempdir>/acme"),
+            "php": String("8.4"),
+            "resources": Array [
+                Object {
+                    "resource": String("mysql"),
+                    "track": String("8.0"),
+                },
+            ],
+            "status": String("unknown"),
+        },
+    ],
+}

@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "ID  Kind  Scope  Status  Started  Finished  Summary\njob_000001  reconcile  project:acme  failed  <timestamp>  <timestamp>  Project config is invalid\n",
+    stderr: "",
+}

@@ -937,7 +937,11 @@ fn accept_with_timeout(
 
     loop {
         match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
+            Ok((stream, address)) => {
+                stream.set_nonblocking(false)?;
+
+                return Ok((stream, address));
+            }
             Err(error)
                 if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {
