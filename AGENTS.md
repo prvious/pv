@@ -3,7 +3,9 @@
 - Read CONTRIBUTING.md for guidelines on how to run tools
 - Before making implementation or product decisions, consult DESIGN.md
 - If the decision is not covered by DESIGN.md, ask instead of guessing
-- ALWAYS attempt to add a test case for changed behavior
+- Add or update tests when they provide meaningful coverage for changed behavior.
+- Skip tests for changes that are purely cosmetic, mechanical, documentation-only, formatting-only, naming-only, or configuration-only, unless there is actual behavior worth protecting.
+- If skipping tests, state the reason briefly.
 - PREFER integration tests, e.g., at `it/...` over unit tests
 - PREFER `insta` snapshots following patterns in nearby tests over substring assertions
 - PREFER running specific tests over running the entire test suite
