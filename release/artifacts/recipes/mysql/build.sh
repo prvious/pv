@@ -221,7 +221,14 @@ install_dir="$work_dir/install"
 root_dir="$work_dir/$artifact_basename"
 openssl_source_archive="$OUT_DIR/sources/openssl-$OPENSSL_VERSION.tar.gz"
 openssl_source_extract_dir="$OUT_DIR/sources/openssl-$OPENSSL_VERSION-source"
-boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tar.bz2"
+boost_source_url_path=${BOOST_SOURCE_URL%%[?#]*}
+case "$boost_source_url_path" in
+  *.tar.bz2) boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tar.bz2" ;;
+  *.tbz2) boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tbz2" ;;
+  *.tar.gz) boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tar.gz" ;;
+  *.tgz) boost_source_archive="$OUT_DIR/sources/boost_1_77_0.tgz" ;;
+  *) die "unsupported Boost source archive extension: $BOOST_SOURCE_URL" ;;
+esac
 boost_source_extract_dir="$OUT_DIR/sources/boost-1.77.0-source"
 archive="$OUT_DIR/$artifact_basename.tar.gz"
 record=$(artifact_record_path "$RECORD_DIR" mysql "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
