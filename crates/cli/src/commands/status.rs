@@ -3,17 +3,19 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, PfConfReference, PfFileState, ResolverFileState,
+    CaFileState, LaunchAgentFileState, LocalCaMetadata, PfConfReference, PfFileState,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use serde::Serialize;
 use state::{
     Database, JobRecord, JobStatus, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    PvPaths, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
+    ProjectEnvObservedStatus, ProjectRecord, PvPaths, RuntimeObservedStateRecord,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 use crate::args::StatusArgs;
 use crate::environment::Environment;
-use crate::error::ExecuteError;
+use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 
 pub(crate) fn run(
@@ -48,6 +50,7 @@ struct StatusSnapshot {
     integrations: IntegrationStatuses,
     managed_resources: Vec<ManagedResourceStatus>,
     runtimes: Vec<RuntimeStatus>,
+    projects: Vec<ProjectStatus>,
     recent_errors: Vec<JobStatusSummary>,
     log_directory: String,
 }
@@ -57,7 +60,7 @@ impl StatusSnapshot {
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
         let daemon = DaemonStatus::read(environment, &paths)?;
-        let integrations = IntegrationStatuses::read(&paths);
+        let integrations = IntegrationStatuses::read(environment, &paths)?;
         let runtime_states = match &database {
             Some(database) => database.runtime_observed_states()?,
             None => Vec::new(),
@@ -67,6 +70,10 @@ impl StatusSnapshot {
             None => Vec::new(),
         };
         let runtimes = runtime_statuses(&runtime_states);
+        let projects = match &database {
+            Some(database) => project_statuses(database)?,
+            None => Vec::new(),
+        };
         let recent_errors = match &database {
             Some(database) => database
                 .recent_jobs()?
@@ -77,8 +84,10 @@ impl StatusSnapshot {
             None => Vec::new(),
         };
         let has_failure = daemon.failure
+            || integrations.failure
             || managed_resources.iter().any(|resource| resource.failure)
             || runtimes.iter().any(|runtime| runtime.failure)
+            || projects.iter().any(|project| project.failure)
             || !recent_errors.is_empty();
         let overall = if has_failure { "failed" } else { "ok" };
 
@@ -88,6 +97,7 @@ impl StatusSnapshot {
             integrations,
             managed_resources,
             runtimes,
+            projects,
             recent_errors,
             log_directory: paths.logs().to_string(),
         })
@@ -131,6 +141,19 @@ impl StatusSnapshot {
                     runtime.subject,
                     runtime.status,
                     runtime.message.as_deref().unwrap_or("-"),
+                ))?;
+            }
+        }
+        output.line("Projects:")?;
+        if self.projects.is_empty() {
+            output.line("  none")?;
+        } else {
+            for project in &self.projects {
+                output.line(&format!(
+                    "  {} env={} {}",
+                    project.hostname,
+                    project.env_status,
+                    project.message.as_deref().unwrap_or("-"),
                 ))?;
             }
         }
@@ -201,21 +224,61 @@ struct IntegrationStatuses {
     dns: &'static str,
     ports: &'static str,
     ca: &'static str,
+    #[serde(skip)]
+    failure: bool,
 }
 
 impl IntegrationStatuses {
-    fn read(paths: &PvPaths) -> Self {
-        let resolver = platform::inspect_resolver_file(&paths.resolver_config(), None);
-        let pf_anchor = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
-        let pf_reference =
-            platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
-        let ca = platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+    fn read(environment: &impl Environment, paths: &PvPaths) -> Result<Self, ExecuteError> {
+        let prepared_resolver = platform::inspect_resolver_file(&paths.resolver_config(), None);
+        let expected_resolver = resolver_config_from_state(&prepared_resolver);
+        let system_resolver_path = resolver_test_path(environment)?;
+        let system_resolver =
+            platform::inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
+        let (dns, dns_failure) = resolver_status(&prepared_resolver, &system_resolver);
 
-        Self {
-            dns: resolver_status(&resolver),
-            ports: pf_status(&pf_anchor, &pf_reference),
-            ca: ca_status(&ca),
-        }
+        let prepared_pf_anchor = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
+        let prepared_pf_reference =
+            platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
+        let expected_pf_anchor = pf_config_from_anchor_state(&prepared_pf_anchor);
+        let expected_pf_reference = pf_reference_from_state(&prepared_pf_reference);
+        let system_pf_anchor_path = pf_anchor_path(environment)?;
+        let system_pf_conf_path = pf_conf_path(environment)?;
+        let system_pf_anchor =
+            platform::inspect_pf_anchor_file(&system_pf_anchor_path, expected_pf_anchor.as_ref());
+        let system_pf_reference = platform::inspect_pf_conf_reference(
+            &system_pf_conf_path,
+            expected_pf_reference.as_ref(),
+        );
+        let active_pf = if pf_file_status(&prepared_pf_anchor, &prepared_pf_reference) == "current"
+            && pf_file_status(&system_pf_anchor, &system_pf_reference) == "current"
+        {
+            Some(environment.active_pf_redirect_config())
+        } else {
+            None
+        };
+        let (ports, ports_failure) = pf_status(
+            &prepared_pf_anchor,
+            &prepared_pf_reference,
+            &system_pf_anchor,
+            &system_pf_reference,
+            active_pf
+                .as_ref()
+                .and_then(|active| active.as_ref().map(|config| config.as_ref()).ok()),
+        );
+
+        let local_ca =
+            platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        let local_metadata = metadata_from_local_ca(&local_ca);
+        let trust = ca_trust_state(environment, local_metadata.as_ref());
+        let (ca, ca_failure) = ca_status(&local_ca, &trust);
+
+        Ok(Self {
+            dns,
+            ports,
+            ca,
+            failure: dns_failure || ports_failure || ca_failure,
+        })
     }
 }
 
@@ -236,6 +299,16 @@ struct RuntimeStatus {
     status: &'static str,
     message: Option<String>,
     observed_at: String,
+    failure: bool,
+}
+
+#[derive(Serialize)]
+struct ProjectStatus {
+    hostname: String,
+    env_status: &'static str,
+    message: Option<String>,
+    observed_at: Option<String>,
+    #[serde(skip)]
     failure: bool,
 }
 
@@ -329,6 +402,45 @@ fn runtime_statuses(runtime_states: &[RuntimeObservedStateRecord]) -> Vec<Runtim
         .collect()
 }
 
+fn project_statuses(database: &Database) -> Result<Vec<ProjectStatus>, ExecuteError> {
+    let mut statuses = Vec::new();
+
+    for project in database.projects()? {
+        let observed = database.project_env_observed_state(&project.id)?;
+        let status = project_status(project, observed);
+        if status.env_status != "rendered" {
+            statuses.push(status);
+        }
+    }
+
+    Ok(statuses)
+}
+
+fn project_status(
+    project: ProjectRecord,
+    observed: Option<state::ProjectEnvObservedStateRecord>,
+) -> ProjectStatus {
+    let Some(observed) = observed else {
+        return ProjectStatus {
+            hostname: project.primary_hostname,
+            env_status: "pending",
+            message: Some("Project env has not been observed yet".to_string()),
+            observed_at: None,
+            failure: false,
+        };
+    };
+    let env_status = project_env_status_label(observed.status);
+    let failure = observed.status == ProjectEnvObservedStatus::Failed;
+
+    ProjectStatus {
+        hostname: project.primary_hostname,
+        env_status,
+        message: observed.message,
+        observed_at: Some(observed.observed_at),
+        failure,
+    }
+}
+
 fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
     match state {
         LaunchAgentFileState::Missing { .. } => "missing",
@@ -339,17 +451,58 @@ fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
     }
 }
 
-fn resolver_status(state: &ResolverFileState) -> &'static str {
-    match state {
-        ResolverFileState::Missing { .. } => "missing",
-        ResolverFileState::Current { .. } => "current",
-        ResolverFileState::Stale { .. } => "stale",
-        ResolverFileState::Conflict { .. } => "conflict",
-        ResolverFileState::Unreadable { .. } => "unreadable",
+fn resolver_status(
+    prepared: &ResolverFileState,
+    system: &ResolverFileState,
+) -> (&'static str, bool) {
+    match prepared {
+        ResolverFileState::Missing { .. } => ("missing", false),
+        ResolverFileState::Current { .. } => match system {
+            ResolverFileState::Current { .. } => ("current", false),
+            ResolverFileState::Missing { .. } => ("prepared-only", true),
+            ResolverFileState::Stale { .. } => ("stale", true),
+            ResolverFileState::Conflict { .. } => ("conflict", true),
+            ResolverFileState::Unreadable { .. } => ("unreadable", true),
+        },
+        ResolverFileState::Stale { .. } => ("stale", true),
+        ResolverFileState::Conflict { .. } => ("conflict", true),
+        ResolverFileState::Unreadable { .. } => ("unreadable", true),
     }
 }
 
 fn pf_status(
+    prepared_anchor: &PfFileState<platform::PfRedirectConfig>,
+    prepared_reference: &PfFileState<PfConfReference>,
+    system_anchor: &PfFileState<platform::PfRedirectConfig>,
+    system_reference: &PfFileState<PfConfReference>,
+    active: Option<Option<&platform::PfRedirectConfig>>,
+) -> (&'static str, bool) {
+    let prepared_status = pf_file_status(prepared_anchor, prepared_reference);
+    if prepared_status != "current" {
+        return (prepared_status, prepared_status != "missing");
+    }
+
+    let system_status = pf_file_status(system_anchor, system_reference);
+    if system_status != "current" {
+        if system_status == "missing" {
+            return ("prepared-only", true);
+        }
+
+        return (system_status, true);
+    }
+
+    let Some(active) = active else {
+        return ("unreadable", true);
+    };
+    let expected = pf_config_from_anchor_state(prepared_anchor);
+    if active == expected.as_ref() {
+        ("current", false)
+    } else {
+        ("inactive", true)
+    }
+}
+
+fn pf_file_status(
     anchor: &PfFileState<platform::PfRedirectConfig>,
     reference: &PfFileState<PfConfReference>,
 ) -> &'static str {
@@ -362,12 +515,19 @@ fn pf_status(
     }
 }
 
-fn ca_status(state: &CaFileState) -> &'static str {
+fn ca_status(state: &CaFileState, trust: &TrustDomainState) -> (&'static str, bool) {
     match state {
-        CaFileState::Missing { .. } => "missing",
-        CaFileState::Current { .. } => "current",
-        CaFileState::RepairRequired { .. } => "repair-required",
-        CaFileState::Unreadable { .. } => "unreadable",
+        CaFileState::Missing { .. } => ("missing", false),
+        CaFileState::Current { .. } => match trust {
+            TrustDomainState::Current { .. } => ("current", false),
+            TrustDomainState::NotTrusted { .. } => ("not-trusted", true),
+            TrustDomainState::Stale { .. } => ("stale", true),
+            TrustDomainState::Denied { .. } => ("denied", true),
+            TrustDomainState::Unknown { .. } => ("unknown", true),
+            TrustDomainState::Unreadable { .. } => ("unreadable", true),
+        },
+        CaFileState::RepairRequired { .. } => ("repair-required", true),
+        CaFileState::Unreadable { .. } => ("unreadable", true),
     }
 }
 
@@ -396,9 +556,94 @@ fn desired_state_label(state: ManagedResourceDesiredState) -> &'static str {
     }
 }
 
+fn project_env_status_label(status: ProjectEnvObservedStatus) -> &'static str {
+    match status {
+        ProjectEnvObservedStatus::Pending => "pending",
+        ProjectEnvObservedStatus::Rendered => "rendered",
+        ProjectEnvObservedStatus::Warning => "warning",
+        ProjectEnvObservedStatus::Failed => "failed",
+    }
+}
+
+fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
+    match state {
+        ResolverFileState::Current { port, .. } => Some(ResolverConfig::new(*port)),
+        ResolverFileState::Missing { .. }
+        | ResolverFileState::Stale { .. }
+        | ResolverFileState::Conflict { .. }
+        | ResolverFileState::Unreadable { .. } => None,
+    }
+}
+
+fn pf_config_from_anchor_state(
+    state: &PfFileState<platform::PfRedirectConfig>,
+) -> Option<platform::PfRedirectConfig> {
+    match state {
+        PfFileState::Current { value, .. } => Some(value.clone()),
+        PfFileState::Missing { .. }
+        | PfFileState::Stale { .. }
+        | PfFileState::Conflict { .. }
+        | PfFileState::Unreadable { .. } => None,
+    }
+}
+
+fn pf_reference_from_state(state: &PfFileState<PfConfReference>) -> Option<PfConfReference> {
+    match state {
+        PfFileState::Current { value, .. } => Some(*value),
+        PfFileState::Missing { .. }
+        | PfFileState::Stale { .. }
+        | PfFileState::Conflict { .. }
+        | PfFileState::Unreadable { .. } => None,
+    }
+}
+
+fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
+    match state {
+        CaFileState::Current { metadata, .. } => Some(metadata.clone()),
+        CaFileState::Missing { .. }
+        | CaFileState::RepairRequired { .. }
+        | CaFileState::Unreadable { .. } => None,
+    }
+}
+
+fn ca_trust_state(
+    environment: &impl Environment,
+    metadata: Option<&LocalCaMetadata>,
+) -> TrustDomainState {
+    struct EnvironmentTrustInspector<'environment, E> {
+        environment: &'environment E,
+    }
+
+    impl<E: Environment> platform::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
+        fn trusted_certificates(
+            &self,
+        ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
+            self.environment.trusted_ca_certificates()
+        }
+    }
+
+    let inspector = EnvironmentTrustInspector { environment };
+    platform::inspect_system_ca_trust(metadata, &inspector)
+}
+
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = environment.home_dir().ok_or(StateError::MissingHome)?;
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
+}
+
+fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+fn pf_anchor_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.pf_anchor_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+fn pf_conf_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.pf_conf_path())
+        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }

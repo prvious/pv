@@ -202,6 +202,14 @@ fn resolve_resource_track(
     requested_track: Option<&str>,
 ) -> Result<String, ExecuteError> {
     if let Some(track) = requested_track {
+        if TrackSelector::is_reserved_alias(track) {
+            let resource = ResourceName::new(resource_name)?;
+            let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+            let track = manifest.resolve_track(&resource, TrackSelector::Latest)?;
+
+            return Ok(track.as_str().to_string());
+        }
+
         return Ok(track.to_string());
     }
 

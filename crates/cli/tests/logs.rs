@@ -175,6 +175,33 @@ fn logs_resource_alias_requires_track_when_ambiguous() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn logs_resource_latest_resolves_manifest_default_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_installed_track(&paths, "postgres", "15")?;
+    seed_installed_track(&paths, "postgres", "16")?;
+    write_file(
+        &paths.downloads().join("manifest.json"),
+        &postgres_manifest_with_default_track("16"),
+    )?;
+    write_log(&paths.resource_log("postgres", "16"), "postgres ready\n")?;
+
+    let output = run_pv(
+        &["logs", "--resource", "pg", "--track", "latest"],
+        &environment,
+    )?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert!(output.stdout.contains("postgres ready"));
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,
@@ -195,11 +222,15 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
     })
 }
 
+fn write_log(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
+    write_file(path, content)
+}
+
 #[expect(
     clippy::disallowed_methods,
-    reason = "CLI logs tests create fixture log files"
+    reason = "CLI logs tests create fixture files"
 )]
-fn write_log(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
+fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -225,4 +256,51 @@ fn seed_installed_track(paths: &PvPaths, resource_name: &str, track: &str) -> an
     ])?;
 
     Ok(())
+}
+
+fn postgres_manifest_with_default_track(default_track: &str) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.0.0",
+  "resources": [
+    {{
+      "name": "postgres",
+      "default_track": "{default_track}",
+      "tracks": [
+        {{
+          "name": "15",
+          "artifacts": [
+            {{
+              "artifact_version": "15.0.0-pv1",
+              "upstream_version": "15.0.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/postgres-15.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 15,
+              "published_at": "2026-01-01T00:00:00Z"
+            }}
+          ]
+        }},
+        {{
+          "name": "16",
+          "artifacts": [
+            {{
+              "artifact_version": "16.0.0-pv1",
+              "upstream_version": "16.0.0",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/postgres-16.tar.gz",
+              "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "size": 16,
+              "published_at": "2026-01-01T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}"#
+    )
 }

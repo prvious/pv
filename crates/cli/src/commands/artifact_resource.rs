@@ -126,7 +126,7 @@ pub(crate) fn list(
         let tracks = if descriptor.kind() == ResourceKind::BackingService {
             backing_resource_json_tracks(&paths, spec.resource_name, &tracks)?
         } else {
-            resource_json_tracks(spec.resource_name, &tracks)
+            resource_json_tracks(&tracks)
         };
         serde_json::to_writer(&mut *stdout, &ResourceListOutput { tracks })?;
         writeln!(stdout)?;
@@ -275,21 +275,10 @@ fn backing_resource_json_tracks(
         .collect())
 }
 
-fn resource_json_tracks(
-    resource_name: &str,
-    tracks: &[ManagedResourceTrack],
-) -> Vec<ResourceListTrack> {
+fn resource_json_tracks(tracks: &[ManagedResourceTrack]) -> Vec<ResourceListTrack> {
     tracks
         .iter()
-        .map(|track| ResourceListTrack {
-            resource: resource_name.to_string(),
-            track: track.track().as_str().to_string(),
-            status: None,
-            ports: BTreeMap::new(),
-            projects: track.usage_count(),
-            version: track.installed_version().as_str().to_string(),
-            path: track.current_artifact_path().to_string(),
-        })
+        .map(|track| resource_json_track(track, None, BTreeMap::new()))
         .collect()
 }
 

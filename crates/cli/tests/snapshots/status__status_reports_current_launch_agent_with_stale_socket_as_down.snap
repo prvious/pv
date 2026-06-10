@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "PV status\nOverall: failed\nDaemon: down\n  LaunchAgent: current\n  Socket: unhealthy\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nRecent errors:\n  none\n",
+    stdout: "PV status\nOverall: failed\nDaemon: down\n  LaunchAgent: current\n  Socket: unhealthy\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n",
     stderr: "",
 }

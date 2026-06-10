@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/status.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  app.test env=pending waiting for reconciliation\nRecent errors:\n  none\n",
+    stderr: "",
+}

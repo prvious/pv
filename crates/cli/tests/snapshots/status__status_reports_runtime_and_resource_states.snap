@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  mysql 8.0 running projects=0 version=1.0.0\nRecent errors:\n  none\n",
+    stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  mysql 8.0 running projects=0 version=1.0.0\nProjects:\n  none\nRecent errors:\n  none\n",
     stderr: "",
 }

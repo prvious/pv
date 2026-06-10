@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/status.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV status\nOverall: failed\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: prepared-only\n  Ports: prepared-only\n  CA: current\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n",
+    stderr: "",
+}

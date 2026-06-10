@@ -8,9 +8,11 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
-use platform::LaunchAgentConfig;
+use platform::{KeychainCertificate, PfConfReference, PfRedirectConfig, ResolverConfig};
+use platform::{KeychainTrustResult, LaunchAgentConfig};
 use state::{
-    Database, ManagedResourceTrackInstallInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    Database, LinkProjectInput, ManagedResourceTrackInstallInput, ProjectEnvObservedStatus,
+    PvPaths, RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -18,6 +20,10 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     launch_agent_path: PathBuf,
+    resolver_path: PathBuf,
+    pf_anchor_path: PathBuf,
+    pf_conf_path: PathBuf,
+    trusted_certificates: Vec<KeychainCertificate>,
 }
 
 impl TestEnvironment {
@@ -29,7 +35,19 @@ impl TestEnvironment {
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
+            resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
+            pf_anchor_path: home
+                .join("etc/pf.anchors/com.prvious.pv")
+                .as_std_path()
+                .to_path_buf(),
+            pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
+            trusted_certificates: Vec::new(),
         }
+    }
+
+    fn with_trusted_certificate(mut self, certificate: KeychainCertificate) -> Self {
+        self.trusted_certificates.push(certificate);
+        self
     }
 }
 
@@ -64,6 +82,28 @@ impl Environment for TestEnvironment {
 
     fn launch_agent_path(&self) -> PathBuf {
         self.launch_agent_path.clone()
+    }
+
+    fn resolver_test_path(&self) -> PathBuf {
+        self.resolver_path.clone()
+    }
+
+    fn pf_anchor_path(&self) -> PathBuf {
+        self.pf_anchor_path.clone()
+    }
+
+    fn pf_conf_path(&self) -> PathBuf {
+        self.pf_conf_path.clone()
+    }
+
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        Ok(None)
+    }
+
+    fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
+        Ok(self.trusted_certificates.clone())
     }
 }
 
@@ -126,6 +166,113 @@ fn status_reports_failed_jobs_as_failure() -> anyhow::Result<()> {
     assert!(output.stderr.is_empty());
     assert_status_snapshot(
         "status_reports_failed_jobs_as_failure",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn status_reports_dns_and_ports_repair_required_as_failure() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let trusted_certificate = seed_current_local_ca(&paths)?;
+    let environment = TestEnvironment::new(&home).with_trusted_certificate(trusted_certificate);
+    Database::open(&paths)?;
+    write_file(
+        &paths.resolver_config(),
+        &ResolverConfig::new(35353).render(),
+    )?;
+    write_file(
+        &paths.pf_anchor_config(),
+        &PfRedirectConfig::new(48080, 48443).render_anchor(),
+    )?;
+    write_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
+
+    let output = run_pv(&["status"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_status_snapshot(
+        "status_reports_dns_and_ports_repair_required_as_failure",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn status_reports_project_env_failures_as_failure() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("project");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path.clone(),
+            primary_hostname: "app.test".to_string(),
+            config_path: project_path.join("pv.toml"),
+            desired_php_track: Some("8.4".to_string()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Failed,
+        Some("missing required env placeholder"),
+        &[],
+    )?;
+
+    let output = run_pv(&["status"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_status_snapshot(
+        "status_reports_project_env_failures_as_failure",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn status_reports_pending_project_env_as_success() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("project");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path.clone(),
+            primary_hostname: "app.test".to_string(),
+            config_path: project_path.join("pv.toml"),
+            desired_php_track: Some("8.4".to_string()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Pending,
+        Some("waiting for reconciliation"),
+        &[],
+    )?;
+
+    let output = run_pv(&["status"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_status_snapshot(
+        "status_reports_pending_project_env_as_success",
         tempdir.path(),
         output,
     );
@@ -223,6 +370,17 @@ fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {
     )?;
 
     Ok(())
+}
+
+fn seed_current_local_ca(paths: &PvPaths) -> anyhow::Result<KeychainCertificate> {
+    let ca = platform::generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &ca.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &ca.private_key_pem)?;
+
+    Ok(KeychainCertificate {
+        metadata: ca.metadata,
+        trust: KeychainTrustResult::TrustRoot,
+    })
 }
 
 fn seed_current_launch_agent(paths: &PvPaths, environment: &TestEnvironment) -> anyhow::Result<()> {

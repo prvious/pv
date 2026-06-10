@@ -1,16 +1,19 @@
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
-use platform::{LaunchAgentConfig, PfConfReference, PfRedirectConfig, ResolverConfig};
+use platform::{
+    KeychainCertificate, KeychainTrustResult, LaunchAgentConfig, PfConfReference, PfRedirectConfig,
+    ResolverConfig,
+};
 use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
 #[derive(Debug)]
@@ -18,6 +21,11 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     launch_agent_path: PathBuf,
+    resolver_path: PathBuf,
+    pf_anchor_path: PathBuf,
+    pf_conf_path: PathBuf,
+    active_pf_config: std::cell::RefCell<Option<PfRedirectConfig>>,
+    trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
 }
 
 impl TestEnvironment {
@@ -29,12 +37,32 @@ impl TestEnvironment {
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
+            resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
+            pf_anchor_path: home
+                .join("etc/pf.anchors/com.prvious.pv")
+                .as_std_path()
+                .to_path_buf(),
+            pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
+            active_pf_config: std::cell::RefCell::new(None),
+            trusted_certificates: std::cell::RefCell::new(Vec::new()),
         }
     }
 
     fn launch_agent_path_utf8(&self) -> anyhow::Result<camino::Utf8PathBuf> {
         camino::Utf8PathBuf::from_path_buf(self.launch_agent_path.clone())
             .map_err(|path| anyhow::anyhow!("launch agent path is not UTF-8: {}", path.display()))
+    }
+
+    fn resolver_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
+        utf8_path_buf(&self.resolver_path, "resolver path")
+    }
+
+    fn pf_anchor_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
+        utf8_path_buf(&self.pf_anchor_path, "pf anchor path")
+    }
+
+    fn pf_conf_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
+        utf8_path_buf(&self.pf_conf_path, "pf.conf path")
     }
 }
 
@@ -69,6 +97,28 @@ impl Environment for TestEnvironment {
 
     fn launch_agent_path(&self) -> PathBuf {
         self.launch_agent_path.clone()
+    }
+
+    fn resolver_test_path(&self) -> PathBuf {
+        self.resolver_path.clone()
+    }
+
+    fn pf_anchor_path(&self) -> PathBuf {
+        self.pf_anchor_path.clone()
+    }
+
+    fn pf_conf_path(&self) -> PathBuf {
+        self.pf_conf_path.clone()
+    }
+
+    fn active_pf_redirect_config(
+        &self,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        Ok(self.active_pf_config.borrow().clone())
+    }
+
+    fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
+        Ok(self.trusted_certificates.borrow().clone())
     }
 }
 
@@ -135,6 +185,78 @@ fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
     assert!(output.stderr.is_empty());
     assert_doctor_snapshot(
         "doctor_fails_when_daemon_socket_is_stale",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_fails_when_system_resolver_is_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    delete_optional_file(&environment.resolver_path_utf8()?)?;
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_doctor_snapshot(
+        "doctor_fails_when_system_resolver_is_missing",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_fails_when_active_pf_redirects_are_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    *environment.active_pf_config.borrow_mut() = None;
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_doctor_snapshot(
+        "doctor_fails_when_active_pf_redirects_are_missing",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_fails_when_system_ca_trust_is_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    environment.trusted_certificates.borrow_mut().clear();
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    assert_doctor_snapshot(
+        "doctor_fails_when_system_ca_trust_is_missing",
         tempdir.path(),
         output,
     );
@@ -220,19 +342,42 @@ fn seed_required_checks(
         &ResolverConfig::new(35353).render(),
     )?;
     state::fs::write_sensitive_file(
+        &environment.resolver_path_utf8()?,
+        &ResolverConfig::new(35353).render(),
+    )?;
+    let pf_redirect_config = PfRedirectConfig::new(48080, 48443);
+    state::fs::write_sensitive_file(
         &paths.pf_anchor_config(),
-        &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        &pf_redirect_config.render_anchor(),
     )?;
     state::fs::write_sensitive_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
+    state::fs::write_sensitive_file(
+        &environment.pf_anchor_path_utf8()?,
+        &pf_redirect_config.render_anchor(),
+    )?;
+    state::fs::write_sensitive_file(&environment.pf_conf_path_utf8()?, &PfConfReference.render())?;
+    *environment.active_pf_config.borrow_mut() = Some(pf_redirect_config);
     let ca = platform::generate_local_ca()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
+    environment
+        .trusted_certificates
+        .borrow_mut()
+        .push(KeychainCertificate {
+            metadata: ca.metadata,
+            trust: KeychainTrustResult::TrustRoot,
+        });
 
     if include_manifest_cache {
         state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), "{}")?;
     }
 
     Ok(())
+}
+
+fn utf8_path_buf(path: &Path, label: &str) -> anyhow::Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path.to_path_buf())
+        .map_err(|path| anyhow::anyhow!("{label} is not UTF-8: {}", path.display()))
 }
 
 #[expect(
@@ -295,6 +440,18 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI doctor tests delete fixture files"
+)]
+fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn assert_doctor_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl std::fmt::Debug) {
