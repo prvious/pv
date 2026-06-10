@@ -22,6 +22,7 @@ BOOST_SOURCE_URL=${PV_MYSQL_BOOST_SOURCE_URL:-"https://archives.boost.io/release
 BOOST_SOURCE_SHA256=${PV_MYSQL_BOOST_SOURCE_SHA256:-fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854}
 DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
+MYSQL_97_APPLECLANG_PATCH="$recipe_dir/patches/mysql-9.7.0-appleclang-parse-options.patch"
 
 need brew
 need cargo
@@ -31,6 +32,7 @@ need dirname
 need find
 need git
 need make
+need patch
 need perl
 need readlink
 need shasum
@@ -94,6 +96,17 @@ extract_source() {
   [ "$source_entry_count" -eq 1 ] || die "$source_name source archive must contain exactly one top-level source directory"
   [ -d "$source_dir" ] || die "$source_name source archive top-level entry is not a directory"
   printf '%s\n' "$source_dir"
+}
+
+apply_mysql_source_patches() {
+  source_dir=$1
+
+  case "$PV_UPSTREAM_VERSION" in
+    9.7.0)
+      # AppleClang 15 rejects MySQL's single-option aggregate initialization.
+      patch -d "$source_dir" -p1 <"$MYSQL_97_APPLECLANG_PATCH"
+      ;;
+  esac
 }
 
 openssl_configure_target_for_platform() {
@@ -214,6 +227,7 @@ else
 fi
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")
+apply_mysql_source_patches "$source_dir"
 if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
   download_source "$boost_source_archive" "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
   BOOST_PREFIX=$(extract_source Boost "$boost_source_archive" "$boost_source_extract_dir")

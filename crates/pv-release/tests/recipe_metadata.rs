@@ -231,6 +231,41 @@ fn committed_mysql_recipe_pins_boost_for_compatibility_track() -> Result<()> {
 }
 
 #[test]
+fn committed_mysql_recipe_applies_appleclang_patch_for_current_track() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let patch_path = workspace_root
+        .join("release/artifacts/recipes/mysql/patches/mysql-9.7.0-appleclang-parse-options.patch");
+    assert!(
+        patch_path.exists(),
+        "expected MySQL 9.7 AppleClang source patch at {patch_path}"
+    );
+
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
+    let patch_lines = build_script
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("APPLECLANG_PATCH")
+                || line.contains("apply_mysql_source_patches")
+                || line.contains("patch -d")
+        })
+        .collect::<Vec<_>>();
+    let patch = read_file(&patch_path)?;
+
+    assert_snapshot!(patch_lines.join("\n"), @r###"
+    MYSQL_97_APPLECLANG_PATCH="$recipe_dir/patches/mysql-9.7.0-appleclang-parse-options.patch"
+    apply_mysql_source_patches() {
+    patch -d "$source_dir" -p1 <"$MYSQL_97_APPLECLANG_PATCH"
+    apply_mysql_source_patches "$source_dir"
+    "###);
+    assert!(patch.contains("Compound_parse_options(std::tuple<Format_t>(format))"));
+    assert!(patch.contains("Compound_parse_options(std::tuple<Repeat_t>(repeat))"));
+    assert!(patch.contains("Compound_parse_options(std::tuple<Checker_t>(checker))"));
+
+    Ok(())
+}
+
+#[test]
 fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let wrong_resource =
         VALID_REDIS_TOML.replace("resources = [\"redis\"]", "resources = [\"mysql\"]");
