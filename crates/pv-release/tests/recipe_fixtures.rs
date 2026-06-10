@@ -78,39 +78,39 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
             ArchiveRoot::new("composer", "2", "any", "composer-2.10.1-pv1-any"),
             ArchiveRoot::new(
                 "frankenphp",
-                "8.2",
-                "darwin-amd64",
-                "frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.2",
-                "darwin-arm64",
-                "frankenphp-8.2.31-frankenphp1.12.3-pv1-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
                 "8.3",
                 "darwin-amd64",
-                "frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-amd64",
+                "frankenphp-8.3.31-frankenphp1.12.4-pv1-darwin-amd64",
             ),
             ArchiveRoot::new(
                 "frankenphp",
                 "8.3",
                 "darwin-arm64",
-                "frankenphp-8.3.31-frankenphp1.12.3-pv1-darwin-arm64",
+                "frankenphp-8.3.31-frankenphp1.12.4-pv1-darwin-arm64",
             ),
             ArchiveRoot::new(
                 "frankenphp",
                 "8.4",
                 "darwin-amd64",
-                "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-amd64",
+                "frankenphp-8.4.22-frankenphp1.12.4-pv1-darwin-amd64",
             ),
             ArchiveRoot::new(
                 "frankenphp",
                 "8.4",
                 "darwin-arm64",
-                "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64",
+                "frankenphp-8.4.22-frankenphp1.12.4-pv1-darwin-arm64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.5",
+                "darwin-amd64",
+                "frankenphp-8.5.7-frankenphp1.12.4-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "frankenphp",
+                "8.5",
+                "darwin-arm64",
+                "frankenphp-8.5.7-frankenphp1.12.4-pv1-darwin-arm64",
             ),
             ArchiveRoot::new(
                 "mailpit",
@@ -126,6 +126,18 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
             ),
             ArchiveRoot::new(
                 "mysql",
+                "8.0",
+                "darwin-amd64",
+                "mysql-8.0.46-pv1-darwin-amd64"
+            ),
+            ArchiveRoot::new(
+                "mysql",
+                "8.0",
+                "darwin-arm64",
+                "mysql-8.0.46-pv1-darwin-arm64"
+            ),
+            ArchiveRoot::new(
+                "mysql",
                 "8.4",
                 "darwin-amd64",
                 "mysql-8.4.9-pv1-darwin-amd64"
@@ -136,33 +148,57 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
                 "darwin-arm64",
                 "mysql-8.4.9-pv1-darwin-arm64"
             ),
-            ArchiveRoot::new("php", "8.2", "darwin-amd64", "php-8.2.31-pv1-darwin-amd64"),
-            ArchiveRoot::new("php", "8.2", "darwin-arm64", "php-8.2.31-pv1-darwin-arm64"),
+            ArchiveRoot::new(
+                "mysql",
+                "9.7",
+                "darwin-amd64",
+                "mysql-9.7.0-pv1-darwin-amd64"
+            ),
+            ArchiveRoot::new(
+                "mysql",
+                "9.7",
+                "darwin-arm64",
+                "mysql-9.7.0-pv1-darwin-arm64"
+            ),
             ArchiveRoot::new("php", "8.3", "darwin-amd64", "php-8.3.31-pv1-darwin-amd64"),
             ArchiveRoot::new("php", "8.3", "darwin-arm64", "php-8.3.31-pv1-darwin-arm64"),
-            ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.20-pv1-darwin-amd64"),
-            ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.20-pv1-darwin-arm64"),
+            ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.22-pv1-darwin-amd64"),
+            ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.22-pv1-darwin-arm64"),
+            ArchiveRoot::new("php", "8.5", "darwin-amd64", "php-8.5.7-pv1-darwin-amd64"),
+            ArchiveRoot::new("php", "8.5", "darwin-arm64", "php-8.5.7-pv1-darwin-arm64"),
+            ArchiveRoot::new(
+                "postgres",
+                "17",
+                "darwin-amd64",
+                "postgres-17.10-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "postgres",
+                "17",
+                "darwin-arm64",
+                "postgres-17.10-pv1-darwin-arm64",
+            ),
             ArchiveRoot::new(
                 "postgres",
                 "18",
                 "darwin-amd64",
-                "postgres-18.3-pv1-darwin-amd64",
+                "postgres-18.4-pv1-darwin-amd64",
             ),
             ArchiveRoot::new(
                 "postgres",
                 "18",
                 "darwin-arm64",
-                "postgres-18.3-pv1-darwin-arm64",
+                "postgres-18.4-pv1-darwin-arm64",
             ),
             ArchiveRoot::new(
                 "redis",
-                "8.2",
+                "8.8",
                 "darwin-amd64",
                 &format!("redis-{redis_upstream_version}-pv1-darwin-amd64"),
             ),
             ArchiveRoot::new(
                 "redis",
-                "8.2",
+                "8.8",
                 "darwin-arm64",
                 &format!("redis-{redis_upstream_version}-pv1-darwin-arm64"),
             ),
@@ -436,7 +472,7 @@ fn open_file(path: &Utf8Path) -> Result<std::fs::File> {
 const VALID_REDIS_TOML: &str = r#"
 [recipe]
 resources = ["redis"]
-default_track = "8.2"
+default_track = "8.8"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
@@ -447,20 +483,20 @@ notice_files = ["NOTICE"]
 payload_paths = ["bin/redis-server", "bin/redis-cli"]
 
 [[tracks]]
-name = "8.2"
-upstream_version = "8.2.1"
-source_url = "https://download.redis.io/releases/redis-8.2.1.tar.gz"
+name = "8.8"
+upstream_version = "8.8.0"
+source_url = "https://download.redis.io/releases/redis-8.8.0.tar.gz"
 source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 "#;
 
 const MAILPIT_RUSTFS_FIXTURE_DEFAULTS: &str = r#"
 [[resource]]
 name = "php"
-default_track = "8.4"
+default_track = "8.5"
 
 [[resource]]
 name = "frankenphp"
-default_track = "8.4"
+default_track = "8.5"
 
 [[resource]]
 name = "composer"

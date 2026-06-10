@@ -11,7 +11,13 @@ notice_files = ["NOTICE"]
 payload_paths = ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
 
 [[tracks]]
+name = "17"
+upstream_version = "17.10"
+source_url = "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz"
+source_sha256 = "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc"
+
+[[tracks]]
 name = "18"
-upstream_version = "18.3"
-source_url = "https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz"
-source_sha256 = "9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59"
+upstream_version = "18.4"
+source_url = "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz"
+source_sha256 = "450aa8f2da06c46f8221916e82ae06b04fb1040f8f00643dbf8b7d663caac0b9"

@@ -1,0 +1,48 @@
+diff --git a/libs/mysql/strconv/decode/parse_options.h b/libs/mysql/strconv/decode/parse_options.h
+--- a/libs/mysql/strconv/decode/parse_options.h
++++ b/libs/mysql/strconv/decode/parse_options.h
+@@ -95,6 +95,8 @@ template <detail::Is_compound_parse_options_tuple Tuple_tp>
+ struct Compound_parse_options {
+   using Tuple_t = Tuple_tp;
+   Tuple_t m_tuple;
++  Compound_parse_options() = default;
++  explicit Compound_parse_options(Tuple_t tuple) : m_tuple(tuple) {}
+   static constexpr bool has_format = detail::Format_count<Tuple_t> > 0;
+   static constexpr bool has_repeat = detail::Repeat_count<Tuple_t> > 0;
+   static constexpr bool has_checker = detail::Checker_count<Tuple_t> > 0;
+@@ -189,15 +189,15 @@ inline auto make_compound_parse_options() {
+ }
+ template <Is_format Format_t>
+ auto make_compound_parse_options(const Format_t &format) {
+-  return Compound_parse_options<std::tuple<Format_t>>(format);
++  return Compound_parse_options(std::tuple<Format_t>(format));
+ }
+ template <Is_repeat Repeat_t>
+ auto make_compound_parse_options(const Repeat_t &repeat) {
+-  return Compound_parse_options<std::tuple<Repeat_t>>(repeat);
++  return Compound_parse_options(std::tuple<Repeat_t>(repeat));
+ }
+ template <Is_checker Checker_t>
+ auto make_compound_parse_options(const Checker_t &checker) {
+-  return Compound_parse_options<std::tuple<Checker_t>>(checker);
++  return Compound_parse_options(std::tuple<Checker_t>(checker));
+ }
+ auto make_compound_parse_options(const Is_compound_parse_options auto &opt) {
+   return opt;
+ }
+diff --git a/sql/json_duality_view/dml.cc b/sql/json_duality_view/dml.cc
+--- a/sql/json_duality_view/dml.cc
++++ b/sql/json_duality_view/dml.cc
+@@ -620,6 +620,12 @@ struct Resolve_column {
+   const Key_column_info *kci = nullptr;
+   Json_dom *value = nullptr;
+   bool deferred_resolve = false;
++  Resolve_column() = default;
++  Resolve_column(const Key_column_info *key_column_info, Json_dom *json_value,
++                 bool deferred_resolve_value)
++      : kci(key_column_info),
++        value(json_value),
++        deferred_resolve(deferred_resolve_value) {}
+ };
+
+ [[maybe_unused]] static std::ostream &operator<<(std::ostream &os,

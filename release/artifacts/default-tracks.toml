@@ -1,10 +1,10 @@
 [[resource]]
 name = "php"
-default_track = "8.4"
+default_track = "8.5"
 
 [[resource]]
 name = "frankenphp"
-default_track = "8.4"
+default_track = "8.5"
 
 [[resource]]
 name = "composer"
@@ -12,7 +12,7 @@ default_track = "2"
 
 [[resource]]
 name = "redis"
-default_track = "8.2"
+default_track = "8.8"
 
 [[resource]]
 name = "mysql"

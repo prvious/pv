@@ -7,7 +7,7 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
-TRACK=${PV_RECIPE_TRACK:-8.2}
+TRACK=${PV_RECIPE_TRACK:-8.8}
 PLATFORM=${PV_RECIPE_PLATFORM:-}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-redis}
@@ -171,6 +171,23 @@ append_redis_legal_file() {
   cat "$source_path"
 }
 
+append_redis_legal_header() {
+  source_path=$1
+  label=$2
+
+  [ -f "$source_path" ] || die "missing Redis third-party legal file: $source_path"
+  legal_header=$(awk '
+    /^[[:space:]]*\/\*/ { in_comment = 1 }
+    in_comment { print }
+    in_comment && /\*\// { found = 1; exit }
+    END { if (!found) exit 1 }
+  ' "$source_path") || die "missing Redis legal header in: $source_path"
+  [ -n "$legal_header" ] || die "missing Redis legal header in: $source_path"
+
+  printf '\n%s\n' "==== $label ===="
+  printf '%s\n' "$legal_header"
+}
+
 write_third_party_notices() {
   output=$1
 
@@ -182,9 +199,11 @@ write_third_party_notices() {
     append_redis_legal_file "$source_dir/deps/hdr_histogram/LICENSE.txt" "deps/hdr_histogram/LICENSE.txt"
     append_redis_legal_file "$source_dir/deps/hdr_histogram/COPYING.txt" "deps/hdr_histogram/COPYING.txt"
     append_redis_legal_file "$source_dir/deps/fpconv/LICENSE.txt" "deps/fpconv/LICENSE.txt"
-    append_redis_legal_file "$source_dir/deps/fast_float/README.md" "deps/fast_float/README.md"
+    append_redis_legal_header "$source_dir/src/fast_float_strtod.c" "src/fast_float_strtod.c"
     append_redis_legal_file "$source_dir/deps/linenoise/README.markdown" "deps/linenoise/README.markdown"
     append_redis_legal_file "$source_dir/deps/jemalloc/COPYING" "deps/jemalloc/COPYING"
+    append_redis_legal_file "$source_dir/deps/tre/LICENSE" "deps/tre/LICENSE"
+    append_redis_legal_file "$source_dir/deps/xxhash/LICENSE" "deps/xxhash/LICENSE"
   } >"$output"
 }
 

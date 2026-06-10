@@ -5,7 +5,7 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../../../.." && pwd)
 # shellcheck source=/dev/null
 . "$ROOT/release/artifacts/recipes/common.sh"
 
-TRACK=${PV_RECIPE_TRACK:-8.4}
+TRACK=${PV_RECIPE_TRACK:-8.5}
 PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
@@ -19,6 +19,7 @@ need curl
 need git
 need lipo
 need otool
+need patch
 need shasum
 need spc
 need tar
@@ -54,6 +55,25 @@ download_source() {
   [ "$source_entry_count" -eq 1 ] || die "$source_name source archive must contain exactly one top-level source directory"
   [ -d "$source_dir" ] || die "$source_name source archive top-level entry is not a directory"
   printf '%s\n' "$source_dir"
+}
+
+prepare_staticphp_php83_frankenphp_patch_context() {
+  php_source_dir=$1
+  frankenphp_source_dir=$2
+
+  case "$PHP_PHP_VERSION" in
+    8.3.*)
+      php_m4="$php_source_dir/build/php.m4"
+      staticphp_patch="$recipe_dir/patches/staticphp/spc_fix_avx512_cache_before_80400.patch"
+
+      [ -f "$php_m4" ] || die "PHP 8.3 StaticPHP patch context missing $php_m4"
+      [ -f "$staticphp_patch" ] || die "PHP 8.3 StaticPHP patch file missing $staticphp_patch"
+
+      mkdir -p "$frankenphp_source_dir/build"
+      cp "$php_m4" "$frankenphp_source_dir/build/php.m4"
+      patch -d "$frankenphp_source_dir" -p1 <"$staticphp_patch"
+      ;;
+  esac
 }
 
 expected_arch_for_platform() {
@@ -250,6 +270,7 @@ export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
 
 php_source_dir=$(download_source php "$PHP_PHP_VERSION" "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256")
 frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION" "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256")
+prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
 
 (
   cd "$spc_work_dir"

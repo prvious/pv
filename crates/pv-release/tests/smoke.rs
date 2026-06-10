@@ -352,6 +352,29 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
 }
 
 #[test]
+fn php_pair_build_smoke_prepatches_frankenphp_for_staticphp_php83_avx512_probe() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        recipe_track: "8.3",
+        php_version: "8.3.31",
+        frankenphp_version: "1.12.4",
+        require_staticphp_php83_frankenphp_patch_context: true,
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.frankenphp_archive_exists,
+        "FrankenPHP archive was not written"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn composer_build_smoke_uses_platform_suffixed_archive_name() -> Result<()> {
     let run = run_composer_build_recipe_smoke()?;
 
@@ -440,6 +463,7 @@ fn redis_build_recipe_signs_binaries_and_requires_third_party_notices() -> Resul
 fn redis_build_recipe_does_not_publish_outputs_before_archive_validation() -> Result<()> {
     let run = run_redis_build_recipe_smoke(RedisBuildRecipeOptions {
         validate_archive_failure: true,
+        ..default_redis_build_recipe_options()
     })?;
 
     assert!(
@@ -459,6 +483,35 @@ fn redis_build_recipe_does_not_publish_outputs_before_archive_validation() -> Re
         String::from_utf8_lossy(&run.output.stdout),
         "",
         "archive path should not be printed before validation succeeds"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_build_recipe_rejects_missing_third_party_legal_header() -> Result<()> {
+    let run = run_redis_build_recipe_smoke(RedisBuildRecipeOptions {
+        include_fast_float_legal_header: false,
+        ..default_redis_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "Redis build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        stderr.contains("missing Redis legal header"),
+        "Redis build recipe should report the missing legal header: {stderr}"
+    );
+    assert!(
+        run.record_json.is_none(),
+        "Redis record should not be written when legal notice collection fails"
+    );
+    assert!(
+        !run.archive_exists,
+        "Redis archive should not be written when legal notice collection fails"
     );
 
     Ok(())
@@ -1081,6 +1134,78 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
         !cmake_log.contains("[-DWITH_SSL=bundled]"),
         "MySQL 8.4 rejects WITH_SSL=bundled: {cmake_log}"
     );
+    assert_debug_snapshot!(mysql_record_source_inputs(&run)?, @r#"
+    Array [
+        Object {
+            "name": String("openssl"),
+            "source_sha256": String("8505c910292123009b4f1327adb5ae9935c04bb05780d1436998953efe501ed4"),
+            "source_url": String("https://sources.example.test/openssl.tar.gz"),
+        },
+    ]
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn mysql_build_recipe_prunes_broken_optional_plugin_symlinks() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        install_broken_plugin_symlink: true,
+        ..MysqlBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.archive_exists,
+        "MySQL archive should still be written when an optional plugin symlink is broken"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mysql_80_build_recipe_records_boost_source_input() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        track: "8.0",
+        upstream_version: "8.0.46",
+        ..MysqlBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "MySQL 8.0 build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_debug_snapshot!(mysql_record_source_inputs(&run)?);
+
+    Ok(())
+}
+
+#[test]
+fn mysql_build_recipe_rejects_unknown_broken_symlinks() -> Result<()> {
+    let run = run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions {
+        install_broken_required_symlink: true,
+        ..MysqlBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "MySQL build recipe should reject unknown broken symlinks: {}",
+        command_output_debug(&run.output)
+    );
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        stderr.contains("broken MySQL install symlink"),
+        "MySQL build recipe should report the broken symlink path: {stderr}"
+    );
+    assert!(
+        !run.archive_exists,
+        "MySQL archive should not be written after an unknown broken symlink"
+    );
 
     Ok(())
 }
@@ -1415,6 +1540,24 @@ struct MysqlBuildRecipeRun {
     archive_exists: bool,
 }
 
+struct MysqlBuildRecipeOptions {
+    track: &'static str,
+    upstream_version: &'static str,
+    install_broken_plugin_symlink: bool,
+    install_broken_required_symlink: bool,
+}
+
+impl Default for MysqlBuildRecipeOptions {
+    fn default() -> Self {
+        Self {
+            track: "8.4",
+            upstream_version: "8.4.9",
+            install_broken_plugin_symlink: false,
+            install_broken_required_symlink: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct BackingBuildRecipe {
     resource: &'static str,
@@ -1443,6 +1586,9 @@ struct BackingBuildRecipeRun {
 }
 
 struct BuildRecipeOptions<'a> {
+    recipe_track: &'a str,
+    php_version: &'a str,
+    frankenphp_version: &'a str,
     lipo_archs: &'a str,
     macho_minos: &'a str,
     macho_libraries: &'a str,
@@ -1450,10 +1596,12 @@ struct BuildRecipeOptions<'a> {
     frankenphp_macho_libraries: &'a str,
     frankenphp_macho_rpaths: &'a str,
     validate_archive_failure_resource: &'a str,
+    require_staticphp_php83_frankenphp_patch_context: bool,
 }
 
 struct RedisBuildRecipeOptions {
     validate_archive_failure: bool,
+    include_fast_float_legal_header: bool,
 }
 
 struct BackingBuildRecipeOptions<'a> {
@@ -1462,6 +1610,60 @@ struct BackingBuildRecipeOptions<'a> {
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
 }
+
+const PHP_83_AVX512_ORIGINAL_M4: &str = r#"dnl PHP_CHECK_AVX512_SUPPORTS
+dnl
+AC_DEFUN([PHP_CHECK_AVX512_SUPPORTS], [
+  AC_MSG_CHECKING([for avx512 supports in compiler])
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="-mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw $CFLAGS"
+
+  AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #include <immintrin.h>
+      int main(void) {
+        __m512i mask = _mm512_set1_epi32(0x1);
+        char out[32];
+        _mm512_storeu_si512(out, _mm512_shuffle_epi8(mask, mask));
+        return 0;
+    }]])], [
+    have_avx512_supports=1
+    AC_MSG_RESULT([yes])
+  ], [
+    have_avx512_supports=0
+    AC_MSG_RESULT([no])
+  ])
+
+  CFLAGS="$save_CFLAGS"
+
+  AC_DEFINE_UNQUOTED([PHP_HAVE_AVX512_SUPPORTS],
+   [$have_avx512_supports], [Whether the compiler supports AVX512])
+])
+
+dnl PHP_CHECK_AVX512_VBMI_SUPPORTS
+dnl
+AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
+  AC_MSG_CHECKING([for avx512 vbmi supports in compiler])
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="-mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw -mavx512vbmi $CFLAGS"
+  AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #include <immintrin.h>
+      int main(void) {
+        __m512i mask = _mm512_set1_epi32(0x1);
+        char out[32];
+        _mm512_storeu_si512(out, _mm512_permutexvar_epi8(mask, mask));
+        return 0;
+    }]])], [
+    have_avx512_vbmi_supports=1
+    AC_MSG_RESULT([yes])
+  ], [
+    have_avx512_vbmi_supports=0
+    AC_MSG_RESULT([no])
+  ])
+  CFLAGS="$save_CFLAGS"
+  AC_DEFINE_UNQUOTED([PHP_HAVE_AVX512_VBMI_SUPPORTS],
+   [$have_avx512_vbmi_supports], [Whether the compiler supports AVX512 VBMI])
+])
+"#;
 
 impl BackingBuildRecipe {
     fn all() -> [Self; 3] {
@@ -1508,6 +1710,11 @@ fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
 }
 
+fn php_staticphp_avx512_patch() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/php/patches/staticphp/spc_fix_avx512_cache_before_80400.patch")
+}
+
 fn composer_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/composer/smoke.sh")
@@ -1538,6 +1745,7 @@ fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
 fn default_redis_build_recipe_options() -> RedisBuildRecipeOptions {
     RedisBuildRecipeOptions {
         validate_archive_failure: false,
+        include_fast_float_legal_header: true,
     }
 }
 
@@ -1552,7 +1760,10 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     let codesign_log = tempdir.path().join("codesign.log");
 
     create_dir_all(&fake_bin)?;
-    write_redis_source_archive(&source_archive)?;
+    write_redis_source_archive_with_options(
+        &source_archive,
+        options.include_fast_float_legal_header,
+    )?;
     write_fake_redis_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
@@ -1621,16 +1832,23 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
 }
 
 fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
+    run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions::default())
+}
+
+fn run_mysql_build_recipe_smoke_with_options(
+    options: MysqlBuildRecipeOptions,
+) -> Result<MysqlBuildRecipeRun> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
     let out_dir = tempdir.path().join("out");
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let artifact_basename = "mysql-8.4.9-pv1-darwin-arm64";
+    let boost_source_archive = tempdir.path().join("boost-source.tar.gz");
+    let artifact_basename = format!("mysql-{}-pv1-darwin-arm64", options.upstream_version);
     let openssl_prefix = out_dir
         .join("work")
-        .join(artifact_basename)
+        .join(&artifact_basename)
         .join("openssl-3.5.7");
     let bison_prefix = tempdir.path().join("bison");
     let bison_executable = bison_prefix.join("bin/bison");
@@ -1643,6 +1861,7 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_openssl_source_archive(&openssl_source_archive)?;
+    write_source_archive(&boost_source_archive, "boost-source")?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
     write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
@@ -1669,7 +1888,7 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
         .env("PV_RECIPE_PLATFORM", "darwin-arm64")
-        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_RECIPE_TRACK", options.track)
         .env("PV_TEST_CMAKE_LOG", &cmake_log)
         .env("PV_TEST_CODESIGN_LOG", &codesign_log)
         .env("PV_TEST_CURL_LOG", &curl_log)
@@ -1681,6 +1900,22 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
         .env("PV_TEST_MACHO_MINOS", "13.0")
         .env("PV_TEST_MACHO_RPATHS", "")
         .env(
+            "PV_TEST_MYSQL_INSTALL_BROKEN_PLUGIN_SYMLINK",
+            if options.install_broken_plugin_symlink {
+                "1"
+            } else {
+                ""
+            },
+        )
+        .env(
+            "PV_TEST_MYSQL_INSTALL_BROKEN_REQUIRED_SYMLINK",
+            if options.install_broken_required_symlink {
+                "1"
+            } else {
+                ""
+            },
+        )
+        .env(
             "PV_MYSQL_OPENSSL_SOURCE_URL",
             "https://sources.example.test/openssl.tar.gz",
         )
@@ -1688,21 +1923,30 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
             "PV_MYSQL_OPENSSL_SOURCE_SHA256",
             file_sha256(&openssl_source_archive)?,
         )
+        .env(
+            "PV_MYSQL_BOOST_SOURCE_URL",
+            "https://sources.example.test/boost.tar.gz",
+        )
+        .env(
+            "PV_MYSQL_BOOST_SOURCE_SHA256",
+            file_sha256(&boost_source_archive)?,
+        )
+        .env("PV_TEST_BOOST_SOURCE_ARCHIVE", &boost_source_archive)
         .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
         .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
         .env("PV_TEST_RESOURCE", "mysql")
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
-        .env("PV_TEST_UPSTREAM_VERSION", "8.4.9")
+        .env("PV_TEST_UPSTREAM_VERSION", options.upstream_version)
         .env("PV_TEST_VALIDATE_LOG", &validate_log)
         .output()?;
 
-    let artifact_version = "8.4.9-pv1";
+    let artifact_version = format!("{}-pv1", options.upstream_version);
     let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
     let record = record_dir
         .join("mysql")
-        .join("8.4")
-        .join(artifact_version)
+        .join(options.track)
+        .join(&artifact_version)
         .join("darwin-arm64")
         .join(format!("{artifact_basename}.json"));
 
@@ -1946,6 +2190,9 @@ fn run_backing_build_recipe_signing_smoke(
 
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
     BuildRecipeOptions {
+        recipe_track: "8.4",
+        php_version: "8.4.20",
+        frankenphp_version: "1.12.3",
         lipo_archs: "arm64",
         macho_minos: "13.0",
         macho_libraries: "",
@@ -1953,6 +2200,7 @@ fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
         frankenphp_macho_libraries: "",
         frankenphp_macho_rpaths: "",
         validate_archive_failure_resource: "",
+        require_staticphp_php83_frankenphp_patch_context: false,
     }
 }
 
@@ -1974,7 +2222,11 @@ fn run_php_build_recipe_smoke_with_options(
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "frankenphp-source")?;
-    write_source_archive(&php_source_archive, "php-source")?;
+    if options.require_staticphp_php83_frankenphp_patch_context {
+        write_php_source_archive(&php_source_archive)?;
+    } else {
+        write_source_archive(&php_source_archive, "php-source")?;
+    }
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
@@ -1998,7 +2250,8 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
         .env("PV_RECIPE_PLATFORM", "darwin-arm64")
-        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_RECIPE_TRACK", options.recipe_track)
+        .env("PV_TEST_FRANKENPHP_VERSION", options.frankenphp_version)
         .env(
             "PV_TEST_FRANKENPHP_MACHO_LIBRARIES",
             options.frankenphp_macho_libraries,
@@ -2019,9 +2272,22 @@ fn run_php_build_recipe_smoke_with_options(
             "PV_TEST_PHP_SOURCE_SHA256",
             file_sha256(&php_source_archive)?,
         )
+        .env("PV_TEST_PHP_VERSION", options.php_version)
         .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
+        .env(
+            "PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT",
+            if options.require_staticphp_php83_frankenphp_patch_context {
+                "1"
+            } else {
+                ""
+            },
+        )
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env(
+            "PV_TEST_STATICPHP_PHP83_AVX512_PATCH",
+            php_staticphp_avx512_patch(),
+        )
         .env(
             "PV_TEST_VALIDATE_ARCHIVE_FAILURE_RESOURCE",
             options.validate_archive_failure_resource,
@@ -2030,33 +2296,37 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_SPC_LOG", &spc_log);
     let output = command.output()?;
 
-    let php_artifact_version = "8.4.20-pv1";
-    let php_artifact_basename = "php-8.4.20-pv1-darwin-arm64";
+    let php_artifact_version = format!("{}-pv1", options.php_version);
+    let php_artifact_basename = format!("php-{php_artifact_version}-darwin-arm64");
     let php_archive = out_dir.join(format!("{php_artifact_basename}.tar.gz"));
     let php_record = record_dir
         .join("php")
-        .join("8.4")
-        .join(php_artifact_version)
+        .join(options.recipe_track)
+        .join(&php_artifact_version)
         .join("darwin-arm64")
         .join(format!("{php_artifact_basename}.json"));
     let php_notice = out_dir
         .join("work")
-        .join("php-pair-8.4-darwin-arm64")
+        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
         .join(php_artifact_basename)
         .join("NOTICE");
 
-    let frankenphp_artifact_version = "8.4.20-frankenphp1.12.3-pv1";
-    let frankenphp_artifact_basename = "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64";
+    let frankenphp_artifact_version = format!(
+        "{}-frankenphp{}-pv1",
+        options.php_version, options.frankenphp_version
+    );
+    let frankenphp_artifact_basename =
+        format!("frankenphp-{frankenphp_artifact_version}-darwin-arm64");
     let frankenphp_archive = out_dir.join(format!("{frankenphp_artifact_basename}.tar.gz"));
     let frankenphp_record = record_dir
         .join("frankenphp")
-        .join("8.4")
-        .join(frankenphp_artifact_version)
+        .join(options.recipe_track)
+        .join(&frankenphp_artifact_version)
         .join("darwin-arm64")
         .join(format!("{frankenphp_artifact_basename}.json"));
     let frankenphp_notice = out_dir
         .join("work")
-        .join("php-pair-8.4-darwin-arm64")
+        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
         .join(frankenphp_artifact_basename)
         .join("NOTICE");
 
@@ -2110,6 +2380,13 @@ fn build_recipe_record_provenance(record_json: Option<&str>) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("build recipe record did not contain provenance"))
 }
 
+fn mysql_record_source_inputs(run: &MysqlBuildRecipeRun) -> Result<Value> {
+    Ok(build_recipe_record_provenance(run.record_json.as_deref())?
+        .get("source_inputs")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new())))
+}
+
 fn build_recipe_notice_source_lines(notice: Option<&str>) -> Result<Vec<&str>> {
     let notice = notice.ok_or_else(|| anyhow::anyhow!("build recipe did not produce NOTICE"))?;
     Ok(notice
@@ -2128,6 +2405,9 @@ fn write_fake_cargo(path: &Utf8Path) -> Result<()> {
         r#"#!/bin/sh
 set -eu
 
+php_version=${PV_TEST_PHP_VERSION:-8.4.20}
+frankenphp_version=${PV_TEST_FRANKENPHP_VERSION:-1.12.3}
+
 if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
   case "$5" in
     print-recipe-env)
@@ -2143,15 +2423,15 @@ if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release
       done
       case "$resource" in
         php)
-          upstream_version=8.4.20
-          artifact_version=8.4.20-pv1
+          upstream_version=$php_version
+          artifact_version=$php_version-pv1
           source_url=https://sources.example.test/php.tar.gz
           source_sha256=$PV_TEST_PHP_SOURCE_SHA256
           php_source_env=
           ;;
         frankenphp)
-          upstream_version=8.4.20-frankenphp1.12.3
-          artifact_version=8.4.20-frankenphp1.12.3-pv1
+          upstream_version=$php_version-frankenphp$frankenphp_version
+          artifact_version=$php_version-frankenphp$frankenphp_version-pv1
           source_url=https://sources.example.test/frankenphp.tar.gz
           source_sha256=$PV_TEST_SOURCE_SHA256
           php_source_env="PV_PHP_SOURCE_URL=https://sources.example.test/php.tar.gz
@@ -2163,7 +2443,7 @@ PV_PHP_SOURCE_SHA256=$PV_TEST_PHP_SOURCE_SHA256"
 PV_RESOURCE=$resource
 PV_TRACK=$PV_RECIPE_TRACK
 PV_PLATFORM=$PV_RECIPE_PLATFORM
-PV_PHP_VERSION=8.4.20
+PV_PHP_VERSION=$php_version
 PV_UPSTREAM_VERSION=$upstream_version
 PV_ARTIFACT_VERSION=$artifact_version
 PV_SOURCE_URL=$source_url
@@ -2468,6 +2748,8 @@ EOF
       recipe=
       pv_commit=
       build_run_id=
+      source_inputs_json=
+      source_input_count=0
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --record)
@@ -2498,22 +2780,38 @@ EOF
             shift
             build_run_id=${1:-}
             ;;
+          --source-input)
+            shift
+            input_name=${1:-}
+            shift
+            input_url=${1:-}
+            shift
+            input_sha256=${1:-}
+            input_json="      {\"name\": \"$input_name\", \"source_url\": \"$input_url\", \"source_sha256\": \"$input_sha256\"}"
+            if [ "$source_input_count" -eq 0 ]; then
+              source_inputs_json=$input_json
+            else
+              source_inputs_json="$source_inputs_json,
+$input_json"
+            fi
+            source_input_count=$((source_input_count + 1))
+            ;;
         esac
         shift
       done
       mkdir -p "$(dirname "$record")"
-      cat >"$record" <<EOF
-{
-  "object_key": "$object_key",
-  "provenance": {
-    "source_url": "$source_url",
-    "source_sha256": "$source_sha256",
-    "recipe": "$recipe",
-    "pv_commit": "$pv_commit",
-    "build_run_id": "$build_run_id"
-  }
-}
-EOF
+      {
+        printf '{\n  "object_key": "%s",\n  "provenance": {\n' "$object_key"
+        printf '    "source_url": "%s",\n' "$source_url"
+        printf '    "source_sha256": "%s",\n' "$source_sha256"
+        if [ "$source_input_count" -gt 0 ]; then
+          printf '    "source_inputs": [\n%s\n    ],\n' "$source_inputs_json"
+        fi
+        printf '    "recipe": "%s",\n' "$recipe"
+        printf '    "pv_commit": "%s",\n' "$pv_commit"
+        printf '    "build_run_id": "%s"\n' "$build_run_id"
+        printf '  }\n}\n'
+      } >"$record"
       ;;
     validate-archive)
       archive=
@@ -2696,6 +2994,9 @@ case "$url" in
     ;;
   https://sources.example.test/openssl.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
+    ;;
+  https://sources.example.test/boost.tar.gz)
+    cp "$PV_TEST_BOOST_SOURCE_ARCHIVE" "$output"
     ;;
   *)
     cp "$PV_TEST_SOURCE_ARCHIVE" "$output"
@@ -3208,6 +3509,13 @@ case "${1:-}" in
       printf '%s fixture\n' "$binary" >"$install_dir/bin/$binary"
       chmod 755 "$install_dir/bin/$binary"
     done
+    if [ -n "${PV_TEST_MYSQL_INSTALL_BROKEN_PLUGIN_SYMLINK:-}" ]; then
+      mkdir -p "$install_dir/lib/plugin"
+      ln -s ../../lib/libfido2.1.dylib "$install_dir/lib/plugin/authentication_fido_client.so"
+    fi
+    if [ -n "${PV_TEST_MYSQL_INSTALL_BROKEN_REQUIRED_SYMLINK:-}" ]; then
+      ln -s missing-libmysqlclient.dylib "$install_dir/lib/libmysqlclient-required.dylib"
+    fi
     ;;
   *)
     exit 78
@@ -3410,6 +3718,26 @@ printf '\n' >>"$PV_TEST_SPC_LOG"
   exit 78
 }
 
+if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
+  frankenphp_source_dir=
+  previous_arg=
+  for arg in "$@"; do
+    if [ "$previous_arg" = "--dl-custom-local" ]; then
+      case "$arg" in
+        frankenphp:*)
+          frankenphp_source_dir=${arg#frankenphp:}
+          ;;
+      esac
+    fi
+    previous_arg=$arg
+  done
+
+  [ -n "$frankenphp_source_dir" ] || exit 79
+  [ -f "$frankenphp_source_dir/build/php.m4" ] || exit 80
+  patch --dry-run -R -d "$frankenphp_source_dir" -p1 \
+    <"$PV_TEST_STATICPHP_PHP83_AVX512_PATCH" >/dev/null || exit 81
+fi
+
 mkdir -p buildroot/bin
 built_target=
 case " $* " in
@@ -3486,6 +3814,25 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
 )]
+fn write_php_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    append_archive_file(
+        &mut builder,
+        "php-source/build/php.m4",
+        PHP_83_AVX512_ORIGINAL_M4.as_bytes(),
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
 fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
@@ -3552,6 +3899,17 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     reason = "release tooling tests create source tarball fixtures directly"
 )]
 fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
+    write_redis_source_archive_with_options(path, true)
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_redis_source_archive_with_options(
+    path: &Utf8Path,
+    include_fast_float_legal_header: bool,
+) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
@@ -3589,8 +3947,12 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
     )?;
     append_archive_file(
         &mut builder,
-        "redis-source/deps/fast_float/README.md",
-        b"fast_float notice\n",
+        "redis-source/src/fast_float_strtod.c",
+        if include_fast_float_legal_header {
+            b"/*\nfast_float notice\n*/\n".as_slice()
+        } else {
+            b"double fast_float_strtod(void) { return 0.0; }\n".as_slice()
+        },
     )?;
     append_archive_file(
         &mut builder,
@@ -3601,6 +3963,16 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
         &mut builder,
         "redis-source/deps/jemalloc/COPYING",
         b"jemalloc license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/tre/LICENSE",
+        b"tre license\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "redis-source/deps/xxhash/LICENSE",
+        b"xxhash license\n",
     )?;
 
     let encoder = builder.into_inner()?;

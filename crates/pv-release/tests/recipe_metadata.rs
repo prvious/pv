@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
@@ -113,13 +113,28 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     let defaults =
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
-    assert_eq!(php.default_track().as_str(), "8.4");
+    assert_eq!(php.default_track().as_str(), "8.5");
     assert_eq!(php.tracks().len(), 3);
+    assert_eq!(
+        php.tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.php_version()))
+            .collect::<Vec<_>>(),
+        vec![("8.3", "8.3.31"), ("8.4", "8.4.22"), ("8.5", "8.5.7")]
+    );
     assert_php_staticphp_build_extensions(&php);
     assert_eq!(composer.track().as_str(), "2");
     assert_eq!(composer.platform().as_str(), "any");
-    assert_eq!(redis.default_track().as_str(), "8.2");
+    assert_eq!(redis.default_track().as_str(), "8.8");
     assert_eq!(redis.tracks().len(), 1);
+    assert_eq!(
+        redis
+            .tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.upstream_version()))
+            .collect::<Vec<_>>(),
+        vec![("8.8", "8.8.0")]
+    );
     assert_eq!(redis.payload_paths(), ["bin/redis-server", "bin/redis-cli"]);
     assert_eq!(mysql.default_track().as_str(), "8.4");
     assert_eq!(
@@ -132,7 +147,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             .iter()
             .map(|track| (track.name().as_str(), track.upstream_version()))
             .collect::<Vec<_>>(),
-        vec![("8.4", "8.4.9")]
+        vec![("8.0", "8.0.46"), ("8.4", "8.4.9"), ("9.7", "9.7.0")]
     );
     assert_eq!(postgres.default_track().as_str(), "18");
     assert_eq!(
@@ -145,20 +160,164 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             .iter()
             .map(|track| (track.name().as_str(), track.upstream_version()))
             .collect::<Vec<_>>(),
-        vec![("18", "18.3")]
+        vec![("17", "17.10"), ("18", "18.4")]
     );
     assert_eq!(mailpit.default_track().as_str(), "1");
     assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);
     assert_eq!(rustfs.default_track().as_str(), "1");
     assert_eq!(rustfs.payload_paths(), ["bin/rustfs"]);
-    assert_default_track(&defaults, "php", "8.4")?;
-    assert_default_track(&defaults, "frankenphp", "8.4")?;
+    assert_default_track(&defaults, "php", "8.5")?;
+    assert_default_track(&defaults, "frankenphp", "8.5")?;
     assert_default_track(&defaults, "composer", "2")?;
-    assert_default_track(&defaults, "redis", "8.2")?;
+    assert_default_track(&defaults, "redis", "8.8")?;
     assert_default_track(&defaults, "mysql", "8.4")?;
     assert_default_track(&defaults, "postgres", "18")?;
     assert_default_track(&defaults, "mailpit", "1")?;
     assert_default_track(&defaults, "rustfs", "1")?;
+
+    Ok(())
+}
+
+#[test]
+fn committed_redis_recipe_collects_current_notice_inputs() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/redis/build.sh"))?;
+    let notice_inputs = build_script
+        .lines()
+        .filter_map(redis_notice_input)
+        .collect::<Vec<_>>();
+
+    assert_snapshot!(notice_inputs.join("\n"), @r###"
+    deps/hiredis/COPYING
+    deps/lua/COPYRIGHT
+    deps/hdr_histogram/LICENSE.txt
+    deps/hdr_histogram/COPYING.txt
+    deps/fpconv/LICENSE.txt
+    src/fast_float_strtod.c
+    deps/linenoise/README.markdown
+    deps/jemalloc/COPYING
+    deps/tre/LICENSE
+    deps/xxhash/LICENSE
+    "###);
+
+    Ok(())
+}
+
+#[test]
+fn committed_recipe_build_script_defaults_match_metadata() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let php = PhpRecipe::load(&workspace_root.join("release/artifacts/recipes/php/tracks.toml"))?;
+    let composer = ComposerRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/composer/composer.toml"),
+    )?;
+    let redis = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/redis/recipe.toml"),
+        BackingRecipeKind::Redis,
+    )?;
+    let mysql = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/mysql/recipe.toml"),
+        BackingRecipeKind::Mysql,
+    )?;
+    let postgres = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/postgres/recipe.toml"),
+        BackingRecipeKind::Postgres,
+    )?;
+    let mailpit = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml"),
+        BackingRecipeKind::Mailpit,
+    )?;
+    let rustfs = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml"),
+        BackingRecipeKind::Rustfs,
+    )?;
+
+    let recipe_defaults = [
+        ("php", php.default_track().as_str()),
+        ("composer", composer.track().as_str()),
+        ("redis", redis.default_track().as_str()),
+        ("mysql", mysql.default_track().as_str()),
+        ("postgres", postgres.default_track().as_str()),
+        ("mailpit", mailpit.default_track().as_str()),
+        ("rustfs", rustfs.default_track().as_str()),
+    ];
+
+    for (resource, expected_track) in recipe_defaults {
+        let build_script = read_file(
+            &workspace_root.join(format!("release/artifacts/recipes/{resource}/build.sh")),
+        )?;
+        let actual_track = script_default_track(&build_script)?;
+        assert_eq!(
+            actual_track, expected_track,
+            "{resource} build.sh default track should match recipe metadata"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn committed_mysql_recipe_pins_boost_for_compatibility_track() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
+    let boost_lines = build_script
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("BOOST_")
+                || line.contains("DOWNLOAD_BOOST")
+                || line.contains("WITH_BOOST")
+        })
+        .collect::<Vec<_>>();
+
+    assert_snapshot!(boost_lines.join("\n"), @r#"
+    BOOST_PREFIX=${PV_MYSQL_BOOST_PREFIX:-}
+    BOOST_SOURCE_URL=${PV_MYSQL_BOOST_SOURCE_URL:-"https://archives.boost.io/release/1.77.0/source/boost_1_77_0.tar.bz2"}
+    BOOST_SOURCE_SHA256=${PV_MYSQL_BOOST_SOURCE_SHA256:-fc9f85fc030e233142908241af7a846e60630aa7388de9a5fafb1f3a26840854}
+    set -- "$@" --source-input boost "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
+    if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
+    download_source "$boost_source_archive" "$BOOST_SOURCE_URL" "$BOOST_SOURCE_SHA256"
+    BOOST_PREFIX=$(extract_source Boost "$boost_source_archive" "$boost_source_extract_dir")
+    set -- "$@" -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$BOOST_PREFIX"
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn committed_mysql_recipe_applies_appleclang_patch_for_current_track() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let patch_path = workspace_root
+        .join("release/artifacts/recipes/mysql/patches/mysql-9.7.0-appleclang-parse-options.patch");
+    assert!(
+        patch_path.exists(),
+        "expected MySQL 9.7 AppleClang source patch at {patch_path}"
+    );
+
+    let build_script = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
+    let patch_lines = build_script
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.contains("APPLECLANG_PATCH")
+                || line.contains("apply_mysql_source_patches")
+                || line.contains("patch -d")
+        })
+        .collect::<Vec<_>>();
+    let patch = read_file(&patch_path)?;
+
+    assert_snapshot!(patch_lines.join("\n"), @r###"
+    MYSQL_97_APPLECLANG_PATCH="$recipe_dir/patches/mysql-9.7.0-appleclang-parse-options.patch"
+    apply_mysql_source_patches() {
+    patch -d "$source_dir" -p1 <"$MYSQL_97_APPLECLANG_PATCH"
+    apply_mysql_source_patches "$source_dir"
+    "###);
+    assert!(patch.contains("Compound_parse_options() = default;"));
+    assert!(patch.contains("explicit Compound_parse_options(Tuple_t tuple) : m_tuple(tuple) {}"));
+    assert!(patch.contains("Compound_parse_options(std::tuple<Format_t>(format))"));
+    assert!(patch.contains("Compound_parse_options(std::tuple<Repeat_t>(repeat))"));
+    assert!(patch.contains("Compound_parse_options(std::tuple<Checker_t>(checker))"));
+    assert!(patch.contains("Resolve_column(const Key_column_info *key_column_info,"));
+    assert!(patch.contains("deferred_resolve(deferred_resolve_value)"));
 
     Ok(())
 }
@@ -635,6 +794,30 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
     );
 }
 
+fn redis_notice_input(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if !line.starts_with("append_redis_legal_") {
+        return None;
+    }
+
+    let mut quoted = line.split('"').skip(1);
+    quoted.next()?;
+    quoted.next()?;
+    quoted.next()
+}
+
+fn script_default_track(build_script: &str) -> Result<&str> {
+    for line in build_script.lines().map(str::trim) {
+        if let Some(default_track) = line.strip_prefix("TRACK=${PV_RECIPE_TRACK:-")
+            && let Some(default_track) = default_track.strip_suffix('}')
+        {
+            return Ok(default_track);
+        }
+    }
+
+    bail!("build script missing PV_RECIPE_TRACK fallback")
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "release tooling tests write local recipe metadata"
@@ -642,6 +825,14 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
 fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
     std::fs::write(path, content)?;
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests read repository-local recipe metadata"
+)]
+fn read_file(path: &Utf8Path) -> Result<String> {
+    Ok(std::fs::read_to_string(path)?)
 }
 
 const VALID_PHP_TOML: &str = r#"
