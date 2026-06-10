@@ -75,6 +75,13 @@ pub fn redis_adapter() -> Result<RuntimeArtifactAdapter> {
     ))
 }
 
+pub fn rustfs_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("rustfs")?,
+        "bin/rustfs",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -90,6 +97,20 @@ mod tests {
 
         let missing = adapter.validate_installation(tempdir.path());
         state::fs::write_sensitive_file(&tempdir.path().join("bin/redis-server"), "")?;
+        let present = adapter.validate_installation(tempdir.path());
+
+        assert_debug_snapshot!((missing, present));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rustfs_adapter_requires_rustfs_binary() -> Result<()> {
+        let tempdir = tempdir()?;
+        let adapter = super::rustfs_adapter()?;
+
+        let missing = adapter.validate_installation(tempdir.path());
+        state::fs::write_sensitive_file(&tempdir.path().join("bin/rustfs"), "")?;
         let present = adapter.validate_installation(tempdir.path());
 
         assert_debug_snapshot!((missing, present));

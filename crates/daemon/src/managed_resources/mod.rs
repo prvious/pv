@@ -2,6 +2,7 @@
 mod fake;
 mod mailpit;
 mod redis;
+mod rustfs;
 pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
@@ -53,6 +54,7 @@ pub(crate) struct ManagedResourceRuntimeContext {
     pub artifact_path: camino::Utf8PathBuf,
     pub data_dir: camino::Utf8PathBuf,
     pub ports: BTreeMap<String, u16>,
+    pub env: EnvContextValues,
 }
 
 pub(crate) enum ManagedResourceReadiness {
@@ -164,6 +166,7 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
         _paths: &'a PvPaths,
         _database: &'a mut Database,
         _context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
         _allocations: &'a [ResourceAllocationRecord],
     ) -> ManagedResourceAllocationFuture<'a> {
         Box::pin(async { Ok(()) })
@@ -191,6 +194,7 @@ impl ManagedResourceRuntimeCatalog {
         );
         let redis = redis::RedisRuntimeAdapter::new();
         adapters.insert(redis.resource_name(), Box::new(redis));
+        adapters.insert("rustfs", Box::new(rustfs::RustfsRuntimeAdapter));
 
         Self {
             adapters,
@@ -341,6 +345,7 @@ async fn reconcile_resource_track(
                 artifact_path: artifact_path.clone(),
                 data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
                 ports,
+                env: track_record.env.clone(),
             };
             let mut runtime_attempt = ResourceRuntimeAttempt {
                 paths,
@@ -394,13 +399,17 @@ struct ResourceRuntimeAttempt<'a> {
 
 impl ResourceRuntimeAttempt<'_> {
     async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
-        let spec = self.adapter.build_process_spec(self.paths, context)?;
-        let readiness = self.adapter.readiness(context)?;
+        let env = self.adapter.resource_env(context)?;
+        let context = ManagedResourceRuntimeContext {
+            env: env.clone(),
+            ..context.clone()
+        };
+        let spec = self.adapter.build_process_spec(self.paths, &context)?;
+        let readiness = self.adapter.readiness(&context)?;
         let readiness_timeout = adapter_readiness_timeout(self.adapter);
 
         start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
-        let env = self.adapter.resource_env(context)?;
         self.database.record_managed_resource_track_env_context(
             &self.resource.resource_name,
             &self.resource.track,
@@ -409,7 +418,7 @@ impl ResourceRuntimeAttempt<'_> {
         let allocations =
             desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
-            .reconcile_allocations(self.paths, self.database, context, &allocations)
+            .reconcile_allocations(self.paths, self.database, &context, &env, &allocations)
             .await?;
         self.database.record_runtime_observed_snapshot(
             self.subject.clone(),
@@ -917,5 +926,19 @@ pub(crate) fn mailpit_runtime_catalog(
             target_platform: current_target_platform(),
         },
         mailpit::MailpitRuntimeAdapter::new(),
+    ))
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn rustfs_runtime_catalog(
+    manifest_url: &str,
+) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
+    Ok(ManagedResourceRuntimeCatalog::with_adapter(
+        ManagedResourceInstallOptions {
+            manifest_url: manifest_url.to_string(),
+            target_platform: current_target_platform(),
+        },
+        rustfs::RustfsRuntimeAdapter,
     ))
 }

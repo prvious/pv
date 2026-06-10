@@ -1,12 +1,14 @@
+use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::time::Duration;
-use std::{future::Future, io};
+use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -16,6 +18,8 @@ use tokio::time::{Instant, sleep, timeout};
 use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
+const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 
 #[expect(
     clippy::disallowed_types,
@@ -23,17 +27,55 @@ const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 )]
 type StdCommand = std::process::Command;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProcessSpec {
     pub name: String,
     pub command: Utf8PathBuf,
     pub arguments: Vec<String>,
+    pub private_environment: BTreeMap<String, String>,
     pub config_path: Utf8PathBuf,
     pub log_path: Utf8PathBuf,
     pub pid_path: Utf8PathBuf,
     pub metadata_path: Utf8PathBuf,
     pub resource_name: String,
     pub track: String,
+}
+
+impl fmt::Debug for ProcessSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("ProcessSpec");
+        debug.field("name", &self.name);
+        debug.field("command", &self.command);
+        debug.field("arguments", &self.arguments);
+        if !self.private_environment.is_empty() {
+            debug.field(
+                "private_environment",
+                &PrivateEnvironmentDebug(&self.private_environment),
+            );
+        }
+        debug.field("config_path", &self.config_path);
+        debug.field("log_path", &self.log_path);
+        debug.field("pid_path", &self.pid_path);
+        debug.field("metadata_path", &self.metadata_path);
+        debug.field("resource_name", &self.resource_name);
+        debug.field("track", &self.track);
+        debug.finish()
+    }
+}
+
+struct PrivateEnvironmentDebug<'a>(&'a BTreeMap<String, String>);
+
+impl fmt::Debug for PrivateEnvironmentDebug<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(
+                self.0
+                    .keys()
+                    .map(|name| (name, PRIVATE_ENVIRONMENT_REDACTION)),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -85,6 +127,8 @@ struct RuntimeMetadata {
     pid: u32,
     command: String,
     arguments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_environment_fingerprint: Option<String>,
     #[serde(default)]
     config_path: String,
     #[serde(default)]
@@ -171,7 +215,7 @@ impl ProcessSupervisor {
         };
         let spec = metadata.process_spec(pid_path.to_path_buf(), metadata_path.to_path_buf());
 
-        if metadata.matches(&spec, pid) && live_process_matches_spec(pid, &spec)? {
+        if metadata.matches_recorded(&spec, pid) && live_process_matches_spec(pid, &spec)? {
             return Ok(Some(AdoptedProcess {
                 owned: OwnedRuntime {
                     pid,
@@ -481,6 +525,7 @@ async fn wait_for_process_group_exit(
 fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(&spec.command);
     command.args(&spec.arguments);
+    command.envs(&spec.private_environment);
     #[cfg(unix)]
     command.process_group(0);
 
@@ -499,6 +544,7 @@ fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonErro
         pid,
         command: spec.command.to_string(),
         arguments: spec.arguments.clone(),
+        private_environment_fingerprint: private_environment_fingerprint(&spec.private_environment),
         config_path: spec.config_path.to_string(),
         resource_name: spec.resource_name.clone(),
         track: spec.track.clone(),
@@ -688,6 +734,7 @@ impl RuntimeMetadata {
             name: self.name.clone(),
             command: self.command.as_str().into(),
             arguments: self.arguments.clone(),
+            private_environment: BTreeMap::new(),
             config_path: self.config_path.as_str().into(),
             log_path: self.log_path.as_str().into(),
             pid_path,
@@ -698,6 +745,12 @@ impl RuntimeMetadata {
     }
 
     fn matches(&self, spec: &ProcessSpec, pid: u32) -> bool {
+        self.matches_recorded(spec, pid)
+            && self.private_environment_fingerprint.as_deref()
+                == private_environment_fingerprint(&spec.private_environment).as_deref()
+    }
+
+    fn matches_recorded(&self, spec: &ProcessSpec, pid: u32) -> bool {
         self.name == spec.name
             && self.pid == pid
             && self.command == spec.command.as_str()
@@ -707,6 +760,25 @@ impl RuntimeMetadata {
             && self.track == spec.track
             && self.log_path == spec.log_path.as_str()
     }
+}
+
+fn private_environment_fingerprint(environment: &BTreeMap<String, String>) -> Option<String> {
+    if environment.is_empty() {
+        return None;
+    }
+
+    let mut hasher = Sha256::new();
+    for (key, value) in environment {
+        hasher.update((key.len() as u64).to_be_bytes());
+        hasher.update(key.as_bytes());
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    Some(format!(
+        "{PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX}{:x}",
+        hasher.finalize()
+    ))
 }
 
 fn timestamp() -> Result<String, DaemonError> {

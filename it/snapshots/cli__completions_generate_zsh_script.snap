@@ -387,6 +387,84 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(rustfs:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- RustFS track to install:_default' \
+&& ret=0
+;;
+(rustfs:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(rustfs:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- RustFS track to uninstall:_default' \
+&& ret=0
+;;
+(rustfs:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(rustfs:open)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(s3:install)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::track -- RustFS track to install:_default' \
+&& ret=0
+;;
+(s3:update)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(s3:uninstall)
+_arguments "${_arguments_options[@]}" : \
+'--prune[Remove PV-owned runtime data for the track]' \
+'--force[Remove the track even if Projects use it]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':track -- RustFS track to uninstall:_default' \
+&& ret=0
+;;
+(s3:list)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(s3:open)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -441,6 +519,16 @@ _pv_commands() {
 'redis:update:Update installed Redis tracks' \
 'redis:uninstall:Uninstall a Redis track' \
 'redis:list:List installed Redis tracks' \
+'rustfs:install:Install a RustFS track' \
+'rustfs:update:Update installed RustFS tracks' \
+'rustfs:uninstall:Uninstall a RustFS track' \
+'rustfs:list:List installed RustFS tracks' \
+'rustfs:open:Open the running RustFS console' \
+'s3:install:Install a RustFS track (S3 alias)' \
+'s3:update:Update installed RustFS tracks (S3 alias)' \
+'s3:uninstall:Uninstall a RustFS track (S3 alias)' \
+'s3:list:List installed RustFS tracks (S3 alias)' \
+'s3:open:Open the running RustFS console (S3 alias)' \
     )
     _describe -t commands 'pv commands' commands "$@"
 }
@@ -648,6 +736,56 @@ _pv__subcmd__redis:uninstall_commands() {
 _pv__subcmd__redis:update_commands() {
     local commands; commands=()
     _describe -t commands 'pv redis:update commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__rustfs:install_commands] )) ||
+_pv__subcmd__rustfs:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv rustfs:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__rustfs:list_commands] )) ||
+_pv__subcmd__rustfs:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv rustfs:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__rustfs:open_commands] )) ||
+_pv__subcmd__rustfs:open_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv rustfs:open commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__rustfs:uninstall_commands] )) ||
+_pv__subcmd__rustfs:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv rustfs:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__rustfs:update_commands] )) ||
+_pv__subcmd__rustfs:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv rustfs:update commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__s3:install_commands] )) ||
+_pv__subcmd__s3:install_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv s3:install commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__s3:list_commands] )) ||
+_pv__subcmd__s3:list_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv s3:list commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__s3:open_commands] )) ||
+_pv__subcmd__s3:open_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv s3:open commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__s3:uninstall_commands] )) ||
+_pv__subcmd__s3:uninstall_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv s3:uninstall commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__s3:update_commands] )) ||
+_pv__subcmd__s3:update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv s3:update commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__setup_commands] )) ||
 _pv__subcmd__setup_commands() {

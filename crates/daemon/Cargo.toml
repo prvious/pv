@@ -8,14 +8,18 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aws-sdk-s3 = { workspace = true }
 camino = { workspace = true }
 config = { path = "../config" }
 futures-util = { workspace = true }
+getrandom = { workspace = true }
 hickory-proto = { workspace = true }
+object_store = { workspace = true }
 protocol = { path = "../protocol" }
 redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 resources = { path = "../resources" }
 rustix = { workspace = true }
 sqlx = { workspace = true }

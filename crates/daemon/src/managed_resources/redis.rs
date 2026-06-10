@@ -66,6 +66,7 @@ appendonly no
                 .artifact_adapter()?
                 .executable_path(&context.artifact_path),
             arguments,
+            private_environment: BTreeMap::new(),
             config_path,
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
@@ -100,6 +101,7 @@ appendonly no
         _paths: &'a PvPaths,
         database: &'a mut Database,
         context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
         allocations: &'a [ResourceAllocationRecord],
     ) -> super::ManagedResourceAllocationFuture<'a> {
         Box::pin(async move {

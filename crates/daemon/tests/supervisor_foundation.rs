@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -216,6 +217,43 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     Ok(())
 }
 
+#[test]
+fn process_spec_debug_omits_empty_private_environment_and_redacts_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let empty_private_env = process_spec(
+        &paths,
+        "empty-private-env",
+        "/bin/sh",
+        vec!["-c".to_string(), "sleep 30".to_string()],
+    );
+    let mut private_env = process_spec(
+        &paths,
+        "private-env",
+        "/bin/sh",
+        vec!["-c".to_string(), "sleep 30".to_string()],
+    );
+    private_env.private_environment = BTreeMap::from([
+        ("RUSTFS_ACCESS_KEY".to_string(), "pv-rustfs".to_string()),
+        (
+            "RUSTFS_SECRET_KEY".to_string(),
+            "raw-secret-value".to_string(),
+        ),
+    ]);
+
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(
+            "process_spec_debug_omits_empty_private_environment_and_redacts_values",
+            (empty_private_env, private_env)
+        );
+    });
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn supervisor_terminates_child_when_runtime_metadata_persistence_fails() -> Result<()> {
     let tempdir = tempdir()?;
@@ -231,6 +269,7 @@ async fn supervisor_terminates_child_when_runtime_metadata_persistence_fails() -
             name: "metadata-failure".to_string(),
             command: "/bin/sh".into(),
             arguments: vec!["-c".to_string(), "sleep 30".to_string()],
+            private_environment: Default::default(),
             config_path: paths.config().join("metadata-failure.json"),
             log_path: paths.logs().join("metadata-failure.log"),
             pid_path: pid_path.clone(),
@@ -275,6 +314,37 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     process.stop(Duration::from_secs(1)).await?;
 
     assert!(supervisor.adopt(&spec)?.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut spec = process_spec(
+        &paths,
+        "private-env-runtime",
+        "/bin/sh",
+        vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+    );
+    spec.private_environment = BTreeMap::from([(
+        "RUSTFS_SECRET_KEY".to_string(),
+        "initial-secret".to_string(),
+    )]);
+    let process = supervisor.start(spec.clone()).await?;
+    let mut changed_spec = spec.clone();
+    changed_spec.private_environment = BTreeMap::from([(
+        "RUSTFS_SECRET_KEY".to_string(),
+        "changed-secret".to_string(),
+    )]);
+
+    assert!(supervisor.verify_ownership(&spec)?.is_some());
+    assert!(supervisor.verify_ownership(&changed_spec)?.is_none());
+
+    process.stop(Duration::from_secs(1)).await?;
 
     Ok(())
 }
@@ -638,6 +708,7 @@ fn process_spec(
         name: name.to_string(),
         command: command.into(),
         arguments,
+        private_environment: Default::default(),
         config_path: paths.config().join(format!("{name}.json")),
         log_path: paths.logs().join(format!("{name}.log")),
         pid_path: paths.run().join(format!("{name}.pid")),

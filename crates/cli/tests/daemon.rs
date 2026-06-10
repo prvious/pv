@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -454,12 +454,14 @@ fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
 
 #[derive(Debug)]
 struct DaemonFixture {
+    _fixture_lock: MutexGuard<'static, ()>,
     requests: Arc<Mutex<Vec<String>>>,
     thread: thread::JoinHandle<anyhow::Result<()>>,
 }
 
 impl DaemonFixture {
     fn start(paths: &PvPaths, expected_requests: usize) -> anyhow::Result<Self> {
+        let fixture_lock = daemon_fixture_lock();
         state::fs::ensure_layout(paths)?;
         delete_optional_file(&paths.daemon_socket())?;
         let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
@@ -503,7 +505,11 @@ impl DaemonFixture {
             Ok(())
         });
 
-        Ok(Self { requests, thread })
+        Ok(Self {
+            _fixture_lock: fixture_lock,
+            requests,
+            thread,
+        })
     }
 
     fn finish(self) -> anyhow::Result<Vec<String>> {
@@ -513,6 +519,12 @@ impl DaemonFixture {
 
         Ok(lock(&self.requests).clone())
     }
+}
+
+fn daemon_fixture_lock() -> MutexGuard<'static, ()> {
+    static DAEMON_FIXTURE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    lock(DAEMON_FIXTURE_LOCK.get_or_init(|| Mutex::new(())))
 }
 
 #[expect(

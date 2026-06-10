@@ -177,6 +177,39 @@ pub(crate) enum Command {
 
     #[command(name = "redis:list", about = "List installed Redis tracks")]
     RedisList,
+
+    #[command(name = "rustfs:install", about = "Install a RustFS track")]
+    RustfsInstall(RustfsInstallArgs),
+
+    #[command(name = "rustfs:update", about = "Update installed RustFS tracks")]
+    RustfsUpdate,
+
+    #[command(name = "rustfs:uninstall", about = "Uninstall a RustFS track")]
+    RustfsUninstall(RustfsUninstallArgs),
+
+    #[command(name = "rustfs:list", about = "List installed RustFS tracks")]
+    RustfsList,
+
+    #[command(name = "rustfs:open", about = "Open the running RustFS console")]
+    RustfsOpen,
+
+    #[command(name = "s3:install", about = "Install a RustFS track (S3 alias)")]
+    S3Install(RustfsInstallArgs),
+
+    #[command(
+        name = "s3:update",
+        about = "Update installed RustFS tracks (S3 alias)"
+    )]
+    S3Update,
+
+    #[command(name = "s3:uninstall", about = "Uninstall a RustFS track (S3 alias)")]
+    S3Uninstall(RustfsUninstallArgs),
+
+    #[command(name = "s3:list", about = "List installed RustFS tracks (S3 alias)")]
+    S3List,
+
+    #[command(name = "s3:open", about = "Open the running RustFS console (S3 alias)")]
+    S3Open,
 }
 
 #[derive(Debug, clap::Args)]
@@ -285,6 +318,24 @@ pub(crate) struct RedisInstallArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct RedisUninstallArgs {
     #[arg(value_name = "track", help = "Redis track to uninstall")]
+    pub(crate) track: String,
+
+    #[arg(long, help = "Remove PV-owned runtime data for the track")]
+    pub(crate) prune: bool,
+
+    #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RustfsInstallArgs {
+    #[arg(value_name = "track", help = "RustFS track to install")]
+    pub(crate) track: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RustfsUninstallArgs {
+    #[arg(value_name = "track", help = "RustFS track to uninstall")]
     pub(crate) track: String,
 
     #[arg(long, help = "Remove PV-owned runtime data for the track")]

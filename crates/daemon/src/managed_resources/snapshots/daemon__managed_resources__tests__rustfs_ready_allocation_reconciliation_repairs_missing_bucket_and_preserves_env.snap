@@ -1,0 +1,27 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "# >>> PV MANAGED\nAWS_ACCESS_KEY_ID=pv-rustfs\nAWS_BUCKET=acme-test-uploads\nAWS_ENDPOINT=http://127.0.0.1:<api_port>\nAWS_SECRET_ACCESS_KEY=<secret_key>\nAWS_URL=http://127.0.0.1:<api_port>\nS3_ACCESS_KEY=pv-rustfs\nS3_ENDPOINT=http://127.0.0.1:<api_port>\nS3_SECRET_KEY=<secret_key>\n# <<< PV MANAGED\n",
+    [
+        ResourceAllocationRecord {
+            id: "allocation_000001",
+            project_id: "<project_id>",
+            resource_name: "rustfs",
+            track: "1.0",
+            allocation_name: "uploads",
+            generated_name: "acme-test-uploads",
+            env: {
+                "bucket": "acme-test-uploads",
+            },
+            status: Ready,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+        },
+    ],
+    true,
+    Some(
+        "pv rustfs probe",
+    ),
+)
