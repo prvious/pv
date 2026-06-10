@@ -352,6 +352,29 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
 }
 
 #[test]
+fn php_pair_build_smoke_prepatches_frankenphp_for_staticphp_php83_avx512_probe() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        recipe_track: "8.3",
+        php_version: "8.3.31",
+        frankenphp_version: "1.12.4",
+        require_staticphp_php83_frankenphp_patch_context: true,
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(
+        run.frankenphp_archive_exists,
+        "FrankenPHP archive was not written"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn composer_build_smoke_uses_platform_suffixed_archive_name() -> Result<()> {
     let run = run_composer_build_recipe_smoke()?;
 
@@ -1443,6 +1466,9 @@ struct BackingBuildRecipeRun {
 }
 
 struct BuildRecipeOptions<'a> {
+    recipe_track: &'a str,
+    php_version: &'a str,
+    frankenphp_version: &'a str,
     lipo_archs: &'a str,
     macho_minos: &'a str,
     macho_libraries: &'a str,
@@ -1450,6 +1476,7 @@ struct BuildRecipeOptions<'a> {
     frankenphp_macho_libraries: &'a str,
     frankenphp_macho_rpaths: &'a str,
     validate_archive_failure_resource: &'a str,
+    require_staticphp_php83_frankenphp_patch_context: bool,
 }
 
 struct RedisBuildRecipeOptions {
@@ -1462,6 +1489,60 @@ struct BackingBuildRecipeOptions<'a> {
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
 }
+
+const PHP_83_AVX512_ORIGINAL_M4: &str = r#"dnl PHP_CHECK_AVX512_SUPPORTS
+dnl
+AC_DEFUN([PHP_CHECK_AVX512_SUPPORTS], [
+  AC_MSG_CHECKING([for avx512 supports in compiler])
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="-mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw $CFLAGS"
+
+  AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #include <immintrin.h>
+      int main(void) {
+        __m512i mask = _mm512_set1_epi32(0x1);
+        char out[32];
+        _mm512_storeu_si512(out, _mm512_shuffle_epi8(mask, mask));
+        return 0;
+    }]])], [
+    have_avx512_supports=1
+    AC_MSG_RESULT([yes])
+  ], [
+    have_avx512_supports=0
+    AC_MSG_RESULT([no])
+  ])
+
+  CFLAGS="$save_CFLAGS"
+
+  AC_DEFINE_UNQUOTED([PHP_HAVE_AVX512_SUPPORTS],
+   [$have_avx512_supports], [Whether the compiler supports AVX512])
+])
+
+dnl PHP_CHECK_AVX512_VBMI_SUPPORTS
+dnl
+AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
+  AC_MSG_CHECKING([for avx512 vbmi supports in compiler])
+  save_CFLAGS="$CFLAGS"
+  CFLAGS="-mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw -mavx512vbmi $CFLAGS"
+  AC_LINK_IFELSE([AC_LANG_SOURCE([[
+    #include <immintrin.h>
+      int main(void) {
+        __m512i mask = _mm512_set1_epi32(0x1);
+        char out[32];
+        _mm512_storeu_si512(out, _mm512_permutexvar_epi8(mask, mask));
+        return 0;
+    }]])], [
+    have_avx512_vbmi_supports=1
+    AC_MSG_RESULT([yes])
+  ], [
+    have_avx512_vbmi_supports=0
+    AC_MSG_RESULT([no])
+  ])
+  CFLAGS="$save_CFLAGS"
+  AC_DEFINE_UNQUOTED([PHP_HAVE_AVX512_VBMI_SUPPORTS],
+   [$have_avx512_vbmi_supports], [Whether the compiler supports AVX512 VBMI])
+])
+"#;
 
 impl BackingBuildRecipe {
     fn all() -> [Self; 3] {
@@ -1506,6 +1587,11 @@ impl BackingBuildRecipe {
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
+}
+
+fn php_staticphp_avx512_patch() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/php/patches/staticphp/spc_fix_avx512_cache_before_80400.patch")
 }
 
 fn composer_smoke_hook() -> camino::Utf8PathBuf {
@@ -1946,6 +2032,9 @@ fn run_backing_build_recipe_signing_smoke(
 
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
     BuildRecipeOptions {
+        recipe_track: "8.4",
+        php_version: "8.4.20",
+        frankenphp_version: "1.12.3",
         lipo_archs: "arm64",
         macho_minos: "13.0",
         macho_libraries: "",
@@ -1953,6 +2042,7 @@ fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
         frankenphp_macho_libraries: "",
         frankenphp_macho_rpaths: "",
         validate_archive_failure_resource: "",
+        require_staticphp_php83_frankenphp_patch_context: false,
     }
 }
 
@@ -1974,7 +2064,11 @@ fn run_php_build_recipe_smoke_with_options(
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "frankenphp-source")?;
-    write_source_archive(&php_source_archive, "php-source")?;
+    if options.require_staticphp_php83_frankenphp_patch_context {
+        write_php_source_archive(&php_source_archive)?;
+    } else {
+        write_source_archive(&php_source_archive, "php-source")?;
+    }
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
@@ -1998,7 +2092,8 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
         .env("PV_RECIPE_PLATFORM", "darwin-arm64")
-        .env("PV_RECIPE_TRACK", "8.4")
+        .env("PV_RECIPE_TRACK", options.recipe_track)
+        .env("PV_TEST_FRANKENPHP_VERSION", options.frankenphp_version)
         .env(
             "PV_TEST_FRANKENPHP_MACHO_LIBRARIES",
             options.frankenphp_macho_libraries,
@@ -2019,9 +2114,22 @@ fn run_php_build_recipe_smoke_with_options(
             "PV_TEST_PHP_SOURCE_SHA256",
             file_sha256(&php_source_archive)?,
         )
+        .env("PV_TEST_PHP_VERSION", options.php_version)
         .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
+        .env(
+            "PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT",
+            if options.require_staticphp_php83_frankenphp_patch_context {
+                "1"
+            } else {
+                ""
+            },
+        )
         .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+        .env(
+            "PV_TEST_STATICPHP_PHP83_AVX512_PATCH",
+            php_staticphp_avx512_patch(),
+        )
         .env(
             "PV_TEST_VALIDATE_ARCHIVE_FAILURE_RESOURCE",
             options.validate_archive_failure_resource,
@@ -2030,33 +2138,37 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_SPC_LOG", &spc_log);
     let output = command.output()?;
 
-    let php_artifact_version = "8.4.20-pv1";
-    let php_artifact_basename = "php-8.4.20-pv1-darwin-arm64";
+    let php_artifact_version = format!("{}-pv1", options.php_version);
+    let php_artifact_basename = format!("php-{php_artifact_version}-darwin-arm64");
     let php_archive = out_dir.join(format!("{php_artifact_basename}.tar.gz"));
     let php_record = record_dir
         .join("php")
-        .join("8.4")
-        .join(php_artifact_version)
+        .join(options.recipe_track)
+        .join(&php_artifact_version)
         .join("darwin-arm64")
         .join(format!("{php_artifact_basename}.json"));
     let php_notice = out_dir
         .join("work")
-        .join("php-pair-8.4-darwin-arm64")
+        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
         .join(php_artifact_basename)
         .join("NOTICE");
 
-    let frankenphp_artifact_version = "8.4.20-frankenphp1.12.3-pv1";
-    let frankenphp_artifact_basename = "frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64";
+    let frankenphp_artifact_version = format!(
+        "{}-frankenphp{}-pv1",
+        options.php_version, options.frankenphp_version
+    );
+    let frankenphp_artifact_basename =
+        format!("frankenphp-{frankenphp_artifact_version}-darwin-arm64");
     let frankenphp_archive = out_dir.join(format!("{frankenphp_artifact_basename}.tar.gz"));
     let frankenphp_record = record_dir
         .join("frankenphp")
-        .join("8.4")
-        .join(frankenphp_artifact_version)
+        .join(options.recipe_track)
+        .join(&frankenphp_artifact_version)
         .join("darwin-arm64")
         .join(format!("{frankenphp_artifact_basename}.json"));
     let frankenphp_notice = out_dir
         .join("work")
-        .join("php-pair-8.4-darwin-arm64")
+        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
         .join(frankenphp_artifact_basename)
         .join("NOTICE");
 
@@ -2128,6 +2240,9 @@ fn write_fake_cargo(path: &Utf8Path) -> Result<()> {
         r#"#!/bin/sh
 set -eu
 
+php_version=${PV_TEST_PHP_VERSION:-8.4.20}
+frankenphp_version=${PV_TEST_FRANKENPHP_VERSION:-1.12.3}
+
 if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
   case "$5" in
     print-recipe-env)
@@ -2143,15 +2258,15 @@ if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release
       done
       case "$resource" in
         php)
-          upstream_version=8.4.20
-          artifact_version=8.4.20-pv1
+          upstream_version=$php_version
+          artifact_version=$php_version-pv1
           source_url=https://sources.example.test/php.tar.gz
           source_sha256=$PV_TEST_PHP_SOURCE_SHA256
           php_source_env=
           ;;
         frankenphp)
-          upstream_version=8.4.20-frankenphp1.12.3
-          artifact_version=8.4.20-frankenphp1.12.3-pv1
+          upstream_version=$php_version-frankenphp$frankenphp_version
+          artifact_version=$php_version-frankenphp$frankenphp_version-pv1
           source_url=https://sources.example.test/frankenphp.tar.gz
           source_sha256=$PV_TEST_SOURCE_SHA256
           php_source_env="PV_PHP_SOURCE_URL=https://sources.example.test/php.tar.gz
@@ -2163,7 +2278,7 @@ PV_PHP_SOURCE_SHA256=$PV_TEST_PHP_SOURCE_SHA256"
 PV_RESOURCE=$resource
 PV_TRACK=$PV_RECIPE_TRACK
 PV_PLATFORM=$PV_RECIPE_PLATFORM
-PV_PHP_VERSION=8.4.20
+PV_PHP_VERSION=$php_version
 PV_UPSTREAM_VERSION=$upstream_version
 PV_ARTIFACT_VERSION=$artifact_version
 PV_SOURCE_URL=$source_url
@@ -3410,6 +3525,26 @@ printf '\n' >>"$PV_TEST_SPC_LOG"
   exit 78
 }
 
+if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
+  frankenphp_source_dir=
+  previous_arg=
+  for arg in "$@"; do
+    if [ "$previous_arg" = "--dl-custom-local" ]; then
+      case "$arg" in
+        frankenphp:*)
+          frankenphp_source_dir=${arg#frankenphp:}
+          ;;
+      esac
+    fi
+    previous_arg=$arg
+  done
+
+  [ -n "$frankenphp_source_dir" ] || exit 79
+  [ -f "$frankenphp_source_dir/build/php.m4" ] || exit 80
+  patch --dry-run -R -d "$frankenphp_source_dir" -p1 \
+    <"$PV_TEST_STATICPHP_PHP83_AVX512_PATCH" >/dev/null || exit 81
+fi
+
 mkdir -p buildroot/bin
 built_target=
 case " $* " in
@@ -3476,6 +3611,25 @@ fn write_source_archive(path: &Utf8Path, top_level_dir: &str) -> Result<()> {
     header.set_mode(0o644);
     header.set_cksum();
     builder.append(&header, content as &[u8])?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_php_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    append_archive_file(
+        &mut builder,
+        "php-source/build/php.m4",
+        PHP_83_AVX512_ORIGINAL_M4.as_bytes(),
+    )?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
