@@ -1,0 +1,195 @@
+name: Artifact Publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Artifact Recipes workflow run ID to publish"
+        required: true
+        type: string
+      versioned_manifest_prefix:
+        description: "Versioned manifest key prefix"
+        required: true
+        default: "manifests/runs"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: artifact-publication-stable-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-14
+
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      STABLE_MANIFEST_KEY: manifest.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install release publication dependencies
+        run: |
+          set -eu
+          if ! command -v aws >/dev/null 2>&1; then
+            brew install awscli
+          fi
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+          aws --version
+          jq --version
+          gh --version
+
+      - name: Validate publication configuration
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
+        run: |
+          set -eu
+          for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_MANIFEST_KEY VERSIONED_MANIFEST_PREFIX; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              printf '%s\n' "missing publication configuration: $name" >&2
+              exit 1
+            fi
+          done
+
+          case "$R2_PUBLIC_BASE_URL" in
+            https://*) ;;
+            *)
+              printf '%s\n' "R2_PUBLIC_BASE_URL must use https" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Download source recipe artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -eu
+          download_dir="$RUNNER_TEMP/pv-publication-download"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+          gh run download "$SOURCE_RUN_ID" --dir "$download_dir"
+          find "$download_dir" -type f -print | sed -n '1,200p'
+
+      - name: Download existing published records
+        run: |
+          set -eu
+          published_dir="$RUNNER_TEMP/pv-published"
+          rm -rf "$published_dir"
+          mkdir -p "$published_dir/records" "$published_dir/revocations"
+          aws s3 sync "s3://$R2_BUCKET/records/" "$published_dir/records" \
+            --endpoint-url "$R2_ENDPOINT"
+          aws s3 sync "s3://$R2_BUCKET/revocations/" "$published_dir/revocations" \
+            --endpoint-url "$R2_ENDPOINT"
+
+      - name: Stage publication
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          VERSIONED_MANIFEST_PREFIX: ${{ inputs.versioned_manifest_prefix }}
+        run: |
+          set -eu
+          download_dir="$RUNNER_TEMP/pv-publication-download"
+          candidate_records="$RUNNER_TEMP/pv-publication-records"
+          stage="$RUNNER_TEMP/pv-publication-stage"
+          versioned_manifest_key="$VERSIONED_MANIFEST_PREFIX/$SOURCE_RUN_ID/manifest.json"
+
+          rm -rf "$candidate_records" "$stage"
+          mkdir -p "$candidate_records"
+          (
+            cd "$download_dir"
+            find . -type f -name '*.json' ! -name manifest.json | while IFS= read -r relative; do
+              relative=${relative#./}
+              mkdir -p "$candidate_records/$(dirname "$relative")"
+              cp "$relative" "$candidate_records/$relative"
+            done
+          )
+
+          if ! find "$candidate_records" -type f -name '*.json' -print -quit | grep -q .; then
+            printf '%s\n' "source run did not contain release records" >&2
+            exit 1
+          fi
+
+          cargo run -p pv-release -- stage-publication \
+            --source-archives "$download_dir" \
+            --candidate-records "$candidate_records" \
+            --published-records "$RUNNER_TEMP/pv-published/records" \
+            --published-revocations "$RUNNER_TEMP/pv-published/revocations" \
+            --defaults release/artifacts/default-tracks.toml \
+            --stage "$stage" \
+            --base-url "$R2_PUBLIC_BASE_URL" \
+            --versioned-manifest-key "$versioned_manifest_key" \
+            --stable-manifest-key "$STABLE_MANIFEST_KEY"
+
+      - name: Upload immutable artifacts, records, and versioned manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-publication-stage"
+
+          ensure_object_absent() {
+            object_key=$1
+            error_file="$RUNNER_TEMP/pv-head-object.err"
+            if aws s3api head-object --bucket "$R2_BUCKET" --key "$object_key" --endpoint-url "$R2_ENDPOINT" > /dev/null 2>"$error_file"; then
+              printf '%s\n' "immutable object already exists: $object_key" >&2
+              exit 1
+            fi
+            if grep -Eq '\(404\)|Not Found|NotFound|NoSuchKey' "$error_file"; then
+              return 0
+            fi
+            printf '%s\n' "failed to confirm immutable object absence: $object_key" >&2
+            cat "$error_file" >&2
+            exit 1
+          }
+
+          upload_immutable_object() {
+            local_path=$1
+            object_key=$2
+            ensure_object_absent "$object_key"
+            aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"
+          }
+
+          upload_rows="$RUNNER_TEMP/pv-immutable-uploads.tsv"
+          jq -r '.immutable_uploads[] | [.local_path, .object_key] | @tsv' publication-plan.json > "$upload_rows"
+          if [ ! -s "$upload_rows" ]; then
+            printf '%s\n' "publication plan did not contain immutable uploads" >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r local_path object_key; do
+            upload_immutable_object "$local_path" "$object_key"
+          done < "$upload_rows"
+
+          local_path=$(jq -e -r '.versioned_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.versioned_manifest.object_key' publication-plan.json)
+          upload_immutable_object "$local_path" "$object_key"
+
+      - name: Publish stable manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-publication-stage"
+          local_path=$(jq -e -r '.stable_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_manifest.object_key' publication-plan.json)
+          if [ "$object_key" != "manifest.json" ]; then
+            printf '%s\n' "stable manifest object key must be manifest.json" >&2
+            exit 1
+          fi
+          aws s3 cp "$local_path" "s3://$R2_BUCKET/$object_key" --endpoint-url "$R2_ENDPOINT"

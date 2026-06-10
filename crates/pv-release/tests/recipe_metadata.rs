@@ -4,7 +4,10 @@ use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::defaults::ManifestDefaults;
-use pv_release::recipe::{ComposerRecipe, PhpRecipe, composer_recipe_env, php_recipe_env};
+use pv_release::recipe::{
+    BackingRecipe, BackingRecipeKind, ComposerRecipe, PhpRecipe, composer_recipe_env,
+    php_recipe_env,
+};
 use resources::ResourceName;
 
 #[test]
@@ -18,6 +21,39 @@ fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
         composer.upstream_version(),
         composer.platform().as_str(),
     ));
+    Ok(())
+}
+
+#[test]
+fn backing_recipe_metadata_parses_common_shape() -> Result<()> {
+    let recipe = BackingRecipe::from_toml(
+        Utf8Path::new("redis/recipe.toml"),
+        BackingRecipeKind::Redis,
+        VALID_REDIS_TOML,
+    )?;
+
+    assert_debug_snapshot!((
+        recipe.kind(),
+        recipe.resource().as_str(),
+        recipe.default_track().as_str(),
+        recipe
+            .platforms()
+            .iter()
+            .map(|platform| platform.as_str())
+            .collect::<Vec<_>>(),
+        recipe
+            .tracks()
+            .iter()
+            .map(|track| (
+                track.name().as_str(),
+                track.upstream_version(),
+                track.source_url(),
+                track.source_sha256().as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        recipe.payload_paths(),
+    ));
+
     Ok(())
 }
 
@@ -38,6 +74,74 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_default_track(&defaults, "php", "8.4")?;
     assert_default_track(&defaults, "frankenphp", "8.4")?;
     assert_default_track(&defaults, "composer", "2")?;
+
+    Ok(())
+}
+
+#[test]
+fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
+    let wrong_resource =
+        VALID_REDIS_TOML.replace("resources = [\"redis\"]", "resources = [\"mysql\"]");
+    let missing_platform = VALID_REDIS_TOML.replace(
+        "platforms = [\"darwin-arm64\", \"darwin-amd64\"]",
+        "platforms = [\"darwin-arm64\"]",
+    );
+    let missing_default_track =
+        VALID_REDIS_TOML.replace("default_track = \"8.2\"", "default_track = \"8.0\"");
+    let empty_payload_paths = VALID_REDIS_TOML.replace(
+        "payload_paths = [\"bin/redis-server\", \"bin/redis-cli\"]",
+        "payload_paths = []",
+    );
+    let unsafe_payload_path = VALID_REDIS_TOML.replace(
+        "\"bin/redis-server\", \"bin/redis-cli\"",
+        "\"bin/redis-server\", \"../bin/redis-cli\"",
+    );
+    let insecure_source_url = VALID_REDIS_TOML.replace(
+        "https://download.redis.io/releases/redis-8.2.1.tar.gz",
+        "http://download.redis.io/releases/redis-8.2.1.tar.gz",
+    );
+    let bad_source_sha256 = VALID_REDIS_TOML.replace(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bad",
+    );
+
+    assert_debug_snapshot!((
+        BackingRecipe::from_toml(
+            Utf8Path::new("wrong-resource.toml"),
+            BackingRecipeKind::Redis,
+            &wrong_resource,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("missing-platform.toml"),
+            BackingRecipeKind::Redis,
+            &missing_platform,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("missing-default-track.toml"),
+            BackingRecipeKind::Redis,
+            &missing_default_track,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("empty-payload-paths.toml"),
+            BackingRecipeKind::Redis,
+            &empty_payload_paths,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("unsafe-payload-path.toml"),
+            BackingRecipeKind::Redis,
+            &unsafe_payload_path,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("insecure-source-url.toml"),
+            BackingRecipeKind::Redis,
+            &insecure_source_url,
+        ),
+        BackingRecipe::from_toml(
+            Utf8Path::new("bad-source-sha256.toml"),
+            BackingRecipeKind::Redis,
+            &bad_source_sha256,
+        ),
+    ));
 
     Ok(())
 }
@@ -123,6 +227,11 @@ fn recipe_metadata_rejects_unknown_fields() -> Result<()> {
         "source_sha256 = \"345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06\"\nunknown_track_metadata = \"ignored\"",
         1,
     );
+    let unknown_backing_artifact = VALID_REDIS_TOML.replacen(
+        "[artifact]",
+        "[artifact]\nunknown_artifact_metadata = \"ignored\"",
+        1,
+    );
 
     assert_invalid_recipe_metadata(PhpRecipe::from_toml(
         Utf8Path::new("unknown-root.toml"),
@@ -135,6 +244,11 @@ fn recipe_metadata_rejects_unknown_fields() -> Result<()> {
     assert_invalid_recipe_metadata(ComposerRecipe::from_toml(
         Utf8Path::new("unknown-composer-track.toml"),
         &unknown_composer_track,
+    ));
+    assert_invalid_recipe_metadata(BackingRecipe::from_toml(
+        Utf8Path::new("unknown-backing-artifact.toml"),
+        BackingRecipeKind::Redis,
+        &unknown_backing_artifact,
     ));
 
     Ok(())
@@ -320,4 +434,24 @@ name = "2"
 upstream_version = "2.10.1"
 source_url = "https://getcomposer.org/download/2.10.1/composer.phar"
 source_sha256 = "345b9c6a98da5c30dcbd4b0d99fc8710bf0ae98a3898eea18f7b2ad9dec93f06"
+"#;
+
+const VALID_REDIS_TOML: &str = r#"
+[recipe]
+resources = ["redis"]
+default_track = "8.2"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/redis-server", "bin/redis-cli"]
+
+[[tracks]]
+name = "8.2"
+upstream_version = "8.2.1"
+source_url = "https://download.redis.io/releases/redis-8.2.1.tar.gz"
+source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 "#;

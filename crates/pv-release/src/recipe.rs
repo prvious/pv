@@ -43,6 +43,38 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
 
 const PHP_DEPLOYMENT_TARGET: &str = "13.0";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackingRecipeKind {
+    Redis,
+    Mysql,
+    Postgres,
+    Mailpit,
+    Rustfs,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackingRecipe {
+    path: Utf8PathBuf,
+    kind: BackingRecipeKind,
+    resource: ResourceName,
+    header: RecipeHeader,
+    artifact: BackingArtifact,
+    tracks: Vec<BackingTrack>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackingArtifact {
+    payload_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BackingTrack {
+    name: TrackName,
+    upstream_version: String,
+    source_url: String,
+    source_sha256: Sha256Digest,
+}
+
 #[derive(Clone, Debug)]
 pub struct PhpRecipe {
     path: Utf8PathBuf,
@@ -121,6 +153,15 @@ struct RawComposerRecipe {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawBackingRecipe {
+    recipe: RawRecipeHeader,
+    artifact: RawBackingArtifact,
+    #[serde(default)]
+    tracks: Vec<RawBackingTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRecipeHeader {
     resources: Vec<String>,
     default_track: String,
@@ -164,6 +205,189 @@ struct RawComposerTrack {
     upstream_version: String,
     source_url: String,
     source_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBackingArtifact {
+    payload_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBackingTrack {
+    name: String,
+    upstream_version: String,
+    source_url: String,
+    source_sha256: String,
+}
+
+impl BackingRecipeKind {
+    pub fn resource_name(self) -> &'static str {
+        match self {
+            Self::Redis => "redis",
+            Self::Mysql => "mysql",
+            Self::Postgres => "postgres",
+            Self::Mailpit => "mailpit",
+            Self::Rustfs => "rustfs",
+        }
+    }
+
+    fn recipe_kind(self) -> &'static str {
+        match self {
+            Self::Redis => "Redis recipe",
+            Self::Mysql => "MySQL recipe",
+            Self::Postgres => "Postgres recipe",
+            Self::Mailpit => "Mailpit recipe",
+            Self::Rustfs => "RustFS recipe",
+        }
+    }
+}
+
+impl BackingRecipe {
+    pub fn from_toml(
+        path: &Utf8Path,
+        kind: BackingRecipeKind,
+        content: &str,
+    ) -> crate::Result<Self> {
+        let raw: RawBackingRecipe =
+            toml::from_str(content).map_err(|error| invalid(path, error))?;
+        Self::from_raw(path, kind, raw)
+    }
+
+    pub fn load(path: &Utf8Path, kind: BackingRecipeKind) -> crate::Result<Self> {
+        let content = read_to_string(path)?;
+        Self::from_toml(path, kind, &content)
+    }
+
+    pub fn kind(&self) -> BackingRecipeKind {
+        self.kind
+    }
+
+    pub fn resource(&self) -> &ResourceName {
+        &self.resource
+    }
+
+    pub fn tracks(&self) -> &[BackingTrack] {
+        &self.tracks
+    }
+
+    pub fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    pub fn platforms(&self) -> &[ArtifactPlatform] {
+        &self.header.platforms
+    }
+
+    pub fn default_track(&self) -> &TrackName {
+        &self.header.default_track
+    }
+
+    pub fn minimum_pv_version(&self) -> &PvVersion {
+        &self.header.minimum_pv_version
+    }
+
+    pub fn pv_build_revision(&self) -> &str {
+        &self.header.pv_build_revision
+    }
+
+    pub fn license_files(&self) -> &[String] {
+        &self.header.license_files
+    }
+
+    pub fn notice_files(&self) -> &[String] {
+        &self.header.notice_files
+    }
+
+    pub fn payload_paths(&self) -> &[String] {
+        &self.artifact.payload_paths
+    }
+
+    fn from_raw(
+        path: &Utf8Path,
+        kind: BackingRecipeKind,
+        raw: RawBackingRecipe,
+    ) -> crate::Result<Self> {
+        let header = RecipeHeader::from_raw(path, raw.recipe)?;
+        let resource = ResourceName::new(kind.resource_name())
+            .map_err(|error| invalid_identity(path, "resource", error))?;
+        validate_exact_resources(
+            path,
+            kind.recipe_kind(),
+            &header.resources,
+            &[kind.resource_name()],
+        )?;
+        validate_exact_platforms(
+            path,
+            kind.recipe_kind(),
+            &header.platforms,
+            &["darwin-arm64", "darwin-amd64"],
+        )?;
+
+        let artifact = BackingArtifact::from_raw(path, raw.artifact)?;
+        let tracks = parse_backing_tracks(path, raw.tracks)?;
+        validate_default_track_exists(
+            path,
+            &header.default_track,
+            tracks.iter().map(BackingTrack::name),
+        )?;
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            kind,
+            resource,
+            header,
+            artifact,
+            tracks,
+        })
+    }
+}
+
+impl BackingArtifact {
+    fn from_raw(path: &Utf8Path, raw: RawBackingArtifact) -> crate::Result<Self> {
+        if raw.payload_paths.is_empty() {
+            return Err(invalid(path, "artifact.payload_paths must not be empty"));
+        }
+        validate_relative_file_list(path, "artifact.payload_paths", &raw.payload_paths)?;
+
+        Ok(Self {
+            payload_paths: raw.payload_paths,
+        })
+    }
+}
+
+impl BackingTrack {
+    pub fn name(&self) -> &TrackName {
+        &self.name
+    }
+
+    pub fn upstream_version(&self) -> &str {
+        &self.upstream_version
+    }
+
+    pub fn source_url(&self) -> &str {
+        &self.source_url
+    }
+
+    pub fn source_sha256(&self) -> &Sha256Digest {
+        &self.source_sha256
+    }
+
+    fn from_raw(path: &Utf8Path, name: TrackName, raw: RawBackingTrack) -> crate::Result<Self> {
+        let upstream_version =
+            require_non_empty(path, "upstream_version", &raw.upstream_version)?.to_string();
+        let source_url = parse_https_url(path, "source_url", raw.source_url)?;
+        let source_sha256 = Sha256Digest::new(raw.source_sha256)
+            .map_err(|error| invalid_identity(path, "source_sha256", error))?;
+
+        Ok(Self {
+            name,
+            upstream_version,
+            source_url,
+            source_sha256,
+        })
+    }
 }
 
 impl PhpRecipe {
@@ -792,6 +1016,30 @@ fn parse_php_tracks(path: &Utf8Path, values: Vec<RawPhpTrack>) -> crate::Result<
     let mut tracks = Vec::with_capacity(values.len());
     for (name, value) in names.into_iter().zip(values) {
         let track = PhpTrack::from_raw(path, name, value)?;
+        tracks.push(track);
+    }
+
+    Ok(tracks)
+}
+
+fn parse_backing_tracks(
+    path: &Utf8Path,
+    values: Vec<RawBackingTrack>,
+) -> crate::Result<Vec<BackingTrack>> {
+    let mut names = Vec::with_capacity(values.len());
+    let mut seen = BTreeSet::new();
+    for value in &values {
+        let name = TrackName::new(value.name.clone())
+            .map_err(|error| invalid_identity(path, "track", error))?;
+        if !seen.insert(name.clone()) {
+            return Err(invalid(path, format!("duplicate track `{name}`")));
+        }
+        names.push(name);
+    }
+
+    let mut tracks = Vec::with_capacity(values.len());
+    for (name, value) in names.into_iter().zip(values) {
+        let track = BackingTrack::from_raw(path, name, value)?;
         tracks.push(track);
     }
 

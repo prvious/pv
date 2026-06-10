@@ -21,6 +21,32 @@ require_sha256() {
   [ "$actual" = "$expected" ] || die "$file checksum mismatch: expected $expected, got $actual"
 }
 
+artifact_basename() {
+  resource=$1
+  artifact_version=$2
+  platform=$3
+  printf '%s\n' "$resource-$artifact_version-$platform"
+}
+
+artifact_object_key() {
+  resource=$1
+  track=$2
+  artifact_version=$3
+  platform=$4
+  basename=$(artifact_basename "$resource" "$artifact_version" "$platform")
+  printf '%s\n' "resources/$resource/$track/$artifact_version/$platform/$basename.tar.gz"
+}
+
+artifact_record_path() {
+  record_dir=$1
+  resource=$2
+  track=$3
+  artifact_version=$4
+  platform=$5
+  basename=$(artifact_basename "$resource" "$artifact_version" "$platform")
+  printf '%s\n' "$record_dir/$resource/$track/$artifact_version/$platform/$basename.json"
+}
+
 write_record() {
   record_path=$1
   resource=$2

@@ -1,0 +1,9 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: "publication_error_summary(error, tempdir.path())"
+---
+(
+    "InvalidPublicationInput",
+    "source-archives",
+    "missing source archive `redis-8.2.1-pv1-darwin-arm64.tar.gz`",
+)

@@ -1,0 +1,48 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(BackingRecipe::from_toml(Utf8Path::new(\"wrong-resource.toml\"),\nBackingRecipeKind::Redis, &wrong_resource,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-platform.toml\"),\nBackingRecipeKind::Redis, &missing_platform,),\nBackingRecipe::from_toml(Utf8Path::new(\"missing-default-track.toml\"),\nBackingRecipeKind::Redis, &missing_default_track,),\nBackingRecipe::from_toml(Utf8Path::new(\"empty-payload-paths.toml\"),\nBackingRecipeKind::Redis, &empty_payload_paths,),\nBackingRecipe::from_toml(Utf8Path::new(\"unsafe-payload-path.toml\"),\nBackingRecipeKind::Redis, &unsafe_payload_path,),\nBackingRecipe::from_toml(Utf8Path::new(\"insecure-source-url.toml\"),\nBackingRecipeKind::Redis, &insecure_source_url,),\nBackingRecipe::from_toml(Utf8Path::new(\"bad-source-sha256.toml\"),\nBackingRecipeKind::Redis, &bad_source_sha256,),)"
+---
+(
+    Err(
+        InvalidRecipeMetadata {
+            path: "wrong-resource.toml",
+            reason: "Redis recipe resources must be exactly `redis`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "missing-platform.toml",
+            reason: "Redis recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "missing-default-track.toml",
+            reason: "recipe.default_track `8.0` must exist in tracks",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "empty-payload-paths.toml",
+            reason: "artifact.payload_paths must not be empty",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "unsafe-payload-path.toml",
+            reason: "artifact.payload_paths contains invalid relative path `../bin/redis-cli`",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "insecure-source-url.toml",
+            reason: "source_url must be an https URL with a host",
+        },
+    ),
+    Err(
+        InvalidRecipeMetadata {
+            path: "bad-source-sha256.toml",
+            reason: "invalid source_sha256: invalid sha256 `bad`",
+        },
+    ),
+)

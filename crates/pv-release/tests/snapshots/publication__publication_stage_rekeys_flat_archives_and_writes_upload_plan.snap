@@ -1,0 +1,24 @@
+---
+source: crates/pv-release/tests/publication.rs
+expression: "read_file(&stage.join(\"publication-plan.json\"))?"
+---
+{
+  "immutable_uploads": [
+    {
+      "local_path": "archives/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+      "object_key": "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz"
+    },
+    {
+      "local_path": "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json",
+      "object_key": "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json"
+    }
+  ],
+  "versioned_manifest": {
+    "local_path": "manifests/runs/123456789/manifest.json",
+    "object_key": "manifests/runs/123456789/manifest.json"
+  },
+  "stable_manifest": {
+    "local_path": "manifest.json",
+    "object_key": "manifest.json"
+  }
+}
