@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE='mysql'
+PV_TRACK='8.4'
+PV_PLATFORM='darwin-arm64'
+PV_UPSTREAM_VERSION='8.4.9'
+PV_ARTIFACT_VERSION='8.4.9-pv1'
+PV_SOURCE_URL='https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz'
+PV_SOURCE_SHA256='e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b'
+PV_MINIMUM_PV_VERSION='0.1.0'
+PV_PV_BUILD_REVISION='pv1'

@@ -40,7 +40,7 @@ jobs:
         run: cargo shear
 
       - name: Check artifact recipe scripts
-        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
+        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
       - name: Validate artifact recipe metadata and fixtures
         run: |
@@ -49,6 +49,8 @@ jobs:
             --php release/artifacts/recipes/php/tracks.toml \
             --composer release/artifacts/recipes/composer/composer.toml \
             --redis release/artifacts/recipes/redis/recipe.toml \
+            --mysql release/artifacts/recipes/mysql/recipe.toml \
+            --postgres release/artifacts/recipes/postgres/recipe.toml \
             --mailpit release/artifacts/recipes/mailpit/recipe.toml \
             --rustfs release/artifacts/recipes/rustfs/recipe.toml \
             --archives /tmp/pv-recipe-fixtures/archives \

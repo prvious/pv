@@ -1,0 +1,17 @@
+[recipe]
+resources = ["postgres"]
+default_track = "18"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
+
+[[tracks]]
+name = "18"
+upstream_version = "18.3"
+source_url = "https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz"
+source_sha256 = "9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59"

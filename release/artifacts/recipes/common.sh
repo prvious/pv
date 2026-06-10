@@ -21,6 +21,99 @@ require_sha256() {
   [ "$actual" = "$expected" ] || die "$file checksum mismatch: expected $expected, got $actual"
 }
 
+pv_recipe_macho_loader_prefix() {
+  root_dir=$1
+  macho=$2
+
+  case "$macho" in
+    "$root_dir"/lib/*)
+      relative=${macho#"$root_dir"/lib/}
+      case "$relative" in
+        */*)
+          directory=${relative%/*}
+          loader_prefix="@loader_path"
+          # Nested lib modules need enough ".." hops to resolve back to the artifact lib root.
+          while :; do
+            loader_prefix="$loader_prefix/.."
+            case "$directory" in
+              */*) directory=${directory#*/} ;;
+              *) break ;;
+            esac
+          done
+          printf '%s\n' "$loader_prefix"
+          ;;
+        *) printf '%s\n' "@loader_path" ;;
+      esac
+      ;;
+    *) printf '%s\n' "@loader_path/../lib" ;;
+  esac
+}
+
+rewrite_macho_install_names() {
+  root_dir=$1
+  install_dir=$2
+
+  need install_name_tool
+  need find
+  need otool
+
+  if [ -d "$root_dir/lib" ]; then
+    find "$root_dir/lib" -type f -name '*.dylib' -exec sh -c '
+      set -e
+      install_dir=$1
+      shift
+      for library do
+        install_name=$(
+          otool -D "$library" 2>/dev/null | {
+            IFS= read -r _ || true
+            IFS= read -r line || true
+            printf "%s\n" "$line"
+          }
+        )
+        case "$install_name" in
+          "$install_dir"/lib/*)
+            install_name_tool -id "@loader_path/${install_name##*/}" "$library" || exit 1
+            ;;
+        esac
+      done
+    ' sh "$install_dir" {} +
+  fi
+
+  for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
+    [ -d "$macho_dir" ] || continue
+    find "$macho_dir" -type f | while IFS= read -r macho; do
+      otool -L "$macho" >/dev/null 2>&1 || continue
+      loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
+      otool -L "$macho" | while read -r linked _; do
+        case "$linked" in
+          "$install_dir"/lib/*)
+            install_name_tool -change "$linked" "$loader_prefix/${linked##*/}" "$macho" || exit 1
+            ;;
+        esac
+      done
+    done
+  done
+}
+
+pv_recipe_ad_hoc_sign_macho_tree() {
+  root_dir=$1
+
+  need codesign
+  need find
+  need otool
+
+  for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
+    [ -d "$macho_dir" ] || continue
+    find "$macho_dir" -type f -exec sh -c '
+      set -e
+      for macho do
+        otool -L "$macho" >/dev/null 2>&1 || continue
+        codesign --force --sign - "$macho" >/dev/null || exit 1
+      done
+    ' sh {} +
+  done
+}
+
 expected_arch_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' arm64 ;;
@@ -140,6 +233,10 @@ sign_macho_binary() {
   binary=$1
   codesign --force --sign - "$binary"
   codesign --verify "$binary"
+}
+
+pv_recipe_validate_macho_binary() {
+  validate_macho_binary "$@"
 }
 
 artifact_basename() {

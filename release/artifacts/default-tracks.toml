@@ -15,6 +15,14 @@ name = "redis"
 default_track = "8.2"
 
 [[resource]]
+name = "mysql"
+default_track = "8.4"
+
+[[resource]]
+name = "postgres"
+default_track = "18"
+
+[[resource]]
 name = "mailpit"
 default_track = "1"
 

@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE='postgres'
+PV_TRACK='18'
+PV_PLATFORM='darwin-arm64'
+PV_UPSTREAM_VERSION='18.3'
+PV_ARTIFACT_VERSION='18.3-pv1'
+PV_SOURCE_URL='https://ftp.postgresql.org/pub/source/v18.3/postgresql-18.3.tar.gz'
+PV_SOURCE_SHA256='9e054ffd6e013da2c2c9a1bfd6e062c98875d340df080516551c96b9b0926a59'
+PV_MINIMUM_PV_VERSION='0.1.0'
+PV_PV_BUILD_REVISION='pv1'
