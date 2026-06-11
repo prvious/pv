@@ -3051,6 +3051,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "self-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "insta",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"

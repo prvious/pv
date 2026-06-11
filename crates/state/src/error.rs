@@ -16,6 +16,18 @@ pub enum StateError {
         source: std::io::Error,
     },
 
+    #[error("invalid PV app release version `{version}`")]
+    InvalidAppReleaseVersion { version: String },
+
+    #[error("PV app release `{version}` is missing at {path}")]
+    AppReleaseMissing { version: String, path: Utf8PathBuf },
+
+    #[error("active PV binary symlink at {path} targets invalid release `{target}`")]
+    InvalidAppReleasePointer { path: Utf8PathBuf, target: String },
+
+    #[error("PV update is already in progress; update lock is held at {path}")]
+    UpdateInProgress { path: Utf8PathBuf },
+
     #[error("unsafe permissions for {path}: expected {expected:o}, found {actual:o}")]
     UnsafePermissions {
         path: Utf8PathBuf,

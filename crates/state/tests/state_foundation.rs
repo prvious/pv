@@ -7,12 +7,12 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
-    Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT,
-    GatewayPort, JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectRecord, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
-    RuntimeObservedStatus, RuntimeSubject, StateError,
+    AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
+    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobStatus, ManagedResourceDesiredState,
+    ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -123,6 +123,25 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
 }
 
 #[test]
+fn pv_paths_include_self_update_artifacts() {
+    let paths = PvPaths::for_home("/Users/alice");
+
+    assert_eq!(
+        paths.app_releases_dir().as_str(),
+        "/Users/alice/.pv/bin/releases"
+    );
+    assert_eq!(
+        paths.app_release_binary("0.2.0").as_str(),
+        "/Users/alice/.pv/bin/releases/0.2.0/pv"
+    );
+    assert_eq!(paths.active_pv_binary().as_str(), "/Users/alice/.pv/bin/pv");
+    assert_eq!(
+        paths.update_lock().as_str(),
+        "/Users/alice/.pv/run/update.lock"
+    );
+}
+
+#[test]
 fn layout_creates_expected_directories_with_user_only_modes() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -130,6 +149,82 @@ fn layout_creates_expected_directories_with_user_only_modes() -> Result<()> {
     state::fs::ensure_layout(&paths)?;
 
     assert_debug_snapshot!(state::fs::inspect_layout(&paths)?);
+
+    Ok(())
+}
+
+#[test]
+fn app_release_layout_installs_fixture_binaries_and_updates_active_symlink() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let layout = AppReleaseLayout::new(paths.clone());
+    let first_source = tempdir.path().join("pv-0.1.0");
+    let second_source = tempdir.path().join("pv-0.2.0");
+    state::fs::write_sensitive_file(&first_source, "pv 0.1.0\n")?;
+    state::fs::write_sensitive_file(&second_source, "pv 0.2.0\n")?;
+
+    let first = layout.install_release_binary("0.1.0", &first_source)?;
+    layout.activate_release("0.1.0")?;
+    let second = layout.install_release_binary("0.2.0", &second_source)?;
+    layout.activate_release("0.2.0")?;
+
+    assert_eq!(first.version(), "0.1.0");
+    assert_eq!(second.version(), "0.2.0");
+    assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+    assert_eq!(
+        state::fs::read_to_string(&paths.app_release_binary("0.1.0"))?,
+        "pv 0.1.0\n"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.app_release_binary("0.2.0"))?,
+        "pv 0.2.0\n"
+    );
+
+    let mut release_entries = state::fs::read_dir_paths(&paths.app_releases_dir())?
+        .into_iter()
+        .map(|path| path.file_name().unwrap_or("").to_string())
+        .collect::<Vec<_>>();
+    release_entries.sort();
+    assert_eq!(release_entries, vec!["0.1.0", "0.2.0"]);
+
+    Ok(())
+}
+
+#[test]
+fn app_release_layout_rejects_unsafe_versions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let layout = AppReleaseLayout::new(paths);
+    let source = tempdir.path().join("pv");
+    state::fs::write_sensitive_file(&source, "pv\n")?;
+
+    for version in ["", ".", "..", "../0.2.0", "0.2.0/pv", "0.2.0\\pv"] {
+        assert!(matches!(
+            layout.install_release_binary(version, &source),
+            Err(StateError::InvalidAppReleaseVersion { .. })
+        ));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn update_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::write_sensitive_file(&paths.update_lock(), "leftover lock file\n")?;
+
+    let first = UpdateLock::acquire(&paths)?;
+    let second = UpdateLock::acquire(&paths);
+
+    assert!(matches!(
+        second,
+        Err(StateError::UpdateInProgress { path }) if path == paths.update_lock()
+    ));
+
+    drop(first);
+    let reacquired = UpdateLock::acquire(&paths)?;
+    drop(reacquired);
 
     Ok(())
 }

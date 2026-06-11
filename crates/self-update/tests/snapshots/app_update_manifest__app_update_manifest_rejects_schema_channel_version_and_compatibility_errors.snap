@@ -1,0 +1,33 @@
+---
+source: crates/self-update/tests/app_update_manifest.rs
+expression: errors
+---
+[
+    InvalidManifestSnapshot {
+        name: "unsupported_schema",
+        error: UnsupportedManifestSchema {
+            schema_version: 2,
+            supported_schema_version: 1,
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "preview_channel",
+        error: UnsupportedChannel {
+            channel: "preview",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_version",
+        error: InvalidIdentity {
+            kind: "version",
+            value: "0.02.0",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "newer_minimum",
+        error: RequiresNewerPv {
+            minimum_pv_version: "999.0.0",
+            current_pv_version: "<current-pv-version>",
+        },
+    },
+]

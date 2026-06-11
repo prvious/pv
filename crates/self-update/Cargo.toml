@@ -1,0 +1,19 @@
+[package]
+name = "self-update"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true, features = ["parsing"] }
+url = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+insta = { workspace = true }

@@ -1,0 +1,44 @@
+---
+source: crates/self-update/tests/app_update_manifest.rs
+expression: errors
+---
+[
+    InvalidManifestSnapshot {
+        name: "invalid_url",
+        error: InvalidAssetUrl {
+            url: "http://downloads.example.test/pv/0.2.0/pv-darwin-arm64",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_checksum",
+        error: InvalidIdentity {
+            kind: "sha256",
+            value: "not-a-sha",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_timestamp",
+        error: InvalidPublishedAt {
+            value: "not-a-date",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_platform",
+        error: UnsupportedPlatform {
+            platform: "any",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "zero_size",
+        error: InvalidAssetSize {
+            platform: "darwin-arm64",
+            size: 0,
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "duplicate_platform",
+        error: DuplicatePlatform {
+            platform: "darwin-arm64",
+        },
+    },
+]

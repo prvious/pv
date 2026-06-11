@@ -9,7 +9,7 @@ use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runti
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
-use state::{Database, JobStatus, ProjectRecord, PvPaths};
+use state::{Database, JobStatus, ProjectRecord, PvPaths, UpdateLock};
 use tokio::io::AsyncWrite;
 
 pub(crate) async fn run_job(
@@ -41,6 +41,8 @@ pub(crate) async fn run_background_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
+    UpdateLock::check_available(&paths)?;
+
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
     let EnqueueResult::Queued(queued) = result else {
         return Ok(());
@@ -663,13 +665,14 @@ mod tests {
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
-    use state::{Database, JobStatus, PvPaths, StateError};
+    use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
     use tokio::io::duplex;
 
     use super::{
         complete_or_fail_background_reconciliation, enqueue_reconciliation_job,
         foreground_reconciliation_result, record_background_reconciliation_error,
-        start_reconciliation_job, stream_started_reconciliation_job,
+        run_background_reconciliation_job, start_reconciliation_job,
+        stream_started_reconciliation_job,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -800,6 +803,32 @@ mod tests {
             job.error.as_deref(),
             Some("I/O error: background task failed")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_reconciliation_rejects_update_lock_without_job() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let update_lock = UpdateLock::acquire(&paths)?;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            ReconciliationScope::System,
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::DaemonError::State(StateError::UpdateInProgress { path }))
+                if path == paths.update_lock()
+        ));
+        drop(update_lock);
+
+        let database = Database::open(&paths)?;
+        assert!(database.recent_jobs()?.is_empty());
 
         Ok(())
     }

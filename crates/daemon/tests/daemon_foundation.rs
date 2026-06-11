@@ -9,7 +9,7 @@ use rusqlite::params;
 use serde_json::{Value, json};
 use state::{
     DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, LinkProjectInput, PortOwner, PortRequest,
-    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, UpdateLock,
 };
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
@@ -106,6 +106,61 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[tokio::test]
+async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let update_lock = UpdateLock::acquire(&paths)?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let run_job_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "system",
+        }),
+    )
+    .await?;
+    let health_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+    drop(update_lock);
+
+    let database = Database::open(&paths)?;
+    let run_job_lines = normalize_update_lock_path(run_job_lines, paths.update_lock().as_str());
+
+    assert_with_normalized_timestamps(
+        "update_lock_rejects_mutating_jobs_but_keeps_health_available",
+        (run_job_lines, health_lines, database.recent_jobs()?),
+    )?;
+
+    Ok(())
+}
+
+fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> Vec<Value> {
+    for line in &mut lines {
+        let Some(message) = line.get_mut("message") else {
+            continue;
+        };
+        let Some(message_text) = message.as_str() else {
+            continue;
+        };
+
+        *message = json!(message_text.replace(update_lock_path, "<update-lock>"));
+    }
+
+    lines
 }
 
 #[tokio::test]

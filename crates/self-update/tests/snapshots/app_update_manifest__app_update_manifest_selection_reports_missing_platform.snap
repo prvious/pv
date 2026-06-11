@@ -1,0 +1,7 @@
+---
+source: crates/self-update/tests/app_update_manifest.rs
+expression: "select_platform_error(&manifest, AppUpdatePlatform::DarwinAmd64,)?"
+---
+MissingPlatform {
+    platform: "darwin-amd64",
+}

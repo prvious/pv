@@ -426,9 +426,43 @@ Resource-specific update commands do not support `--check` in v1. Update preview
 
 PV application self-update metadata comes from a PV app update manifest that is separate from the Managed Resource artifact manifest. The app update manifest includes PV application version metadata, platform-specific download URLs, SHA-256 checksums, and compatibility fields needed by the self-updater.
 
+The v1 PV app update manifest is a single stable-channel release document. It does not contain multiple channels, preview metadata, nightly metadata, or Managed Resource artifact data. The minimal v1 JSON shape is:
+
+```json
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "minimum_pv_version": "0.1.0",
+  "published_at": "2026-06-11T12:00:00Z",
+  "assets": [
+    {
+      "platform": "darwin-arm64",
+      "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-arm64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 12345678
+    },
+    {
+      "platform": "darwin-amd64",
+      "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-amd64",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 12345678
+    }
+  ]
+}
+```
+
+`schema_version` must be `1`; newer schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version` and `minimum_pv_version` use PV's simple application version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
+
+`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes one native PV application binary for one exact supported target platform. V1 app update assets support `darwin-arm64` and `darwin-amd64`; `any` is not valid for the PV application binary. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
+
+The manifest must contain at least one asset and must not contain duplicate assets for the same platform. Selecting the current platform returns the matching asset for the current target platform. If the current target platform is missing, selection fails clearly instead of falling back to another platform.
+
 The PV app update manifest is published at a stable PV-owned URL used by the Rust self-updater. Initially, that stable URL may be backed by GitHub Releases, such as a versioned `pv-app-manifest.json` release asset plus a stable latest manifest URL. The human-facing installer URL is separate and serves a generated installer script based on the same PV app release metadata.
 
 PV v1 relies on HTTPS/GitHub trust for the PV app update manifest itself. The app update manifest format should allow signatures to be added later without breaking compatibility.
+
+The self-update foundation PR implements only the typed PV app update manifest parser, current-platform asset selection, release-layout helpers for `~/.pv/bin/releases/<version>/pv` and `~/.pv/bin/pv`, and the active OS-level update lock at `~/.pv/run/update.lock`. It may exercise release-layout helpers with fixture binaries in tests. It does not implement `pv update`, `pv update --check`, PV app binary downloads, binary swapping from a downloaded artifact, daemon restart coordination, rollback, installer generation, PV app release metadata generation, Managed Resource update orchestration, artifact recipe changes, or runtime/user-facing update channel selection.
 
 For `pv update`, the CLI fetches the PV app update manifest and performs PV binary self-update before handing Managed Resource update work to the daemon. The daemon owns Managed Resource manifest refresh, install, update, and runtime reconciliation.
 
