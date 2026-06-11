@@ -1,10 +1,13 @@
+mod app_release;
 mod backup;
 mod database;
 mod error;
 pub mod fs;
 mod migrations;
 mod paths;
+mod update_lock;
 
+pub use app_release::{AppReleaseInstall, AppReleaseLayout};
 pub use database::{
     DNS_PREFERRED_PORT, Database, DatabaseInspection, EnvContextValues,
     GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, GatewayPortAssignments,
@@ -20,6 +23,7 @@ pub use database::{
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
+pub use update_lock::UpdateLock;
 
 #[doc(hidden)]
 pub mod testing {

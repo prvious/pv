@@ -14,6 +14,7 @@ members = [
     "crates/protocol",
     "crates/pv-release",
     "crates/resources",
+    "crates/self-update",
     "crates/state",
 ]
 resolver = "3"
@@ -46,7 +47,7 @@ rcgen = { version = "0.14.8", features = ["x509-parser"] }
 redis = { version = "1.2.2", default-features = false, features = ["tokio-comp"] }
 rusqlite = { version = "0", features = ["bundled"] }
 rustls-pemfile = "2.2.0"
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["fs", "process"] }
 security-framework = "3.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

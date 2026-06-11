@@ -1105,8 +1105,7 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
         )
     };
     stop_recorded_rustfs_runtime(&paths).await?;
-    let _api_port_guard = TcpListener::bind(("127.0.0.1", 19_030))?;
-    let _console_port_guard = TcpListener::bind(("127.0.0.1", 19_031))?;
+    let _port_guards = bind_loopback_ports_when_available([19_030, 19_031]).await?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let snapshot = {
@@ -2446,6 +2445,29 @@ fn reserve_postgres_port(paths: &PvPaths, port: u16) -> Result<()> {
 
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+async fn bind_loopback_ports_when_available(ports: [u16; 2]) -> Result<[TcpListener; 2]> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+
+    loop {
+        match bind_loopback_ports(ports) {
+            Ok(listeners) => return Ok(listeners),
+            Err(error) if tokio::time::Instant::now() >= deadline => {
+                bail!("timed out waiting for RustFS ports to become available: {error}");
+            }
+            Err(_error) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+}
+
+fn bind_loopback_ports(ports: [u16; 2]) -> std::io::Result<[TcpListener; 2]> {
+    let api_listener = TcpListener::bind(("127.0.0.1", ports[0]))?;
+    let console_listener = TcpListener::bind(("127.0.0.1", ports[1]))?;
+
+    Ok([api_listener, console_listener])
 }
 
 fn rustfs_bucket_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {

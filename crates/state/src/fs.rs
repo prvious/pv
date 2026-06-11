@@ -8,6 +8,7 @@ use crate::{PvPaths, StateError, backup};
 
 const USER_ONLY_DIR_MODE: u32 = 0o700;
 const SENSITIVE_FILE_MODE: u32 = 0o600;
+const EXECUTABLE_FILE_MODE: u32 = 0o700;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +69,25 @@ pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateE
     ensure_parent_dir(path)?;
     write_atomically(path, content)?;
     secure_sensitive_file(path)
+}
+
+pub fn copy_file_atomically(source: &Utf8Path, target: &Utf8Path) -> Result<(), StateError> {
+    ensure_parent_dir(target)?;
+    let temporary_path = temporary_path_for(target);
+    let result =
+        copy_file(source, &temporary_path).and_then(|_bytes| rename(&temporary_path, target));
+
+    match result {
+        Ok(()) => {
+            sync_parent_directory(target)?;
+            Ok(())
+        }
+        Err(error) => {
+            if let Err(_cleanup_error) = remove_file_if_exists(&temporary_path) {}
+
+            Err(error)
+        }
+    }
 }
 
 #[expect(
@@ -144,6 +164,12 @@ pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
     validate_owner(path)
 }
 
+pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
+    set_file_mode(path, EXECUTABLE_FILE_MODE)?;
+    validate_mode(path, EXECUTABLE_FILE_MODE)?;
+    validate_owner(path)
+}
+
 fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
     [
         ("database", paths.db().to_path_buf()),
@@ -179,6 +205,14 @@ fn write_atomically(path: &Utf8Path, content: &str) -> Result<(), StateError> {
     secure_sensitive_file(&temporary_path)?;
     std::fs::rename(&temporary_path, path)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns atomic file copies"
+)]
+fn copy_file(source: &Utf8Path, target: &Utf8Path) -> Result<u64, StateError> {
+    std::fs::copy(source, target).map_err(|source| StateError::filesystem(target, source))
 }
 
 fn temporary_path_for(path: &Utf8Path) -> Utf8PathBuf {
@@ -236,8 +270,28 @@ fn create_dir_all(path: &Utf8Path) -> Result<(), StateError> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
+pub fn rename(from: &Utf8Path, to: &Utf8Path) -> Result<(), StateError> {
+    std::fs::rename(from, to).map_err(|source| StateError::filesystem(to.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
 pub fn remove_file(path: &Utf8Path) -> Result<(), StateError> {
     std::fs::remove_file(path).map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+pub fn remove_file_if_exists(path: &Utf8Path) -> Result<(), StateError> {
+    match remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn delete_file(path: &Utf8Path) -> Result<(), StateError> {
@@ -330,6 +384,87 @@ fn owner_uid(path: &Utf8Path) -> Result<u32, StateError> {
 
 pub fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
+pub fn path_entry_exists(path: &Utf8Path) -> Result<bool, StateError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_metadata) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(StateError::filesystem(path.to_path_buf(), source)),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
+pub fn path_is_file(path: &Utf8Path) -> Result<bool, StateError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(StateError::filesystem(path.to_path_buf(), source)),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
+pub fn read_link(path: &Utf8Path) -> Result<Utf8PathBuf, StateError> {
+    let target = std::fs::read_link(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+
+    Utf8PathBuf::from_path_buf(target).map_err(|path| {
+        StateError::filesystem(
+            path.to_string_lossy().as_ref(),
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "symlink target is not valid UTF-8",
+            ),
+        )
+    })
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct symlink updates"
+)]
+pub fn symlink_file(target: &Utf8Path, link: &Utf8Path) -> Result<(), StateError> {
+    std::os::unix::fs::symlink(target, link)
+        .map_err(|source| StateError::filesystem(link.to_path_buf(), source))
+}
+
+#[cfg(not(unix))]
+pub fn symlink_file(_target: &Utf8Path, link: &Utf8Path) -> Result<(), StateError> {
+    Err(StateError::filesystem(
+        link.to_path_buf(),
+        io::Error::new(io::ErrorKind::Unsupported, "PV requires Unix symlinks"),
+    ))
+}
+
+pub fn sync_parent_directory(path: &Utf8Path) -> Result<(), StateError> {
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn sync_directory(path: &Utf8Path) -> Result<(), StateError> {
+    let directory = std::fs::File::open(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+    directory
+        .sync_all()
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
 #[expect(

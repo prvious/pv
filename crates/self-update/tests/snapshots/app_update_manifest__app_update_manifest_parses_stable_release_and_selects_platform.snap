@@ -1,0 +1,41 @@
+---
+source: crates/self-update/tests/app_update_manifest.rs
+expression: manifest
+---
+AppUpdateManifest {
+    schema_version: 1,
+    channel: "stable",
+    version: AppUpdateVersion {
+        major: 0,
+        minor: 2,
+        patch: 0,
+        raw: "0.2.0",
+    },
+    minimum_pv_version: AppUpdateVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        raw: "0.1.0",
+    },
+    published_at: AppUpdatePublishedAt(
+        "2026-06-11T12:00:00Z",
+    ),
+    assets: [
+        AppUpdateAsset {
+            platform: DarwinArm64,
+            url: "https://downloads.example.test/pv/0.2.0/pv-darwin-arm64",
+            sha256: Sha256Digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            size: 12345678,
+        },
+        AppUpdateAsset {
+            platform: DarwinAmd64,
+            url: "https://downloads.example.test/pv/0.2.0/pv-darwin-amd64",
+            sha256: Sha256Digest(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            size: 12345678,
+        },
+    ],
+}

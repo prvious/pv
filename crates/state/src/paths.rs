@@ -74,8 +74,24 @@ impl PvPaths {
         &self.bin
     }
 
+    pub fn app_releases_dir(&self) -> Utf8PathBuf {
+        self.bin().join("releases")
+    }
+
+    pub fn app_release_binary(&self, version: &str) -> Utf8PathBuf {
+        self.app_releases_dir().join(version).join("pv")
+    }
+
+    pub fn active_pv_binary(&self) -> Utf8PathBuf {
+        self.bin().join("pv")
+    }
+
     pub fn run(&self) -> &Utf8Path {
         &self.run
+    }
+
+    pub fn update_lock(&self) -> Utf8PathBuf {
+        self.run().join("update.lock")
     }
 
     pub fn daemon_socket(&self) -> Utf8PathBuf {
