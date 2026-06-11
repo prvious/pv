@@ -598,6 +598,14 @@ PV discovers available Managed Resource artifacts through a PV-owned remote arti
 
 The Managed Resource artifact manifest points only to PV-owned packaged artifacts, not raw upstream archives or local build recipes. PV never builds Managed Resource binaries on the user's machine during setup, install, update, or reconciliation.
 
+The Managed Resource artifact manifest endpoint is a property of the built PV binary in v1. Production/default builds use PV's stable/default artifact manifest endpoint. Maintainer staging builds may override that compiled default by setting `PV_DEFAULT_ARTIFACT_MANIFEST_URL` at build time, for example:
+
+```sh
+PV_DEFAULT_ARTIFACT_MANIFEST_URL=https://artifacts-staging.pv.prvious.dev/manifest.json cargo build --release
+```
+
+PV v1 does not expose runtime/user-facing artifact manifest selection through CLI flags such as `--channel` or `--manifest-url`, config files, shell environment variables, LaunchAgent environment variables, shell profile edits, installer channel parameters, or database state. Runtime/user-facing manifest selection could redirect PV to an unintended artifact manifest and could cause the CLI and daemon to disagree about which manifest owns Managed Resource artifacts. Tests may still inject manifest URLs through test-only seams.
+
 The PV artifact release pipeline may either wrap suitable upstream binaries or build missing binaries from source, but it always produces a normalized PV artifact archive before publishing. For example, if Redis does not publish the macOS binary shape PV needs, the release pipeline builds Redis ahead of time and publishes the resulting PV-owned Redis artifact. The release pipeline is expected to run in hosted automation such as GitHub Actions, not on user machines.
 
 Artifact recipes prefer wrapping official upstream binaries when those binaries pass PV's archive validation and smoke-test requirements. Recipes build from source when upstream binaries are unavailable, do not match PV's required build matrix, cannot be packaged to run from PV's installed resource layout, or fail PV's smoke tests.

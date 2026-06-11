@@ -82,7 +82,7 @@ async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> R
     let project = link_project_with_mysql_database_env(&paths, &tempdir.path().join("project"))?;
     let admin = super::mysql::RecordingMysqlAdmin::default();
     let catalog = super::mysql::mysql_runtime_catalog_with_recording_admin(
-        super::DEFAULT_MANIFEST_URL,
+        resources::default_artifact_manifest_url(),
         admin.clone(),
     )?;
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;
@@ -158,7 +158,7 @@ async fn mysql_reconciliation_reuses_admin_env_and_ready_allocation() -> Result<
     let project = link_project_with_mysql_database_env(&paths, &tempdir.path().join("project"))?;
     let admin = super::mysql::RecordingMysqlAdmin::default();
     let catalog = super::mysql::mysql_runtime_catalog_with_recording_admin(
-        super::DEFAULT_MANIFEST_URL,
+        resources::default_artifact_manifest_url(),
         admin,
     )?;
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;

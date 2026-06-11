@@ -2,6 +2,7 @@ pub mod allocation;
 pub mod cache;
 pub mod command;
 pub mod download;
+pub mod endpoint;
 pub mod error;
 mod fs;
 pub mod http;
@@ -24,6 +25,9 @@ pub use command::{
     PhpPairRemovalIntent, PhpPairUpdate,
 };
 pub use download::{ArtifactDownload, ArtifactDownloader};
+pub use endpoint::{
+    ARTIFACT_MANIFEST_URL_BUILD_ENV, STABLE_ARTIFACT_MANIFEST_URL, default_artifact_manifest_url,
+};
 pub use error::{ResourcesError, Result};
 pub use http::{ResourceHttpClient, UreqResourceHttpClient};
 pub use identity::{

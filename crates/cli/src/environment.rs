@@ -156,6 +156,12 @@ pub trait Environment {
     }
 }
 
+pub(crate) fn artifact_manifest_url(environment: &impl Environment) -> String {
+    environment
+        .artifact_manifest_url()
+        .unwrap_or_else(|| resources::default_artifact_manifest_url().to_string())
+}
+
 #[derive(Debug, Default)]
 pub struct ProcessEnvironment;
 
@@ -231,4 +237,97 @@ fn process_current_dir() -> io::Result<PathBuf> {
 )]
 fn process_current_exe() -> io::Result<PathBuf> {
     std::env::current_exe()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct TestEnvironment {
+        manifest_url: Option<String>,
+        vars: BTreeMap<String, OsString>,
+    }
+
+    impl TestEnvironment {
+        fn with_manifest_url(mut self, manifest_url: &str) -> Self {
+            self.manifest_url = Some(manifest_url.to_string());
+            self
+        }
+
+        fn with_var(mut self, key: &str, value: &str) -> Self {
+            self.vars.insert(key.to_string(), OsString::from(value));
+            self
+        }
+    }
+
+    impl Environment for TestEnvironment {
+        fn var_os(&self, key: &str) -> Option<OsString> {
+            self.vars.get(key).cloned()
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            false
+        }
+
+        fn read_line(&self) -> io::Result<String> {
+            Ok(String::new())
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn artifact_manifest_url(&self) -> Option<String> {
+            self.manifest_url.clone()
+        }
+    }
+
+    #[test]
+    fn artifact_manifest_url_uses_compiled_default_without_test_override() {
+        let environment = TestEnvironment::default();
+
+        assert_eq!(
+            artifact_manifest_url(&environment),
+            resources::default_artifact_manifest_url()
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_url_preserves_test_injection() {
+        let environment = TestEnvironment::default()
+            .with_manifest_url("https://fixtures.example.test/manifest.json");
+
+        assert_eq!(
+            artifact_manifest_url(&environment),
+            "https://fixtures.example.test/manifest.json"
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_url_ignores_runtime_environment_variables() {
+        let environment = TestEnvironment::default().with_var(
+            resources::ARTIFACT_MANIFEST_URL_BUILD_ENV,
+            "https://runtime.example.test/manifest.json",
+        );
+
+        assert_eq!(
+            artifact_manifest_url(&environment),
+            resources::default_artifact_manifest_url()
+        );
+    }
 }
