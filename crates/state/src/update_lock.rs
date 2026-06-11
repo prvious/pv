@@ -29,13 +29,6 @@ impl UpdateLock {
             Err(error) => Err(StateError::filesystem(path, io::Error::from(error))),
         }
     }
-
-    pub fn check_available(paths: &PvPaths) -> Result<(), StateError> {
-        let lock = Self::acquire(paths)?;
-        drop(lock);
-
-        Ok(())
-    }
 }
 
 #[expect(
