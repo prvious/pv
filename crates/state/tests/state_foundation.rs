@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
@@ -179,6 +180,8 @@ fn app_release_layout_installs_fixture_binaries_and_updates_active_symlink() -> 
         state::fs::read_to_string(&paths.app_release_binary("0.2.0"))?,
         "pv 0.2.0\n"
     );
+    assert_eq!(file_mode(&paths.app_release_binary("0.1.0"))?, "700");
+    assert_eq!(file_mode(&paths.app_release_binary("0.2.0"))?, "700");
 
     let mut release_entries = state::fs::read_dir_paths(&paths.app_releases_dir())?
         .into_iter()
@@ -188,6 +191,16 @@ fn app_release_layout_installs_fixture_binaries_and_updates_active_symlink() -> 
     assert_eq!(release_entries, vec!["0.1.0", "0.2.0"]);
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "state foundation tests inspect fixture file permissions"
+)]
+fn file_mode(path: &Utf8Path) -> Result<String> {
+    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+
+    Ok(format!("{mode:o}"))
 }
 
 #[test]

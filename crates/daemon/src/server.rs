@@ -143,17 +143,17 @@ async fn handle_connection(
             Ok(())
         }
         DaemonCommand::RunJob { kind, scope } => {
-            match UpdateLock::check_available(&paths) {
-                Ok(()) => {}
+            let update_lock = match UpdateLock::acquire(&paths) {
+                Ok(update_lock) => update_lock,
                 Err(error @ StateError::UpdateInProgress { .. }) => {
                     write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
 
                     return Ok(());
                 }
                 Err(error) => return Err(error.into()),
-            }
+            };
 
-            run_job(
+            let result = run_job(
                 paths,
                 queue,
                 transport,
@@ -161,7 +161,10 @@ async fn handle_connection(
                 &scope,
                 runtime_catalog.as_deref(),
             )
-            .await
+            .await;
+            drop(update_lock);
+
+            result
         }
     }
 }

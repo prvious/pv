@@ -8,6 +8,7 @@ use crate::{PvPaths, StateError, backup};
 
 const USER_ONLY_DIR_MODE: u32 = 0o700;
 const SENSITIVE_FILE_MODE: u32 = 0o600;
+const EXECUTABLE_FILE_MODE: u32 = 0o700;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -160,6 +161,12 @@ pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
 pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
     set_file_mode(path, SENSITIVE_FILE_MODE)?;
     validate_mode(path, SENSITIVE_FILE_MODE)?;
+    validate_owner(path)
+}
+
+pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
+    set_file_mode(path, EXECUTABLE_FILE_MODE)?;
+    validate_mode(path, EXECUTABLE_FILE_MODE)?;
     validate_owner(path)
 }
 

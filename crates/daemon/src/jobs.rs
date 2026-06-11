@@ -41,7 +41,7 @@ pub(crate) async fn run_background_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    UpdateLock::check_available(&paths)?;
+    let update_lock = UpdateLock::acquire(&paths)?;
 
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
     let EnqueueResult::Queued(queued) = result else {
@@ -55,6 +55,7 @@ pub(crate) async fn run_background_reconciliation_job(
         .map(|_summary| ());
 
     running.finish();
+    drop(update_lock);
 
     result
 }
@@ -833,6 +834,39 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn queued_background_reconciliation_reserves_update_lock() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let running = first.wait_for_turn().await;
+        let queued_paths = paths.clone();
+        let queued_queue = queue.clone();
+        let queued_scope = ReconciliationScope::project("project_1")?;
+        let queued_task = tokio::spawn(async move {
+            run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
+        });
+
+        wait_for_job_scope(&paths, "project:project_1").await?;
+        let update_lock = UpdateLock::acquire(&paths);
+
+        assert!(matches!(
+            update_lock,
+            Err(StateError::UpdateInProgress { path }) if path == paths.update_lock()
+        ));
+
+        queued_task.abort();
+        let _join_result = queued_task.await;
+        running.finish();
+
+        Ok(())
+    }
+
     #[test]
     fn foreground_reconciliation_result_takes_precedence_over_accepted_write_error() {
         let result = foreground_reconciliation_result(
@@ -907,6 +941,22 @@ mod tests {
                 "scope unexpectedly coalesced into {}",
                 job.job_id()
             )),
+        }
+    }
+
+    async fn wait_for_job_scope(paths: &PvPaths, scope: &str) -> anyhow::Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+
+        loop {
+            let database = Database::open(paths)?;
+            if database.recent_jobs()?.iter().any(|job| job.scope == scope) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("timed out waiting for job scope {scope}");
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 

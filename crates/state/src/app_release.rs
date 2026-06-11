@@ -31,6 +31,7 @@ impl AppReleaseLayout {
         let binary_path = self.paths.app_release_binary(version);
 
         fs::copy_file_atomically(source, &binary_path)?;
+        fs::secure_executable_file(&binary_path)?;
 
         Ok(AppReleaseInstall {
             version: version.to_string(),
