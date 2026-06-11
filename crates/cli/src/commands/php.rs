@@ -14,11 +14,10 @@ use serde::Serialize;
 use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 
 use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
-use crate::environment::Environment;
+use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 
-const DEFAULT_MANIFEST_URL: &str = "https://artifacts.prvious.test/manifest.json";
 const RECONCILE_KIND: &str = "reconcile";
 const SYSTEM_SCOPE: &str = "system";
 
@@ -407,9 +406,7 @@ fn resolve_current_project(
 fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
     ManagedResourceCommands::new(
         paths.clone(),
-        environment
-            .artifact_manifest_url()
-            .unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string()),
+        artifact_manifest_url(environment),
         target_platform(environment),
     )
 }

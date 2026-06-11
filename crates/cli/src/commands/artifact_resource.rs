@@ -13,11 +13,10 @@ use serde::Serialize;
 use state::{PortAssignment, PortOwner, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::ListArgs;
-use crate::environment::Environment;
+use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
 
-const DEFAULT_MANIFEST_URL: &str = "https://artifacts.prvious.test/manifest.json";
 const RECONCILE_KIND: &str = "reconcile";
 const SYSTEM_SCOPE: &str = "system";
 
@@ -374,9 +373,7 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
     ManagedResourceCommands::new(
         paths.clone(),
-        environment
-            .artifact_manifest_url()
-            .unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_string()),
+        artifact_manifest_url(environment),
         target_platform(environment),
     )
 }

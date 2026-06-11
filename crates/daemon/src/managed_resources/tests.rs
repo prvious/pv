@@ -52,6 +52,26 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     },
 ];
 
+#[test]
+fn production_catalog_uses_compiled_artifact_manifest_endpoint() {
+    let catalog = super::ManagedResourceRuntimeCatalog::production();
+
+    assert_eq!(
+        catalog.install_options.manifest_url,
+        resources::default_artifact_manifest_url()
+    );
+}
+
+#[test]
+fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() {
+    let catalog = super::ManagedResourceRuntimeCatalog::without_adapters();
+
+    assert_eq!(
+        catalog.install_options.manifest_url,
+        resources::default_artifact_manifest_url()
+    );
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeFilePresence {
     pid: bool,
@@ -718,7 +738,7 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
         database.unlink_project(&project.id)?;
-        let catalog = super::fake_runtime_catalog(super::DEFAULT_MANIFEST_URL)?;
+        let catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
 
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
@@ -1672,7 +1692,7 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
     let hook_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
@@ -1736,7 +1756,7 @@ async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<
     let hook_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
@@ -1783,7 +1803,7 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
     let hook_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
@@ -2082,7 +2102,7 @@ async fn reconcile_project_env_with_fake_runtime_catalog(
     reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
         paths,
         project_id,
-        super::DEFAULT_MANIFEST_URL,
+        resources::default_artifact_manifest_url(),
     )
     .await
 }
@@ -2132,7 +2152,7 @@ async fn reconcile_project_env_with_rustfs_runtime_catalog(
     reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
         paths,
         project_id,
-        super::DEFAULT_MANIFEST_URL,
+        resources::default_artifact_manifest_url(),
     )
     .await
 }
@@ -2160,7 +2180,7 @@ async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<()> {
-    let catalog = super::fake_unready_runtime_catalog(super::DEFAULT_MANIFEST_URL)?;
+    let catalog = super::fake_unready_runtime_catalog(resources::default_artifact_manifest_url())?;
     let mut database = Database::open(paths)?;
 
     crate::project_env::reconcile_project_env_with_catalog(
@@ -2180,7 +2200,7 @@ async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
 ) -> Result<()> {
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
         super::fake::FakeMailpitRuntimeAdapter::exits_after_readiness()?,
@@ -2220,7 +2240,7 @@ async fn reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
 fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntimeCatalog> {
     Ok(super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
         InvalidDefaultPortRuntimeAdapter {
@@ -2237,7 +2257,7 @@ async fn reconcile_project_env_with_unready_postgres_runtime_catalog(
     project_id: &str,
 ) -> Result<()> {
     let catalog = super::postgres_runtime_catalog_with_readiness_timeout(
-        super::DEFAULT_MANIFEST_URL,
+        resources::default_artifact_manifest_url(),
         Duration::from_millis(100),
     )?;
     let mut database = Database::open(paths)?;
@@ -2810,7 +2830,7 @@ fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
     super::ManagedResourceRuntimeCatalog {
         adapters: BTreeMap::new(),
         install_options: super::ManagedResourceInstallOptions {
-            manifest_url: super::DEFAULT_MANIFEST_URL.to_string(),
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
     }

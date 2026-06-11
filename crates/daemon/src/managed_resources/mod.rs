@@ -29,7 +29,6 @@ use tokio::time::{sleep, timeout};
 
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
-const DEFAULT_MANIFEST_URL: &str = "https://artifacts.prvious.test/manifest.json";
 const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const ASYNC_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -168,7 +167,7 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters,
             install_options: ManagedResourceInstallOptions {
-                manifest_url: DEFAULT_MANIFEST_URL.to_string(),
+                manifest_url: resources::default_artifact_manifest_url().to_string(),
                 target_platform: current_target_platform(),
             },
         }
@@ -178,7 +177,7 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters: BTreeMap::new(),
             install_options: ManagedResourceInstallOptions {
-                manifest_url: DEFAULT_MANIFEST_URL.to_string(),
+                manifest_url: resources::default_artifact_manifest_url().to_string(),
                 target_platform: current_target_platform(),
             },
         }
