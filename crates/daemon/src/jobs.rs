@@ -9,7 +9,7 @@ use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runti
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
-use state::{Database, JobStatus, ProjectRecord, PvPaths, UpdateLock};
+use state::{Database, JobStatus, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
 
 pub(crate) async fn run_job(
@@ -41,8 +41,6 @@ pub(crate) async fn run_background_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    let update_lock = UpdateLock::acquire(&paths)?;
-
     let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
     let EnqueueResult::Queued(queued) = result else {
         return Ok(());
@@ -55,7 +53,6 @@ pub(crate) async fn run_background_reconciliation_job(
         .map(|_summary| ());
 
     running.finish();
-    drop(update_lock);
 
     result
 }
@@ -67,7 +64,15 @@ async fn run_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
+    let result = match enqueue_reconciliation_job(&paths, &queue, scope) {
+        Ok(result) => result,
+        Err(DaemonError::State(error @ StateError::UpdateInProgress { .. })) => {
+            write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
+
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     match result {
         EnqueueResult::Queued(queued) => {
@@ -115,7 +120,8 @@ fn enqueue_reconciliation_job(
     let scope_text = scope.to_string();
     let abandon_paths = paths.clone();
 
-    queue.enqueue_with_abandon(
+    queue.enqueue_mutating_with_abandon(
+        paths,
         scope,
         || start_reconciliation_job(paths, &scope_text),
         move |job_id| {
@@ -859,6 +865,35 @@ mod tests {
             update_lock,
             Err(StateError::UpdateInProgress { path }) if path == paths.update_lock()
         ));
+
+        queued_task.abort();
+        let _join_result = queued_task.await;
+        running.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_reconciliation_coalesces_under_daemon_update_lock() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let running = first.wait_for_turn().await;
+        let scope = ReconciliationScope::project("project_1")?;
+        let queued_paths = paths.clone();
+        let queued_queue = queue.clone();
+        let queued_scope = scope.clone();
+        let queued_task = tokio::spawn(async move {
+            run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
+        });
+
+        wait_for_job_scope(&paths, "project:project_1").await?;
+        run_background_reconciliation_job(paths.clone(), queue.clone(), scope, None).await?;
 
         queued_task.abort();
         let _join_result = queued_task.await;

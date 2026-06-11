@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use state::{PvPaths, StateError, UpdateLock};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -93,6 +94,7 @@ struct DebounceState {
 struct QueueState {
     active: Option<ReconciliationJob>,
     queued: VecDeque<ReconciliationJob>,
+    update_lock: Option<UpdateLock>,
 }
 
 #[derive(Debug, Default)]
@@ -135,6 +137,50 @@ impl ReconciliationQueue {
             scope,
             job_id: create_job_id()?,
         };
+        state.queued.push_back(job.clone());
+        self.inner.notify.notify_waiters();
+
+        Ok(EnqueueResult::Queued(QueuedReconciliation {
+            job,
+            inner: Arc::clone(&self.inner),
+            abandon_job: Some(Box::new(abandon_job)),
+            released: false,
+        }))
+    }
+
+    pub(crate) fn enqueue_mutating_with_abandon<E>(
+        &self,
+        paths: &PvPaths,
+        scope: ReconciliationScope,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
+        let mut state = lock_queue_state(&self.inner);
+
+        if let Some(job) = matching_queued_job(&state, &scope) {
+            return Ok(EnqueueResult::Coalesced(job));
+        }
+
+        let acquired_lock = state.update_lock.is_none();
+        if acquired_lock {
+            state.update_lock = Some(UpdateLock::acquire(paths).map_err(E::from)?);
+        }
+
+        let job_id = match create_job_id() {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                if acquired_lock && state.active.is_none() && state.queued.is_empty() {
+                    state.update_lock = None;
+                }
+
+                return Err(error);
+            }
+        };
+
+        let job = ReconciliationJob { scope, job_id };
         state.queued.push_back(job.clone());
         self.inner.notify.notify_waiters();
 
@@ -421,6 +467,7 @@ fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     state.queued.retain(|queued| queued.job_id != job.job_id);
 
     if state.queued.len() != queued_len {
+        release_update_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
@@ -437,11 +484,18 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
         .is_some_and(|active| active.job_id == job.job_id)
     {
         state.active = None;
+        release_update_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
 
     false
+}
+
+fn release_update_lock_if_idle(state: &mut QueueState) {
+    if state.active.is_none() && state.queued.is_empty() {
+        state.update_lock = None;
+    }
 }
 
 fn lock_queue_state(inner: &QueueInner) -> MutexGuard<'_, QueueState> {

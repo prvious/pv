@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use state::{PvPaths, StateError, UpdateLock};
+use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -143,17 +143,7 @@ async fn handle_connection(
             Ok(())
         }
         DaemonCommand::RunJob { kind, scope } => {
-            let update_lock = match UpdateLock::acquire(&paths) {
-                Ok(update_lock) => update_lock,
-                Err(error @ StateError::UpdateInProgress { .. }) => {
-                    write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
-
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
-            };
-
-            let result = run_job(
+            run_job(
                 paths,
                 queue,
                 transport,
@@ -161,10 +151,7 @@ async fn handle_connection(
                 &scope,
                 runtime_catalog.as_deref(),
             )
-            .await;
-            drop(update_lock);
-
-            result
+            .await
         }
     }
 }
