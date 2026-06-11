@@ -133,16 +133,31 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
         }),
     )
     .await?;
+    let update_check_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "managed_resource_update_check",
+        }),
+    )
+    .await?;
 
     daemon.shutdown().await?;
     drop(update_lock);
 
     let database = Database::open(&paths)?;
     let run_job_lines = normalize_update_lock_path(run_job_lines, paths.update_lock().as_str());
+    let update_check_lines =
+        normalize_update_lock_path(update_check_lines, paths.update_lock().as_str());
 
     assert_with_normalized_timestamps(
         "update_lock_rejects_mutating_jobs_but_keeps_health_available",
-        (run_job_lines, health_lines, database.recent_jobs()?),
+        (
+            run_job_lines,
+            health_lines,
+            update_check_lines,
+            database.recent_jobs()?,
+        ),
     )?;
 
     Ok(())

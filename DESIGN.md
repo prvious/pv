@@ -420,6 +420,93 @@ Install and update commands submit daemon jobs, stream progress over the socket,
 
 `pv update --check` reports both PV application update availability and Managed Resource update availability when possible. If Managed Resource update metadata requires a newer PV application version, the check reports the available PV application update and clearly marks Managed Resource update availability as blocked until PV is updated.
 
+Until the mutating self-update implementation lands, bare `pv update` is routed but does not apply updates. It exits non-zero with `error: pv update is not implemented yet; run pv update --check to preview available updates`.
+
+The plain `pv update --check` output is:
+
+```text
+PV application: current 0.1.0
+Managed Resources:
+  none installed
+```
+
+When an application update is available, the first line is `PV application: update available <current-version> -> <latest-version> (<platform>)`. When the app update check cannot select an asset for the current platform, the first line is `PV application: unavailable <current-version> (<reason>)`. App manifest parse, compatibility, fetch, and cache errors are check failures, not availability statuses, so the command exits non-zero and reports the error on stderr.
+
+Installed Managed Resource tracks are listed one per line as `  <resource> <track>: <status> <details>`. Status values are `current`, `update available`, `blocked`, `revoked`, and `unavailable`. `current` includes the installed artifact version. `update available` includes `<current-artifact-version> -> <latest-artifact-version>`. `blocked` includes `requires PV <minimum-pv-version>, current PV <current-pv-version>` and is used when artifact metadata cannot be interpreted until PV itself is updated. `revoked` is used when the currently installed artifact is explicitly revoked in the refreshed artifact manifest; it includes the installed artifact version, revocation reason, and the replacement artifact version when one is available. `unavailable` is used for per-track metadata problems such as a missing resource, missing track, no installable platform candidate, or ambiguous artifact selection; it includes the installed artifact version and the reason. If the newest candidate in the refreshed artifact manifest is revoked but a non-revoked fallback exists, output keeps the normal `current`, `update available`, or `revoked` status and appends `; newest <revoked-artifact-version> revoked: <reason>`.
+
+`pv update --check --json` writes this command-specific object to stdout on successful checks:
+
+```json
+{
+  "app": {
+    "status": "current",
+    "current_version": "0.1.0",
+    "latest_version": "0.1.0",
+    "platform": "darwin-arm64",
+    "asset": {
+      "url": "https://downloads.prvious.test/pv/0.1.0/pv-darwin-arm64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 12345678
+    },
+    "reason": null
+  },
+  "managed_resources": [
+    {
+      "status": "update_available",
+      "resource": "mysql",
+      "track": "8.4",
+      "current_artifact_version": "8.4.0-pv1",
+      "current_artifact_path": "/Users/me/.pv/resources/mysql/8.4/releases/8.4.0-pv1",
+      "latest_artifact_version": "8.4.1-pv1",
+      "current_revocation": null,
+      "latest_revocation": null,
+      "blocked_by": null,
+      "reason": null
+    }
+  ]
+}
+```
+
+The JSON `app.status` values are `current`, `update_available`, and `unavailable`. `latest_version` and `asset` are `null` only for `unavailable`. The JSON Managed Resource `status` values are `current`, `update_available`, `blocked`, `revoked`, and `unavailable`. `current_artifact_version`, `current_artifact_path`, `resource`, and `track` always identify the installed track. `latest_artifact_version` is `null` only when no installable latest artifact can be selected or the check is blocked before parsing artifact metadata. `current_revocation`, `latest_revocation`, and `blocked_by` are nullable objects. Revocation objects contain `artifact_version` and `reason`. `blocked_by` contains `minimum_pv_version` and `current_pv_version`. `reason` is `null` except for `unavailable` statuses.
+
+The daemon protocol adds a read-only `managed_resource_update_check` request:
+
+```json
+{
+  "protocol_version": 1,
+  "command": "managed_resource_update_check"
+}
+```
+
+The daemon response is a normal response line with `status: "ok"` and an `update_check` object:
+
+```json
+{
+  "type": "response",
+  "protocol_version": 1,
+  "status": "ok",
+  "message": "Managed Resource update check completed",
+  "update_check": {
+    "managed_resources": [
+      {
+        "status": "current",
+        "resource": "redis",
+        "track": "8.8",
+        "current_artifact_version": "8.8.0-pv1",
+        "current_artifact_path": "/Users/me/.pv/resources/redis/8.8/releases/8.8.0-pv1",
+        "latest_artifact_version": "8.8.0-pv1",
+        "current_revocation": null,
+        "latest_revocation": null,
+        "blocked_by": null,
+        "reason": null
+      }
+    ]
+  }
+}
+```
+
+The daemon returns all installed Managed Resource tracks, including current tracks, not only tracks with available updates. If the artifact manifest requires a newer PV version, the daemon still returns all installed tracks from local state and marks each one `blocked` with `blocked_by`. Per-track metadata errors are reported as `unavailable` entries so one bad resource or track does not hide other successful checks. Global refresh failures other than manifest incompatibility, such as network failure with no usable metadata, return a normal daemon error response and make the command fail.
+
 PV does not auto-check for updates in the background. Update-related network checks happen only when users run `pv update`, `pv update --check`, setup/install commands that need manifests, or explicit install/update commands for Managed Resources.
 
 Resource-specific update commands do not support `--check` in v1. Update preview is available only through top-level `pv update --check`.

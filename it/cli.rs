@@ -240,6 +240,7 @@ fn diagnostic_commands_are_documented() -> Result<()> {
         run_pv(&["logs", "--help"])?,
         run_pv(&["doctor", "--help"])?,
         run_pv(&["jobs", "--help"])?,
+        run_pv(&["update", "--help"])?,
         run_pv(&["list", "--help"])?,
     ];
 
@@ -256,6 +257,7 @@ fn diagnostic_command_options_are_documented() -> Result<()> {
         run_pv(&["logs", "--resource", "pg", "--track", "latest", "--help"])?,
         run_pv(&["doctor", "--help"])?,
         run_pv(&["jobs", "--json", "--help"])?,
+        run_pv(&["update", "--check", "--json", "--help"])?,
     ];
 
     assert_debug_snapshot!(output);

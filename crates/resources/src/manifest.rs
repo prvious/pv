@@ -116,6 +116,22 @@ impl ArtifactManifest {
         track.select_latest(resource.name.as_str(), target)
     }
 
+    pub fn select_artifact(
+        &self,
+        resource: &ResourceName,
+        track: &TrackName,
+        artifact_version: &ArtifactVersion,
+        target: TargetPlatform,
+    ) -> Result<Option<&ManifestArtifact>> {
+        let resource = self.resource(resource)?;
+        let track = resource.track(track.as_str())?;
+
+        Ok(track
+            .platform_selected_candidates(target)
+            .into_iter()
+            .find(|artifact| artifact.artifact_version() == artifact_version))
+    }
+
     pub fn resolve_track(
         &self,
         resource: &ResourceName,

@@ -35,6 +35,13 @@ expression: output
         code: Some(
             0,
         ),
+        stdout: "Update PV or preview available updates with --check\n\nUsage: pv update [OPTIONS]\n\nOptions:\n      --check     Check for updates without applying them\n      --no-color  Disable colored output\n      --json      Print update check output as JSON\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
         stdout: "List linked Projects\n\nUsage: pv list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },

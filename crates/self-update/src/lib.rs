@@ -10,6 +10,14 @@ use url::Url;
 const SUPPORTED_SCHEMA_VERSION: u64 = 1;
 const STABLE_CHANNEL: &str = "stable";
 
+pub const APP_UPDATE_MANIFEST_URL_BUILD_ENV: &str = "PV_DEFAULT_APP_UPDATE_MANIFEST_URL";
+pub const STABLE_APP_UPDATE_MANIFEST_URL: &str =
+    "https://updates.prvious.test/pv-app-manifest.json";
+
+pub fn default_app_update_manifest_url() -> &'static str {
+    option_env!("PV_DEFAULT_APP_UPDATE_MANIFEST_URL").unwrap_or(STABLE_APP_UPDATE_MANIFEST_URL)
+}
+
 #[derive(Debug)]
 pub struct AppUpdateManifest {
     schema_version: u64,

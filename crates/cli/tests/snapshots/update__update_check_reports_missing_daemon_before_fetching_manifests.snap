@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: pv update --check requires the PV daemon; run `pv daemon:restart` or `pv setup`\n",
+}

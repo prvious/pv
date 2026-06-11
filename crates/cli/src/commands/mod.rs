@@ -26,6 +26,7 @@ mod redis;
 mod rustfs;
 mod setup;
 mod status;
+mod update;
 
 pub(crate) fn execute(
     cli: Cli,
@@ -61,6 +62,7 @@ pub(crate) fn execute(
         Command::Logs(args) => logs::run(args, cli.no_color, environment, stdout),
         Command::Doctor(args) => doctor::run(args, environment, stdout),
         Command::Jobs(args) => jobs::run(args, environment, stdout),
+        Command::Update(args) => update::run(args, environment, stdout),
         Command::List(args) => project::list(args, environment, stdout),
         Command::PhpUse(args) => php::use_track(args, environment, stdout),
         Command::PhpInstall(args) => php::install(args, environment, stdout),

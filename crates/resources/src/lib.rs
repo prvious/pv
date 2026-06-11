@@ -21,7 +21,9 @@ pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifest
 pub use command::{
     ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
     ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceRevokedLatest,
-    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate, PhpPairInstall,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
+    ManagedResourceUpdateBlocker, ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack,
+    ManagedResourceUpdateRevocation, ManagedResourceUpdateStatus, PhpPairInstall,
     PhpPairRemovalIntent, PhpPairUpdate,
 };
 pub use download::{ArtifactDownload, ArtifactDownloader};

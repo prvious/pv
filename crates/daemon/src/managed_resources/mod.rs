@@ -19,6 +19,13 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
+use protocol::{
+    ManagedResourceUpdateBlocker as ProtocolUpdateBlocker,
+    ManagedResourceUpdateCheck as ProtocolUpdateCheck,
+    ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
+    ManagedResourceUpdateRevocation as ProtocolUpdateRevocation,
+    ManagedResourceUpdateStatus as ProtocolUpdateStatus,
+};
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
@@ -252,6 +259,93 @@ pub(crate) async fn reconcile_system_resources(paths: &PvPaths) -> Result<(), Da
     let mut database = Database::open(paths)?;
 
     reconcile_system_resources_with_catalog(paths, &mut database, &catalog).await
+}
+
+pub(crate) fn update_check(
+    paths: PvPaths,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<ProtocolUpdateCheck, DaemonError> {
+    if let Some(error) = state::UpdateLock::active_update_in_progress(&paths)? {
+        return Err(error.into());
+    }
+
+    match catalog {
+        Some(catalog) => update_check_with_catalog(paths, catalog),
+        None => {
+            let catalog = ManagedResourceRuntimeCatalog::production();
+
+            update_check_with_catalog(paths, &catalog)
+        }
+    }
+}
+
+fn update_check_with_catalog(
+    paths: PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<ProtocolUpdateCheck, DaemonError> {
+    let commands = ManagedResourceCommands::new(
+        paths,
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    let client = resources::UreqResourceHttpClient::default();
+    let check = commands.check_updates(&client)?;
+    let managed_resources = check
+        .tracks()
+        .iter()
+        .map(protocol_update_check_track)
+        .collect();
+
+    Ok(ProtocolUpdateCheck { managed_resources })
+}
+
+fn protocol_update_check_track(
+    track: &resources::ManagedResourceUpdateCheckTrack,
+) -> ProtocolUpdateCheckTrack {
+    ProtocolUpdateCheckTrack {
+        status: protocol_update_status(track.status()),
+        resource: track.resource_name().as_str().to_string(),
+        track: track.track().as_str().to_string(),
+        current_artifact_version: track.current_artifact_version().as_str().to_string(),
+        current_artifact_path: track.current_artifact_path().to_string(),
+        latest_artifact_version: track
+            .latest_artifact_version()
+            .map(|version| version.as_str().to_string()),
+        current_revocation: track.current_revocation().map(protocol_update_revocation),
+        latest_revocation: track.latest_revocation().map(protocol_update_revocation),
+        blocked_by: track.blocked_by().map(protocol_update_blocker),
+        reason: track.reason().map(ToString::to_string),
+    }
+}
+
+fn protocol_update_status(status: resources::ManagedResourceUpdateStatus) -> ProtocolUpdateStatus {
+    match status {
+        resources::ManagedResourceUpdateStatus::Current => ProtocolUpdateStatus::Current,
+        resources::ManagedResourceUpdateStatus::UpdateAvailable => {
+            ProtocolUpdateStatus::UpdateAvailable
+        }
+        resources::ManagedResourceUpdateStatus::Blocked => ProtocolUpdateStatus::Blocked,
+        resources::ManagedResourceUpdateStatus::Revoked => ProtocolUpdateStatus::Revoked,
+        resources::ManagedResourceUpdateStatus::Unavailable => ProtocolUpdateStatus::Unavailable,
+    }
+}
+
+fn protocol_update_revocation(
+    revocation: &resources::ManagedResourceUpdateRevocation,
+) -> ProtocolUpdateRevocation {
+    ProtocolUpdateRevocation {
+        artifact_version: revocation.artifact_version().as_str().to_string(),
+        reason: revocation.reason().to_string(),
+    }
+}
+
+fn protocol_update_blocker(
+    blocker: &resources::ManagedResourceUpdateBlocker,
+) -> ProtocolUpdateBlocker {
+    ProtocolUpdateBlocker {
+        minimum_pv_version: blocker.minimum_pv_version().to_string(),
+        current_pv_version: blocker.current_pv_version().to_string(),
+    }
 }
 
 pub(crate) async fn reconcile_system_resources_with_catalog(

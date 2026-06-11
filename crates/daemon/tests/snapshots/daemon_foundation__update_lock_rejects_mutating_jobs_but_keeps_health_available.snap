@@ -19,5 +19,13 @@ expression: snapshot
             "type": String("response"),
         },
     ],
+    [
+        Object {
+            "message": String("state error: PV update is already in progress; update lock is held at <update-lock>"),
+            "protocol_version": Number(1),
+            "status": String("error"),
+            "type": String("response"),
+        },
+    ],
     [],
 )
