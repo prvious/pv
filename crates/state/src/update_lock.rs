@@ -30,14 +30,14 @@ impl UpdateLock {
         }
     }
 
-    pub fn active_update_in_progress(paths: &PvPaths) -> Result<Option<StateError>, StateError> {
+    pub fn require_no_update_in_progress(paths: &PvPaths) -> Result<(), StateError> {
         let path = paths.update_lock();
         let file = match open_existing_update_lock_file(&path) {
             Ok(file) => file,
             Err(StateError::Filesystem { source, .. })
                 if source.kind() == io::ErrorKind::NotFound =>
             {
-                return Ok(None);
+                return Ok(());
             }
             Err(error) => return Err(error),
         };
@@ -48,10 +48,10 @@ impl UpdateLock {
                     StateError::filesystem(path.clone(), io::Error::from(error))
                 })?;
 
-                Ok(None)
+                Ok(())
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                Ok(Some(StateError::UpdateInProgress { path }))
+                Err(StateError::UpdateInProgress { path })
             }
             Err(error) => Err(StateError::filesystem(path, io::Error::from(error))),
         }
