@@ -163,6 +163,31 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
     Ok(())
 }
 
+#[tokio::test]
+async fn managed_resource_update_check_returns_success_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "managed_resource_update_check",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    assert_with_normalized_timestamps(
+        "managed_resource_update_check_returns_success_response",
+        lines,
+    )?;
+
+    Ok(())
+}
+
 fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> Vec<Value> {
     for line in &mut lines {
         let Some(message) = line.get_mut("message") else {

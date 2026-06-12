@@ -288,6 +288,12 @@ fn update_check_with_catalog(
         catalog.install_options.manifest_url.clone(),
         catalog.install_options.target_platform,
     );
+    if commands.list(None)?.is_empty() {
+        return Ok(ProtocolUpdateCheck {
+            managed_resources: Vec::new(),
+        });
+    }
+
     let client = resources::UreqResourceHttpClient::default();
     let check = commands.check_updates(&client)?;
     let managed_resources = check

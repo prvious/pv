@@ -1,0 +1,16 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 777
+expression: snapshot
+---
+[
+    Object {
+        "message": String("Managed Resource update check completed"),
+        "protocol_version": Number(1),
+        "status": String("ok"),
+        "type": String("response"),
+        "update_check": Object {
+            "managed_resources": Array [],
+        },
+    },
+]
