@@ -1,5 +1,6 @@
 ---
 source: crates/cli/tests/update.rs
+assertion_line: 366
 expression: output
 ---
 RunOutput {
@@ -9,5 +10,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: pv update --check failed: update in progress\n",
+    stderr: "error: pv update is not implemented yet; run pv update --check to preview available updates\n",
 }

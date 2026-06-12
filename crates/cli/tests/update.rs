@@ -1,3 +1,5 @@
+#[cfg(unix)]
+mod update_tests {
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -17,17 +19,16 @@ use state::PvPaths;
 
 const APP_MANIFEST_URL: &str = "https://updates.example.test/pv-app-manifest.json";
 
-#[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
-    client: ScriptedClient,
+    client: Box<dyn ResourceHttpClient>,
 }
 
 impl TestEnvironment {
-    fn new(home: &Utf8Path, client: ScriptedClient) -> Self {
+    fn new(home: &Utf8Path, client: impl ResourceHttpClient + 'static) -> Self {
         Self {
             home: home.as_std_path().to_path_buf(),
-            client,
+            client: Box::new(client),
         }
     }
 }
@@ -70,7 +71,7 @@ impl Environment for TestEnvironment {
     }
 
     fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
-        Some(&self.client)
+        Some(self.client.as_ref())
     }
 }
 
@@ -82,9 +83,14 @@ fn update_check_reports_app_and_managed_resource_updates() -> anyhow::Result<()>
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_update_check_response(
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-        ),
+        vec![
+            health_response(),
+            managed_resource_update_check_response(
+                paths
+                    .resources()
+                    .join("redis/8.8/releases/8.8.0-pv1"),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
 
@@ -109,9 +115,14 @@ fn update_check_json_reports_app_and_managed_resource_updates() -> anyhow::Resul
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_update_check_response(
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-        ),
+        vec![
+            health_response(),
+            managed_resource_update_check_response(
+                paths
+                    .resources()
+                    .join("redis/8.8/releases/8.8.0-pv1"),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
 
@@ -132,7 +143,7 @@ fn update_check_json_reports_app_and_managed_resource_updates() -> anyhow::Resul
 fn update_check_reports_missing_daemon_before_fetching_manifests() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let environment = TestEnvironment::new(&home, ScriptedClient::new());
+    let environment = TestEnvironment::new(&home, PanickingClient);
 
     let output = run_pv(&["update", "--check"], &environment)?;
 
@@ -151,12 +162,15 @@ fn update_check_reports_daemon_rejected() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        json!({
-            "type": "response",
-            "protocol_version": 1,
-            "status": "error",
-            "message": "update in progress"
-        }),
+        vec![
+            health_response(),
+            json!({
+                "type": "response",
+                "protocol_version": 1,
+                "status": "error",
+                "message": "update in progress"
+            }),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
 
@@ -178,7 +192,12 @@ fn update_check_reports_app_manifest_parse_failure() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let _daemon = FakeDaemon::start(
         &paths,
-        managed_resource_update_check_response(paths.resources().join("redis/8.8/releases/8.8.0-pv1")),
+        vec![
+            health_response(),
+            managed_resource_update_check_response(
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text("not json"));
 
@@ -199,7 +218,12 @@ fn update_check_reports_app_manifest_network_failure() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let _daemon = FakeDaemon::start(
         &paths,
-        managed_resource_update_check_response(paths.resources().join("redis/8.8/releases/8.8.0-pv1")),
+        vec![
+            health_response(),
+            managed_resource_update_check_response(
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(
         &home,
@@ -226,11 +250,14 @@ fn update_check_reports_current_managed_resource() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_status_response(
-            "current",
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-            json!({"latest_artifact_version": "8.8.0-pv1"}),
-        ),
+        vec![
+            health_response(),
+            managed_resource_status_response(
+                "current",
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                json!({"latest_artifact_version": "8.8.0-pv1"}),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
     let output = run_pv(&["update", "--check"], &environment)?;
@@ -248,17 +275,20 @@ fn update_check_reports_revoked_managed_resource() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_status_response(
-            "revoked",
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-            json!({
-                "current_revocation": {
-                    "artifact_version": "8.8.0-pv1",
-                    "reason": "security vulnerability"
-                },
-                "latest_artifact_version": "8.8.1-pv1"
-            }),
-        ),
+        vec![
+            health_response(),
+            managed_resource_status_response(
+                "revoked",
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                json!({
+                    "current_revocation": {
+                        "artifact_version": "8.8.0-pv1",
+                        "reason": "security vulnerability"
+                    },
+                    "latest_artifact_version": "8.8.1-pv1"
+                }),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
     let output = run_pv(&["update", "--check"], &environment)?;
@@ -276,16 +306,19 @@ fn update_check_reports_blocked_managed_resource() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_status_response(
-            "blocked",
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-            json!({
-                "blocked_by": {
-                    "minimum_pv_version": "0.5.0",
-                    "current_pv_version": "0.1.0"
-                }
-            }),
-        ),
+        vec![
+            health_response(),
+            managed_resource_status_response(
+                "blocked",
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                json!({
+                    "blocked_by": {
+                        "minimum_pv_version": "0.5.0",
+                        "current_pv_version": "0.1.0"
+                    }
+                }),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
     let output = run_pv(&["update", "--check"], &environment)?;
@@ -303,11 +336,14 @@ fn update_check_reports_unavailable_managed_resource() -> anyhow::Result<()> {
     state::fs::ensure_layout(&paths)?;
     let daemon = FakeDaemon::start(
         &paths,
-        managed_resource_status_response(
-            "unavailable",
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-            json!({"reason": "no installable artifact"}),
-        ),
+        vec![
+            health_response(),
+            managed_resource_status_response(
+                "unavailable",
+                paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                json!({"reason": "no installable artifact"}),
+            ),
+        ],
     )?;
     let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
     let output = run_pv(&["update", "--check"], &environment)?;
@@ -342,8 +378,7 @@ impl FakeDaemon {
         clippy::disallowed_methods,
         reason = "update tests use a one-shot fake Unix socket daemon"
     )]
-    fn start(paths: &PvPaths, response: serde_json::Value) -> anyhow::Result<Self> {
-        let responses = vec![health_response(), response];
+    fn start(paths: &PvPaths, responses: Vec<serde_json::Value>) -> anyhow::Result<Self> {
         let listener = UnixListener::bind(paths.daemon_socket())?;
         let handle = thread::spawn(move || {
             let mut requests = Vec::new();
@@ -362,9 +397,33 @@ impl FakeDaemon {
     }
 
     fn join(self) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.handle
+        let result = self
+            .handle
             .join()
-            .map_err(|_error| anyhow::anyhow!("fake daemon thread panicked"))?
+            .map_err(|error| {
+                let payload = if let Some(s) = error.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = error.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "unknown panic".to_string()
+                };
+                anyhow::anyhow!("fake daemon thread panicked: {payload}")
+            })?;
+        result
+    }
+}
+
+#[derive(Debug)]
+struct PanickingClient;
+
+impl ResourceHttpClient for PanickingClient {
+    fn get_text(&self, _url: &str) -> resources::Result<String> {
+        panic!("get_text should not be called when daemon is missing")
+    }
+
+    fn download(&self, _url: &str, _writer: &mut dyn Write) -> resources::Result<()> {
+        panic!("download should not be called when daemon is missing")
     }
 }
 
@@ -536,3 +595,5 @@ const APP_MANIFEST: &str = r#"
   ]
 }
 "#;
+
+}

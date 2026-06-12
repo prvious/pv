@@ -1,5 +1,6 @@
 ---
 source: crates/cli/tests/update.rs
+assertion_line: 571
 expression: snapshot
 ---
 RunOutput {
