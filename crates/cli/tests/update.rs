@@ -219,6 +219,105 @@ fn update_check_reports_app_manifest_network_failure() -> anyhow::Result<()> {
 }
 
 #[test]
+fn update_check_reports_current_managed_resource() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_status_response(
+            "current",
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            json!({"latest_artifact_version": "8.8.0-pv1"}),
+        ),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+    let output = run_pv(&["update", "--check"], &environment)?;
+    daemon.join()?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_update_snapshot("update_check_reports_current_managed_resource", output);
+    Ok(())
+}
+
+#[test]
+fn update_check_reports_revoked_managed_resource() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_status_response(
+            "revoked",
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            json!({
+                "current_revocation": {
+                    "artifact_version": "8.8.0-pv1",
+                    "reason": "security vulnerability"
+                },
+                "latest_artifact_version": "8.8.1-pv1"
+            }),
+        ),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+    let output = run_pv(&["update", "--check"], &environment)?;
+    daemon.join()?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_update_snapshot("update_check_reports_revoked_managed_resource", output);
+    Ok(())
+}
+
+#[test]
+fn update_check_reports_blocked_managed_resource() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_status_response(
+            "blocked",
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            json!({
+                "blocked_by": {
+                    "minimum_pv_version": "0.5.0",
+                    "current_pv_version": "0.1.0"
+                }
+            }),
+        ),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+    let output = run_pv(&["update", "--check"], &environment)?;
+    daemon.join()?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_update_snapshot("update_check_reports_blocked_managed_resource", output);
+    Ok(())
+}
+
+#[test]
+fn update_check_reports_unavailable_managed_resource() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_status_response(
+            "unavailable",
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+            json!({"reason": "no installable artifact"}),
+        ),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+    let output = run_pv(&["update", "--check"], &environment)?;
+    daemon.join()?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_update_snapshot("update_check_reports_unavailable_managed_resource", output);
+    Ok(())
+}
+
+#[test]
 fn update_without_check_is_deferred_without_mutating() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -340,6 +439,37 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
 fn managed_resource_update_check_response(
     current_artifact_path: impl AsRef<Path>,
 ) -> serde_json::Value {
+    managed_resource_status_response(
+        "update_available",
+        current_artifact_path,
+        json!({"latest_artifact_version": "8.8.1-pv1"}),
+    )
+}
+
+fn managed_resource_status_response(
+    status: &str,
+    current_artifact_path: impl AsRef<Path>,
+    extra: serde_json::Value,
+) -> serde_json::Value {
+    let mut resource = json!({
+        "status": status,
+        "resource": "redis",
+        "track": "8.8",
+        "current_artifact_version": "8.8.0-pv1",
+        "current_artifact_path": current_artifact_path.as_ref().to_string_lossy(),
+        "latest_artifact_version": null,
+        "current_revocation": null,
+        "latest_revocation": null,
+        "blocked_by": null,
+        "reason": null
+    });
+
+    if let Some(obj) = extra.as_object() {
+        for (key, value) in obj {
+            resource[key] = value.clone();
+        }
+    }
+
     json!({
         "type": "response",
         "protocol_version": 1,
