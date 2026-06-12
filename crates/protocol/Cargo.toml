@@ -8,6 +8,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+resources = { path = "../resources" }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

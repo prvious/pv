@@ -41,6 +41,14 @@ const POSTGRES_TRACK: &str = "16";
 const POSTGRES_ARTIFACT_VERSION: &str = "16.0-pv1";
 const POSTGRES_ARCHIVE_FILE_NAME: &str = "postgres-16.0-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+const EMPTY_ARTIFACT_MANIFEST: &str = r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": []
+}
+"#;
 const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     super::ManagedResourcePortSpec {
         name: "smtp",
@@ -70,6 +78,62 @@ fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() {
         catalog.install_options.manifest_url,
         resources::default_artifact_manifest_url()
     );
+}
+
+#[test]
+fn update_check_refreshes_manifest_when_no_resources_are_installed() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let manifest_requests = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog {
+        adapters: BTreeMap::new(),
+        install_options: super::ManagedResourceInstallOptions {
+            manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_string(),
+            target_platform: super::current_target_platform(),
+        },
+        update_check_client: Some(Arc::new(RecordingManifestClient {
+            body: EMPTY_ARTIFACT_MANIFEST,
+            requests: Arc::clone(&manifest_requests),
+        })),
+    };
+
+    let update_check = super::update_check(paths, Some(&catalog))?;
+    let manifest_requests = manifest_requests
+        .lock()
+        .map_err(|_poison| anyhow::anyhow!("manifest request log lock poisoned"))?;
+
+    assert!(update_check.managed_resources.is_empty());
+    assert_eq!(manifest_requests.len(), 1);
+    assert_eq!(manifest_requests[0], TEST_ARTIFACT_MANIFEST_URL);
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RecordingManifestClient {
+    body: &'static str,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl resources::ResourceHttpClient for RecordingManifestClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        let mut requests = self.requests.lock().map_err(|_poison| {
+            resources::ResourcesError::HttpRequestFailed {
+                url: url.to_string(),
+                reason: "manifest request log lock poisoned".to_string(),
+            }
+        })?;
+        requests.push(url.to_string());
+
+        Ok(self.body.to_string())
+    }
+
+    fn download(&self, url: &str, _writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        Err(resources::ResourcesError::HttpRequestFailed {
+            url: url.to_string(),
+            reason: "downloads are not used by update checks".to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2855,6 +2919,7 @@ fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
+        update_check_client: None,
     }
 }
 

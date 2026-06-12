@@ -1,0 +1,33 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(managed_resource_update_check_summary(&checked, tempdir.path())?,\ntrack_records_summary(&listed_after_check, tempdir.path())?,\nclient.text_request_count(), client.byte_request_count(),)"
+---
+(
+    [
+        UpdateCheckTrackSnapshot {
+            status: "UpdateAvailable",
+            resource_name: "redis",
+            track: "7.2",
+            current_artifact_version: "7.2.5-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+            latest_artifact_version: Some(
+                "7.2.6-pv1",
+            ),
+            current_revocation: None,
+            latest_revocation: None,
+            blocked_by: None,
+            reason: None,
+        },
+    ],
+    [
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "7.2",
+            installed_version: "7.2.5-pv1",
+            current_artifact_path: "home/.pv/resources/redis/7.2/releases/7.2.5-pv1",
+            usage_count: 0,
+        },
+    ],
+    2,
+    1,
+)

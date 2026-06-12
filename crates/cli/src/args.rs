@@ -121,6 +121,12 @@ pub(crate) enum Command {
     #[command(name = "jobs", about = "List recent daemon jobs")]
     Jobs(JobsArgs),
 
+    #[command(
+        name = "update",
+        about = "Update PV or preview available updates with --check"
+    )]
+    Update(UpdateArgs),
+
     #[command(name = "list", about = "List linked Projects")]
     List(ListArgs),
 
@@ -291,6 +297,15 @@ pub(crate) struct UninstallArgs {
 
     #[arg(long, help = "Skip prune confirmation")]
     pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct UpdateArgs {
+    #[arg(long, help = "Check for updates without applying them")]
+    pub(crate) check: bool,
+
+    #[arg(long, requires = "check", help = "Print update check output as JSON")]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, clap::Args)]

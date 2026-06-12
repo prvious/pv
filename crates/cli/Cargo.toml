@@ -18,9 +18,11 @@ daemon = { path = "../daemon" }
 home = { workspace = true }
 linemux = { workspace = true }
 platform = { path = "../platform" }
+protocol = { path = "../protocol" }
 resources = { path = "../resources" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+self-update = { path = "../self-update" }
 state = { path = "../state" }
 thiserror = { workspace = true }
 tokio = { workspace = true }

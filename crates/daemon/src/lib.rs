@@ -24,8 +24,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use client::{
-    CompletedJob, SubmittedJob, health_blocking, run_job_blocking, submit_job_blocking,
-    wait_until_healthy_blocking,
+    CompletedJob, SubmittedJob, health_blocking, managed_resource_update_check_blocking,
+    run_job_blocking, submit_job_blocking, wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::DaemonError;
@@ -59,6 +59,24 @@ impl RunningDaemon {
         Self::start_with_runtime_catalog(
             paths,
             Some(ManagedResourceRuntimeCatalog::without_adapters()),
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn start_without_managed_resource_adapters_with_manifest_client(
+        paths: PvPaths,
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+    ) -> Result<Self, DaemonError> {
+        Self::start_with_runtime_catalog(
+            paths,
+            Some(
+                ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                    manifest_url,
+                    client,
+                ),
+            ),
         )
         .await
     }

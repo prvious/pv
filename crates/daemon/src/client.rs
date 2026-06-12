@@ -6,7 +6,8 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::DaemonError;
 use protocol::{
-    DaemonCommand, DaemonRequest, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line,
+    DaemonCommand, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck, PROTOCOL_VERSION,
+    ResponseStatus, write_line,
 };
 
 const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -71,6 +72,17 @@ pub fn health_blocking(paths: PvPaths) -> Result<(), DaemonError> {
     runtime.block_on(health(paths))
 }
 
+pub fn managed_resource_update_check_blocking(
+    paths: PvPaths,
+) -> Result<ManagedResourceUpdateCheck, DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+
+    runtime.block_on(managed_resource_update_check(paths))
+}
+
 async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<SubmittedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
@@ -122,6 +134,27 @@ async fn health(paths: PvPaths) -> Result<(), DaemonError> {
     }
 }
 
+async fn managed_resource_update_check(
+    paths: PvPaths,
+) -> Result<ManagedResourceUpdateCheck, DaemonError> {
+    let mut transport = connect_transport(&paths).await?;
+
+    write_managed_resource_update_check_request(&mut transport).await?;
+    let response = read_response(&mut transport).await?;
+    validate_response_contract(&response)?;
+
+    match response.status() {
+        ResponseStatus::Ok => response.update_check().cloned().ok_or_else(|| {
+            DaemonError::UnexpectedProtocolResponse {
+                reason: "daemon accepted update check without an update_check payload".to_string(),
+            }
+        }),
+        ResponseStatus::Accepted | ResponseStatus::Error => Err(DaemonError::DaemonRejected {
+            message: response.message().to_string(),
+        }),
+    }
+}
+
 async fn connect_transport(
     paths: &PvPaths,
 ) -> Result<protocol::DaemonTransport<UnixStream>, DaemonError> {
@@ -162,6 +195,20 @@ async fn write_job_request(
             kind: kind.to_string(),
             scope: scope.to_string(),
         },
+    };
+
+    timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
+        .await
+        .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
+        .map_err(DaemonError::from)
+}
+
+async fn write_managed_resource_update_check_request(
+    transport: &mut protocol::DaemonTransport<UnixStream>,
+) -> Result<(), DaemonError> {
+    let request = DaemonRequest {
+        protocol_version: PROTOCOL_VERSION,
+        command: DaemonCommand::ManagedResourceUpdateCheck,
     };
 
     timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))

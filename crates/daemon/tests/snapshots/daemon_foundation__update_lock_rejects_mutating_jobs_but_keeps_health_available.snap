@@ -6,7 +6,7 @@ expression: snapshot
     [
         Object {
             "message": String("PV update is already in progress; update lock is held at <update-lock>"),
-            "protocol_version": Number(1),
+            "protocol_version": Number(2),
             "status": String("error"),
             "type": String("response"),
         },
@@ -14,8 +14,16 @@ expression: snapshot
     [
         Object {
             "message": String("daemon healthy"),
-            "protocol_version": Number(1),
+            "protocol_version": Number(2),
             "status": String("ok"),
+            "type": String("response"),
+        },
+    ],
+    [
+        Object {
+            "message": String("state error: PV update is already in progress; update lock is held at <update-lock>"),
+            "protocol_version": Number(2),
+            "status": String("error"),
             "type": String("response"),
         },
     ],

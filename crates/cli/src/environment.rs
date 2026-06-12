@@ -147,6 +147,14 @@ pub trait Environment {
         None
     }
 
+    fn app_update_manifest_url(&self) -> Option<String> {
+        None
+    }
+
+    fn app_update_platform(&self) -> Option<self_update::AppUpdatePlatform> {
+        None
+    }
+
     fn resource_http_client(&self) -> Option<&dyn resources::ResourceHttpClient> {
         None
     }
@@ -160,6 +168,12 @@ pub(crate) fn artifact_manifest_url(environment: &impl Environment) -> String {
     environment
         .artifact_manifest_url()
         .unwrap_or_else(|| resources::default_artifact_manifest_url().to_string())
+}
+
+pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String {
+    environment
+        .app_update_manifest_url()
+        .unwrap_or_else(|| self_update::default_app_update_manifest_url().to_string())
 }
 
 #[derive(Debug, Default)]

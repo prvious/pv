@@ -78,6 +78,46 @@ pub struct ManagedResourceUpdate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedResourceUpdateCheck {
+    tracks: Vec<ManagedResourceUpdateCheckTrack>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedResourceUpdateCheckTrack {
+    status: ManagedResourceUpdateStatus,
+    resource_name: ResourceName,
+    track: TrackName,
+    current_artifact_version: ArtifactVersion,
+    current_artifact_path: Utf8PathBuf,
+    latest_artifact_version: Option<ArtifactVersion>,
+    current_revocation: Option<ManagedResourceUpdateRevocation>,
+    latest_revocation: Option<ManagedResourceUpdateRevocation>,
+    blocked_by: Option<ManagedResourceUpdateBlocker>,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedResourceUpdateStatus {
+    Current,
+    UpdateAvailable,
+    Blocked,
+    Revoked,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedResourceUpdateRevocation {
+    artifact_version: ArtifactVersion,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedResourceUpdateBlocker {
+    minimum_pv_version: String,
+    current_pv_version: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpPairInstall {
     php: ManagedResourceInstall,
     frankenphp: ManagedResourceInstall,
@@ -606,6 +646,46 @@ impl ManagedResourceCommands {
         Ok(ManagedResourceUpdate { installs })
     }
 
+    pub fn check_updates(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdateCheck> {
+        let installed_tracks = self.list(None)?;
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client);
+        let refresh = match refresh {
+            Ok(refresh) => refresh,
+            Err(ResourcesError::RequiresNewerPv {
+                minimum_pv_version,
+                current_pv_version,
+            }) => {
+                return Ok(ManagedResourceUpdateCheck {
+                    tracks: installed_tracks
+                        .into_iter()
+                        .map(|track| {
+                            ManagedResourceUpdateCheckTrack::blocked(
+                                track,
+                                ManagedResourceUpdateBlocker {
+                                    minimum_pv_version: minimum_pv_version.clone(),
+                                    current_pv_version: current_pv_version.clone(),
+                                },
+                            )
+                        })
+                        .collect(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let tracks = installed_tracks
+            .into_iter()
+            .map(|track| {
+                check_installed_track_update(track, refresh.manifest(), self.target_platform)
+            })
+            .collect();
+
+        Ok(ManagedResourceUpdateCheck { tracks })
+    }
+
     pub fn uninstall(
         &self,
         resource_name: &ResourceName,
@@ -746,6 +826,114 @@ impl ManagedResourceRevokedLatest {
 impl ManagedResourceUpdate {
     pub fn installs(&self) -> &[ManagedResourceInstall] {
         &self.installs
+    }
+}
+
+impl ManagedResourceUpdateCheck {
+    pub fn tracks(&self) -> &[ManagedResourceUpdateCheckTrack] {
+        &self.tracks
+    }
+}
+
+impl ManagedResourceUpdateCheckTrack {
+    fn blocked(track: ManagedResourceTrack, blocked_by: ManagedResourceUpdateBlocker) -> Self {
+        Self {
+            status: ManagedResourceUpdateStatus::Blocked,
+            resource_name: track.resource_name,
+            track: track.track,
+            current_artifact_version: track.installed_version,
+            current_artifact_path: track.current_artifact_path,
+            latest_artifact_version: None,
+            current_revocation: None,
+            latest_revocation: None,
+            blocked_by: Some(blocked_by),
+            reason: None,
+        }
+    }
+
+    fn unavailable(track: ManagedResourceTrack, reason: String) -> Self {
+        Self {
+            status: ManagedResourceUpdateStatus::Unavailable,
+            resource_name: track.resource_name,
+            track: track.track,
+            current_artifact_version: track.installed_version,
+            current_artifact_path: track.current_artifact_path,
+            latest_artifact_version: None,
+            current_revocation: None,
+            latest_revocation: None,
+            blocked_by: None,
+            reason: Some(reason),
+        }
+    }
+
+    pub fn status(&self) -> ManagedResourceUpdateStatus {
+        self.status
+    }
+
+    pub fn resource_name(&self) -> &ResourceName {
+        &self.resource_name
+    }
+
+    pub fn track(&self) -> &TrackName {
+        &self.track
+    }
+
+    pub fn current_artifact_version(&self) -> &ArtifactVersion {
+        &self.current_artifact_version
+    }
+
+    pub fn current_artifact_path(&self) -> &Utf8Path {
+        &self.current_artifact_path
+    }
+
+    pub fn latest_artifact_version(&self) -> Option<&ArtifactVersion> {
+        self.latest_artifact_version.as_ref()
+    }
+
+    pub fn current_revocation(&self) -> Option<&ManagedResourceUpdateRevocation> {
+        self.current_revocation.as_ref()
+    }
+
+    pub fn latest_revocation(&self) -> Option<&ManagedResourceUpdateRevocation> {
+        self.latest_revocation.as_ref()
+    }
+
+    pub fn blocked_by(&self) -> Option<&ManagedResourceUpdateBlocker> {
+        self.blocked_by.as_ref()
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+impl ManagedResourceUpdateRevocation {
+    pub fn artifact_version(&self) -> &ArtifactVersion {
+        &self.artifact_version
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+impl ManagedResourceUpdateBlocker {
+    pub fn minimum_pv_version(&self) -> &str {
+        &self.minimum_pv_version
+    }
+
+    pub fn current_pv_version(&self) -> &str {
+        &self.current_pv_version
+    }
+}
+
+impl std::fmt::Display for ManagedResourceUpdateBlocker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "requires PV {}, current PV {}",
+            self.minimum_pv_version, self.current_pv_version
+        )
     }
 }
 
@@ -940,6 +1128,103 @@ fn record_removal_intent(
         prune: options.prune,
         force: options.force,
     })
+}
+
+fn check_installed_track_update(
+    track: ManagedResourceTrack,
+    manifest: &ArtifactManifest,
+    target_platform: TargetPlatform,
+) -> ManagedResourceUpdateCheckTrack {
+    let current_artifact = manifest.select_artifact(
+        track.resource_name(),
+        track.track(),
+        track.installed_version(),
+        target_platform,
+    );
+    let current_revocation = match current_artifact {
+        Ok(Some(artifact)) => update_revocation_from_current_artifact(artifact),
+        Ok(None) => None,
+        Err(error) => {
+            return ManagedResourceUpdateCheckTrack::unavailable(
+                track,
+                format!("artifact lookup failed: {error}"),
+            );
+        }
+    };
+
+    let selection =
+        match manifest.select_latest(track.resource_name(), track.track(), target_platform) {
+            Ok(selection) => selection,
+            Err(error) => {
+                if current_revocation.is_some() {
+                    return ManagedResourceUpdateCheckTrack {
+                        status: ManagedResourceUpdateStatus::Revoked,
+                        resource_name: track.resource_name,
+                        track: track.track,
+                        current_artifact_version: track.installed_version,
+                        current_artifact_path: track.current_artifact_path,
+                        latest_artifact_version: None,
+                        current_revocation,
+                        latest_revocation: None,
+                        blocked_by: None,
+                        reason: None,
+                    };
+                }
+                return ManagedResourceUpdateCheckTrack::unavailable(track, error.to_string());
+            }
+        };
+    let latest_artifact = selection.artifact();
+    let latest_revocation = selection
+        .revoked_latest()
+        .map(update_revocation_from_artifact);
+    let status = if current_revocation.is_some() {
+        ManagedResourceUpdateStatus::Revoked
+    } else if latest_artifact.artifact_version() != track.installed_version() {
+        ManagedResourceUpdateStatus::UpdateAvailable
+    } else {
+        ManagedResourceUpdateStatus::Current
+    };
+
+    ManagedResourceUpdateCheckTrack {
+        status,
+        resource_name: track.resource_name,
+        track: track.track,
+        current_artifact_version: track.installed_version,
+        current_artifact_path: track.current_artifact_path,
+        latest_artifact_version: Some(latest_artifact.artifact_version().clone()),
+        current_revocation,
+        latest_revocation,
+        blocked_by: None,
+        reason: None,
+    }
+}
+
+fn update_revocation_from_current_artifact(
+    artifact: &ManifestArtifact,
+) -> Option<ManagedResourceUpdateRevocation> {
+    if !artifact.revocation_state().is_revoked() {
+        return None;
+    }
+
+    Some(ManagedResourceUpdateRevocation {
+        artifact_version: artifact.artifact_version().clone(),
+        reason: artifact
+            .revocation_state()
+            .reason()
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
+fn update_revocation_from_artifact(artifact: &ManifestArtifact) -> ManagedResourceUpdateRevocation {
+    ManagedResourceUpdateRevocation {
+        artifact_version: artifact.artifact_version().clone(),
+        reason: artifact
+            .revocation_state()
+            .reason()
+            .unwrap_or_default()
+            .to_string(),
+    }
 }
 
 fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourceRevokedLatest {

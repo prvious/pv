@@ -16,9 +16,14 @@ use std::future::Future;
 use std::io;
 use std::net::TcpListener;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
+use protocol::{
+    ManagedResourceUpdateCheck as ProtocolUpdateCheck,
+    ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
+};
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
@@ -144,6 +149,7 @@ pub(crate) struct ManagedResourceInstallOptions {
 pub(crate) struct ManagedResourceRuntimeCatalog {
     adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>>,
     install_options: ManagedResourceInstallOptions,
+    update_check_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
 impl ManagedResourceRuntimeCatalog {
@@ -170,16 +176,36 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: resources::default_artifact_manifest_url().to_string(),
                 target_platform: current_target_platform(),
             },
+            update_check_client: None,
         }
     }
 
     pub(crate) fn without_adapters() -> Self {
+        Self::without_adapters_with_manifest_url(resources::default_artifact_manifest_url())
+    }
+
+    pub(crate) fn without_adapters_with_manifest_url(manifest_url: impl Into<String>) -> Self {
         Self {
             adapters: BTreeMap::new(),
             install_options: ManagedResourceInstallOptions {
-                manifest_url: resources::default_artifact_manifest_url().to_string(),
+                manifest_url: manifest_url.into(),
                 target_platform: current_target_platform(),
             },
+            update_check_client: None,
+        }
+    }
+
+    pub(crate) fn without_adapters_with_manifest_client(
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            adapters: BTreeMap::new(),
+            install_options: ManagedResourceInstallOptions {
+                manifest_url: manifest_url.into(),
+                target_platform: current_target_platform(),
+            },
+            update_check_client: Some(Arc::new(client)),
         }
     }
 
@@ -195,6 +221,7 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters,
             install_options,
+            update_check_client: None,
         }
     }
 
@@ -252,6 +279,53 @@ pub(crate) async fn reconcile_system_resources(paths: &PvPaths) -> Result<(), Da
     let mut database = Database::open(paths)?;
 
     reconcile_system_resources_with_catalog(paths, &mut database, &catalog).await
+}
+
+pub(crate) fn update_check(
+    paths: PvPaths,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<ProtocolUpdateCheck, DaemonError> {
+    state::UpdateLock::require_no_update_in_progress(&paths)?;
+
+    match catalog {
+        Some(catalog) => update_check_with_catalog(paths, catalog),
+        None => {
+            let catalog = ManagedResourceRuntimeCatalog::production();
+
+            update_check_with_catalog(paths, &catalog)
+        }
+    }
+}
+
+fn update_check_with_catalog(
+    paths: PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<ProtocolUpdateCheck, DaemonError> {
+    let commands = ManagedResourceCommands::new(
+        paths,
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    let check = if let Some(client) = catalog.update_check_client.as_deref() {
+        commands.check_updates(client)?
+    } else {
+        let client = resources::UreqResourceHttpClient::default();
+
+        commands.check_updates(&client)?
+    };
+    let managed_resources = check
+        .tracks()
+        .iter()
+        .map(protocol_update_check_track)
+        .collect();
+
+    Ok(ProtocolUpdateCheck { managed_resources })
+}
+
+fn protocol_update_check_track(
+    track: &resources::ManagedResourceUpdateCheckTrack,
+) -> ProtocolUpdateCheckTrack {
+    track.clone().into()
 }
 
 pub(crate) async fn reconcile_system_resources_with_catalog(

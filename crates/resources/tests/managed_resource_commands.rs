@@ -11,9 +11,10 @@ use insta::assert_debug_snapshot;
 use resources::{
     ArtifactManifestSource, ManagedResourceCommandError, ManagedResourceCommands,
     ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceTrack,
-    ManagedResourceUninstallOptions, ManagedResourceUpdate, ResourceAdapter, ResourceHttpClient,
-    ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter,
-    frankenphp_adapter, php_adapter,
+    ManagedResourceUninstallOptions, ManagedResourceUpdate, ManagedResourceUpdateCheck,
+    ManagedResourceUpdateCheckTrack, ResourceAdapter, ResourceHttpClient, ResourceName,
+    ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter, frankenphp_adapter,
+    php_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -170,6 +171,72 @@ fn managed_resource_commands_update_without_installed_tracks_does_not_refresh_ma
     let updated = commands.update(&adapter, &client)?;
 
     assert_debug_snapshot!(update_summary(&updated, tempdir.path())?);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_check_updates_is_read_only() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
+    let first_manifest = manifest_with_artifacts(&[&first_artifact]);
+    let second_manifest = manifest_with_artifacts(&[&first_artifact, &second_artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&first_manifest)
+        .with_bytes(first_artifact.bytes())
+        .with_text(&second_manifest);
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let checked = commands.check_updates(&client)?;
+    let listed_after_check = commands.list(Some(adapter.resource_name()))?;
+
+    assert_eq!(client.byte_request_count(), 1);
+    assert_debug_snapshot!((
+        managed_resource_update_check_summary(&checked, tempdir.path())?,
+        track_records_summary(&listed_after_check, tempdir.path())?,
+        client.text_request_count(),
+        client.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_check_updates_marks_installed_tracks_blocked_by_newer_pv() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let release_path = release_path(&paths, "redis", "7.2", "7.2.5-pv1");
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed(
+            "redis",
+            "7.2",
+            "7.2.5-pv1",
+            &release_path,
+        )?;
+    }
+    let incompatible_manifest = manifest_with_artifacts(&[&fixture_artifact("7.2.6-pv1", "new")?])
+        .replacen(
+            "\"minimum_pv_version\": \"0.1.0\"",
+            "\"minimum_pv_version\": \"999.0.0\"",
+            1,
+        );
+    let client = ScriptedClient::new().with_text(&incompatible_manifest);
+
+    let checked = commands.check_updates(&client)?;
+
+    assert_debug_snapshot!(managed_resource_update_check_summary(
+        &checked,
+        tempdir.path()
+    )?);
 
     Ok(())
 }
@@ -1458,8 +1525,71 @@ struct RawTrackRecordSnapshot {
     removal_force: bool,
 }
 
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct UpdateCheckTrackSnapshot {
+    status: String,
+    resource_name: String,
+    track: String,
+    current_artifact_version: String,
+    current_artifact_path: String,
+    latest_artifact_version: Option<String>,
+    current_revocation: Option<RevokedLatestSnapshot>,
+    latest_revocation: Option<RevokedLatestSnapshot>,
+    blocked_by: Option<String>,
+    reason: Option<String>,
+}
+
 fn update_summary(update: &ManagedResourceUpdate, root: &Utf8Path) -> Result<Vec<InstallSnapshot>> {
     install_summaries(update.installs(), root)
+}
+
+fn managed_resource_update_check_summary(
+    check: &ManagedResourceUpdateCheck,
+    root: &Utf8Path,
+) -> Result<Vec<UpdateCheckTrackSnapshot>> {
+    check
+        .tracks()
+        .iter()
+        .map(|track| managed_resource_update_check_track_summary(track, root))
+        .collect()
+}
+
+fn managed_resource_update_check_track_summary(
+    track: &ManagedResourceUpdateCheckTrack,
+    root: &Utf8Path,
+) -> Result<UpdateCheckTrackSnapshot> {
+    Ok(UpdateCheckTrackSnapshot {
+        status: format!("{:?}", track.status()),
+        resource_name: track.resource_name().as_str().to_string(),
+        track: track.track().as_str().to_string(),
+        current_artifact_version: track.current_artifact_version().as_str().to_string(),
+        current_artifact_path: track
+            .current_artifact_path()
+            .strip_prefix(root)?
+            .to_string(),
+        latest_artifact_version: track
+            .latest_artifact_version()
+            .map(|version| version.as_str().to_string()),
+        current_revocation: track
+            .current_revocation()
+            .map(revoked_update_check_snapshot),
+        latest_revocation: track.latest_revocation().map(revoked_update_check_snapshot),
+        blocked_by: track.blocked_by().map(ToString::to_string),
+        reason: track.reason().map(ToString::to_string),
+    })
+}
+
+fn revoked_update_check_snapshot(
+    revocation: &resources::ManagedResourceUpdateRevocation,
+) -> RevokedLatestSnapshot {
+    RevokedLatestSnapshot {
+        artifact_version: revocation.artifact_version().as_str().to_string(),
+        reason: revocation.reason().to_string(),
+    }
 }
 
 fn install_summaries(

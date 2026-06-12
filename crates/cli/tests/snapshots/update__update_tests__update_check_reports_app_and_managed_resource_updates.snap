@@ -1,0 +1,14 @@
+---
+source: crates/cli/tests/update.rs
+assertion_line: 571
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "PV application: update available 0.1.0 -> 0.2.0 (darwin-arm64)\nManaged Resources:\n  redis 8.8: update available 8.8.0-pv1 -> 8.8.1-pv1\n",
+    stderr: "",
+}

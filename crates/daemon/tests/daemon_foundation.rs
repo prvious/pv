@@ -14,12 +14,21 @@ use state::{
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
 use tokio::time::{sleep, timeout};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
+const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+const EMPTY_ARTIFACT_MANIFEST: &str = r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": []
+}
+"#;
 
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
@@ -133,16 +142,64 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
         }),
     )
     .await?;
+    let update_check_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "managed_resource_update_check",
+        }),
+    )
+    .await?;
 
     daemon.shutdown().await?;
     drop(update_lock);
 
     let database = Database::open(&paths)?;
     let run_job_lines = normalize_update_lock_path(run_job_lines, paths.update_lock().as_str());
+    let update_check_lines =
+        normalize_update_lock_path(update_check_lines, paths.update_lock().as_str());
 
     assert_with_normalized_timestamps(
         "update_lock_rejects_mutating_jobs_but_keeps_health_available",
-        (run_job_lines, health_lines, database.recent_jobs()?),
+        (
+            run_job_lines,
+            health_lines,
+            update_check_lines,
+            database.recent_jobs()?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_resource_update_check_returns_success_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
+    let manifest_requests = manifest_client.request_count();
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            manifest_client,
+        )
+        .await?;
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "managed_resource_update_check",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    assert_with_normalized_timestamps(
+        "managed_resource_update_check_returns_success_response",
+        (lines, manifest_request_count(&manifest_requests)?),
     )?;
 
     Ok(())
@@ -205,6 +262,33 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
     assert_eq!(job.kind, "reconcile");
     assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
+    let manifest_requests = manifest_client.request_count();
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            manifest_client,
+        )
+        .await?;
+    let client_paths = paths.clone();
+
+    let update_check = tokio::task::spawn_blocking(move || {
+        daemon::managed_resource_update_check_blocking(client_paths)
+    })
+    .await??;
+    daemon.shutdown().await?;
+
+    assert!(update_check.managed_resources.is_empty());
+    assert_eq!(manifest_request_count(&manifest_requests)?, 1);
 
     Ok(())
 }
@@ -736,6 +820,53 @@ fn assert_with_normalized_timestamps(
         assert_debug_snapshot!(name, snapshot);
         Ok::<(), anyhow::Error>(())
     })
+}
+
+#[derive(Debug)]
+struct ScriptedManifestClient {
+    body: &'static str,
+    request_count: Arc<Mutex<usize>>,
+}
+
+impl ScriptedManifestClient {
+    fn new(body: &'static str) -> Self {
+        Self {
+            body,
+            request_count: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn request_count(&self) -> Arc<Mutex<usize>> {
+        Arc::clone(&self.request_count)
+    }
+}
+
+impl resources::ResourceHttpClient for ScriptedManifestClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        let mut request_count = self.request_count.lock().map_err(|_poison| {
+            resources::ResourcesError::HttpRequestFailed {
+                url: url.to_string(),
+                reason: "manifest request count lock poisoned".to_string(),
+            }
+        })?;
+        *request_count += 1;
+
+        Ok(self.body.to_string())
+    }
+
+    fn download(&self, url: &str, _writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        Err(resources::ResourcesError::HttpRequestFailed {
+            url: url.to_string(),
+            reason: "downloads are not used by update checks".to_string(),
+        })
+    }
+}
+
+fn manifest_request_count(request_count: &Arc<Mutex<usize>>) -> Result<usize> {
+    request_count
+        .lock()
+        .map(|count| *count)
+        .map_err(|_poison| anyhow!("manifest request count lock poisoned"))
 }
 
 async fn send_raw_request(paths: &PvPaths, request: &str) -> Result<()> {

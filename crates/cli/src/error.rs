@@ -51,6 +51,15 @@ pub enum CliError {
 
     #[error("no installed {resource} tracks were found; pass --track explicitly")]
     MissingLogResourceTrack { resource: String },
+
+    #[error("pv update is not implemented yet; run pv update --check to preview available updates")]
+    UpdateNotImplemented,
+
+    #[error("pv update --check requires the PV daemon; run `pv daemon:restart` or `pv setup`")]
+    UpdateCheckDaemonUnavailable,
+
+    #[error("pv update --check failed: {message}")]
+    UpdateCheckFailed { message: String },
 }
 
 #[derive(Debug, Error)]
@@ -81,4 +90,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     ManagedResourceCommand(#[from] resources::ManagedResourceCommandError),
+
+    #[error(transparent)]
+    SelfUpdate(#[from] self_update::AppUpdateManifestError),
 }

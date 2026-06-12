@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 const RESPONSE_LINE_TYPE: &str = "response";
@@ -33,6 +33,7 @@ pub struct DaemonRequest {
 pub enum DaemonCommand {
     Health,
     RunJob { kind: String, scope: String },
+    ManagedResourceUpdateCheck,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -45,19 +46,29 @@ pub struct DaemonResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     job_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    update_check: Option<ManagedResourceUpdateCheck>,
 }
 
 impl DaemonResponse {
     pub fn ok(message: impl Into<String>) -> Self {
-        Self::new(ResponseStatus::Ok, message, None)
+        Self::new(ResponseStatus::Ok, message, None, None)
     }
 
     pub fn accepted(message: impl Into<String>, job_id: impl Into<String>) -> Self {
-        Self::new(ResponseStatus::Accepted, message, Some(job_id.into()))
+        Self::new(ResponseStatus::Accepted, message, Some(job_id.into()), None)
     }
 
     pub fn error(message: impl Into<String>) -> Self {
-        Self::new(ResponseStatus::Error, message, None)
+        Self::new(ResponseStatus::Error, message, None, None)
+    }
+
+    pub fn ok_update_check(
+        message: impl Into<String>,
+        update_check: ManagedResourceUpdateCheck,
+    ) -> Self {
+        Self::new(ResponseStatus::Ok, message, None, Some(update_check))
     }
 
     pub fn line_type(&self) -> &str {
@@ -80,13 +91,123 @@ impl DaemonResponse {
         self.job_id.as_deref()
     }
 
-    fn new(status: ResponseStatus, message: impl Into<String>, job_id: Option<String>) -> Self {
+    pub fn update_check(&self) -> Option<&ManagedResourceUpdateCheck> {
+        self.update_check.as_ref()
+    }
+
+    fn new(
+        status: ResponseStatus,
+        message: impl Into<String>,
+        job_id: Option<String>,
+        update_check: Option<ManagedResourceUpdateCheck>,
+    ) -> Self {
         Self {
             line_type: RESPONSE_LINE_TYPE.to_string(),
             protocol_version: PROTOCOL_VERSION,
             status,
             message: message.into(),
             job_id,
+            update_check,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagedResourceUpdateCheck {
+    pub managed_resources: Vec<ManagedResourceUpdateCheckTrack>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagedResourceUpdateCheckTrack {
+    pub status: ManagedResourceUpdateStatus,
+    pub resource: String,
+    pub track: String,
+    pub current_artifact_version: String,
+    pub current_artifact_path: String,
+    pub latest_artifact_version: Option<String>,
+    pub current_revocation: Option<ManagedResourceUpdateRevocation>,
+    pub latest_revocation: Option<ManagedResourceUpdateRevocation>,
+    pub blocked_by: Option<ManagedResourceUpdateBlocker>,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagedResourceUpdateRevocation {
+    pub artifact_version: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ManagedResourceUpdateBlocker {
+    pub minimum_pv_version: String,
+    pub current_pv_version: String,
+}
+
+impl std::fmt::Display for ManagedResourceUpdateBlocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "requires PV {}, current PV {}",
+            self.minimum_pv_version, self.current_pv_version
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedResourceUpdateStatus {
+    Current,
+    UpdateAvailable,
+    Blocked,
+    Revoked,
+    Unavailable,
+}
+
+impl From<resources::ManagedResourceUpdateStatus> for ManagedResourceUpdateStatus {
+    fn from(status: resources::ManagedResourceUpdateStatus) -> Self {
+        match status {
+            resources::ManagedResourceUpdateStatus::Current => Self::Current,
+            resources::ManagedResourceUpdateStatus::UpdateAvailable => Self::UpdateAvailable,
+            resources::ManagedResourceUpdateStatus::Blocked => Self::Blocked,
+            resources::ManagedResourceUpdateStatus::Revoked => Self::Revoked,
+            resources::ManagedResourceUpdateStatus::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+impl From<resources::ManagedResourceUpdateCheckTrack> for ManagedResourceUpdateCheckTrack {
+    fn from(track: resources::ManagedResourceUpdateCheckTrack) -> Self {
+        Self {
+            status: track.status().into(),
+            resource: track.resource_name().as_str().to_string(),
+            track: track.track().as_str().to_string(),
+            current_artifact_version: track.current_artifact_version().as_str().to_string(),
+            current_artifact_path: track.current_artifact_path().to_string(),
+            latest_artifact_version: track
+                .latest_artifact_version()
+                .map(|version| version.as_str().to_string()),
+            current_revocation: track.current_revocation().map(Into::into),
+            latest_revocation: track.latest_revocation().map(Into::into),
+            blocked_by: track.blocked_by().map(Into::into),
+            reason: track.reason().map(ToString::to_string),
+        }
+    }
+}
+
+impl From<&resources::ManagedResourceUpdateRevocation> for ManagedResourceUpdateRevocation {
+    fn from(revocation: &resources::ManagedResourceUpdateRevocation) -> Self {
+        Self {
+            artifact_version: revocation.artifact_version().as_str().to_string(),
+            reason: revocation.reason().to_string(),
+        }
+    }
+}
+
+impl From<&resources::ManagedResourceUpdateBlocker> for ManagedResourceUpdateBlocker {
+    fn from(blocker: &resources::ManagedResourceUpdateBlocker) -> Self {
+        Self {
+            minimum_pv_version: blocker.minimum_pv_version().to_string(),
+            current_pv_version: blocker.current_pv_version().to_string(),
         }
     }
 }
@@ -155,7 +276,30 @@ mod tests {
     use serde_json::json;
     use tokio::io::duplex;
 
-    use super::{DaemonResponse, PROTOCOL_VERSION, ResponseStatus, transport, write_line};
+    use super::{
+        DaemonCommand, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck,
+        ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus, PROTOCOL_VERSION,
+        ResponseStatus, transport, write_line,
+    };
+
+    #[test]
+    fn managed_resource_update_check_command_bumps_protocol_version() -> anyhow::Result<()> {
+        let request = DaemonRequest {
+            protocol_version: PROTOCOL_VERSION,
+            command: DaemonCommand::ManagedResourceUpdateCheck,
+        };
+
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(
+            serde_json::to_value(&request)?,
+            json!({
+                "protocol_version": 2,
+                "command": "managed_resource_update_check",
+            })
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn response_envelope_round_trips_through_protocol_type() -> anyhow::Result<()> {
@@ -178,6 +322,67 @@ mod tests {
         assert_eq!(decoded.status(), ResponseStatus::Accepted);
         assert_eq!(decoded.message(), "job accepted");
         assert_eq!(decoded.job_id(), Some("job-1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_check_response_round_trips_with_managed_resources() -> anyhow::Result<()> {
+        let response = DaemonResponse::ok_update_check(
+            "Managed Resource update check completed",
+            ManagedResourceUpdateCheck {
+                managed_resources: vec![ManagedResourceUpdateCheckTrack {
+                    status: ManagedResourceUpdateStatus::UpdateAvailable,
+                    resource: "redis".to_string(),
+                    track: "8.8".to_string(),
+                    current_artifact_version: "8.8.0-pv1".to_string(),
+                    current_artifact_path: "/Users/me/.pv/resources/redis/8.8/releases/8.8.0-pv1"
+                        .to_string(),
+                    latest_artifact_version: Some("8.8.1-pv1".to_string()),
+                    current_revocation: None,
+                    latest_revocation: None,
+                    blocked_by: None,
+                    reason: None,
+                }],
+            },
+        );
+        let encoded = serde_json::to_value(&response)?;
+
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "response",
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "ok",
+                "message": "Managed Resource update check completed",
+                "update_check": {
+                    "managed_resources": [
+                        {
+                            "status": "update_available",
+                            "resource": "redis",
+                            "track": "8.8",
+                            "current_artifact_version": "8.8.0-pv1",
+                            "current_artifact_path": "/Users/me/.pv/resources/redis/8.8/releases/8.8.0-pv1",
+                            "latest_artifact_version": "8.8.1-pv1",
+                            "current_revocation": null,
+                            "latest_revocation": null,
+                            "blocked_by": null,
+                            "reason": null
+                        }
+                    ]
+                }
+            })
+        );
+
+        let decoded = serde_json::from_value::<DaemonResponse>(encoded)?;
+
+        assert_eq!(decoded.status(), ResponseStatus::Ok);
+        assert_eq!(
+            decoded
+                .update_check()
+                .map(|check| check.managed_resources.len()),
+            Some(1)
+        );
 
         Ok(())
     }

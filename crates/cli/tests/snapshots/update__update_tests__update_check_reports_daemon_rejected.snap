@@ -1,0 +1,14 @@
+---
+source: crates/cli/tests/update.rs
+assertion_line: 182
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: pv update --check failed: update in progress\n",
+}

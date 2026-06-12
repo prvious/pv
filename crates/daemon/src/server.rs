@@ -153,6 +153,31 @@ async fn handle_connection(
             )
             .await
         }
+        DaemonCommand::ManagedResourceUpdateCheck => {
+            let update_paths = paths.clone();
+            let update_catalog = runtime_catalog.clone();
+            let update_check_result = tokio::task::spawn_blocking(move || {
+                crate::managed_resources::update_check(update_paths, update_catalog.as_deref())
+            })
+            .await?;
+            match update_check_result {
+                Ok(update_check) => {
+                    write_line(
+                        &mut transport,
+                        &DaemonResponse::ok_update_check(
+                            "Managed Resource update check completed",
+                            update_check,
+                        ),
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 
