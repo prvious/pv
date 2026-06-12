@@ -22,6 +22,6 @@ expression: "(output, prepared_path, prepared_config, parsed_config,\nsystem_res
         "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
     ],
     [
-        "{\"protocol_version\":1,\"command\":\"health\"}",
+        "{\"protocol_version\":2,\"command\":\"health\"}",
     ],
 )

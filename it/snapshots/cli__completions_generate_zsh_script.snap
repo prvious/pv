@@ -244,6 +244,15 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(update)
+_arguments "${_arguments_options[@]}" : \
+'--check[Check for updates without applying them]' \
+'--json[Print update check output as JSON]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--json[Print command output as JSON]' \
@@ -645,6 +654,7 @@ _pv_commands() {
 'logs:Show PV logs' \
 'doctor:Run read-only PV diagnostics' \
 'jobs:List recent daemon jobs' \
+'update:Update PV or preview available updates with --check' \
 'list:List linked Projects' \
 'php:use:Set the PHP track' \
 'php:install:Install a PHP track' \
@@ -1052,6 +1062,11 @@ _pv__subcmd__uninstall_commands() {
 _pv__subcmd__unlink_commands() {
     local commands; commands=()
     _describe -t commands 'pv unlink commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__update_commands] )) ||
+_pv__subcmd__update_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv update commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_pv" ]; then
