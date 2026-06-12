@@ -65,6 +65,10 @@ impl Environment for TestEnvironment {
         Some(APP_MANIFEST_URL.to_string())
     }
 
+    fn app_update_platform(&self) -> Option<self_update::AppUpdatePlatform> {
+        Some(self_update::AppUpdatePlatform::DarwinArm64)
+    }
+
     fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
         Some(&self.client)
     }

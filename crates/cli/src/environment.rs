@@ -151,6 +151,10 @@ pub trait Environment {
         None
     }
 
+    fn app_update_platform(&self) -> Option<self_update::AppUpdatePlatform> {
+        None
+    }
+
     fn resource_http_client(&self) -> Option<&dyn resources::ResourceHttpClient> {
         None
     }
