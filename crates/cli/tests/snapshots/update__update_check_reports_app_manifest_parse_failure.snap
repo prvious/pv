@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: invalid PV app update manifest: expected ident at line 1 column 2\n",
+}

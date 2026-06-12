@@ -171,6 +171,54 @@ fn update_check_reports_daemon_rejected() -> anyhow::Result<()> {
 }
 
 #[test]
+fn update_check_reports_app_manifest_parse_failure() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let _daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_update_check_response(paths.resources().join("redis/8.8/releases/8.8.0-pv1")),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text("not json"));
+
+    let output = run_pv(&["update", "--check"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn update_check_reports_app_manifest_network_failure() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let _daemon = FakeDaemon::start(
+        &paths,
+        managed_resource_update_check_response(paths.resources().join("redis/8.8/releases/8.8.0-pv1")),
+    )?;
+    let environment = TestEnvironment::new(
+        &home,
+        ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
+            url: APP_MANIFEST_URL.to_string(),
+            reason: "network error".to_string(),
+        }),
+    );
+
+    let output = run_pv(&["update", "--check"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn update_without_check_is_deferred_without_mutating() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -237,6 +285,13 @@ impl ScriptedClient {
         self.text_responses
             .borrow_mut()
             .push_back(Ok(text.to_string()));
+        self
+    }
+
+    fn with_error(self, error: ResourcesError) -> Self {
+        self.text_responses
+            .borrow_mut()
+            .push_back(Err(error));
         self
     }
 }
