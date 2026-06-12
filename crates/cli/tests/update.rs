@@ -506,6 +506,8 @@ fn health_response() -> serde_json::Value {
 fn assert_update_snapshot(name: &'static str, snapshot: impl std::fmt::Debug) {
     let mut settings = Settings::clone_current();
     settings.add_filter(r#"/[^ \n"]+/home/\.pv"#, "<pv-home>");
+    settings.add_filter(r"/[\w\-]+/home/\.pv", "<pv-home>");
+    settings.add_filter(r"[a-f0-9]{64}", "<sha256>");
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
     });
