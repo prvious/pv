@@ -63,6 +63,24 @@ impl RunningDaemon {
         .await
     }
 
+    #[doc(hidden)]
+    pub async fn start_without_managed_resource_adapters_with_manifest_client(
+        paths: PvPaths,
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+    ) -> Result<Self, DaemonError> {
+        Self::start_with_runtime_catalog(
+            paths,
+            Some(
+                ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                    manifest_url,
+                    client,
+                ),
+            ),
+        )
+        .await
+    }
+
     async fn start_with_runtime_catalog(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,

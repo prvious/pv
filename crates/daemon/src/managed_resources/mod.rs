@@ -16,6 +16,7 @@ use std::future::Future;
 use std::io;
 use std::net::TcpListener;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
@@ -148,6 +149,7 @@ pub(crate) struct ManagedResourceInstallOptions {
 pub(crate) struct ManagedResourceRuntimeCatalog {
     adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>>,
     install_options: ManagedResourceInstallOptions,
+    update_check_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
 impl ManagedResourceRuntimeCatalog {
@@ -174,16 +176,36 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: resources::default_artifact_manifest_url().to_string(),
                 target_platform: current_target_platform(),
             },
+            update_check_client: None,
         }
     }
 
     pub(crate) fn without_adapters() -> Self {
+        Self::without_adapters_with_manifest_url(resources::default_artifact_manifest_url())
+    }
+
+    pub(crate) fn without_adapters_with_manifest_url(manifest_url: impl Into<String>) -> Self {
         Self {
             adapters: BTreeMap::new(),
             install_options: ManagedResourceInstallOptions {
-                manifest_url: resources::default_artifact_manifest_url().to_string(),
+                manifest_url: manifest_url.into(),
                 target_platform: current_target_platform(),
             },
+            update_check_client: None,
+        }
+    }
+
+    pub(crate) fn without_adapters_with_manifest_client(
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            adapters: BTreeMap::new(),
+            install_options: ManagedResourceInstallOptions {
+                manifest_url: manifest_url.into(),
+                target_platform: current_target_platform(),
+            },
+            update_check_client: Some(Arc::new(client)),
         }
     }
 
@@ -199,6 +221,7 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters,
             install_options,
+            update_check_client: None,
         }
     }
 
@@ -283,14 +306,13 @@ fn update_check_with_catalog(
         catalog.install_options.manifest_url.clone(),
         catalog.install_options.target_platform,
     );
-    if commands.list(None)?.is_empty() {
-        return Ok(ProtocolUpdateCheck {
-            managed_resources: Vec::new(),
-        });
-    }
+    let check = if let Some(client) = catalog.update_check_client.as_deref() {
+        commands.check_updates(client)?
+    } else {
+        let client = resources::UreqResourceHttpClient::default();
 
-    let client = resources::UreqResourceHttpClient::default();
-    let check = commands.check_updates(&client)?;
+        commands.check_updates(&client)?
+    };
     let managed_resources = check
         .tracks()
         .iter()

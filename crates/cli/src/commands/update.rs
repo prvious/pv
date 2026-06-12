@@ -7,6 +7,7 @@ use protocol::{
     ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus as ResourceUpdateStatus,
 };
 use resources::{ResourceHttpClient, UreqResourceHttpClient};
+use self_update::{AppUpdateManifest, AppUpdatePlatform, AppUpdateVersion};
 use serde::Serialize;
 use state::{PvPaths, StateError};
 
@@ -122,11 +123,11 @@ struct AppUpdateAssetStatus {
 fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, ExecuteError> {
     let url = app_update_manifest_url(environment);
     let json = with_resource_http_client(environment, |client| client.get_text(&url))?;
-    let manifest = self_update::AppUpdateManifest::parse(&json)?;
-    let current_version = self_update::AppUpdateVersion::current()?;
+    let manifest = AppUpdateManifest::parse(&json)?;
+    let current_version = AppUpdateVersion::current()?;
     let platform = match environment.app_update_platform() {
         Some(platform) => Ok(platform),
-        None => self_update::AppUpdatePlatform::current(),
+        None => AppUpdatePlatform::current(),
     };
     let platform = match platform {
         Ok(platform) => platform,
@@ -169,7 +170,7 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
 }
 
 fn app_update_status_unavailable(
-    current_version: &self_update::AppUpdateVersion,
+    current_version: &AppUpdateVersion,
     platform: String,
     reason: String,
 ) -> AppUpdateStatus {

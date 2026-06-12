@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 const RESPONSE_LINE_TYPE: &str = "response";
@@ -277,9 +277,29 @@ mod tests {
     use tokio::io::duplex;
 
     use super::{
-        DaemonResponse, ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack,
-        ManagedResourceUpdateStatus, PROTOCOL_VERSION, ResponseStatus, transport, write_line,
+        DaemonCommand, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck,
+        ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus, PROTOCOL_VERSION,
+        ResponseStatus, transport, write_line,
     };
+
+    #[test]
+    fn managed_resource_update_check_command_bumps_protocol_version() -> anyhow::Result<()> {
+        let request = DaemonRequest {
+            protocol_version: PROTOCOL_VERSION,
+            command: DaemonCommand::ManagedResourceUpdateCheck,
+        };
+
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(
+            serde_json::to_value(&request)?,
+            json!({
+                "protocol_version": 2,
+                "command": "managed_resource_update_check",
+            })
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn response_envelope_round_trips_through_protocol_type() -> anyhow::Result<()> {

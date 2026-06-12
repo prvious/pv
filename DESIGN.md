@@ -473,7 +473,7 @@ The daemon protocol adds a read-only `managed_resource_update_check` request:
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "command": "managed_resource_update_check"
 }
 ```
@@ -483,7 +483,7 @@ The daemon response is a normal response line with `status: "ok"` and an `update
 ```json
 {
   "type": "response",
-  "protocol_version": 1,
+  "protocol_version": 2,
   "status": "ok",
   "message": "Managed Resource update check completed",
   "update_check": {

@@ -164,7 +164,7 @@ mod update_tests {
                 health_response(),
                 json!({
                     "type": "response",
-                    "protocol_version": 1,
+                    "protocol_version": daemon::PROTOCOL_VERSION,
                     "status": "error",
                     "message": "update in progress"
                 }),
@@ -189,19 +189,12 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let _daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
-            ],
-        )?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text("not json"));
 
         let output = run_pv(&["update", "--check"], &environment)?;
 
+        daemon.join()?;
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert!(output.stdout.is_empty());
         assert_debug_snapshot!(output);
@@ -215,15 +208,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let _daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
-            ],
-        )?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
@@ -234,6 +219,7 @@ mod update_tests {
 
         let output = run_pv(&["update", "--check"], &environment)?;
 
+        daemon.join()?;
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert!(output.stdout.is_empty());
         assert_debug_snapshot!(output);
@@ -400,7 +386,7 @@ mod update_tests {
         }
 
         fn join(self) -> anyhow::Result<Vec<serde_json::Value>> {
-            let result = self.handle.join().map_err(|error| {
+            self.handle.join().map_err(|error| {
                 let payload = if let Some(s) = error.downcast_ref::<String>() {
                     s.clone()
                 } else if let Some(s) = error.downcast_ref::<&str>() {
@@ -409,8 +395,7 @@ mod update_tests {
                     "unknown panic".to_string()
                 };
                 anyhow::anyhow!("fake daemon thread panicked: {payload}")
-            })?;
-            result
+            })?
         }
     }
 
@@ -418,12 +403,18 @@ mod update_tests {
     struct PanickingClient;
 
     impl ResourceHttpClient for PanickingClient {
-        fn get_text(&self, _url: &str) -> resources::Result<String> {
-            panic!("get_text should not be called when daemon is missing")
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_string(),
+                reason: "get_text should not be called when daemon is missing".to_string(),
+            })
         }
 
-        fn download(&self, _url: &str, _writer: &mut dyn Write) -> resources::Result<()> {
-            panic!("download should not be called when daemon is missing")
+        fn download(&self, url: &str, _writer: &mut dyn Write) -> resources::Result<()> {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_string(),
+                reason: "download should not be called when daemon is missing".to_string(),
+            })
         }
     }
 
@@ -529,24 +520,11 @@ mod update_tests {
 
         json!({
             "type": "response",
-            "protocol_version": 1,
+            "protocol_version": daemon::PROTOCOL_VERSION,
             "status": "ok",
             "message": "Managed Resource update check completed",
             "update_check": {
-                "managed_resources": [
-                    {
-                        "status": "update_available",
-                        "resource": "redis",
-                        "track": "8.8",
-                        "current_artifact_version": "8.8.0-pv1",
-                        "current_artifact_path": current_artifact_path.as_ref().to_string_lossy(),
-                        "latest_artifact_version": "8.8.1-pv1",
-                        "current_revocation": null,
-                        "latest_revocation": null,
-                        "blocked_by": null,
-                        "reason": null
-                    }
-                ]
+                "managed_resources": [resource]
             }
         })
     }
@@ -554,7 +532,7 @@ mod update_tests {
     fn health_response() -> serde_json::Value {
         json!({
             "type": "response",
-            "protocol_version": 1,
+            "protocol_version": daemon::PROTOCOL_VERSION,
             "status": "ok",
             "message": "daemon healthy"
         })
