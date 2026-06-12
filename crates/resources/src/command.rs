@@ -1213,7 +1213,7 @@ fn check_unavailable_or_revoked_current(
         current_revocation,
         latest_revocation: None,
         blocked_by: None,
-        reason: Some(reason),
+        reason: None,
     }
 }
 
