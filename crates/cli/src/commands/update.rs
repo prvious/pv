@@ -131,27 +131,21 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
     let platform = match platform {
         Ok(platform) => platform,
         Err(error) => {
-            return Ok(AppUpdateStatus {
-                status: AppUpdateStatusValue::Unavailable,
-                current_version: current_version.to_string(),
-                latest_version: None,
-                platform: "unsupported".to_string(),
-                asset: None,
-                reason: Some(error.to_string()),
-            });
+            return Ok(app_update_status_unavailable(
+                &current_version,
+                "unsupported".to_string(),
+                error.to_string(),
+            ));
         }
     };
     let asset = match manifest.select_platform(platform) {
         Ok(asset) => asset,
         Err(error) => {
-            return Ok(AppUpdateStatus {
-                status: AppUpdateStatusValue::Unavailable,
-                current_version: current_version.to_string(),
-                latest_version: None,
-                platform: platform.to_string(),
-                asset: None,
-                reason: Some(error.to_string()),
-            });
+            return Ok(app_update_status_unavailable(
+                &current_version,
+                platform.to_string(),
+                error.to_string(),
+            ));
         }
     };
     let status = if manifest.version() > &current_version {
@@ -174,6 +168,21 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
     })
 }
 
+fn app_update_status_unavailable(
+    current_version: &self_update::AppUpdateVersion,
+    platform: String,
+    reason: String,
+) -> AppUpdateStatus {
+    AppUpdateStatus {
+        status: AppUpdateStatusValue::Unavailable,
+        current_version: current_version.to_string(),
+        latest_version: None,
+        platform,
+        asset: None,
+        reason: Some(reason),
+    }
+}
+
 fn managed_resource_plain(resource: &ManagedResourceUpdateCheckTrack) -> String {
     let mut line = match resource.status {
         ResourceUpdateStatus::Current => format!(
@@ -194,12 +203,7 @@ fn managed_resource_plain(resource: &ManagedResourceUpdateCheckTrack) -> String 
             let blocked_by = resource
                 .blocked_by
                 .as_ref()
-                .map(|blocked_by| {
-                    format!(
-                        "requires PV {}, current PV {}",
-                        blocked_by.minimum_pv_version, blocked_by.current_pv_version
-                    )
-                })
+                .map(ToString::to_string)
                 .unwrap_or_else(|| "requires newer PV".to_string());
             format!(
                 "{} {}: blocked {} ({})",
@@ -247,7 +251,15 @@ fn managed_resource_plain(resource: &ManagedResourceUpdateCheckTrack) -> String 
 
 fn update_check_daemon_error(error: daemon::DaemonError) -> ExecuteError {
     match error {
-        daemon::DaemonError::Io(source) if daemon_is_unavailable(&source) => {
+        daemon::DaemonError::Io(source)
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::TimedOut
+            ) =>
+        {
             CliError::UpdateCheckDaemonUnavailable.into()
         }
         daemon::DaemonError::DaemonRejected { message } => {
@@ -255,13 +267,6 @@ fn update_check_daemon_error(error: daemon::DaemonError) -> ExecuteError {
         }
         error => error.into(),
     }
-}
-
-fn daemon_is_unavailable(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
 }
 
 fn with_resource_http_client<T>(
