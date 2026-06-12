@@ -144,6 +144,33 @@ fn update_check_reports_missing_daemon_before_fetching_manifests() -> anyhow::Re
 }
 
 #[test]
+fn update_check_reports_daemon_rejected() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let daemon = FakeDaemon::start(
+        &paths,
+        json!({
+            "type": "response",
+            "protocol_version": 1,
+            "status": "error",
+            "message": "update in progress"
+        }),
+    )?;
+    let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+
+    let output = run_pv(&["update", "--check"], &environment)?;
+
+    daemon.join()?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn update_without_check_is_deferred_without_mutating() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
