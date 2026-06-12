@@ -2512,6 +2512,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "resources",
  "serde",
  "serde_json",
  "thiserror",
