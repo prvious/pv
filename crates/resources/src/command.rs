@@ -1220,13 +1220,18 @@ fn check_unavailable_or_revoked_current(
 fn update_revocation_from_current_artifact(
     artifact: &ManifestArtifact,
 ) -> Option<ManagedResourceUpdateRevocation> {
-    artifact
-        .revocation_state()
-        .reason()
-        .map(|reason| ManagedResourceUpdateRevocation {
-            artifact_version: artifact.artifact_version().clone(),
-            reason: reason.to_string(),
-        })
+    if !artifact.revocation_state().is_revoked() {
+        return None;
+    }
+
+    Some(ManagedResourceUpdateRevocation {
+        artifact_version: artifact.artifact_version().clone(),
+        reason: artifact
+            .revocation_state()
+            .reason()
+            .unwrap_or_default()
+            .to_string(),
+    })
 }
 
 fn update_revocation_from_artifact(artifact: &ManifestArtifact) -> ManagedResourceUpdateRevocation {
