@@ -1135,32 +1135,48 @@ fn check_installed_track_update(
     manifest: &ArtifactManifest,
     target_platform: TargetPlatform,
 ) -> ManagedResourceUpdateCheckTrack {
+    let current_artifact = manifest.select_artifact(
+        track.resource_name(),
+        track.track(),
+        track.installed_version(),
+        target_platform,
+    );
+    let current_revocation = match current_artifact {
+        Ok(Some(artifact)) => update_revocation_from_current_artifact(artifact),
+        Ok(None) => None,
+        Err(error) => {
+            return ManagedResourceUpdateCheckTrack::unavailable(
+                track,
+                format!("artifact lookup failed: {error}"),
+            );
+        }
+    };
+
     let selection =
         match manifest.select_latest(track.resource_name(), track.track(), target_platform) {
             Ok(selection) => selection,
             Err(error) => {
-                return check_unavailable_or_revoked_current(
-                    track,
-                    manifest,
-                    target_platform,
-                    error.to_string(),
-                );
+                if current_revocation.is_some() {
+                    return ManagedResourceUpdateCheckTrack {
+                        status: ManagedResourceUpdateStatus::Revoked,
+                        resource_name: track.resource_name,
+                        track: track.track,
+                        current_artifact_version: track.installed_version,
+                        current_artifact_path: track.current_artifact_path,
+                        latest_artifact_version: None,
+                        current_revocation,
+                        latest_revocation: None,
+                        blocked_by: None,
+                        reason: None,
+                    };
+                }
+                return ManagedResourceUpdateCheckTrack::unavailable(track, error.to_string());
             }
         };
     let latest_artifact = selection.artifact();
     let latest_revocation = selection
         .revoked_latest()
         .map(update_revocation_from_artifact);
-    let current_revocation = manifest
-        .select_artifact(
-            track.resource_name(),
-            track.track(),
-            track.installed_version(),
-            target_platform,
-        )
-        .ok()
-        .flatten()
-        .and_then(update_revocation_from_current_artifact);
     let status = if current_revocation.is_some() {
         ManagedResourceUpdateStatus::Revoked
     } else if latest_artifact.artifact_version() != track.installed_version() {
@@ -1178,40 +1194,6 @@ fn check_installed_track_update(
         latest_artifact_version: Some(latest_artifact.artifact_version().clone()),
         current_revocation,
         latest_revocation,
-        blocked_by: None,
-        reason: None,
-    }
-}
-
-fn check_unavailable_or_revoked_current(
-    track: ManagedResourceTrack,
-    manifest: &ArtifactManifest,
-    target_platform: TargetPlatform,
-    reason: String,
-) -> ManagedResourceUpdateCheckTrack {
-    let current_revocation = manifest
-        .select_artifact(
-            track.resource_name(),
-            track.track(),
-            track.installed_version(),
-            target_platform,
-        )
-        .ok()
-        .flatten()
-        .and_then(update_revocation_from_current_artifact);
-    if current_revocation.is_none() {
-        return ManagedResourceUpdateCheckTrack::unavailable(track, reason);
-    }
-
-    ManagedResourceUpdateCheckTrack {
-        status: ManagedResourceUpdateStatus::Revoked,
-        resource_name: track.resource_name,
-        track: track.track,
-        current_artifact_version: track.installed_version,
-        current_artifact_path: track.current_artifact_path,
-        latest_artifact_version: None,
-        current_revocation,
-        latest_revocation: None,
         blocked_by: None,
         reason: None,
     }
