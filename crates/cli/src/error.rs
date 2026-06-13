@@ -52,8 +52,55 @@ pub enum CliError {
     #[error("no installed {resource} tracks were found; pass --track explicitly")]
     MissingLogResourceTrack { resource: String },
 
-    #[error("pv update is not implemented yet; run pv update --check to preview available updates")]
-    UpdateNotImplemented,
+    #[error("PV update is already in progress; update lock is held at {path}")]
+    UpdateInProgress { path: String },
+
+    #[error("PV application update requires an installed active release: {message}")]
+    AppUpdateInvalidActiveRelease { message: String },
+
+    #[error(
+        "PV application update requires active release {current_version}, found {active_version}"
+    )]
+    AppUpdateActiveReleaseMismatch {
+        active_version: String,
+        current_version: String,
+    },
+
+    #[error(
+        "PV application update requires the PV LaunchAgent at {path}; run `pv setup` or `pv daemon:enable`"
+    )]
+    AppUpdateLaunchAgentMissing { path: String },
+
+    #[error("PV LaunchAgent file is not PV-owned; leaving it unchanged at {path}")]
+    AppUpdateLaunchAgentConflict { path: String },
+
+    #[error("PV LaunchAgent file is unreadable; leaving it unchanged: {message}")]
+    AppUpdateLaunchAgentUnreadable { message: String },
+
+    #[error("PV app download size mismatch for `{url}`: expected {expected}, got {actual}")]
+    AppUpdateSizeMismatch {
+        url: String,
+        expected: u64,
+        actual: u64,
+    },
+
+    #[error("PV app download checksum mismatch for `{url}`: expected {expected}, got {actual}")]
+    AppUpdateChecksumMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("{message}")]
+    AppUpdatePostActivationFailed { message: String },
+
+    #[error("PV application update failed ({original}); rollback failed: {rollback}")]
+    AppUpdateRollbackFailed { original: String, rollback: String },
+
+    #[error(
+        "PV application update failed ({original}); previous release was restored, but daemon restart after rollback failed: {rollback}. Run `pv daemon:restart` or `pv setup`."
+    )]
+    AppUpdateRollbackDaemonFailed { original: String, rollback: String },
 
     #[error("pv update --check requires the PV daemon; run `pv daemon:restart` or `pv setup`")]
     UpdateCheckDaemonUnavailable,

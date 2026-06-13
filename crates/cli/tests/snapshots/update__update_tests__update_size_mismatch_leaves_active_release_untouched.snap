@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\n",
+    stderr: "error: PV app download size mismatch for `https://downloads.example.test/pv/0.2.0/pv-darwin-arm64`: expected 999, got 9\n",
+}

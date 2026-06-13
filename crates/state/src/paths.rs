@@ -98,6 +98,10 @@ impl PvPaths {
         self.run().join("pv.sock")
     }
 
+    pub fn daemon_startup_error(&self) -> Utf8PathBuf {
+        self.run().join("daemon-startup-error.json")
+    }
+
     pub fn logs(&self) -> &Utf8Path {
         &self.logs
     }

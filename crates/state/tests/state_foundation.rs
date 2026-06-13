@@ -193,6 +193,36 @@ fn app_release_layout_installs_fixture_binaries_and_updates_active_symlink() -> 
     Ok(())
 }
 
+#[test]
+fn app_release_pruning_keeps_active_and_previous_releases() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let layout = AppReleaseLayout::new(paths.clone());
+
+    for version in ["0.1.0", "0.2.0", "0.3.0"] {
+        let source = tempdir.path().join(format!("pv-{version}"));
+        state::fs::write_sensitive_file(&source, &format!("pv {version}\n"))?;
+        layout.install_release_binary(version, &source)?;
+        layout.activate_release(version)?;
+    }
+
+    layout.prune_releases("0.2.0")?;
+
+    let mut release_entries = state::fs::read_dir_paths(&paths.app_releases_dir())?
+        .into_iter()
+        .map(|path| path.file_name().unwrap_or("").to_string())
+        .collect::<Vec<_>>();
+    release_entries.sort();
+
+    assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+    assert_eq!(release_entries, vec!["0.2.0", "0.3.0"]);
+    assert!(!state::fs::path_entry_exists(
+        &paths.app_release_binary("0.1.0")
+    )?);
+
+    Ok(())
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "state foundation tests inspect fixture file permissions"

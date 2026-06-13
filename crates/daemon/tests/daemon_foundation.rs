@@ -5,7 +5,7 @@ use hickory_proto::rr::rdata::{A, AAAA};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use state::{
     DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, LinkProjectInput, PortOwner, PortRequest,
@@ -168,6 +168,57 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
             database.recent_jobs()?,
         ),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_start_writes_migration_failed_startup_marker() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    Database::open(&paths)?;
+    let connection = Connection::open(paths.db())?;
+    connection.execute(
+        "UPDATE pv_migrations SET name = ?1 WHERE version = ?2",
+        params!["wrong_name", 1_i64],
+    )?;
+
+    let result =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await;
+
+    assert!(result.is_err());
+    let marker = state::fs::read_to_string(&paths.daemon_startup_error())?;
+    assert_debug_snapshot!(serde_json::from_str::<Value>(&marker)?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    state::fs::write_sensitive_file(
+        &paths.daemon_startup_error(),
+        r#"{"kind":"startup_failed","message":"stale"}"#,
+    )?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let health_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+    daemon.shutdown().await?;
+
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+    assert!(!state::fs::path_entry_exists(
+        &paths.daemon_startup_error()
+    )?);
 
     Ok(())
 }

@@ -85,6 +85,45 @@ impl AppReleaseLayout {
 
         Ok(Some(version.to_string()))
     }
+
+    pub fn prune_releases(&self, previous_version: &str) -> Result<(), StateError> {
+        validate_app_release_version(previous_version)?;
+        let active_version = match self.active_release()? {
+            Some(version) => version,
+            None => return Ok(()),
+        };
+        let releases_dir = self.paths.app_releases_dir();
+        if !fs::path_entry_exists(&releases_dir)? {
+            return Ok(());
+        }
+
+        for release_path in fs::read_dir_paths(&releases_dir)? {
+            let Some(version) = release_path.file_name() else {
+                continue;
+            };
+            if version == active_version || version == previous_version {
+                continue;
+            }
+
+            fs::delete_dir_all(&release_path)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn remove_release(&self, version: &str) -> Result<(), StateError> {
+        validate_app_release_version(version)?;
+        let release_path = self.paths.app_releases_dir().join(version);
+        match fs::delete_dir_all(&release_path) {
+            Ok(()) => Ok(()),
+            Err(StateError::Filesystem { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl AppReleaseInstall {
