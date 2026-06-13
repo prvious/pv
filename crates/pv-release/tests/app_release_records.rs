@@ -46,6 +46,51 @@ fn app_release_records_generate_self_update_manifest() -> Result<()> {
 }
 
 #[test]
+fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
+    let tempdir = tempdir()?;
+    let binary = tempdir.path().join("pv");
+    let record = tempdir.path().join("records/pv/0.2.0/pv-darwin-arm64.json");
+    write_binary_file(&binary, b"pv app bytes")?;
+
+    let output = StdCommand::new(env!("CARGO_BIN_EXE_pv-release"))
+        .arg("write-app-release-record")
+        .arg("--record")
+        .arg(record.as_str())
+        .arg("--binary")
+        .arg(binary.as_str())
+        .arg("--channel")
+        .arg("stable")
+        .arg("--version")
+        .arg("0.2.0")
+        .arg("--minimum-pv-version")
+        .arg("0.1.0")
+        .arg("--published-at")
+        .arg("2026-06-11T12:00:00Z")
+        .arg("--platform")
+        .arg("darwin-arm64")
+        .arg("--object-key")
+        .arg("pv/0.2.0/pv-darwin-arm64")
+        .arg("--source-url")
+        .arg("https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz")
+        .arg("--source-sha256")
+        .arg("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        .arg("--recipe")
+        .arg(".github/workflows/pv-app-release.yml")
+        .arg("--pv-commit")
+        .arg("0123456789abcdef0123456789abcdef01234567")
+        .arg("--build-run-id")
+        .arg("123456789")
+        .output()
+        .context("failed to execute pv-release write-app-release-record")?;
+
+    assert_command_success(&output, "write-app-release-record")?;
+    let json = read_file(&record)?;
+    assert_snapshot!(json);
+
+    Ok(())
+}
+
+#[test]
 fn app_release_records_reject_invalid_record_metadata() -> Result<()> {
     let cases = [
         InvalidAppReleaseRecordCase {
@@ -204,6 +249,15 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
     reason = "release tooling tests write local fixture metadata records"
 )]
 fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests write local fixture binaries"
+)]
+fn write_binary_file(path: &Utf8Path, content: &[u8]) -> Result<()> {
     std::fs::write(path, content)?;
     Ok(())
 }
