@@ -87,6 +87,9 @@ pub enum ReleaseError {
     #[error("generated app manifest is invalid: {reason}")]
     GeneratedAppManifestInvalid { reason: String },
 
+    #[error("generated app installer is invalid: {reason}")]
+    GeneratedAppInstallerInvalid { reason: String },
+
     #[error("filesystem error at `{path}`: {reason}")]
     Filesystem { path: String, reason: String },
 }

@@ -12,6 +12,416 @@ use url::Url;
 
 const SUPPORTED_SCHEMA_VERSION: u64 = 1;
 const STABLE_CHANNEL: &str = "stable";
+const APP_INSTALLER_TEMPLATE: &str = r##"#!/usr/bin/env bash
+set -euo pipefail
+
+PV_VERSION=@@PV_VERSION@@
+ARM64_URL=@@ARM64_URL@@
+ARM64_SHA256=@@ARM64_SHA256@@
+ARM64_SIZE=@@ARM64_SIZE@@
+AMD64_URL=@@AMD64_URL@@
+AMD64_SHA256=@@AMD64_SHA256@@
+AMD64_SIZE=@@AMD64_SIZE@@
+
+YES=0
+NON_INTERACTIVE=0
+NO_SETUP=0
+NO_PATH=0
+PV_HOME="${HOME}/.pv"
+PV_BIN_DIR="${PV_HOME}/bin"
+PV_RELEASE_DIR="${HOME}/.pv/bin/releases/${PV_VERSION}"
+PV_RELEASE_BIN="${PV_RELEASE_DIR}/pv"
+PV_ACTIVE_BIN="${PV_BIN_DIR}/pv"
+TMP_DIR=
+
+usage() {
+  cat <<'USAGE'
+PV macOS installer
+
+Usage: install.sh [OPTIONS]
+
+Options:
+  --yes              Accept PV installer confirmations
+  --non-interactive  Disable prompts and fail when interactive input is required
+  --no-setup         Install the pv binary without running pv setup
+  --no-path          Skip shell profile PATH integration
+  --help             Show this help
+USAGE
+}
+
+info() {
+  printf 'pv installer: %s\n' "$*" >&2
+}
+
+warn() {
+  printf 'pv installer: %s\n' "$*" >&2
+}
+
+die() {
+  printf 'pv installer: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup() {
+  if [ -n "${TMP_DIR}" ]; then
+    rm -rf "${TMP_DIR}"
+  fi
+}
+
+trap cleanup EXIT
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes)
+      YES=1
+      ;;
+    --non-interactive)
+      NON_INTERACTIVE=1
+      ;;
+    --no-setup)
+      NO_SETUP=1
+      ;;
+    --no-path)
+      NO_PATH=1
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      die "unknown option: $1"
+      ;;
+  esac
+  shift
+done
+
+is_rosetta() {
+  [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = "1" ]
+}
+
+select_asset() {
+  local os machine platform
+
+  os="$(uname -s)"
+  if [ "${os}" != "Darwin" ]; then
+    die "macOS is required; found ${os}"
+  fi
+
+  machine="$(uname -m)"
+  case "${machine}" in
+    arm64|aarch64)
+      platform="darwin-arm64"
+      ;;
+    x86_64|amd64)
+      if is_rosetta; then
+        platform="darwin-arm64"
+      else
+        platform="darwin-amd64"
+      fi
+      ;;
+    *)
+      die "unsupported macOS architecture: ${machine}"
+      ;;
+  esac
+
+  case "${platform}" in
+    darwin-arm64)
+      ASSET_URL="${ARM64_URL}"
+      EXPECTED_SHA256="${ARM64_SHA256}"
+      EXPECTED_SIZE="${ARM64_SIZE}"
+      ;;
+    darwin-amd64)
+      ASSET_URL="${AMD64_URL}"
+      EXPECTED_SHA256="${AMD64_SHA256}"
+      EXPECTED_SIZE="${AMD64_SIZE}"
+      ;;
+    *)
+      die "unsupported PV installer platform: ${platform}"
+      ;;
+  esac
+}
+
+sha256_file() {
+  local path
+
+  path="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${path}" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${path}" | awk '{print $1}'
+  else
+    die "neither shasum nor sha256sum is available for checksum verification"
+  fi
+}
+
+verify_download() {
+  local path actual_size actual_sha256
+
+  path="$1"
+  actual_size="$(wc -c < "${path}" | tr -d '[:space:]')"
+  if [ "${actual_size}" != "${EXPECTED_SIZE}" ]; then
+    rm -f "${path}"
+    die "download size mismatch: expected ${EXPECTED_SIZE} bytes, got ${actual_size}"
+  fi
+
+  actual_sha256="$(sha256_file "${path}")"
+  if [ "${actual_sha256}" != "${EXPECTED_SHA256}" ]; then
+    rm -f "${path}"
+    die "download checksum mismatch: expected ${EXPECTED_SHA256}, got ${actual_sha256}"
+  fi
+}
+
+download_asset() {
+  local download
+
+  TMP_DIR="${PV_HOME}/tmp/installer.$$"
+  mkdir -p "${TMP_DIR}"
+  download="${TMP_DIR}/pv"
+
+  curl --fail --location --silent --show-error --output "${download}" "${ASSET_URL}" || {
+    rm -f "${download}"
+    die "failed to download ${ASSET_URL}"
+  }
+
+  verify_download "${download}"
+  install_binary "${download}"
+}
+
+install_binary() {
+  local download release_tmp link_tmp
+
+  download="$1"
+  mkdir -p "${PV_RELEASE_DIR}" "${PV_BIN_DIR}"
+  chmod 755 "${download}"
+
+  release_tmp="${PV_RELEASE_BIN}.tmp.$$"
+  mv "${download}" "${release_tmp}"
+  mv -f "${release_tmp}" "${PV_RELEASE_BIN}"
+
+  link_tmp="${PV_ACTIVE_BIN}.tmp.$$"
+  rm -f "${link_tmp}"
+  ln -s "${PV_RELEASE_BIN}" "${link_tmp}"
+  mv -f "${link_tmp}" "${PV_ACTIVE_BIN}"
+}
+
+detect_shell_profile() {
+  local shell_path shell_name
+
+  shell_path="${SHELL:-}"
+  shell_name="${shell_path##*/}"
+  case "${shell_name}" in
+    zsh)
+      PROFILE_SHELL="zsh"
+      PROFILE_PATH="${HOME}/.zprofile"
+      ;;
+    bash)
+      PROFILE_SHELL="bash"
+      PROFILE_PATH="${HOME}/.bash_profile"
+      ;;
+    fish)
+      PROFILE_SHELL="fish"
+      PROFILE_PATH="${HOME}/.config/fish/config.fish"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+profile_block() {
+  local shell_name
+
+  shell_name="$1"
+  case "${shell_name}" in
+    fish)
+      cat <<'FISH'
+# >>> PV ENV
+if test -x "$HOME/.pv/bin/pv"
+  "$HOME/.pv/bin/pv" env --shell fish | source
+end
+# <<< PV ENV
+FISH
+      ;;
+    *)
+      cat <<EOF
+# >>> PV ENV
+if [ -x "\$HOME/.pv/bin/pv" ]; then
+  eval "\$("\$HOME/.pv/bin/pv" env --shell ${shell_name})"
+fi
+# <<< PV ENV
+EOF
+      ;;
+  esac
+}
+
+manual_shell_instructions() {
+  local shell_name
+
+  shell_name="${1:-zsh}"
+  warn "add PV to your shell profile manually if you want pv on PATH in new terminals"
+  case "${shell_name}" in
+    fish)
+      printf '  "%s" env --shell fish | source\n' "${PV_ACTIVE_BIN}" >&2
+      ;;
+    bash|zsh)
+      printf '  eval "%s("%s" env --shell %s)"\n' '$' "${PV_ACTIVE_BIN}" "${shell_name}" >&2
+      ;;
+    *)
+      printf '  eval "%s("%s" env --shell zsh)"\n' '$' "${PV_ACTIVE_BIN}" >&2
+      ;;
+  esac
+}
+
+confirm_profile_edit() {
+  local action profile reply
+
+  action="$1"
+  profile="$2"
+  if [ "${YES}" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ "${NON_INTERACTIVE}" -eq 1 ]; then
+    die "shell profile confirmation required to ${action} ${profile}"
+  fi
+
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    warn "cannot prompt to ${action} ${profile}; skipping shell profile integration"
+    return 1
+  fi
+
+  printf 'pv installer: %s %s? [y/N] ' "${action}" "${profile}" >/dev/tty
+  IFS= read -r reply </dev/tty || return 1
+  case "${reply}" in
+    y|Y|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+write_profile_block() {
+  local profile block profile_dir timestamp backup tmp line inserted skipping
+
+  profile="$1"
+  block="$2"
+  profile_dir="${profile%/*}"
+  if [ "${profile_dir}" != "${profile}" ]; then
+    mkdir -p "${profile_dir}" || return 1
+  fi
+
+  if [ ! -f "${profile}" ]; then
+    printf '%s\n' "${block}" >"${profile}" || return 1
+    info "created ${profile} with PV ENV"
+    return 0
+  fi
+
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  backup="${profile}.${timestamp}.pv.bak"
+  cp "${profile}" "${backup}" || return 1
+
+  tmp="${profile}.pv.tmp.$$"
+  : >"${tmp}" || return 1
+  inserted=0
+  skipping=0
+  while IFS= read -r line || [ -n "${line}" ]; do
+    if [ "${line}" = "# >>> PV ENV" ]; then
+      if [ "${inserted}" -eq 0 ]; then
+        printf '%s\n' "${block}" >>"${tmp}" || return 1
+        inserted=1
+      fi
+      skipping=1
+      continue
+    fi
+
+    if [ "${skipping}" -eq 1 ]; then
+      if [ "${line}" = "# <<< PV ENV" ]; then
+        skipping=0
+      fi
+      continue
+    fi
+
+    printf '%s\n' "${line}" >>"${tmp}" || return 1
+  done <"${profile}"
+
+  if [ "${inserted}" -eq 0 ]; then
+    if [ -s "${tmp}" ]; then
+      printf '\n' >>"${tmp}" || return 1
+    fi
+    printf '%s\n' "${block}" >>"${tmp}" || return 1
+  fi
+
+  mv "${tmp}" "${profile}" || return 1
+  info "updated ${profile}; backup saved at ${backup}"
+}
+
+install_shell_profile_block() {
+  local action block
+
+  if [ "${NO_SETUP}" -eq 1 ] || [ "${NO_PATH}" -eq 1 ]; then
+    return 0
+  fi
+
+  if ! detect_shell_profile; then
+    warn "unsupported or unknown shell '${SHELL:-}'; skipping shell profile integration"
+    manual_shell_instructions unknown
+    return 0
+  fi
+
+  if [ -f "${PROFILE_PATH}" ]; then
+    action="update"
+  else
+    action="create"
+  fi
+
+  if ! confirm_profile_edit "${action}" "${PROFILE_PATH}"; then
+    manual_shell_instructions "${PROFILE_SHELL}"
+    return 0
+  fi
+
+  block="$(profile_block "${PROFILE_SHELL}")"
+  if ! write_profile_block "${PROFILE_PATH}" "${block}"; then
+    if [ "${NON_INTERACTIVE}" -eq 1 ]; then
+      die "failed to ${action} ${PROFILE_PATH}"
+    fi
+    warn "failed to ${action} ${PROFILE_PATH}; continuing without shell profile integration"
+    manual_shell_instructions "${PROFILE_SHELL}"
+  fi
+}
+
+run_setup() {
+  if [ "${NO_SETUP}" -eq 1 ]; then
+    return 0
+  fi
+
+  install_shell_profile_block
+
+  set -- setup
+  if [ "${YES}" -eq 1 ]; then
+    set -- "$@" --yes
+  fi
+  if [ "${NON_INTERACTIVE}" -eq 1 ]; then
+    set -- "$@" --non-interactive
+  fi
+  if [ "${NO_PATH}" -eq 1 ]; then
+    set -- "$@" --no-path
+  fi
+
+  if ! "${PV_ACTIVE_BIN}" "$@"; then
+    warn "pv setup failed after installing ${PV_ACTIVE_BIN}"
+    warn "rerun \"${PV_ACTIVE_BIN}\" setup after fixing the issue"
+    return 1
+  fi
+}
+
+select_asset
+download_asset
+run_setup
+info "PV ${PV_VERSION} installed at ${PV_ACTIVE_BIN}"
+"##;
 
 #[derive(Clone, Debug)]
 pub struct WriteAppReleaseRecordRequest {
@@ -106,6 +516,12 @@ struct AppManifestJson {
 #[derive(Serialize)]
 struct AppManifestAssetJson {
     platform: String,
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
+struct InstallerAsset {
     url: String,
     sha256: String,
     size: u64,
@@ -299,6 +715,20 @@ pub fn generate_app_manifest_file(
     write_string(output, &manifest)
 }
 
+pub fn generate_app_installer_file(
+    records: &Utf8Path,
+    output: &Utf8Path,
+    base_url: &str,
+) -> crate::Result<()> {
+    let records = load_app_release_records(records)?;
+    let installer = generate_app_installer_script(&records, base_url)?;
+
+    if let Some(parent) = output.parent() {
+        create_dir_all(parent)?;
+    }
+    write_string(output, &installer)
+}
+
 pub fn generate_app_manifest_json(
     records: &[AppReleaseRecord],
     base_url: &str,
@@ -341,6 +771,33 @@ pub fn generate_app_manifest_json(
     })?;
 
     Ok(json)
+}
+
+pub fn generate_app_installer_script(
+    records: &[AppReleaseRecord],
+    base_url: &str,
+) -> crate::Result<String> {
+    let Some((first_record, remaining_records)) = records.split_first() else {
+        return Err(crate::ReleaseError::GeneratedAppInstallerInvalid {
+            reason: "app release records must not be empty".to_string(),
+        });
+    };
+
+    let mut seen_platforms = BTreeSet::new();
+    validate_app_record_group(first_record, remaining_records, &mut seen_platforms)?;
+    generate_app_manifest_json(records, base_url)?;
+
+    let arm64 = require_installer_asset(records, AppUpdatePlatform::DarwinArm64, base_url)?;
+    let amd64 = require_installer_asset(records, AppUpdatePlatform::DarwinAmd64, base_url)?;
+
+    Ok(APP_INSTALLER_TEMPLATE
+        .replace("@@PV_VERSION@@", &shell_quote(first_record.version()))
+        .replace("@@ARM64_URL@@", &shell_quote(&arm64.url))
+        .replace("@@ARM64_SHA256@@", &shell_quote(&arm64.sha256))
+        .replace("@@ARM64_SIZE@@", &shell_quote(&arm64.size.to_string()))
+        .replace("@@AMD64_URL@@", &shell_quote(&amd64.url))
+        .replace("@@AMD64_SHA256@@", &shell_quote(&amd64.sha256))
+        .replace("@@AMD64_SIZE@@", &shell_quote(&amd64.size.to_string())))
 }
 
 pub fn load_app_release_records(root: &Utf8Path) -> crate::Result<Vec<AppReleaseRecord>> {
@@ -392,6 +849,24 @@ fn validate_app_record_group(
     }
 
     Ok(())
+}
+
+fn require_installer_asset(
+    records: &[AppReleaseRecord],
+    platform: AppUpdatePlatform,
+    base_url: &str,
+) -> crate::Result<InstallerAsset> {
+    let Some(record) = records.iter().find(|record| record.platform() == platform) else {
+        return Err(crate::ReleaseError::GeneratedAppInstallerInvalid {
+            reason: format!("app release records must include {platform}"),
+        });
+    };
+
+    Ok(InstallerAsset {
+        url: artifact_url(base_url, record.object_key()),
+        sha256: record.sha256().to_string(),
+        size: record.size(),
+    })
 }
 
 fn require_same_metadata(
@@ -462,6 +937,19 @@ fn artifact_url(base_url: &str, object_key: &str) -> String {
         base_url.trim_end_matches('/'),
         object_key.trim_start_matches('/')
     )
+}
+
+fn shell_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for character in value.chars() {
+        if character == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(character);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::Result<()> {

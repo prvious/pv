@@ -122,6 +122,46 @@ fn installer_default_mode_invokes_pv_setup() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
+fn installer_non_interactive_fails_when_shell_profile_confirmation_is_required() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let output = fixture.run_installer_with_shell(
+        &["--non-interactive"],
+        ChecksumMode::Match,
+        "/bin/zsh",
+    )?;
+
+    assert!(
+        !output.status.success(),
+        "installer should fail when --non-interactive would need shell profile confirmation"
+    );
+    assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
+    assert!(active_pv_symlink_points_to_release(
+        &fixture.active_binary(),
+        &fixture.release_binary()
+    )?);
+    assert!(!path_exists(&fixture.pv_log()));
+    assert!(!path_exists(&fixture.home().join(".zprofile")));
+
+    assert_snapshot!(non_interactive_shell_profile_confirmation_summary(&output, &fixture)?, @r#"
+    status_success=false
+    stderr_mentions_shell_profile_confirmation=true
+    logs:
+    curl:
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+
+    checksum:
+    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+
+    pv:
+    <missing>
+    "#);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn installer_checksum_mismatch_deletes_bad_download_and_does_not_install() -> Result<()> {
     let fixture = InstallerExecutionFixture::new()?;
     let output = fixture.run_installer(&["--no-setup"], ChecksumMode::Mismatch)?;
@@ -260,6 +300,15 @@ impl InstallerExecutionFixture {
     }
 
     fn run_installer(&self, args: &[&str], checksum_mode: ChecksumMode) -> Result<Output> {
+        self.run_installer_with_shell(args, checksum_mode, "/bin/pv-unsupported-shell")
+    }
+
+    fn run_installer_with_shell(
+        &self,
+        args: &[&str],
+        checksum_mode: ChecksumMode,
+        shell: &str,
+    ) -> Result<Output> {
         let installer = self.app.generate_installer()?;
         write_executable(&self.app.output, &installer)?;
 
@@ -270,7 +319,7 @@ impl InstallerExecutionFixture {
             .args(args)
             .env("HOME", &self.home)
             .env("PATH", path)
-            .env("SHELL", "/bin/pv-unsupported-shell")
+            .env("SHELL", shell)
             .env("PV_TEST_CURL_LOG", &self.curl_log)
             .env("PV_TEST_CHECKSUM_LOG", &self.checksum_log)
             .env("PV_TEST_PV_LOG", &self.pv_log)
@@ -414,6 +463,9 @@ fn write_app_record(
         "sha256": sha256,
         "size": size,
         "provenance": {
+            "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.9.0.tar.gz",
+            "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "recipe": ".github/workflows/pv-app-release.yml",
             "pv_commit": "0123456789abcdef0123456789abcdef01234567",
             "build_run_id": "installer-contract-test",
         },
@@ -625,6 +677,20 @@ fn checksum_mismatch_summary(
         "status_success={}\nstderr_mentions_checksum={}\nlogs:\n{}",
         output.status.success(),
         stderr.contains("checksum") || stderr.contains("sha256"),
+        fixture.command_logs()?
+    ))
+}
+
+#[cfg(unix)]
+fn non_interactive_shell_profile_confirmation_summary(
+    output: &Output,
+    fixture: &InstallerExecutionFixture,
+) -> Result<String> {
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    Ok(format!(
+        "status_success={}\nstderr_mentions_shell_profile_confirmation={}\nlogs:\n{}",
+        output.status.success(),
+        stderr.contains("shell profile") && stderr.contains("confirmation"),
         fixture.command_logs()?
     ))
 }

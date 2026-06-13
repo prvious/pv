@@ -39,6 +39,14 @@ enum Command {
         #[arg(long)]
         base_url: String,
     },
+    GenerateAppInstaller {
+        #[arg(long)]
+        records: Utf8PathBuf,
+        #[arg(long)]
+        output: Utf8PathBuf,
+        #[arg(long)]
+        base_url: String,
+    },
     StagePublication {
         #[arg(long)]
         source_archives: Utf8PathBuf,
@@ -205,6 +213,12 @@ pub fn run() -> anyhow::Result<()> {
             output,
             base_url,
         } => crate::app::generate_app_manifest_file(&records, &output, &base_url)
+            .map_err(anyhow::Error::from),
+        Command::GenerateAppInstaller {
+            records,
+            output,
+            base_url,
+        } => crate::app::generate_app_installer_file(&records, &output, &base_url)
             .map_err(anyhow::Error::from),
         Command::StagePublication {
             source_archives,
@@ -838,6 +852,34 @@ mod tests {
                     Some(Utf8PathBuf::from("release/artifacts/default-tracks.toml"))
                 );
                 assert_eq!(output, Utf8PathBuf::from("manifest.json"));
+                assert_eq!(base_url, "https://artifacts.test");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generate_app_installer_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "generate-app-installer",
+            "--records",
+            "records",
+            "--output",
+            "install.sh",
+            "--base-url",
+            "https://artifacts.test",
+        ])?;
+
+        match args.command {
+            Command::GenerateAppInstaller {
+                records,
+                output,
+                base_url,
+            } => {
+                assert_eq!(records, Utf8PathBuf::from("records"));
+                assert_eq!(output, Utf8PathBuf::from("install.sh"));
                 assert_eq!(base_url, "https://artifacts.test");
                 Ok(())
             }
