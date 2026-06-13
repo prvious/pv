@@ -181,6 +181,61 @@ fn app_workflows_use_repository_r2_configuration() -> Result<()> {
 }
 
 #[test]
+fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let release_workflow = release.as_deref().unwrap_or("");
+    let summary = format!(
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nmanifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        release.is_some(),
+        workflow_name(release_workflow).unwrap_or(""),
+        workflow_job_ids(release_workflow),
+        platform_matrices(release_workflow),
+        release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL")
+            && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json"),
+        release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
+        release_workflow.contains("pv-staging"),
+        release_workflow.contains("artifacts-staging.pv.prvious.dev"),
+        release_workflow.contains("write-app-release-record"),
+        release_workflow.contains("generate-app-manifest"),
+        release_workflow.contains("generate-app-installer"),
+        app_binary_object_key_reference_present(release_workflow),
+        app_record_object_key_reference_present(release_workflow),
+        release_workflow.matches("uses: actions/upload-artifact@v7").count(),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64")
+            && release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/install.sh"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    release_workflow_exists=true
+    release_name=PV App Release
+    jobs=["prepare-release", "build-app", "generate-release"]
+    platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
+    uses_native_macos_runners=true
+    manifest_url_env=true
+    uses_r2_public_base_url_var=true
+    hardcodes_staging_bucket=false
+    hardcodes_staging_public_base_url=false
+    write_app_release_record_command=true
+    app_manifest_command=true
+    app_installer_command=true
+    app_binary_object_key_refs=true
+    app_record_object_key_refs=true
+    upload_steps=2
+    uploads_binaries=true
+    uploads_records=true
+    uploads_manifest=true
+    uploads_installer=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
 fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
@@ -301,7 +356,10 @@ fn platform_matrices(workflow: &str) -> Vec<&str> {
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            if line.starts_with("platform: ${{ fromJSON(") || line == "platform: [any]" {
+            if line.starts_with("platform: ${{ fromJSON(")
+                || line.starts_with("platform: [")
+                || line == "platform: [any]"
+            {
                 Some(line)
             } else {
                 None
@@ -412,6 +470,10 @@ fn app_binary_object_key_reference_present(workflow: &str) -> bool {
 
 fn versioned_generated_artifact_reference_present(workflow: &str, artifact: &str) -> bool {
     workflow.contains("pv/manifests/runs") && workflow.contains(artifact)
+}
+
+fn app_record_object_key_reference_present(workflow: &str) -> bool {
+    workflow.contains("pv/records/") && workflow.contains("pv-${{ matrix.platform }}.json")
 }
 
 fn path_exists(path: &Utf8Path) -> bool {
