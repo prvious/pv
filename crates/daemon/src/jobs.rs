@@ -173,16 +173,27 @@ async fn run_update_job(
 
             foreground_reconciliation_result(accepted_result, result)
         }
-        EnqueueResult::Coalesced(job) => {
-            write_line(
-                &mut transport,
-                &DaemonResponse::accepted("update already queued", job.job_id()),
-            )
-            .await?;
+        EnqueueResult::Coalesced(_job) => {
+            write_coalesced_update_response(&mut transport).await?;
 
             Ok(())
         }
     }
+}
+
+async fn write_coalesced_update_response<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+{
+    write_line(
+        transport,
+        &DaemonResponse::error("update already queued or running"),
+    )
+    .await?;
+
+    Ok(())
 }
 
 fn enqueue_update_job(
@@ -891,6 +902,8 @@ mod tests {
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
+    use futures_util::StreamExt;
+    use serde_json::json;
     use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
     use tokio::io::duplex;
 
@@ -898,7 +911,7 @@ mod tests {
         complete_or_fail_background_reconciliation, enqueue_reconciliation_job,
         foreground_reconciliation_result, record_background_reconciliation_error,
         run_background_reconciliation_job, start_reconciliation_job,
-        stream_started_reconciliation_job,
+        stream_started_reconciliation_job, write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -929,6 +942,35 @@ mod tests {
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Succeeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coalesced_update_response_is_error_without_job_id() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut writer = protocol::transport(server);
+
+        write_coalesced_update_response(&mut writer).await?;
+        drop(writer);
+
+        let mut reader = protocol::transport(client);
+        let line = reader
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing response line"))??;
+        let response = serde_json::from_str::<serde_json::Value>(&line)?;
+
+        assert_eq!(
+            response,
+            json!({
+                "type": "response",
+                "protocol_version": protocol::PROTOCOL_VERSION,
+                "status": "error",
+                "message": "update already queued or running",
+            })
+        );
+        assert!(reader.next().await.is_none());
 
         Ok(())
     }

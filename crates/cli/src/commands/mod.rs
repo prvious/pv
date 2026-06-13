@@ -142,6 +142,7 @@ fn command_blocked_during_update(command: &Command) -> bool {
             command,
             Command::Setup(_)
                 | Command::Uninstall(_)
+                | Command::InternalUpdateManagedResources
                 | Command::DaemonEnable
                 | Command::DaemonDisable
                 | Command::DaemonRestart

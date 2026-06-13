@@ -253,6 +253,13 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(internal:update-managed-resources)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--json[Print command output as JSON]' \
@@ -655,6 +662,7 @@ _pv_commands() {
 'doctor:Run read-only PV diagnostics' \
 'jobs:List recent daemon jobs' \
 'update:Update PV or preview available updates with --check' \
+'internal:update-managed-resources:Run the internal Managed Resource update continuation' \
 'list:List linked Projects' \
 'php:use:Set the PHP track' \
 'php:install:Install a PHP track' \
@@ -782,6 +790,11 @@ _pv__subcmd__doctor_commands() {
 _pv__subcmd__env_commands() {
     local commands; commands=()
     _describe -t commands 'pv env commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__internal:update-managed-resources_commands] )) ||
+_pv__subcmd__internal:update-managed-resources_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv internal:update-managed-resources commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__jobs_commands] )) ||
 _pv__subcmd__jobs_commands() {

@@ -638,6 +638,13 @@ mod update_tests {
                 "command": "health"
             })]
         );
+        assert_eq!(
+            environment.execs(),
+            vec![(
+                paths.active_pv_binary().as_std_path().to_path_buf(),
+                vec!["internal:update-managed-resources".to_string()]
+            )]
+        );
         assert_update_snapshot(
             "update_reports_reexec_failure_without_rolling_back_updated_app",
             output,
@@ -819,6 +826,29 @@ mod update_tests {
         assert!(output.stderr.contains(paths.update_lock().as_str()));
         assert_update_snapshot(
             "update_check_rejects_update_lock_before_daemon_or_manifest",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn internal_managed_resource_continuation_rejects_update_lock_before_daemon()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let _update_lock = state::UpdateLock::acquire(&paths)?;
+        let environment = TestEnvironment::new(&home, PanickingClient);
+
+        let output = run_pv(&["internal:update-managed-resources"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains(paths.update_lock().as_str()));
+        assert_update_snapshot(
+            "internal_managed_resource_continuation_rejects_update_lock_before_daemon",
             output,
         );
 
