@@ -8,14 +8,12 @@
 - If skipping tests, state the reason briefly.
 - PREFER integration tests, e.g., at `it/...` over unit tests
 - PREFER `insta` snapshots following patterns in nearby tests over substring assertions
-- PREFER running specific tests over running the entire test suite
 - AVOID using `panic!`, `unreachable!`, `.unwrap()`, unsafe code, and clippy rule ignores
 - PREFER patterns like `if let` to handle fallibility
 - ALWAYS write `SAFETY` comments following our usual style when writing `unsafe` code
 - PREFER `#[expect()]` over `[allow()]` if clippy must be disabled
 - PREFER let chains (`if let` combined with `&&`) over nested `if let` statements
-- NEVER update all dependencies in the lockfile and ALWAYS use `cargo update --precise` to make
-  lockfile changes
+- NEVER update all dependencies in the lockfile and ALWAYS use `cargo update --precise` to make lockfile changes
 - NEVER assume clippy warnings are pre-existing, it is very rare that `main` has warnings
 - ALWAYS read and copy the style of similar tests when adding new cases
 - PREFER top-level imports over local imports or fully qualified names
