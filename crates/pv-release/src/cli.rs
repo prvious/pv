@@ -5,6 +5,7 @@ use resources::ArtifactPlatform;
 use std::io::{self, Write};
 
 use crate::app::WriteAppReleaseRecordRequest;
+use crate::app_publication::AppPublicationRequest;
 use crate::publication::PublicationRequest;
 use crate::recipe::BackingRecipeKind;
 use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
@@ -68,6 +69,20 @@ enum Command {
         stable_manifest_key: String,
         #[arg(long = "required-native-platform")]
         required_native_platforms: Vec<String>,
+    },
+    StageAppPublication {
+        #[arg(long)]
+        source_binaries: Utf8PathBuf,
+        #[arg(long)]
+        candidate_records: Utf8PathBuf,
+        #[arg(long)]
+        app_manifest: Utf8PathBuf,
+        #[arg(long)]
+        installer: Utf8PathBuf,
+        #[arg(long)]
+        stage: Utf8PathBuf,
+        #[arg(long)]
+        source_run_id: String,
     },
     GenerateRecipeFixtures {
         #[arg(long)]
@@ -244,6 +259,22 @@ pub fn run() -> anyhow::Result<()> {
             required_native_platforms: parse_required_native_platforms(required_native_platforms)?,
         })
         .context("failed to stage publication"),
+        Command::StageAppPublication {
+            source_binaries,
+            candidate_records,
+            app_manifest,
+            installer,
+            stage,
+            source_run_id,
+        } => crate::app_publication::stage_app_publication(&AppPublicationRequest {
+            source_binaries,
+            candidate_records,
+            app_manifest,
+            installer,
+            stage,
+            source_run_id,
+        })
+        .context("failed to stage app publication"),
         Command::GenerateRecipeFixtures {
             php,
             composer,

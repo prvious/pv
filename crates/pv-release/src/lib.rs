@@ -1,4 +1,5 @@
 pub mod app;
+pub mod app_publication;
 pub mod archive;
 pub mod cli;
 pub mod defaults;

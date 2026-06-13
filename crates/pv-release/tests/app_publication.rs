@@ -230,6 +230,7 @@ impl AppPublicationFixture {
             "provenance": {
                 "source_url": "https://github.com/prvious/pv/actions/runs/987654321",
                 "source_sha256": sha256,
+                "recipe": ".github/workflows/app-release.yml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "987654321"
             }
