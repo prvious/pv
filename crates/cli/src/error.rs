@@ -107,6 +107,19 @@ pub enum CliError {
 
     #[error("pv update --check failed: {message}")]
     UpdateCheckFailed { message: String },
+
+    #[error(
+        "PV application update succeeded, but Managed Resource update continuation failed to start: {message}. Run `pv update` again to update Managed Resources."
+    )]
+    ManagedResourceUpdateContinuationFailed { message: String },
+
+    #[error(
+        "pv update requires the PV daemon for Managed Resource updates; run `pv daemon:restart` or `pv setup`"
+    )]
+    ManagedResourceUpdateDaemonUnavailable,
+
+    #[error("pv update Managed Resource phase failed: {message}")]
+    ManagedResourceUpdateFailed { message: String },
 }
 
 #[derive(Debug, Error)]

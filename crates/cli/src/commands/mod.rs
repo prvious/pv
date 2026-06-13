@@ -68,6 +68,9 @@ pub(crate) fn execute(
         Command::Doctor(args) => doctor::run(args, environment, stdout),
         Command::Jobs(args) => jobs::run(args, environment, stdout),
         Command::Update(args) => update::run(args, environment, stdout, stderr),
+        Command::InternalUpdateManagedResources => {
+            update::run_managed_resource_continuation(environment, stdout)
+        }
         Command::List(args) => project::list(args, environment, stdout),
         Command::PhpUse(args) => php::use_track(args, environment, stdout),
         Command::PhpInstall(args) => php::install(args, environment, stdout),

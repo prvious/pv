@@ -1,0 +1,16 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "message": String("PV update is already in progress; update lock is held at <update-lock>"),
+            "protocol_version": Number(2),
+            "status": String("error"),
+            "type": String("response"),
+        },
+    ],
+    [],
+    0,
+)

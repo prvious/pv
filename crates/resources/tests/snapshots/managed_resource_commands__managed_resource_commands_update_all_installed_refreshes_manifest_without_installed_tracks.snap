@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(update_summary(&updated, tempdir.path())?, client.text_request_count(),\nclient.byte_request_count(),)"
+---
+(
+    [],
+    1,
+    0,
+)

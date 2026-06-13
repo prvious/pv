@@ -256,6 +256,85 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     Ok(())
 }
 
+#[tokio::test]
+async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_success() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
+    let manifest_requests = manifest_client.request_count();
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            manifest_client,
+        )
+        .await?;
+    let client_paths = paths.clone();
+
+    let completed = tokio::task::spawn_blocking(move || {
+        daemon::run_job_blocking(client_paths, "update", "system")
+    })
+    .await??;
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+    let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
+
+    assert_eq!(completed.summary, "none installed");
+    assert_eq!(job.kind, "update");
+    assert_eq!(job.scope, "system");
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert_eq!(manifest_request_count(&manifest_requests)?, 1);
+    assert_eq!(database.recent_jobs()?.len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let update_lock = UpdateLock::acquire(&paths)?;
+    let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
+    let manifest_requests = manifest_client.request_count();
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            manifest_client,
+        )
+        .await?;
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "update",
+            "scope": "system",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+    drop(update_lock);
+
+    let lines = normalize_update_lock_path(lines, paths.update_lock().as_str());
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "update_lock_rejects_update_jobs_before_manifest_refresh",
+        (
+            lines,
+            database.recent_jobs()?,
+            manifest_request_count(&manifest_requests)?,
+        ),
+    )?;
+
+    Ok(())
+}
+
 fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> Vec<Value> {
     for line in &mut lines {
         let Some(message) = line.get_mut("message") else {

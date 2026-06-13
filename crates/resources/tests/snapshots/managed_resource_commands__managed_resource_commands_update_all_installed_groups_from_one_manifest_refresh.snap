@@ -1,0 +1,76 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(&listed_after_update, tempdir.path())?,\nmanifest_refreshes_during_update, client.byte_request_count(),)"
+---
+(
+    [
+        InstallSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            artifact_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.9-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            artifact_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.9-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "composer",
+            track: "2",
+            artifact_version: "2.8.1-pv1",
+            current_artifact_path: "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
+            resource_name: "redis",
+            track: "8.8",
+            artifact_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/8.8/releases/7.2.6-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+    ],
+    [
+        TrackRecordSnapshot {
+            resource_name: "composer",
+            track: "2",
+            installed_version: "2.8.1-pv1",
+            current_artifact_path: "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "frankenphp",
+            track: "8.4",
+            installed_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.9-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "php",
+            track: "8.4",
+            installed_version: "8.4.9-pv1",
+            current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.9-pv1",
+            usage_count: 0,
+        },
+        TrackRecordSnapshot {
+            resource_name: "redis",
+            track: "8.8",
+            installed_version: "7.2.6-pv1",
+            current_artifact_path: "home/.pv/resources/redis/8.8/releases/7.2.6-pv1",
+            usage_count: 0,
+        },
+    ],
+    1,
+    8,
+)

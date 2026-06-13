@@ -20,6 +20,7 @@ use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 
 static APP_DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MANAGED_RESOURCE_UPDATE_CONTINUATION: &str = "internal:update-managed-resources";
 
 #[expect(
     clippy::disallowed_types,
@@ -34,7 +35,7 @@ pub(crate) fn run(
     stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     if !args.check {
-        return run_app_update(environment, stdout, stderr);
+        return run_update(environment, stdout, stderr);
     }
 
     let paths = pv_paths(environment)?;
@@ -59,6 +60,76 @@ pub(crate) fn run(
     check.write_plain(&mut output)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn run_managed_resource_continuation(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let paths = pv_paths(environment)?;
+    let layout = state::AppReleaseLayout::new(paths.clone());
+    let current_version = AppUpdateVersion::current()?;
+    validate_active_release(&layout, &current_version)?;
+
+    run_managed_resource_update_phase(paths, stdout)
+}
+
+fn run_update(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let outcome = run_app_update_phase(environment, stdout, stderr)?;
+
+    match outcome {
+        AppUpdateOutcome::Current { paths } => run_managed_resource_update_phase(paths, stdout),
+        AppUpdateOutcome::Updated { paths } => {
+            let active_pv_binary = paths.active_pv_binary();
+
+            reexec_managed_resource_update(environment, &active_pv_binary)
+        }
+    }
+}
+
+fn run_managed_resource_update_phase(
+    paths: PvPaths,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let job = daemon::run_job_blocking(paths, "update", "system")
+        .map_err(managed_resource_update_daemon_error)?;
+    let mut output = Output::new(stdout, OutputMode::plain());
+    write_managed_resource_update_summary(&mut output, &job.summary)?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn reexec_managed_resource_update(
+    environment: &impl Environment,
+    active_pv_binary: &Utf8Path,
+) -> Result<ExitCode, ExecuteError> {
+    let args = vec![MANAGED_RESOURCE_UPDATE_CONTINUATION.to_string()];
+    environment
+        .exec(active_pv_binary.as_std_path(), &args)
+        .map_err(|error| CliError::ManagedResourceUpdateContinuationFailed {
+            message: error.to_string(),
+        })
+        .map_err(ExecuteError::from)
+}
+
+fn write_managed_resource_update_summary(
+    output: &mut Output<'_, impl Write>,
+    summary: &str,
+) -> Result<(), ExecuteError> {
+    if let Some((updated, reconciled)) = summary.split_once("; reconciled: ") {
+        output.line(&format!("Managed Resources: {updated}"))?;
+        output.line(&format!("Managed Resources reconciled: {reconciled}"))?;
+
+        return Ok(());
+    }
+
+    output.line(&format!("Managed Resources: {summary}"))?;
+
+    Ok(())
 }
 
 fn validate_active_release(
@@ -336,11 +407,16 @@ fn sha256_digest_hex(digest: impl IntoIterator<Item = u8>) -> String {
     hex
 }
 
-fn run_app_update(
+enum AppUpdateOutcome {
+    Current { paths: PvPaths },
+    Updated { paths: PvPaths },
+}
+
+fn run_app_update_phase(
     environment: &impl Environment,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
-) -> Result<ExitCode, ExecuteError> {
+) -> Result<AppUpdateOutcome, ExecuteError> {
     let paths = pv_paths(environment)?;
     let mut output = Output::new(stdout, OutputMode::plain());
     output.line("PV update")?;
@@ -357,7 +433,7 @@ fn run_app_update(
     if manifest.version() <= &current_version {
         output.line(&format!("PV application: current {current_version}"))?;
 
-        return Ok(ExitCode::SUCCESS);
+        return Ok(AppUpdateOutcome::Current { paths });
     }
 
     let platform = environment
@@ -413,8 +489,7 @@ fn run_app_update(
         ))?;
     }
 
-    // PR 22E will continue from here into daemon-owned Managed Resource update orchestration.
-    Ok(ExitCode::SUCCESS)
+    Ok(AppUpdateOutcome::Updated { paths })
 }
 
 struct RollbackVersions<'a> {
@@ -435,7 +510,7 @@ fn rollback_app_update(
     original_error: ExecuteError,
     output: &mut Output<'_, impl Write>,
     stderr: &mut impl Write,
-) -> Result<ExitCode, ExecuteError> {
+) -> Result<AppUpdateOutcome, ExecuteError> {
     let original_message = app_update_failure_message(context.paths, &original_error);
     if let Err(restore_error) = context.layout.activate_release(versions.previous) {
         output.line("PV application: update failed; rollback failed")?;
@@ -760,6 +835,26 @@ fn update_check_daemon_error(error: daemon::DaemonError) -> ExecuteError {
         }
         daemon::DaemonError::DaemonRejected { message } => {
             CliError::UpdateCheckFailed { message }.into()
+        }
+        error => error.into(),
+    }
+}
+
+fn managed_resource_update_daemon_error(error: daemon::DaemonError) -> ExecuteError {
+    match error {
+        daemon::DaemonError::Io(source)
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::TimedOut
+            ) =>
+        {
+            CliError::ManagedResourceUpdateDaemonUnavailable.into()
+        }
+        daemon::DaemonError::DaemonRejected { message } => {
+            CliError::ManagedResourceUpdateFailed { message }.into()
         }
         error => error.into(),
     }

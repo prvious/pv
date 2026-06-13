@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV update\nPV application: current 0.1.0\nManaged Resources: current\n",
+    stdout: "Managed Resources: updated 2 artifact(s)\nManaged Resources reconciled: Gateway runtime skipped\n",
     stderr: "",
 }

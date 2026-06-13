@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV update\nPV application: updated 0.1.0 -> 0.2.0\nDaemon restarted and healthy\n",
+        stderr: "",
+    },
+    [
+        "0.1.0",
+        "0.2.0",
+    ],
+)

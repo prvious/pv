@@ -178,7 +178,7 @@ impl ManagedResourceCommands {
 
     pub fn install(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         selector: TrackSelector,
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
@@ -230,7 +230,7 @@ impl ManagedResourceCommands {
 
     fn validate_install_selection(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: &TrackName,
         manifest: &ArtifactManifest,
     ) -> ManagedResourceCommandResult<()> {
@@ -241,7 +241,7 @@ impl ManagedResourceCommands {
 
     fn install_track(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: TrackName,
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
@@ -280,7 +280,7 @@ impl ManagedResourceCommands {
 
     fn prepare_track_install(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: TrackName,
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
@@ -305,7 +305,7 @@ impl ManagedResourceCommands {
 
     fn install_selected_artifact(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: TrackName,
         artifact: ManifestArtifact,
         revoked_latest: Option<ManagedResourceRevokedLatest>,
@@ -483,7 +483,7 @@ impl ManagedResourceCommands {
 
     pub fn update(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
@@ -644,6 +644,182 @@ impl ManagedResourceCommands {
         )?);
 
         Ok(ManagedResourceUpdate { installs })
+    }
+
+    pub fn update_all_installed(
+        &self,
+        backing_adapters: &[&dyn ResourceAdapter],
+        client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        for adapter in backing_adapters {
+            registry::resolve_canonical(adapter.resource_name().as_str())?;
+        }
+
+        let refresh = ArtifactManifestCache::new(self.paths.downloads())
+            .refresh_latest(&self.manifest_url, client)?;
+        let manifest = refresh.manifest();
+        let installed_tracks = self.list(None)?;
+        let mut installs = Vec::new();
+
+        self.update_installed_php_pairs(
+            &installed_tracks,
+            manifest,
+            refresh.source(),
+            client,
+            &mut installs,
+        )?;
+        self.update_installed_composer(
+            &installed_tracks,
+            manifest,
+            refresh.source(),
+            client,
+            &mut installs,
+        )?;
+        self.update_installed_backing_resources(
+            &installed_tracks,
+            backing_adapters,
+            manifest,
+            refresh.source(),
+            client,
+            &mut installs,
+        )?;
+
+        Ok(ManagedResourceUpdate { installs })
+    }
+
+    fn update_installed_php_pairs(
+        &self,
+        installed_tracks: &[ManagedResourceTrack],
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+        installs: &mut Vec<ManagedResourceInstall>,
+    ) -> ManagedResourceCommandResult<()> {
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let mut tracks = BTreeSet::new();
+
+        collect_installed_tracks(installed_tracks, php.resource_name(), &mut tracks);
+        collect_installed_tracks(installed_tracks, frankenphp.resource_name(), &mut tracks);
+
+        for track in &tracks {
+            self.validate_install_selection(&php, track, manifest)?;
+            self.validate_install_selection(&frankenphp, track, manifest)?;
+        }
+
+        for track in tracks {
+            let php_installed = find_installed_track(installed_tracks, php.resource_name(), &track);
+            let frankenphp_installed =
+                find_installed_track(installed_tracks, frankenphp.resource_name(), &track);
+            if !self.track_needs_update(&php, &track, php_installed, manifest)?
+                && !self.track_needs_update(&frankenphp, &track, frankenphp_installed, manifest)?
+            {
+                continue;
+            }
+
+            let install = self.prepare_php_pair_install(
+                &php,
+                &frankenphp,
+                track,
+                manifest,
+                manifest_source,
+                client,
+            )?;
+            if let Err(error) = self.record_php_pair_install(&install) {
+                return Err(self.rollback_php_pair_after_error(&install, error));
+            }
+            installs.push(install.php);
+            installs.push(install.frankenphp);
+        }
+
+        Ok(())
+    }
+
+    fn update_installed_composer(
+        &self,
+        installed_tracks: &[ManagedResourceTrack],
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+        installs: &mut Vec<ManagedResourceInstall>,
+    ) -> ManagedResourceCommandResult<()> {
+        let composer = composer_adapter()?;
+        let track = composer_track()?;
+        let Some(installed) =
+            find_installed_track(installed_tracks, composer.resource_name(), &track)
+        else {
+            return Ok(());
+        };
+        if !self.track_needs_update(&composer, &track, Some(installed), manifest)? {
+            return Ok(());
+        }
+
+        installs.push(self.install_track(&composer, track, manifest, manifest_source, client)?);
+
+        Ok(())
+    }
+
+    fn update_installed_backing_resources(
+        &self,
+        installed_tracks: &[ManagedResourceTrack],
+        backing_adapters: &[&dyn ResourceAdapter],
+        manifest: &ArtifactManifest,
+        manifest_source: &ArtifactManifestSource,
+        client: &(impl ResourceHttpClient + ?Sized),
+        installs: &mut Vec<ManagedResourceInstall>,
+    ) -> ManagedResourceCommandResult<()> {
+        for adapter in backing_adapters {
+            for installed in installed_tracks
+                .iter()
+                .filter(|track| track.resource_name() == adapter.resource_name())
+            {
+                if !self.track_needs_update(
+                    *adapter,
+                    installed.track(),
+                    Some(installed),
+                    manifest,
+                )? {
+                    continue;
+                }
+                installs.push(self.install_track(
+                    *adapter,
+                    installed.track().clone(),
+                    manifest,
+                    manifest_source,
+                    client,
+                )?);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn track_needs_update(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        track: &TrackName,
+        installed: Option<&ManagedResourceTrack>,
+        manifest: &ArtifactManifest,
+    ) -> ManagedResourceCommandResult<bool> {
+        let selection =
+            manifest.select_latest(adapter.resource_name(), track, self.target_platform)?;
+        let latest_artifact = selection.artifact();
+        let Some(installed) = installed else {
+            return Ok(true);
+        };
+
+        if latest_artifact.artifact_version() != installed.installed_version() {
+            return Ok(true);
+        }
+
+        let current_artifact = manifest.select_artifact(
+            adapter.resource_name(),
+            track,
+            installed.installed_version(),
+            self.target_platform,
+        )?;
+
+        Ok(current_artifact.is_some_and(|artifact| artifact.revocation_state().is_revoked()))
     }
 
     pub fn check_updates(
@@ -1071,6 +1247,29 @@ fn validate_uninstall_request(
     }
 
     Ok(())
+}
+
+fn collect_installed_tracks(
+    installed_tracks: &[ManagedResourceTrack],
+    resource_name: &ResourceName,
+    tracks: &mut BTreeSet<TrackName>,
+) {
+    for installed in installed_tracks
+        .iter()
+        .filter(|track| track.resource_name() == resource_name)
+    {
+        tracks.insert(installed.track().clone());
+    }
+}
+
+fn find_installed_track<'a>(
+    installed_tracks: &'a [ManagedResourceTrack],
+    resource_name: &ResourceName,
+    track: &TrackName,
+) -> Option<&'a ManagedResourceTrack> {
+    installed_tracks
+        .iter()
+        .find(|installed| installed.resource_name() == resource_name && installed.track() == track)
 }
 
 fn validate_uninstall_eligibility(
