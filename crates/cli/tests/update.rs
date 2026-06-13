@@ -937,6 +937,62 @@ mod update_tests {
     }
 
     #[test]
+    fn update_rolls_back_protocol_mismatch_health_error_after_activation() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start_until_idle(
+            &paths,
+            vec![
+                daemon_error_response_with_protocol(
+                    daemon::PROTOCOL_VERSION + 1,
+                    "daemon boot failed",
+                ),
+                health_response(),
+            ],
+            Duration::from_millis(100),
+        )?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+        let daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            daemon_requests,
+            vec![
+                json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "health"
+                }),
+                json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "health"
+                })
+            ]
+        );
+        assert_update_snapshot(
+            "update_rolls_back_protocol_mismatch_health_error_after_activation",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_reports_rollback_symlink_restore_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
@@ -1547,9 +1603,16 @@ mod update_tests {
     }
 
     fn daemon_error_response(message: &str) -> serde_json::Value {
+        daemon_error_response_with_protocol(daemon::PROTOCOL_VERSION, message)
+    }
+
+    fn daemon_error_response_with_protocol(
+        protocol_version: u16,
+        message: &str,
+    ) -> serde_json::Value {
         json!({
             "type": "response",
-            "protocol_version": daemon::PROTOCOL_VERSION,
+            "protocol_version": protocol_version,
             "status": "error",
             "message": message
         })

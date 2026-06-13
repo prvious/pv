@@ -230,15 +230,14 @@ fn wait_until_daemon_started(
     paths: PvPaths,
     health_check: DaemonHealthCheck,
 ) -> Result<(), ExecuteError> {
-    match daemon::wait_until_healthy_blocking(paths) {
-        Ok(()) => Ok(()),
-        Err(daemon::DaemonError::ProtocolMismatch { .. })
-            if health_check == DaemonHealthCheck::AcceptProtocolMismatch =>
-        {
-            Ok(())
+    match health_check {
+        DaemonHealthCheck::RequireCompatibleProtocol => daemon::wait_until_healthy_blocking(paths)?,
+        DaemonHealthCheck::AcceptProtocolMismatch => {
+            daemon::wait_until_healthy_allowing_protocol_mismatch_blocking(paths)?;
         }
-        Err(error) => Err(error.into()),
     }
+
+    Ok(())
 }
 
 fn clear_daemon_startup_failure_marker(paths: &PvPaths) -> Result<(), ExecuteError> {
