@@ -152,6 +152,12 @@ pub(crate) struct ManagedResourceRuntimeCatalog {
     update_check_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedResourceUpdateReport {
+    pub installed_count: usize,
+    pub updated_count: usize,
+}
+
 impl ManagedResourceRuntimeCatalog {
     pub(crate) fn production() -> Self {
         let mut adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>> =
@@ -227,6 +233,13 @@ impl ManagedResourceRuntimeCatalog {
 
     fn adapter(&self, resource_name: &str) -> Option<&dyn ManagedResourceRuntimeAdapter> {
         self.adapters.get(resource_name).map(Box::as_ref)
+    }
+
+    fn artifact_adapters(&self) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {
+        self.adapters
+            .values()
+            .map(|adapter| adapter.artifact_adapter())
+            .collect()
     }
 }
 
@@ -320,6 +333,49 @@ fn update_check_with_catalog(
         .collect();
 
     Ok(ProtocolUpdateCheck { managed_resources })
+}
+
+pub(crate) fn update_installed(
+    paths: PvPaths,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<ManagedResourceUpdateReport, DaemonError> {
+    match catalog {
+        Some(catalog) => update_installed_with_catalog(paths, catalog),
+        None => {
+            let catalog = ManagedResourceRuntimeCatalog::production();
+
+            update_installed_with_catalog(paths, &catalog)
+        }
+    }
+}
+
+fn update_installed_with_catalog(
+    paths: PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<ManagedResourceUpdateReport, DaemonError> {
+    let commands = ManagedResourceCommands::new(
+        paths,
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    let installed_count = commands.list(None)?.len();
+    let artifact_adapters = catalog.artifact_adapters()?;
+    let backing_adapters = artifact_adapters
+        .iter()
+        .map(|adapter| adapter as &dyn resources::ResourceAdapter)
+        .collect::<Vec<_>>();
+    let update = if let Some(client) = catalog.update_check_client.as_deref() {
+        commands.update_all_installed(&backing_adapters, client)?
+    } else {
+        let client = resources::UreqResourceHttpClient::default();
+
+        commands.update_all_installed(&backing_adapters, &client)?
+    };
+
+    Ok(ManagedResourceUpdateReport {
+        installed_count,
+        updated_count: update.installs().len(),
+    })
 }
 
 fn protocol_update_check_track(

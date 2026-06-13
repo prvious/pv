@@ -35,8 +35,15 @@ pub enum EnqueueResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReconciliationJob {
+    key: ReconciliationQueueKey,
     scope: ReconciliationScope,
     job_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ReconciliationQueueKey {
+    Reconcile(ReconciliationScope),
+    UpdateSystem,
 }
 
 pub struct QueuedReconciliation {
@@ -127,13 +134,26 @@ impl ReconciliationQueue {
         create_job_id: impl FnOnce() -> Result<String, E>,
         abandon_job: impl FnOnce(&str) + Send + 'static,
     ) -> Result<EnqueueResult, E> {
+        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+
+        self.enqueue_with_key(scope, key, create_job_id, abandon_job)
+    }
+
+    fn enqueue_with_key<E>(
+        &self,
+        scope: ReconciliationScope,
+        key: ReconciliationQueueKey,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E> {
         let mut state = lock_queue_state(&self.inner);
 
-        if let Some(job) = matching_queued_job(&state, &scope) {
+        if let Some(job) = matching_queued_job(&state, &key) {
             return Ok(EnqueueResult::Coalesced(job));
         }
 
         let job = ReconciliationJob {
+            key,
             scope,
             job_id: create_job_id()?,
         };
@@ -158,9 +178,43 @@ impl ReconciliationQueue {
     where
         E: From<StateError>,
     {
+        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+
+        self.enqueue_mutating_with_key(paths, scope, key, create_job_id, abandon_job)
+    }
+
+    pub(crate) fn enqueue_system_update_with_abandon<E>(
+        &self,
+        paths: &PvPaths,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
+        self.enqueue_mutating_with_key(
+            paths,
+            ReconciliationScope::System,
+            ReconciliationQueueKey::UpdateSystem,
+            create_job_id,
+            abandon_job,
+        )
+    }
+
+    fn enqueue_mutating_with_key<E>(
+        &self,
+        paths: &PvPaths,
+        scope: ReconciliationScope,
+        key: ReconciliationQueueKey,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
         let mut state = lock_queue_state(&self.inner);
 
-        if let Some(job) = matching_queued_job(&state, &scope) {
+        if let Some(job) = matching_queued_job(&state, &key) {
             return Ok(EnqueueResult::Coalesced(job));
         }
 
@@ -180,7 +234,7 @@ impl ReconciliationQueue {
             }
         };
 
-        let job = ReconciliationJob { scope, job_id };
+        let job = ReconciliationJob { key, scope, job_id };
         state.queued.push_back(job.clone());
         self.inner.notify.notify_waiters();
 
@@ -456,9 +510,9 @@ impl FromStr for ReconciliationScope {
 
 fn matching_queued_job(
     state: &QueueState,
-    scope: &ReconciliationScope,
+    key: &ReconciliationQueueKey,
 ) -> Option<ReconciliationJob> {
-    state.queued.iter().find(|job| &job.scope == scope).cloned()
+    state.queued.iter().find(|job| &job.key == key).cloned()
 }
 
 fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
@@ -518,7 +572,7 @@ mod tests {
 
     use super::{
         EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
-        ReconciliationScope, ReconciliationScopeParseError,
+        ReconciliationQueueKey, ReconciliationScope, ReconciliationScopeParseError,
     };
 
     #[tokio::test]
@@ -607,6 +661,42 @@ mod tests {
         let running = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
         assert_eq!(running.job_id(), "job_2");
         running.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_system_does_not_coalesce_with_reconcile_system() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let update = queued(queue.enqueue_with_key(
+            ReconciliationScope::System,
+            ReconciliationQueueKey::UpdateSystem,
+            || Ok::<String, anyhow::Error>("job_1".to_string()),
+            |_job_id| {},
+        )?)?;
+        let duplicate_update = queue.enqueue_with_key(
+            ReconciliationScope::System,
+            ReconciliationQueueKey::UpdateSystem,
+            || Ok::<String, anyhow::Error>("job_duplicate".to_string()),
+            |_job_id| {},
+        )?;
+        let reconcile = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_2".to_string())
+        })?)?;
+
+        assert!(matches!(
+            duplicate_update,
+            EnqueueResult::Coalesced(job) if job.job_id() == "job_1"
+        ));
+
+        let running_update = update.wait_for_turn().await;
+        assert_eq!(running_update.job_id(), "job_1");
+        running_update.finish();
+
+        let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
+        assert_eq!(running_reconcile.scope(), &ReconciliationScope::System);
+        assert_eq!(running_reconcile.job_id(), "job_2");
+        running_reconcile.finish();
 
         Ok(())
     }

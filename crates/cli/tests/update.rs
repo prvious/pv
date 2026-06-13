@@ -31,6 +31,8 @@ mod update_tests {
         home: PathBuf,
         client: Box<dyn ResourceHttpClient>,
         operations: RefCell<Vec<String>>,
+        execs: RefCell<Vec<(PathBuf, Vec<String>)>>,
+        exec_result: RefCell<Result<ExitCode, io::Error>>,
         delete_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
         lock_probe: RefCell<Option<PvPaths>>,
         startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
@@ -42,6 +44,8 @@ mod update_tests {
                 home: home.as_std_path().to_path_buf(),
                 client: Box::new(client),
                 operations: RefCell::new(Vec::new()),
+                execs: RefCell::new(Vec::new()),
+                exec_result: RefCell::new(Ok(ExitCode::SUCCESS)),
                 delete_on_first_kickstart: RefCell::new(None),
                 lock_probe: RefCell::new(None),
                 startup_marker_on_first_kickstart: RefCell::new(None),
@@ -50,6 +54,15 @@ mod update_tests {
 
         fn operations(&self) -> Vec<String> {
             self.operations.borrow().clone()
+        }
+
+        fn execs(&self) -> Vec<(PathBuf, Vec<String>)> {
+            self.execs.borrow().clone()
+        }
+
+        fn with_exec_error(self, error: io::Error) -> Self {
+            let _previous = self.exec_result.replace(Err(error));
+            self
         }
 
         fn with_delete_on_first_kickstart(self, path: Utf8PathBuf) -> Self {
@@ -96,6 +109,14 @@ mod update_tests {
 
         fn open_url(&self, _url: &str) -> io::Result<()> {
             Ok(())
+        }
+
+        fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {
+            self.execs
+                .borrow_mut()
+                .push((program.to_path_buf(), args.to_vec()));
+
+            self.exec_result.replace(Ok(ExitCode::SUCCESS))
         }
 
         fn app_update_manifest_url(&self) -> Option<String> {
@@ -433,6 +454,13 @@ mod update_tests {
         state::fs::ensure_layout(&paths)?;
         let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start_with_response_lines(
+            &paths,
+            vec![vec![
+                job_accepted_response("job_1"),
+                job_completed("job_1", "current"),
+            ]],
+        )?;
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
@@ -443,11 +471,22 @@ mod update_tests {
         );
 
         let output = run_pv(&["update"], &environment)?;
+        let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
         assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            daemon_requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "update",
+                "scope": "system",
+            })]
+        );
         assert!(environment.operations().is_empty());
+        assert!(environment.execs().is_empty());
         assert_update_snapshot(
             "update_reports_current_app_without_restarting_daemon",
             output,
@@ -457,7 +496,8 @@ mod update_tests {
     }
 
     #[test]
-    fn update_downloads_and_activates_new_app_without_reconciliation() -> anyhow::Result<()> {
+    fn update_downloads_and_activates_new_app_then_reexecs_managed_resource_continuation()
+    -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
@@ -506,9 +546,108 @@ mod update_tests {
             environment.operations(),
             vec![format!("kickstart {LAUNCH_AGENT_LABEL}")]
         );
+        assert_eq!(
+            environment.execs(),
+            vec![(
+                paths.active_pv_binary().as_std_path().to_path_buf(),
+                vec!["internal:update-managed-resources".to_string()]
+            )]
+        );
         assert_update_snapshot(
-            "update_downloads_and_activates_new_app_without_reconciliation",
+            "update_downloads_and_activates_new_app_then_reexecs_managed_resource_continuation",
             (output, releases),
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn internal_managed_resource_continuation_skips_app_phase_and_submits_update_job()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start_with_response_lines(
+            &paths,
+            vec![vec![
+                job_accepted_response("job_1"),
+                job_completed(
+                    "job_1",
+                    "updated 2 artifact(s); reconciled: Gateway runtime skipped",
+                ),
+            ]],
+        )?;
+        let environment = TestEnvironment::new(&home, PanickingClient);
+
+        let output = run_pv(&["internal:update-managed-resources"], &environment)?;
+        let daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            daemon_requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "update",
+                "scope": "system",
+            })]
+        );
+        assert!(environment.operations().is_empty());
+        assert_update_snapshot(
+            "internal_managed_resource_continuation_skips_app_phase_and_submits_update_job",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_reports_reexec_failure_without_rolling_back_updated_app() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        )
+        .with_exec_error(io::Error::other("exec failed"));
+
+        let output = run_pv(&["update"], &environment)?;
+        let daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(
+            daemon_requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "health"
+            })]
+        );
+        assert_eq!(
+            environment.execs(),
+            vec![(
+                paths.active_pv_binary().as_std_path().to_path_buf(),
+                vec!["internal:update-managed-resources".to_string()]
+            )]
+        );
+        assert_update_snapshot(
+            "update_reports_reexec_failure_without_rolling_back_updated_app",
+            output,
         );
 
         Ok(())
@@ -599,6 +738,13 @@ mod update_tests {
         state::fs::ensure_layout(&paths)?;
         let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
         write_launch_agent(&paths, &tempdir.path().join("old-pv"))?;
+        let daemon = FakeDaemon::start_with_response_lines(
+            &paths,
+            vec![vec![
+                job_accepted_response("job_1"),
+                job_completed("job_1", "current"),
+            ]],
+        )?;
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
@@ -609,9 +755,19 @@ mod update_tests {
         );
 
         let output = run_pv(&["update"], &environment)?;
+        let requests = daemon.join()?;
         let plist = state::fs::read_to_string(&launch_agent_path(&paths))?;
         let parsed = LaunchAgentConfig::parse(&plist);
 
+        assert_eq!(
+            requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "update",
+                "scope": "system"
+            })]
+        );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
         assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
@@ -670,6 +826,29 @@ mod update_tests {
         assert!(output.stderr.contains(paths.update_lock().as_str()));
         assert_update_snapshot(
             "update_check_rejects_update_lock_before_daemon_or_manifest",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn internal_managed_resource_continuation_rejects_update_lock_before_daemon()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let _update_lock = state::UpdateLock::acquire(&paths)?;
+        let environment = TestEnvironment::new(&home, PanickingClient);
+
+        let output = run_pv(&["internal:update-managed-resources"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains(paths.update_lock().as_str()));
+        assert_update_snapshot(
+            "internal_managed_resource_continuation_rejects_update_lock_before_daemon",
             output,
         );
 
@@ -794,6 +973,13 @@ mod update_tests {
         state::fs::ensure_layout(&paths)?;
         let layout = install_active_release(&paths, "0.1.0", b"\xffpv 0.1.0\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start_with_response_lines(
+            &paths,
+            vec![vec![
+                job_accepted_response("job_1"),
+                job_completed("job_1", "current"),
+            ]],
+        )?;
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
@@ -804,7 +990,17 @@ mod update_tests {
         );
 
         let output = run_pv(&["update"], &environment)?;
+        let requests = daemon.join()?;
 
+        assert_eq!(
+            requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "update",
+                "scope": "system"
+            })]
+        );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
         assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
@@ -1328,11 +1524,23 @@ mod update_tests {
     }
 
     impl FakeDaemon {
+        fn start(paths: &PvPaths, responses: Vec<serde_json::Value>) -> anyhow::Result<Self> {
+            let responses = responses
+                .into_iter()
+                .map(|response| vec![response])
+                .collect();
+
+            Self::start_with_response_lines(paths, responses)
+        }
+
         #[expect(
             clippy::disallowed_methods,
             reason = "update tests use a one-shot fake Unix socket daemon"
         )]
-        fn start(paths: &PvPaths, responses: Vec<serde_json::Value>) -> anyhow::Result<Self> {
+        fn start_with_response_lines(
+            paths: &PvPaths,
+            responses: Vec<Vec<serde_json::Value>>,
+        ) -> anyhow::Result<Self> {
             let listener = UnixListener::bind(paths.daemon_socket())?;
             let handle = thread::spawn(move || {
                 let mut requests = Vec::new();
@@ -1340,7 +1548,9 @@ mod update_tests {
                     let (mut stream, _address) = listener.accept()?;
                     let mut request = String::new();
                     BufReader::new(stream.try_clone()?).read_line(&mut request)?;
-                    stream.write_all(format!("{response}\n").as_bytes())?;
+                    for line in response {
+                        stream.write_all(format!("{line}\n").as_bytes())?;
+                    }
                     requests.push(serde_json::from_str(request.trim_end())?);
                 }
 
@@ -1615,6 +1825,24 @@ mod update_tests {
             "protocol_version": protocol_version,
             "status": "error",
             "message": message
+        })
+    }
+
+    fn job_accepted_response(job_id: &str) -> serde_json::Value {
+        json!({
+            "type": "response",
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "status": "accepted",
+            "message": "job accepted",
+            "job_id": job_id,
+        })
+    }
+
+    fn job_completed(job_id: &str, summary: &str) -> serde_json::Value {
+        json!({
+            "type": "job_completed",
+            "job_id": job_id,
+            "summary": summary,
         })
     }
 

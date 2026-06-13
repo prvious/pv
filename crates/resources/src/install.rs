@@ -40,7 +40,7 @@ impl ArtifactInstaller {
 
     pub fn install(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: &TrackName,
         artifact: &ManifestArtifact,
         archive_path: &Utf8Path,
@@ -97,7 +97,7 @@ impl ArtifactInstaller {
 
     pub fn install_existing_release(
         &self,
-        adapter: &impl ResourceAdapter,
+        adapter: &(impl ResourceAdapter + ?Sized),
         track: &TrackName,
         artifact: &ManifestArtifact,
     ) -> Result<Option<ArtifactInstall>> {
@@ -240,7 +240,7 @@ fn unpack_validate_and_promote(
     archive_path: &Utf8Path,
     staging_dir: &Utf8Path,
     release_path: &Utf8Path,
-    adapter: &impl ResourceAdapter,
+    adapter: &(impl ResourceAdapter + ?Sized),
     artifact_version: &ArtifactVersion,
 ) -> Result<()> {
     fs::remove_dir_all_if_exists(staging_dir)?;

@@ -5,9 +5,9 @@ expression: snapshot
 RunOutput {
     exit_code: ExitCode(
         unix_exit_status(
-            0,
+            1,
         ),
     ),
-    stdout: "PV update\nPV application: current 0.1.0\nManaged Resources: current\n",
-    stderr: "",
+    stdout: "",
+    stderr: "error: PV update is already in progress; update lock is held at <pv-home>/run/update.lock\n",
 }

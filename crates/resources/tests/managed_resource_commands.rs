@@ -14,7 +14,7 @@ use resources::{
     ManagedResourceUninstallOptions, ManagedResourceUpdate, ManagedResourceUpdateCheck,
     ManagedResourceUpdateCheckTrack, ResourceAdapter, ResourceHttpClient, ResourceName,
     ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter, frankenphp_adapter,
-    php_adapter,
+    mailpit_adapter, php_adapter, redis_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths};
@@ -1178,6 +1178,158 @@ fn managed_resource_commands_update_composer_ignores_installed_non_v2_tracks() -
         update_summary(&updated, tempdir.path())?,
         track_records_summary(&listed_after_update, tempdir.path())?,
         byte_downloads_during_update,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refresh() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let redis = redis_adapter()?;
+    let mailpit = mailpit_adapter()?;
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let php_update_artifact =
+        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let frankenphp_update_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.9-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4 update",
+    )?;
+    let composer_artifact = composer_fixture_artifact("2.8.0-pv1", "composer first")?;
+    let composer_update_artifact = composer_fixture_artifact("2.8.1-pv1", "composer update")?;
+    let redis_artifact =
+        runtime_fixture_artifact("redis", "7.2.5-pv1", "bin/redis-server", "redis first")?;
+    let redis_update_artifact =
+        runtime_fixture_artifact("redis", "7.2.6-pv1", "bin/redis-server", "redis update")?;
+    let mailpit_default_artifact =
+        runtime_fixture_artifact("mailpit", "1.0.0-pv1", "bin/mailpit", "mailpit default")?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+        manifest_resource(
+            "composer",
+            "2",
+            vec![manifest_track("2", vec![&composer_artifact])],
+        ),
+        manifest_resource(
+            "redis",
+            "8.8",
+            vec![manifest_track("8.8", vec![&redis_artifact])],
+        ),
+        manifest_resource(
+            "mailpit",
+            "1",
+            vec![manifest_track("1", vec![&mailpit_default_artifact])],
+        ),
+    ]);
+    let update_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&php_artifact, &php_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&frankenphp_artifact, &frankenphp_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "composer",
+            "2",
+            vec![manifest_track(
+                "2",
+                vec![&composer_artifact, &composer_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "redis",
+            "8.8",
+            vec![manifest_track(
+                "8.8",
+                vec![&redis_artifact, &redis_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "mailpit",
+            "1",
+            vec![manifest_track("1", vec![&mailpit_default_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(composer_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(redis_artifact.bytes())
+        .with_text(&update_manifest)
+        .with_bytes(php_update_artifact.bytes())
+        .with_bytes(frankenphp_update_artifact.bytes())
+        .with_bytes(composer_update_artifact.bytes())
+        .with_bytes(redis_update_artifact.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    commands.install_composer(&client)?;
+    commands.install(&redis, TrackSelector::Latest, &client)?;
+    let manifest_requests_before_update = client.text_request_count();
+    let backing_adapters: [&dyn ResourceAdapter; 2] = [&mailpit, &redis];
+    let updated = commands.update_all_installed(&backing_adapters, &client)?;
+    let listed_after_update = commands.list(None)?;
+    let manifest_refreshes_during_update =
+        client.text_request_count() - manifest_requests_before_update;
+
+    assert_debug_snapshot!((
+        update_summary(&updated, tempdir.path())?,
+        track_records_summary(&listed_after_update, tempdir.path())?,
+        manifest_refreshes_during_update,
+        client.byte_request_count(),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_all_installed_refreshes_manifest_without_installed_tracks()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let client = ScriptedClient::new().with_text(&manifest_with_resources(&[]));
+    let backing_adapters: [&dyn ResourceAdapter; 0] = [];
+
+    let updated = commands.update_all_installed(&backing_adapters, &client)?;
+
+    assert_debug_snapshot!((
+        update_summary(&updated, tempdir.path())?,
+        client.text_request_count(),
+        client.byte_request_count(),
     ));
 
     Ok(())

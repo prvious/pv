@@ -127,6 +127,13 @@ pub(crate) enum Command {
     )]
     Update(UpdateArgs),
 
+    #[command(
+        name = "internal:update-managed-resources",
+        about = "Run the internal Managed Resource update continuation",
+        hide = true
+    )]
+    InternalUpdateManagedResources,
+
     #[command(name = "list", about = "List linked Projects")]
     List(ListArgs),
 

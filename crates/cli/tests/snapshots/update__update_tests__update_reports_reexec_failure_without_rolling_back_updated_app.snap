@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\nPV application: updated 0.1.0 -> 0.2.0\nDaemon restarted and healthy\n",
+    stderr: "error: PV application update succeeded, but Managed Resource update continuation failed to start: exec failed. Run `pv update` again to update Managed Resources.\n",
+}

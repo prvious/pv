@@ -404,9 +404,9 @@ Install and update commands submit daemon jobs, stream progress over the socket,
 
 `pv update` updates both the PV application and all installed Managed Resource tracks. Resource-specific update commands, such as `pv mysql:update`, update only installed tracks of that Managed Resource.
 
-`pv update` self-updates the PV application before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads the new `pv` binary, verifies its SHA-256 checksum and byte count, installs it under `~/.pv/bin/releases/<version>/pv`, atomically points `~/.pv/bin/pv` at the new release, coordinates daemon restart, reconnects to the daemon, refreshes the artifact manifest, and then updates installed Managed Resources as needed. If checksum verification, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
+`pv update` self-updates the PV application before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads the new `pv` binary, verifies its SHA-256 checksum and byte count, installs it under `~/.pv/bin/releases/<version>/pv`, atomically points `~/.pv/bin/pv` at the new release, coordinates daemon restart, reconnects to the daemon, releases the foreground update lock, and then runs a daemon-owned Managed Resource update job. If checksum verification, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
 
-Until Managed Resource update orchestration lands, bare `pv update` implements only the PV application phase. During this interim PR 22D behavior, `pv update` exits zero when the PV application phase succeeds or when the PV application is already current, and exits non-zero for app-phase failures, daemon restart or health failures, rollback failures, an active update lock, manifest failures, download failures, and binary verification failures. It does not print a user-facing message saying Managed Resource updates were skipped, and it does not apply installed Managed Resource track updates.
+If the PV application is already current, `pv update` still continues to the daemon-owned Managed Resource update phase in the same foreground process after releasing the update lock. If a newer PV application release is activated successfully, `pv update` re-execs the active `~/.pv/bin/pv` through an internal hidden continuation path before submitting the Managed Resource update job. The continuation path skips the app-update phase, does not reprint the `PV update` header or app-phase lines, validates that it is running from the installed active release layout, and submits only the daemon-owned Managed Resource update phase.
 
 `pv update` does not prompt for confirmation before applying available PV application or Managed Resource updates. Running the command is the explicit user intent to update. Safety comes from checksum verification, atomic release installation, rollback, and non-destructive data handling.
 
@@ -422,19 +422,26 @@ Until Managed Resource update orchestration lands, bare `pv update` implements o
 
 `pv update --check` reports both PV application update availability and Managed Resource update availability when possible. If Managed Resource update metadata requires a newer PV application version, the check reports the available PV application update and clearly marks Managed Resource update availability as blocked until PV is updated.
 
-The plain interim `pv update` output is quiet. A successful PV application update prints:
+The plain `pv update` output is quiet and phase-based. Successful examples are:
 
 ```text
 PV update
 PV application: updated 0.1.0 -> 0.2.0
 Daemon restarted and healthy
+Managed Resources: updated 3 artifact(s)
+Managed Resources reconciled: <daemon summary>
 ```
-
-When the PV application is already current, it prints:
 
 ```text
 PV update
 PV application: current 0.2.0
+Managed Resources: current
+```
+
+```text
+PV update
+PV application: current 0.2.0
+Managed Resources: none installed
 ```
 
 Pre-activation failures print `PV update` to stdout when the command has started, one specific `error: ...` line to stderr, and no rollback message. `--json` remains valid only with `--check`; bare `pv update --json` remains invalid.
@@ -566,28 +573,32 @@ The PV app update manifest is published at a stable PV-owned URL used by the Rus
 
 PV v1 relies on HTTPS/GitHub trust for the PV app update manifest itself. The app update manifest format should allow signatures to be added later without breaking compatibility.
 
-For `pv update`, the CLI fetches the PV app update manifest and performs PV binary self-update before handing Managed Resource update work to the daemon. The daemon owns Managed Resource manifest refresh, install, update, and runtime reconciliation.
+For `pv update`, the CLI fetches the PV app update manifest and performs PV binary self-update before handing Managed Resource update work to the daemon. The daemon owns Managed Resource manifest refresh, install, update, and runtime reconciliation through a mutating `RunJob` request with `kind = "update"` and `scope = "system"`.
 
-The mutating PV application phase runs in the foreground `pv update` process and does not re-exec after swapping the active binary. The foreground process activates the new `~/.pv/bin/pv` symlink, restarts or kickstarts the daemon, waits for daemon health, reports success or rollback, and exits. If a future re-exec is needed to continue into Managed Resource update orchestration, that belongs with the Managed Resource update phase rather than the application self-update phase.
+The mutating PV application phase runs in the foreground `pv update` process. The foreground process activates the new `~/.pv/bin/pv` symlink when needed, restarts or kickstarts the daemon, waits for daemon health, reports success or rollback, and releases the update lock before Managed Resource work begins. App-current continuation submits the daemon update job from the same process. App-updated continuation re-execs the active `~/.pv/bin/pv` into a hidden internal continuation path so the newly active CLI/protocol submits the daemon update job.
 
-The PR 22D PV application update phase runs in this order:
+The PV application update phase runs in this order:
 
 1. Print `PV update`.
 2. Acquire the OS update lock at `~/.pv/run/update.lock`.
 3. Validate the installed active release symlink and running version.
 4. Validate or normalize the PV-owned LaunchAgent to `~/.pv/bin/pv daemon:run`.
 5. Fetch and parse the PV app update manifest.
-6. If the manifest version is not newer than the running version, report current and exit zero.
+6. If the manifest version is not newer than the running version, report current, release the update lock, and continue to the Managed Resource phase in the same process.
 7. Download, verify, install, and activate the newer app release.
 8. Restart or kickstart the daemon without submitting `reconcile system`.
 9. Wait for daemon health.
-10. Release the update lock and exit.
+10. Release the update lock and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
 
-The update lock covers the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` while the update lock is held. The interim PR 22D application phase also does not enqueue explicit post-update reconciliation after releasing the lock, because Managed Resource update orchestration is separate work.
+The update lock covers the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` or `update system` while the update lock is held. The Managed Resource update job is submitted only after the foreground app phase releases the lock or after the re-execed continuation starts.
 
-If the PV application is already current, final top-level `pv update` still continues to the daemon-owned Managed Resource update phase. During the interim PR 22D application-only phase, it reports current and exits zero without download, reinstall, reactivation, or daemon restart.
+If the PV application is already current, top-level `pv update` reports current and continues to the daemon-owned Managed Resource update phase without download, reinstall, reactivation, or daemon restart.
 
 Top-level `pv update` updates all installed Managed Resource tracks, not only tracks currently needed by linked Projects.
+
+The daemon `update system` job refreshes the Managed Resource artifact manifest once for the whole top-level Managed Resource phase, including when no Managed Resource tracks are installed. All installed-track update decisions in that phase use the same refreshed manifest snapshot. The job considers installed PHP/FrankenPHP tracks as paired update groups, then Composer track `2` when installed, then backing service tracks in deterministic canonical order. It updates only installed tracks within their existing tracks, does not install manifest defaults just because they exist, does not install tracks that are only demanded by Project config, and does not rewrite Project config.
+
+After one or more Managed Resource artifacts change, the daemon update job runs system reconciliation before reporting success so running updated resources restart or continue under existing runtime ownership rules. If no tracks changed, the job may skip heavier runtime restart work and report `current` or `none installed`. If reconciliation fails after artifacts were updated, the update job fails and reports the reconciliation/runtime failure. PR 22E does not add a global all-resource rollback; each track or PHP/FrankenPHP pair keeps its existing atomic update behavior, the previous artifact revision remains retained where the installer supports it, and successful earlier resource updates remain in place.
 
 For `pv update --check`, the CLI fetches the PV app update manifest and computes PV application update availability, then asks the daemon to refresh the Managed Resource artifact manifest and report installed Managed Resource track update availability.
 
@@ -843,7 +854,7 @@ When updating a running Managed Resource track, PV restarts it immediately as pa
 
 PV caches the last successfully fetched artifact manifest under `~/.pv/downloads/manifest.json`. When offline, PV can use cached metadata and already-downloaded or installed resources, but cannot install versions missing from the cache/downloads. Offline or stale-manifest failures should be reported clearly.
 
-`pv update` refreshes the artifact manifest every time. Setup and install commands try to fetch the latest manifest and fall back to the cached manifest when offline. PV v1 does not need a manifest cache TTL.
+`pv update` refreshes the artifact manifest every time. The top-level Managed Resource phase refreshes it once per run and uses that same snapshot for every installed-track decision, including the no-installed-tracks case. Setup and install commands try to fetch the latest manifest and fall back to the cached manifest when offline. PV v1 does not need a manifest cache TTL.
 
 `pv setup` fails if it cannot fetch the artifact manifest and no cached manifest exists, because default Managed Resource installation cannot be planned without artifact metadata. Completed system integration steps remain in place and setup remains safe to rerun.
 

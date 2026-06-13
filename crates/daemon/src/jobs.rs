@@ -2,7 +2,7 @@ use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
-    ManagedResourceRuntimeCatalog, reconcile_system_resources,
+    ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport, reconcile_system_resources,
     reconcile_system_resources_with_catalog,
 };
 use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runtime_catalog};
@@ -30,6 +30,9 @@ pub(crate) async fn run_job(
                 run_invalid_reconciliation_scope_job(paths, transport, scope, error).await
             }
         };
+    }
+    if kind == "update" && scope == "system" {
+        return run_update_job(paths, queue, transport, runtime_catalog).await;
     }
 
     run_started_job(paths, transport, kind, scope).await
@@ -130,6 +133,163 @@ fn enqueue_reconciliation_job(
     )
 }
 
+async fn run_update_job(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    mut transport: DaemonTransport<LocalStream>,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
+    let result = match enqueue_update_job(&paths, &queue) {
+        Ok(result) => result,
+        Err(DaemonError::State(error @ StateError::UpdateInProgress { .. })) => {
+            write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
+
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+
+    match result {
+        EnqueueResult::Queued(queued) => {
+            let job_id = queued.job_id().to_string();
+            let accepted_result = write_line(
+                &mut transport,
+                &DaemonResponse::accepted("job accepted", &job_id),
+            )
+            .await
+            .map_err(DaemonError::from);
+            let stream_is_open = accepted_result.is_ok();
+            let running = queued.wait_for_turn().await;
+            let result = stream_started_update_job(
+                paths,
+                transport,
+                stream_is_open,
+                running.job_id(),
+                runtime_catalog,
+            )
+            .await;
+
+            running.finish();
+
+            foreground_reconciliation_result(accepted_result, result)
+        }
+        EnqueueResult::Coalesced(_job) => {
+            write_coalesced_update_response(&mut transport).await?;
+
+            Ok(())
+        }
+    }
+}
+
+async fn write_coalesced_update_response<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+{
+    write_line(
+        transport,
+        &DaemonResponse::error("update already queued or running"),
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn enqueue_update_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+) -> Result<EnqueueResult, DaemonError> {
+    let abandon_paths = paths.clone();
+
+    queue.enqueue_system_update_with_abandon(
+        paths,
+        || start_update_job(paths),
+        move |job_id| {
+            let _result = abandon_update_job(&abandon_paths, job_id);
+        },
+    )
+}
+
+async fn stream_started_update_job<Stream>(
+    paths: PvPaths,
+    mut transport: DaemonTransport<Stream>,
+    stream_is_open: bool,
+    job_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+{
+    let started_stream_result = if stream_is_open {
+        async {
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobStarted {
+                    job_id,
+                    kind: "update",
+                    scope: "system",
+                },
+            )
+            .await?;
+            write_line(
+                &mut transport,
+                &DaemonEvent::Log {
+                    job_id,
+                    message: "Managed Resource update started",
+                },
+            )
+            .await?;
+
+            Ok::<(), DaemonError>(())
+        }
+        .await
+    } else {
+        Ok(())
+    };
+
+    let update_result = complete_update_job(&paths, job_id, runtime_catalog).await;
+    started_stream_result?;
+
+    if !stream_is_open {
+        return update_result.map(|_summary| ());
+    }
+
+    match update_result {
+        Ok(summary) => {
+            write_line(
+                &mut transport,
+                &DaemonEvent::Progress {
+                    job_id,
+                    message: &summary,
+                },
+            )
+            .await?;
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobCompleted {
+                    job_id,
+                    summary: &summary,
+                },
+            )
+            .await?;
+        }
+        Err(error) => {
+            let error_message = error.to_string();
+            write_line(
+                &mut transport,
+                &DaemonEvent::JobFailed {
+                    job_id,
+                    error: &error_message,
+                },
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
 fn foreground_reconciliation_result(
     accepted_result: Result<(), DaemonError>,
     reconciliation_result: Result<(), DaemonError>,
@@ -223,11 +383,81 @@ fn start_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String, Daem
     Ok(job.id)
 }
 
+fn start_update_job(paths: &PvPaths) -> Result<String, DaemonError> {
+    let mut database = Database::open(paths)?;
+    let job = database.start_job("update", "system")?;
+    structured_log::job_started(paths, &job.id, "update", "system");
+
+    Ok(job.id)
+}
+
 fn abandon_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
     database.fail_job(job_id, "reconciliation was abandoned before completion")?;
 
     Ok(())
+}
+
+fn abandon_update_job(paths: &PvPaths, job_id: &str) -> Result<(), DaemonError> {
+    let mut database = Database::open(paths)?;
+    database.fail_job(
+        job_id,
+        "Managed Resource update was abandoned before completion",
+    )?;
+
+    Ok(())
+}
+
+async fn complete_update_job(
+    paths: &PvPaths,
+    job_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<String, DaemonError> {
+    let result = complete_update_job_inner(paths, runtime_catalog).await;
+
+    match &result {
+        Ok(summary) => {
+            let mut database = Database::open(paths)?;
+            database.complete_job(job_id, summary)?;
+            structured_log::job_completed(paths, job_id, "update", "system", summary);
+        }
+        Err(error) => {
+            let error_message = error.to_string();
+            let mut database = Database::open(paths)?;
+            database.fail_job(job_id, &error_message)?;
+            structured_log::job_failed(paths, job_id, "update", "system", &error_message);
+        }
+    }
+
+    result
+}
+
+async fn complete_update_job_inner(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<String, DaemonError> {
+    let report = crate::managed_resources::update_installed(paths.clone(), runtime_catalog)?;
+    if report.updated_count == 0 {
+        return Ok(unchanged_update_summary(&report));
+    }
+
+    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
+    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+    let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
+
+    Ok(format!(
+        "updated {} artifact(s); reconciled: {reconciliation_summary}",
+        report.updated_count
+    ))
+}
+
+fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
+    if report.installed_count == 0 {
+        "none installed".to_string()
+    } else {
+        "current".to_string()
+    }
 }
 
 async fn complete_managed_resource_reconciliation(
@@ -672,6 +902,8 @@ mod tests {
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
+    use futures_util::StreamExt;
+    use serde_json::json;
     use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
     use tokio::io::duplex;
 
@@ -679,7 +911,7 @@ mod tests {
         complete_or_fail_background_reconciliation, enqueue_reconciliation_job,
         foreground_reconciliation_result, record_background_reconciliation_error,
         run_background_reconciliation_job, start_reconciliation_job,
-        stream_started_reconciliation_job,
+        stream_started_reconciliation_job, write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -710,6 +942,35 @@ mod tests {
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Succeeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn coalesced_update_response_is_error_without_job_id() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut writer = protocol::transport(server);
+
+        write_coalesced_update_response(&mut writer).await?;
+        drop(writer);
+
+        let mut reader = protocol::transport(client);
+        let line = reader
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing response line"))??;
+        let response = serde_json::from_str::<serde_json::Value>(&line)?;
+
+        assert_eq!(
+            response,
+            json!({
+                "type": "response",
+                "protocol_version": protocol::PROTOCOL_VERSION,
+                "status": "error",
+                "message": "update already queued or running",
+            })
+        );
+        assert!(reader.next().await.is_none());
 
         Ok(())
     }
