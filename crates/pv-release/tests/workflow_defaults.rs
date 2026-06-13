@@ -7,6 +7,8 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
     "${{ runner.temp }}/pv-artifacts/manifest.json",
     "${{ runner.temp }}/pv-records/**/*.json",
 ];
+const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
+const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
 
 #[test]
 fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
@@ -134,6 +136,164 @@ fn artifact_publication_defaults_to_preview_native_platform_gate() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn app_workflows_use_repository_r2_configuration() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let release_workflow = release.as_deref().unwrap_or("");
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let summary = format!(
+        "release_workflow_exists={}\npublication_workflow_exists={}\nrelease_name={}\npublication_name={}\nrelease_uses_r2_public_base_url_var={}\npublication_uses_r2_bucket_var={}\npublication_uses_r2_public_base_url_var={}\npublication_uses_cloudflare_account_secret={}\npublication_uses_r2_access_key_secret={}\npublication_uses_r2_secret_access_key_secret={}\npublication_derives_r2_endpoint_from_secret={}\npublication_hardcodes_staging_bucket={}\npublication_hardcodes_staging_public_base_url={}",
+        release.is_some(),
+        publication.is_some(),
+        workflow_name(release_workflow).unwrap_or(""),
+        workflow_name(publication_workflow).unwrap_or(""),
+        release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
+        publication_workflow.contains("${{ vars.R2_BUCKET }}"),
+        publication_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
+        publication_workflow.contains("${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"),
+        publication_workflow.contains("${{ secrets.R2_ACCESS_KEY_ID }}"),
+        publication_workflow.contains("${{ secrets.R2_SECRET_ACCESS_KEY }}"),
+        publication_workflow
+            .contains("https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com"),
+        publication_workflow.contains("pv-staging"),
+        publication_workflow.contains("artifacts-staging.pv.prvious.dev"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    release_workflow_exists=true
+    publication_workflow_exists=true
+    release_name=PV App Release
+    publication_name=PV App Publication
+    release_uses_r2_public_base_url_var=true
+    publication_uses_r2_bucket_var=true
+    publication_uses_r2_public_base_url_var=true
+    publication_uses_cloudflare_account_secret=true
+    publication_uses_r2_access_key_secret=true
+    publication_uses_r2_secret_access_key_secret=true
+    publication_derives_r2_endpoint_from_secret=true
+    publication_hardcodes_staging_bucket=false
+    publication_hardcodes_staging_public_base_url=false
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let release_workflow = release.as_deref().unwrap_or("");
+    let summary = format!(
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nmanifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        release.is_some(),
+        workflow_name(release_workflow).unwrap_or(""),
+        workflow_job_ids(release_workflow),
+        platform_matrices(release_workflow),
+        release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL")
+            && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json"),
+        release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
+        release_workflow.contains("pv-staging"),
+        release_workflow.contains("artifacts-staging.pv.prvious.dev"),
+        release_workflow.contains("write-app-release-record"),
+        release_workflow.contains("generate-app-manifest"),
+        release_workflow.contains("generate-app-installer"),
+        app_binary_object_key_reference_present(release_workflow),
+        app_record_object_key_reference_present(release_workflow),
+        release_workflow.matches("uses: actions/upload-artifact@v7").count(),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64")
+            && release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/install.sh"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    release_workflow_exists=true
+    release_name=PV App Release
+    jobs=["prepare-release", "build-app", "generate-release"]
+    platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
+    uses_native_macos_runners=true
+    manifest_url_env=true
+    uses_r2_public_base_url_var=true
+    hardcodes_staging_bucket=false
+    hardcodes_staging_public_base_url=false
+    write_app_release_record_command=true
+    app_manifest_command=true
+    app_installer_command=true
+    app_binary_object_key_refs=true
+    app_record_object_key_refs=true
+    upload_steps=2
+    uploads_binaries=true
+    uploads_records=true
+    uploads_manifest=true
+    uploads_installer=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let summary = format!(
+        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nmanaged_resource_key_references={:?}",
+        publication.is_some(),
+        stable_key_reference_present(publication_workflow, "pv-app-manifest.json"),
+        stable_key_reference_present(publication_workflow, "install.sh"),
+        managed_resource_key_references(publication_workflow),
+    );
+
+    assert_snapshot!(summary, @r#"
+    publication_workflow_exists=true
+    stable_app_manifest_key_present=true
+    stable_installer_key_present=true
+    managed_resource_key_references=[]
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_publication_uses_immutable_upload_checks_for_app_objects() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let summary = format!(
+        "publication_workflow_exists={}\nuses_stage_app_publication_command={}\ndefines_immutable_upload_helper={}\nuses_if_none_match={}\nhandles_precondition_failed={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nversioned_manifest_object_key_refs={}\nversioned_installer_object_key_refs={}",
+        publication.is_some(),
+        publication_workflow.contains("stage-app-publication"),
+        publication_workflow.contains("upload_immutable_object()"),
+        publication_workflow.contains("--if-none-match '*'"),
+        publication_workflow.contains("PreconditionFailed"),
+        app_binary_object_key_reference_present(publication_workflow),
+        publication_workflow.contains("pv/records/"),
+        versioned_generated_artifact_reference_present(
+            publication_workflow,
+            "pv-app-manifest.json",
+        ),
+        versioned_generated_artifact_reference_present(publication_workflow, "install.sh"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    publication_workflow_exists=true
+    uses_stage_app_publication_command=true
+    defines_immutable_upload_helper=true
+    uses_if_none_match=true
+    handles_precondition_failed=true
+    app_binary_object_key_refs=true
+    app_record_object_key_refs=true
+    versioned_manifest_object_key_refs=true
+    versioned_installer_object_key_refs=true
+    "#);
+
+    Ok(())
+}
+
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
     let input_header = format!("      {input}:");
     let mut in_input = false;
@@ -184,12 +344,22 @@ fn input_description<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
     None
 }
 
+fn workflow_name(workflow: &str) -> Option<&str> {
+    workflow
+        .lines()
+        .find_map(|line| line.strip_prefix("name: "))
+        .map(|name| name.trim_matches('"'))
+}
+
 fn platform_matrices(workflow: &str) -> Vec<&str> {
     workflow
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            if line.starts_with("platform: ${{ fromJSON(") || line == "platform: [any]" {
+            if line.starts_with("platform: ${{ fromJSON(")
+                || line.starts_with("platform: [")
+                || line == "platform: [any]"
+            {
                 Some(line)
             } else {
                 None
@@ -252,6 +422,70 @@ fn workflow_job_ids(workflow: &str) -> Vec<&str> {
     }
 
     job_ids
+}
+
+fn stable_key_reference_present(workflow: &str, object_key: &str) -> bool {
+    workflow.lines().any(|line| {
+        let line = line.trim();
+        line.contains(object_key)
+            && (line.contains("STABLE")
+                || line.contains("stable_")
+                || line.contains("stable-")
+                || line.contains(".stable"))
+    })
+}
+
+fn managed_resource_key_references(workflow: &str) -> Vec<&str> {
+    workflow
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.contains("pv-app-manifest.json")
+                || line.contains("pv/records/")
+                || line.contains("pv/manifests/")
+            {
+                return None;
+            }
+
+            if line.contains("manifest.json")
+                || line.contains("resources/")
+                || line.contains("records/")
+                || line.contains("revocations/")
+            {
+                Some(line)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn app_binary_object_key_reference_present(workflow: &str) -> bool {
+    workflow.contains("pv/")
+        && workflow.contains("pv-darwin-arm64")
+        && workflow.contains("pv-darwin-amd64")
+}
+
+fn versioned_generated_artifact_reference_present(workflow: &str, artifact: &str) -> bool {
+    workflow.contains("pv/manifests/runs") && workflow.contains(artifact)
+}
+
+fn app_record_object_key_reference_present(workflow: &str) -> bool {
+    workflow.contains("pv/records/") && workflow.contains("pv-${{ matrix.platform }}.json")
+}
+
+fn path_exists(path: &Utf8Path) -> bool {
+    path.exists()
+}
+
+fn read_optional_file(path: &Utf8Path) -> Result<Option<String>> {
+    if !path_exists(path) {
+        return Ok(None);
+    }
+
+    read_file(path).map(Some)
 }
 
 #[expect(

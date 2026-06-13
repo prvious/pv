@@ -1,0 +1,22 @@
+---
+source: crates/pv-release/tests/app_release_records.rs
+expression: json
+---
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "minimum_pv_version": "0.1.0",
+  "published_at": "2026-06-11T12:00:00Z",
+  "platform": "darwin-arm64",
+  "object_key": "pv/0.2.0/pv-darwin-arm64",
+  "sha256": "c8e2518d36faa62255498db2f13c75e56df99659ad4c58b16d4ad0ab9ce23cdf",
+  "size": 12,
+  "provenance": {
+    "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
+    "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "recipe": ".github/workflows/pv-app-release.yml",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "123456789"
+  }
+}

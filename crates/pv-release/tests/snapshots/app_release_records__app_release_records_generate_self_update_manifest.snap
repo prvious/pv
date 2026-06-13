@@ -1,0 +1,25 @@
+---
+source: crates/pv-release/tests/app_release_records.rs
+expression: manifest_json
+---
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "minimum_pv_version": "0.1.0",
+  "published_at": "2026-06-11T12:00:00Z",
+  "assets": [
+    {
+      "platform": "darwin-arm64",
+      "url": "https://artifacts-staging.pv.prvious.dev/pv/0.2.0/pv-darwin-arm64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 12345678
+    },
+    {
+      "platform": "darwin-amd64",
+      "url": "https://artifacts-staging.pv.prvious.dev/pv/0.2.0/pv-darwin-amd64",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 12345679
+    }
+  ]
+}

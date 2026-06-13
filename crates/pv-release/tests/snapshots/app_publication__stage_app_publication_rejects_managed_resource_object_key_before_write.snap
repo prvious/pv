@@ -1,0 +1,14 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "AppPublicationCollisionContract\n{\n    rejected_object_key: \"resources/pv/0.2.0/pv-darwin-amd64\", expected_error:\n    \"app publication object key is reserved for Managed Resource publication\",\n    must_not_write_managed_resource_keys: managed_resource_keys(),\n}"
+---
+AppPublicationCollisionContract {
+    rejected_object_key: "resources/pv/0.2.0/pv-darwin-amd64",
+    expected_error: "app publication object key is reserved for Managed Resource publication",
+    must_not_write_managed_resource_keys: [
+        "manifest.json",
+        "resources/...",
+        "records/...",
+        "revocations/...",
+    ],
+}

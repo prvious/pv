@@ -1,0 +1,231 @@
+name: PV App Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      minimum_pv_version:
+        description: "Minimum installed PV version that may apply this app release"
+        required: true
+        default: "0.1.0"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  prepare-release:
+    name: prepare release metadata
+    runs-on: macos-14
+
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      minimum_pv_version: ${{ steps.metadata.outputs.minimum_pv_version }}
+      published_at: ${{ steps.metadata.outputs.published_at }}
+      source_url: ${{ steps.metadata.outputs.source_url }}
+      source_sha256: ${{ steps.metadata.outputs.source_sha256 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare release metadata
+        id: metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MINIMUM_PV_VERSION: ${{ inputs.minimum_pv_version }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -eu
+
+          if [ -z "$MINIMUM_PV_VERSION" ]; then
+            printf '%s\n' "minimum_pv_version is required" >&2
+            exit 1
+          fi
+
+          if [ -z "$R2_PUBLIC_BASE_URL" ]; then
+            printf '%s\n' "R2_PUBLIC_BASE_URL repository variable is required" >&2
+            exit 1
+          fi
+          case "$R2_PUBLIC_BASE_URL" in
+            https://*) ;;
+            *)
+              printf '%s\n' "R2_PUBLIC_BASE_URL must use https" >&2
+              exit 1
+              ;;
+          esac
+
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ -z "$version" ]; then
+            printf '%s\n' "failed to read PV app version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          source_ref="${GITHUB_SHA:?}"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            source_ref="refs/tags/${GITHUB_REF_NAME:?}"
+          fi
+          source_url="https://github.com/${GITHUB_REPOSITORY:?}/archive/${source_ref}.tar.gz"
+          source_archive="${RUNNER_TEMP:?}/pv-source.tar.gz"
+
+          curl -L --fail --show-error --silent \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            -H "Authorization: Bearer ${GITHUB_TOKEN:?}" \
+            "$source_url" \
+            -o "$source_archive"
+          source_sha256=$(shasum -a 256 "$source_archive" | awk '{print $1}')
+          published_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          {
+            printf 'version=%s\n' "$version"
+            printf 'minimum_pv_version=%s\n' "$MINIMUM_PV_VERSION"
+            printf 'published_at=%s\n' "$published_at"
+            printf 'source_url=%s\n' "$source_url"
+            printf 'source_sha256=%s\n' "$source_sha256"
+          } >>"${GITHUB_OUTPUT:?}"
+
+  build-app:
+    name: "build app ${{ matrix.platform }}"
+    needs: prepare-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, darwin-amd64]
+        include:
+          - platform: darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+          - platform: darwin-amd64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build app binary
+        env:
+          PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json
+          PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+        run: |
+          set -eu
+
+          mkdir -p "$(dirname "$PV_APP_BINARY")"
+          cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
+          install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
+
+      - name: Write app release record
+        env:
+          PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+          PV_APP_RECORD: ${{ runner.temp }}/pv-app-stage/pv/records/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}.json
+          PV_APP_VERSION: ${{ needs.prepare-release.outputs.version }}
+          PV_MINIMUM_PV_VERSION: ${{ needs.prepare-release.outputs.minimum_pv_version }}
+          PV_PUBLISHED_AT: ${{ needs.prepare-release.outputs.published_at }}
+          PV_APP_PLATFORM: ${{ matrix.platform }}
+          PV_APP_OBJECT_KEY: pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+          PV_SOURCE_URL: ${{ needs.prepare-release.outputs.source_url }}
+          PV_SOURCE_SHA256: ${{ needs.prepare-release.outputs.source_sha256 }}
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          cargo run --locked -p pv-release -- write-app-release-record \
+            --record "$PV_APP_RECORD" \
+            --binary "$PV_APP_BINARY" \
+            --channel stable \
+            --version "$PV_APP_VERSION" \
+            --minimum-pv-version "$PV_MINIMUM_PV_VERSION" \
+            --published-at "$PV_PUBLISHED_AT" \
+            --platform "$PV_APP_PLATFORM" \
+            --object-key "$PV_APP_OBJECT_KEY" \
+            --source-url "$PV_SOURCE_URL" \
+            --source-sha256 "$PV_SOURCE_SHA256" \
+            --recipe .github/workflows/app-release.yml \
+            --pv-commit "$PV_COMMIT" \
+            --build-run-id "$PV_BUILD_RUN_ID"
+
+      - name: Upload app binary and record
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-app-release-build-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+            ${{ runner.temp }}/pv-app-stage/pv/records/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}.json
+          if-no-files-found: error
+
+  generate-release:
+    name: generate manifest and installer
+    needs:
+      - prepare-release
+      - build-app
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download app build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: pv-app-release-build-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-app-release-download
+          merge-multiple: true
+
+      - name: Generate app manifest and installer
+        env:
+          PV_APP_VERSION: ${{ needs.prepare-release.outputs.version }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -eu
+
+          download_dir="${RUNNER_TEMP:?}/pv-app-release-download"
+          stage="${RUNNER_TEMP:?}/pv-app-release-stage"
+          rm -rf "$stage"
+          mkdir -p "$stage/pv/$PV_APP_VERSION" "$stage/pv/records/$PV_APP_VERSION"
+
+          for platform in darwin-arm64 darwin-amd64; do
+            binary_source=$(find "$download_dir" -type f -path "*/$PV_APP_VERSION/pv-$platform" -print -quit)
+            record_source=$(find "$download_dir" -type f -path "*/records/$PV_APP_VERSION/pv-$platform.json" -print -quit)
+            if [ -z "$binary_source" ]; then
+              printf '%s\n' "missing app binary for $platform" >&2
+              exit 1
+            fi
+            if [ -z "$record_source" ]; then
+              printf '%s\n' "missing app release record for $platform" >&2
+              exit 1
+            fi
+            cp "$binary_source" "$stage/pv/$PV_APP_VERSION/pv-$platform"
+            cp "$record_source" "$stage/pv/records/$PV_APP_VERSION/pv-$platform.json"
+          done
+
+          cargo run --locked -p pv-release -- generate-app-manifest \
+            --records "$stage/pv/records/$PV_APP_VERSION" \
+            --output "$stage/pv-app-manifest.json" \
+            --base-url "$R2_PUBLIC_BASE_URL"
+          cargo run --locked -p pv-release -- generate-app-installer \
+            --records "$stage/pv/records/$PV_APP_VERSION" \
+            --output "$stage/install.sh" \
+            --base-url "$R2_PUBLIC_BASE_URL"
+          chmod 755 "$stage/install.sh"
+
+      - name: Upload app release handoff artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-app-release-${{ needs.prepare-release.outputs.version }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64
+            ${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64
+            ${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json
+            ${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json
+            ${{ runner.temp }}/pv-app-release-stage/install.sh
+          if-no-files-found: error

@@ -2546,6 +2546,7 @@ dependencies = [
  "flate2",
  "insta",
  "resources",
+ "self-update",
  "serde",
  "serde_json",
  "sha2 0.10.9",
