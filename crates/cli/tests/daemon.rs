@@ -160,7 +160,7 @@ fn daemon_enable_installs_pv_launch_agent_and_starts_it() -> anyhow::Result<()> 
     assert_eq!(
         parsed,
         Some(LaunchAgentConfig::new(
-            current_exe,
+            paths.active_pv_binary(),
             paths.logs().join("launchd.out.log"),
             paths.logs().join("launchd.err.log"),
         ))
@@ -237,7 +237,7 @@ fn daemon_restart_replaces_stale_pv_owned_launch_agent() -> anyhow::Result<()> {
     assert_eq!(
         parsed,
         Some(LaunchAgentConfig::new(
-            current_exe,
+            paths.active_pv_binary(),
             paths.logs().join("launchd.out.log"),
             paths.logs().join("launchd.err.log"),
         ))

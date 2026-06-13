@@ -18,14 +18,16 @@ use std::io;
 use std::sync::Arc;
 
 use managed_resources::ManagedResourceRuntimeCatalog;
-use state::{Database, PvPaths};
+use serde::Serialize;
+use state::{Database, PvPaths, StateError};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use client::{
     CompletedJob, SubmittedJob, health_blocking, managed_resource_update_check_blocking,
-    run_job_blocking, submit_job_blocking, wait_until_healthy_blocking,
+    run_job_blocking, submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
+    wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::DaemonError;
@@ -85,7 +87,22 @@ impl RunningDaemon {
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
+        match Self::start_with_runtime_catalog_inner(paths.clone(), runtime_catalog).await {
+            Ok(daemon) => Ok(daemon),
+            Err(error) => {
+                write_startup_failure_marker(&paths, &error);
+
+                Err(error)
+            }
+        }
+    }
+
+    async fn start_with_runtime_catalog_inner(
+        paths: PvPaths,
+        runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+    ) -> Result<Self, DaemonError> {
         Database::open(&paths)?;
+        clear_startup_failure_marker(&paths)?;
         structured_log::daemon_started(&paths);
         ipc::prepare_endpoint(&paths).await?;
         let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
@@ -127,6 +144,39 @@ impl RunningDaemon {
         structured_log::daemon_stopped(&self.paths);
 
         Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct StartupFailureMarker {
+    kind: &'static str,
+    message: String,
+}
+
+fn clear_startup_failure_marker(paths: &PvPaths) -> Result<(), DaemonError> {
+    state::fs::remove_file_if_exists(&paths.daemon_startup_error())?;
+
+    Ok(())
+}
+
+fn write_startup_failure_marker(paths: &PvPaths, error: &DaemonError) {
+    let marker = StartupFailureMarker {
+        kind: startup_failure_kind(error),
+        message: error.to_string(),
+    };
+    let Ok(json) = serde_json::to_string(&marker) else {
+        return;
+    };
+
+    let _result = state::fs::write_sensitive_file(&paths.daemon_startup_error(), &json);
+}
+
+fn startup_failure_kind(error: &DaemonError) -> &'static str {
+    match error {
+        DaemonError::State(
+            StateError::MigrationFailed { .. } | StateError::MigrationNameMismatch { .. },
+        ) => "migration_failed",
+        _ => "startup_failed",
     }
 }
 

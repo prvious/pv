@@ -404,7 +404,9 @@ Install and update commands submit daemon jobs, stream progress over the socket,
 
 `pv update` updates both the PV application and all installed Managed Resource tracks. Resource-specific update commands, such as `pv mysql:update`, update only installed tracks of that Managed Resource.
 
-`pv update` self-updates the PV application before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads the new `pv` binary, verifies its SHA-256 checksum, installs it under `~/.pv/bin/releases/<version>/pv`, atomically points `~/.pv/bin/pv` at the new release, coordinates daemon restart, reconnects to the daemon, refreshes the artifact manifest, and then updates installed Managed Resources as needed. If checksum verification, binary replacement, or daemon restart fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
+`pv update` self-updates the PV application before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads the new `pv` binary, verifies its SHA-256 checksum and byte count, installs it under `~/.pv/bin/releases/<version>/pv`, atomically points `~/.pv/bin/pv` at the new release, coordinates daemon restart, reconnects to the daemon, refreshes the artifact manifest, and then updates installed Managed Resources as needed. If checksum verification, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
+
+Until Managed Resource update orchestration lands, bare `pv update` implements only the PV application phase. During this interim PR 22D behavior, `pv update` exits zero when the PV application phase succeeds or when the PV application is already current, and exits non-zero for app-phase failures, daemon restart or health failures, rollback failures, an active update lock, manifest failures, download failures, and binary verification failures. It does not print a user-facing message saying Managed Resource updates were skipped, and it does not apply installed Managed Resource track updates.
 
 `pv update` does not prompt for confirmation before applying available PV application or Managed Resource updates. Running the command is the explicit user intent to update. Safety comes from checksum verification, atomic release installation, rollback, and non-destructive data handling.
 
@@ -420,7 +422,22 @@ Install and update commands submit daemon jobs, stream progress over the socket,
 
 `pv update --check` reports both PV application update availability and Managed Resource update availability when possible. If Managed Resource update metadata requires a newer PV application version, the check reports the available PV application update and clearly marks Managed Resource update availability as blocked until PV is updated.
 
-Until the mutating self-update implementation lands, bare `pv update` is routed but does not apply updates. It exits non-zero with `error: pv update is not implemented yet; run pv update --check to preview available updates`.
+The plain interim `pv update` output is quiet. A successful PV application update prints:
+
+```text
+PV update
+PV application: updated 0.1.0 -> 0.2.0
+Daemon restarted and healthy
+```
+
+When the PV application is already current, it prints:
+
+```text
+PV update
+PV application: current 0.2.0
+```
+
+Pre-activation failures print `PV update` to stdout when the command has started, one specific `error: ...` line to stderr, and no rollback message. `--json` remains valid only with `--check`; bare `pv update --json` remains invalid.
 
 The plain `pv update --check` output is:
 
@@ -549,17 +566,40 @@ The PV app update manifest is published at a stable PV-owned URL used by the Rus
 
 PV v1 relies on HTTPS/GitHub trust for the PV app update manifest itself. The app update manifest format should allow signatures to be added later without breaking compatibility.
 
-The self-update foundation PR implements only the typed PV app update manifest parser, current-platform asset selection, release-layout helpers for `~/.pv/bin/releases/<version>/pv` and `~/.pv/bin/pv`, and the active OS-level update lock at `~/.pv/run/update.lock`. It may exercise release-layout helpers with fixture binaries in tests. It does not implement `pv update`, `pv update --check`, PV app binary downloads, binary swapping from a downloaded artifact, daemon restart coordination, rollback, installer generation, PV app release metadata generation, Managed Resource update orchestration, artifact recipe changes, or runtime/user-facing update channel selection.
-
 For `pv update`, the CLI fetches the PV app update manifest and performs PV binary self-update before handing Managed Resource update work to the daemon. The daemon owns Managed Resource manifest refresh, install, update, and runtime reconciliation.
 
-If the PV application is already current, `pv update` still continues to the daemon-owned Managed Resource update phase. Top-level update always checks installed Managed Resource tracks after the PV application self-update phase.
+The mutating PV application phase runs in the foreground `pv update` process and does not re-exec after swapping the active binary. The foreground process activates the new `~/.pv/bin/pv` symlink, restarts or kickstarts the daemon, waits for daemon health, reports success or rollback, and exits. If a future re-exec is needed to continue into Managed Resource update orchestration, that belongs with the Managed Resource update phase rather than the application self-update phase.
+
+The PR 22D PV application update phase runs in this order:
+
+1. Print `PV update`.
+2. Acquire the OS update lock at `~/.pv/run/update.lock`.
+3. Validate the installed active release symlink and running version.
+4. Validate or normalize the PV-owned LaunchAgent to `~/.pv/bin/pv daemon:run`.
+5. Fetch and parse the PV app update manifest.
+6. If the manifest version is not newer than the running version, report current and exit zero.
+7. Download, verify, install, and activate the newer app release.
+8. Restart or kickstart the daemon without submitting `reconcile system`.
+9. Wait for daemon health.
+10. Release the update lock and exit.
+
+The update lock covers the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` while the update lock is held. The interim PR 22D application phase also does not enqueue explicit post-update reconciliation after releasing the lock, because Managed Resource update orchestration is separate work.
+
+If the PV application is already current, final top-level `pv update` still continues to the daemon-owned Managed Resource update phase. During the interim PR 22D application-only phase, it reports current and exits zero without download, reinstall, reactivation, or daemon restart.
 
 Top-level `pv update` updates all installed Managed Resource tracks, not only tracks currently needed by linked Projects.
 
 For `pv update --check`, the CLI fetches the PV app update manifest and computes PV application update availability, then asks the daemon to refresh the Managed Resource artifact manifest and report installed Managed Resource track update availability.
 
-PV self-update keeps the previous PV application binary for rollback. If the updated binary cannot restart the daemon and report healthy, `pv update` restores the previous binary, restarts the daemon again, and reports that the app update was rolled back.
+User-facing `pv update` only performs PV application self-update when PV is running from the installed active release layout. Before mutation, `~/.pv/bin/pv` must be a symlink to `releases/<version>/pv`, that symlink target must exist and be a file, and the symlink version must match the running PV application version. If any precondition fails, `pv update` fails before download or activation and does not repair the layout by copying `current_exe()`.
+
+`pv update` is version-driven. If the manifest version equals or is lower than the running version, it reports current and does not download, reinstall, or reactivate the same version. Downgrades are out of v1 scope.
+
+Installed and self-updating PV uses the stable active symlink as the LaunchAgent program path: `~/.pv/bin/pv daemon:run`. During update preflight, a PV-owned stale LaunchAgent plist is normalized to that stable path. When an update later needs to restart the daemon after stale plist normalization, PV reloads the launchd job with bootout/bootstrap before kickstart so launchd uses the normalized `ProgramArguments`. A missing LaunchAgent fails before activation with guidance to run `pv setup` or `pv daemon:enable`. A non-PV-owned LaunchAgent fails before activation and is left unchanged. If LaunchAgent normalization succeeds but the manifest says the PV application is current, `pv update` exits zero without restarting the daemon.
+
+PV app binary downloads use a freshly created command-scoped temporary file under `~/.pv/downloads/`; an existing path is never reused or truncated. While streaming the response, PV writes to that temporary file, computes SHA-256, and counts bytes. After the stream completes, PV verifies byte count and digest against the selected manifest asset. Verification failure deletes the temporary file, fails before app release installation, and leaves the active release unchanged. Successful installation uses the self-update release layout helper, then removes the temporary download; v1 does not introduce a persistent PV app binary download cache.
+
+PV self-update keeps the previous PV application binary for rollback. If the updated binary cannot restart the daemon and report healthy, `pv update` restores the previous binary, restarts the daemon again, and reports that the app update was rolled back. A daemon protocol mismatch during the post-activation health check means the newly activated daemon is running with a newer protocol and is not by itself a rollback reason; subsequent user commands run through the newly active `~/.pv/bin/pv` binary.
 
 PV application rollback applies only to PV app update failures or post-update daemon health failure. If the PV app self-update succeeds but later Managed Resource updates fail, PV keeps the newer app binary installed and reports the Managed Resource update failure.
 
@@ -567,13 +607,19 @@ PV applies database migrations after swapping to the new PV binary and restartin
 
 If the new PV binary's database migration fails during self-update, `pv update` rolls back to the previous PV binary, restarts the daemon with the previous binary, and reports the migration failure. Transactional migrations should leave `pv.db` unchanged on failure.
 
+The daemon writes a minimal startup failure marker at `~/.pv/run/daemon-startup-error.json` when startup fails before it can serve health. A marker has `kind` set to `migration_failed` for `StateError::MigrationFailed` and `StateError::MigrationNameMismatch`, or `startup_failed` for other daemon startup errors, plus a user-facing `message`. The daemon removes any stale marker on successful startup before it serves health. `pv update` clears stale marker content immediately before kickstarting the updated daemon and reads this marker only after post-update daemon health wait fails; missing or malformed marker content falls back to a generic daemon health failure.
+
 `pv update` does not create an extra `pv.db` backup before every PV application self-update. The embedded migration system creates a timestamped backup only when migrations are about to run.
 
-PV application self-update restarts the daemon/control plane but does not stop currently running Gateway, Project-serving workers, or backing Managed Resource processes before swapping the PV binary. The updated daemon adopts existing PV-owned child processes where ownership verification passes and then reconciles/update resources as needed.
+PV application self-update restarts the daemon/control plane but does not stop currently running Gateway, Project-serving workers, or backing Managed Resource processes before swapping the PV binary. The updated daemon adopts existing PV-owned child processes where ownership verification passes and then reconciles or updates resources as needed when a later command requests that work.
+
+Rollback is attempted only after the active binary has changed. If daemon startup, daemon health, or migration health fails after activation and rollback succeeds, stdout reports `PV application: update failed; rolled back to <previous-version>` and stderr reports the original failure. A generic daemon health failure is reported as `daemon did not become healthy after update`; migration failure is reported as `database migration failed after update: <message>`.
+
+If restoring the previous active symlink fails, stdout reports that rollback failed and stderr includes both the original failure and the symlink restore failure. If the previous symlink is restored but daemon restart or health after rollback fails, stdout reports that the previous app release was restored, stderr includes the original failure, says daemon restart after rollback failed, and suggests `pv daemon:restart` or `pv setup`. After the previous symlink is restored, PV attempts to remove the failed new release directory even if daemon restart after rollback fails; cleanup failure is a warning, not the primary result.
 
 PV self-update holds an OS-level filesystem lock at `~/.pv/run/update.lock` for the binary swap and daemon transition. The foreground `pv update` process owns the lock, and both old and new daemon processes check the same lock before accepting mutating work. While the lock is held, concurrent mutating commands fail clearly with an update-in-progress message. The daemon rejects mutating requests while the lock is held; it does not queue them for later execution. Simple local read-only commands that do not require daemon protocol compatibility, such as `pv env`, may still run. Read-only commands that need daemon state, such as `pv status`, fail clearly during the transition. The lock file may remain on disk after the update; the active OS lock is released automatically when the owning process closes it or exits.
 
-After a successful PV application self-update, PV keeps the current app release plus one previous app release under `~/.pv/bin/releases/`. Older app releases are pruned.
+After a successful PV application self-update, PV keeps the current app release plus one previous app release under `~/.pv/bin/releases/`. Older app releases are pruned. Pruning never removes the active release or the previous rollback release. If pruning fails after a successful app update and healthy daemon restart, `pv update` exits zero and reports the cleanup failure as a warning on stderr.
 
 `pv restart` asks the daemon to restart all currently running PV-managed runtime processes, including the Gateway, Project-serving workers, and running Managed Resource processes, then reconcile desired state. Desired-but-stopped runtime processes are started during that reconciliation. It streams progress and exits when restart/reconciliation completes or fails. `pv daemon:restart` is the lower-level command for restarting the daemon/LaunchAgent itself.
 

@@ -9,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
+use state::{Database, PvPaths};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -107,6 +108,34 @@ fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Resu
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((link, open, opened_urls));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn link_rejects_update_lock_without_recording_project() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let _update_lock = state::UpdateLock::acquire(&paths)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    let database = Database::open(&paths)?;
+    let recorded_project = database.project_by_path(&canonical_path(&project)?)?;
+
+    assert_eq!(link.exit_code, ExitCode::FAILURE);
+    assert!(link.stdout.is_empty());
+    assert!(recorded_project.is_none());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(link);
     });
 
     Ok(())

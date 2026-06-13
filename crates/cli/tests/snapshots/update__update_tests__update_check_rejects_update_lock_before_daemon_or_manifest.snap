@@ -1,7 +1,6 @@
 ---
 source: crates/cli/tests/update.rs
-assertion_line: 366
-expression: output
+expression: snapshot
 ---
 RunOutput {
     exit_code: ExitCode(
@@ -10,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: pv update is not implemented yet; run pv update --check to preview available updates\n",
+    stderr: "error: PV update is already in progress; update lock is held at <pv-home>/run/update.lock\n",
 }

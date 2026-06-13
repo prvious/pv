@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "PV update\nPV application: updated 0.1.0 -> 0.2.0\nDaemon restarted and healthy\n",
+    stderr: "warning: failed to prune old PV app releases: filesystem error at <pv-home>/bin/releases/0.0.8: Not a directory (os error 20)\n",
+}

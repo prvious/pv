@@ -23,7 +23,7 @@ expression: "(output, PfRedirectConfig::parse_anchor(&prepared_anchor),\nPfConfR
     ),
     Some(
         LaunchAgentConfig {
-            program_path: "<tempdir>/bin/pv",
+            program_path: "<tempdir>/home/.pv/bin/pv",
             stdout_path: "<tempdir>/home/.pv/logs/launchd.out.log",
             stderr_path: "<tempdir>/home/.pv/logs/launchd.err.log",
         },

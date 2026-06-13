@@ -63,6 +63,17 @@ pub fn wait_until_healthy_blocking(paths: PvPaths) -> Result<(), DaemonError> {
     runtime.block_on(wait_until_healthy(paths))
 }
 
+pub fn wait_until_healthy_allowing_protocol_mismatch_blocking(
+    paths: PvPaths,
+) -> Result<(), DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+
+    runtime.block_on(wait_until_healthy_allowing_protocol_mismatch(paths))
+}
+
 pub fn health_blocking(paths: PvPaths) -> Result<(), DaemonError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -119,12 +130,41 @@ async fn wait_until_healthy(paths: PvPaths) -> Result<(), DaemonError> {
     }
 }
 
+async fn wait_until_healthy_allowing_protocol_mismatch(paths: PvPaths) -> Result<(), DaemonError> {
+    let started_at = Instant::now();
+
+    loop {
+        match health_allowing_protocol_mismatch(paths.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(error) if health_error_is_retryable(&error, started_at) => {
+                sleep(DAEMON_HEALTH_POLL_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 async fn health(paths: PvPaths) -> Result<(), DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
     write_health_request(&mut transport).await?;
     let response = read_response(&mut transport).await?;
     validate_response_contract(&response)?;
+
+    match response.status() {
+        ResponseStatus::Ok => Ok(()),
+        ResponseStatus::Accepted | ResponseStatus::Error => Err(DaemonError::DaemonRejected {
+            message: response.message().to_string(),
+        }),
+    }
+}
+
+async fn health_allowing_protocol_mismatch(paths: PvPaths) -> Result<(), DaemonError> {
+    let mut transport = connect_transport(&paths).await?;
+
+    write_health_request(&mut transport).await?;
+    let response = read_response(&mut transport).await?;
+    validate_response_line_type(&response)?;
 
     match response.status() {
         ResponseStatus::Ok => Ok(()),
@@ -286,11 +326,21 @@ fn accepted_job_id(response: &DaemonResponse) -> Result<String, DaemonError> {
 }
 
 fn validate_response_contract(response: &DaemonResponse) -> Result<(), DaemonError> {
+    validate_response_line_type(response)?;
+    validate_response_protocol(response)
+}
+
+fn validate_response_line_type(response: &DaemonResponse) -> Result<(), DaemonError> {
     if response.line_type() != "response" {
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: format!("daemon sent unexpected `{}` line", response.line_type()),
         });
     }
+
+    Ok(())
+}
+
+fn validate_response_protocol(response: &DaemonResponse) -> Result<(), DaemonError> {
     if response.protocol_version() != PROTOCOL_VERSION {
         return Err(DaemonError::ProtocolMismatch {
             expected: PROTOCOL_VERSION,

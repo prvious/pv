@@ -1,0 +1,8 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: "serde_json::from_str::<Value>(&marker)?"
+---
+Object {
+    "kind": String("migration_failed"),
+    "message": String("state error: migration 1 name mismatch: expected core_state_schema, found wrong_name"),
+}

@@ -34,7 +34,7 @@ fn enable_inner(
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    let config = launch_agent_config(environment, &paths)?;
+    let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -132,7 +132,7 @@ pub(crate) fn restart(
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    let config = launch_agent_config(environment, &paths)?;
+    let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -189,17 +189,12 @@ pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn launch_agent_config(
-    environment: &impl Environment,
-    paths: &PvPaths,
-) -> Result<LaunchAgentConfig, ExecuteError> {
-    let program_path = utf8_path(environment.current_exe()?)?;
-
-    Ok(LaunchAgentConfig::new(
-        program_path,
+fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
+    LaunchAgentConfig::new(
+        paths.active_pv_binary(),
         paths.logs().join("launchd.out.log"),
         paths.logs().join("launchd.err.log"),
-    ))
+    )
 }
 
 fn wait_for_daemon_and_submit_reconciliation(
