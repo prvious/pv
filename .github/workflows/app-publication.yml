@@ -1,0 +1,263 @@
+name: PV App Publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "PV App Release workflow run ID to publish"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: app-publication-stable-entrypoints
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-14
+
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      STABLE_APP_MANIFEST_KEY: pv-app-manifest.json
+      STABLE_INSTALLER_KEY: install.sh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install app publication dependencies
+        run: |
+          set -eu
+          if ! command -v aws >/dev/null 2>&1; then
+            brew install awscli
+          fi
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+          aws --version
+          jq --version
+          gh --version
+
+      - name: Validate publication configuration
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -eu
+          for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_APP_MANIFEST_KEY STABLE_INSTALLER_KEY; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              printf '%s\n' "missing app publication configuration: $name" >&2
+              exit 1
+            fi
+          done
+
+          case "$R2_PUBLIC_BASE_URL" in
+            https://*) ;;
+            *)
+              printf '%s\n' "R2_PUBLIC_BASE_URL must use https" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Validate source app release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          PUBLICATION_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          source_run_json="$RUNNER_TEMP/pv-app-source-run.json"
+          gh run view "$SOURCE_RUN_ID" \
+            --json conclusion,headSha,name,status,url,workflowName \
+            --jq '{conclusion, headSha, name, status, url, workflowName}' \
+            > "$source_run_json"
+
+          run_name=$(jq -r '.name // ""' "$source_run_json")
+          workflow_name=$(jq -r '.workflowName // ""' "$source_run_json")
+          status=$(jq -r '.status // ""' "$source_run_json")
+          conclusion=$(jq -r '.conclusion // ""' "$source_run_json")
+          head_sha=$(jq -r '.headSha // ""' "$source_run_json")
+          url=$(jq -r '.url // ""' "$source_run_json")
+
+          if [ "$workflow_name" != "PV App Release" ] && [ "$run_name" != "PV App Release" ]; then
+            printf '%s\n' "source run must be a PV App Release workflow run: $url" >&2
+            exit 1
+          fi
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            printf '%s\n' "source PV App Release run must be completed successfully: $url" >&2
+            exit 1
+          fi
+          if [ "$head_sha" != "$PUBLICATION_HEAD_SHA" ]; then
+            printf '%s\n' "source PV App Release run must use this commit: expected $PUBLICATION_HEAD_SHA, got $head_sha" >&2
+            exit 1
+          fi
+
+      - name: Download source app release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -eu
+          download_dir="$RUNNER_TEMP/pv-app-publication-download"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+          gh run download "$SOURCE_RUN_ID" --dir "$download_dir"
+          find "$download_dir" -type f -print | sed -n '1,200p'
+
+      - name: Stage app publication
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -eu
+          download_dir="$RUNNER_TEMP/pv-app-publication-download"
+          candidate_record_dir="$RUNNER_TEMP/pv-app-publication-record-files"
+          stage="$RUNNER_TEMP/pv-app-publication-stage"
+
+          app_manifest=$(find "$download_dir" -type f -name pv-app-manifest.json -print -quit)
+          if [ -z "$app_manifest" ]; then
+            printf '%s\n' "source run did not contain pv-app-manifest.json" >&2
+            exit 1
+          fi
+          handoff_dir=$(dirname "$app_manifest")
+          installer="$handoff_dir/install.sh"
+          if [ ! -f "$installer" ]; then
+            printf '%s\n' "source run did not contain install.sh next to pv-app-manifest.json" >&2
+            exit 1
+          fi
+
+          for binary_name in pv-darwin-arm64 pv-darwin-amd64; do
+            binary_source=$(find "$handoff_dir" -type f -path "*/pv/*/$binary_name" -print -quit)
+            record_source=$(find "$handoff_dir" -type f -path "*/pv/records/*/$binary_name.json" -print -quit)
+            if [ -z "$binary_source" ]; then
+              printf '%s\n' "missing app binary for $binary_name" >&2
+              exit 1
+            fi
+            if [ -z "$record_source" ]; then
+              printf '%s\n' "missing app release record for $binary_name" >&2
+              exit 1
+            fi
+          done
+
+          rm -rf "$candidate_record_dir" "$stage"
+          mkdir -p "$candidate_record_dir"
+          find "$handoff_dir" -type f -path "*/pv/records/*/pv-darwin-*.json" | while IFS= read -r record; do
+            cp "$record" "$candidate_record_dir/$(basename "$record")"
+          done
+          if ! find "$candidate_record_dir" -type f -name '*.json' -print -quit | grep -q .; then
+            printf '%s\n' "source run did not contain app release records" >&2
+            exit 1
+          fi
+
+          cargo run --locked -p pv-release -- stage-app-publication \
+            --source-binaries "$handoff_dir" \
+            --candidate-records "$candidate_record_dir" \
+            --app-manifest "$app_manifest" \
+            --installer "$installer" \
+            --stage "$stage" \
+            --source-run-id "$SOURCE_RUN_ID"
+
+          expected_app_manifest_key="pv/manifests/runs/$SOURCE_RUN_ID/pv-app-manifest.json"
+          expected_installer_key="pv/manifests/runs/$SOURCE_RUN_ID/install.sh"
+          jq -e \
+            --arg manifest_key "$expected_app_manifest_key" \
+            --arg installer_key "$expected_installer_key" \
+            'any(.immutable_uploads[]; .object_key == $manifest_key) and any(.immutable_uploads[]; .object_key == $installer_key)' \
+            "$stage/publication-plan.json" >/dev/null
+
+      - name: Upload staged app publication plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-app-publication-plan-${{ inputs.source_run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-app-publication-stage/publication-plan.json
+          if-no-files-found: error
+
+      - name: Upload immutable app objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+
+          upload_immutable_object() {
+            local_path=$1
+            object_key=$2
+            error_file="$RUNNER_TEMP/pv-app-put-object.err"
+            if aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --body "$local_path" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --if-none-match '*' \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'PreconditionFailed|Precondition Failed|412' "$error_file"; then
+              printf '%s\n' "immutable app object already exists: $object_key" >&2
+              exit 1
+            fi
+            printf '%s\n' "failed to upload immutable app object: $object_key" >&2
+            cat "$error_file" >&2
+            exit 1
+          }
+
+          upload_rows="$RUNNER_TEMP/pv-app-immutable-uploads.tsv"
+          jq -r '.immutable_uploads[] | [.local_path, .object_key] | @tsv' publication-plan.json > "$upload_rows"
+          if [ ! -s "$upload_rows" ]; then
+            printf '%s\n' "app publication plan did not contain immutable uploads" >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r local_path object_key; do
+            upload_immutable_object "$local_path" "$object_key"
+          done < "$upload_rows"
+
+      - name: Publish stable app manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_app_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_app_manifest.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_APP_MANIFEST_KEY" ]; then
+            printf '%s\n' "stable app manifest object key must be $STABLE_APP_MANIFEST_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json \
+            > /dev/null
+
+      - name: Publish stable installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_installer.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_installer.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_INSTALLER_KEY" ]; then
+            printf '%s\n' "stable installer object key must be $STABLE_INSTALLER_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type text/x-shellscript \
+            > /dev/null
