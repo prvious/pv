@@ -193,10 +193,6 @@ fn temporary_app_download_path(paths: &PvPaths) -> Utf8PathBuf {
         .join(format!("pv-app-{process_id}-{counter}.tmp"))
 }
 
-fn create_download_file(path: &Utf8Path) -> io::Result<AppDownloadFile> {
-    AppDownloadFile::create(path)
-}
-
 fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
     state::fs::remove_file_if_exists(path)?;
 
@@ -207,13 +203,46 @@ fn restart_daemon_without_reconciliation(
     environment: &impl Environment,
     paths: &PvPaths,
     reload: &LaunchAgentReload,
+    health_check: DaemonHealthCheck,
 ) -> Result<(), ExecuteError> {
     if let LaunchAgentReload::Required { path } = reload {
         bootout_launch_agent_if_loaded(environment)?;
         environment.bootstrap_launch_agent(path)?;
     }
+    clear_daemon_startup_failure_marker(paths)?;
     environment.kickstart_launch_agent()?;
-    daemon::wait_until_healthy_blocking(paths.clone())?;
+    wait_until_daemon_started(paths.clone(), health_check)?;
+
+    Ok(())
+}
+
+fn create_download_file(path: &Utf8Path) -> Result<AppDownloadFile, StateError> {
+    state::fs::create_new_file(path)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonHealthCheck {
+    RequireCompatibleProtocol,
+    AcceptProtocolMismatch,
+}
+
+fn wait_until_daemon_started(
+    paths: PvPaths,
+    health_check: DaemonHealthCheck,
+) -> Result<(), ExecuteError> {
+    match daemon::wait_until_healthy_blocking(paths) {
+        Ok(()) => Ok(()),
+        Err(daemon::DaemonError::ProtocolMismatch { .. })
+            if health_check == DaemonHealthCheck::AcceptProtocolMismatch =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn clear_daemon_startup_failure_marker(paths: &PvPaths) -> Result<(), ExecuteError> {
+    state::fs::remove_file_if_exists(&paths.daemon_startup_error())?;
 
     Ok(())
 }
@@ -350,9 +379,12 @@ fn run_app_update(
     }
     let updated_version = manifest.version().as_str().to_string();
     layout.activate_release(&updated_version)?;
-    if let Err(error) =
-        restart_daemon_without_reconciliation(environment, &paths, &launch_agent_reload)
-    {
+    if let Err(error) = restart_daemon_without_reconciliation(
+        environment,
+        &paths,
+        &launch_agent_reload,
+        DaemonHealthCheck::AcceptProtocolMismatch,
+    ) {
         return rollback_app_update(
             environment,
             RollbackContext {
@@ -421,6 +453,7 @@ fn rollback_app_update(
         environment,
         context.paths,
         context.launch_agent_reload,
+        DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
         output.line(&format!(
             "PV application: update failed; restored {}",
@@ -754,4 +787,37 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn utf8_path(path: impl Into<std::path::PathBuf>) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(path.into()).map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+
+    use camino_tempfile::tempdir;
+
+    use super::create_download_file;
+
+    #[test]
+    fn create_download_file_rejects_existing_path_without_truncating() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let path = tempdir.path().join("pv-app-existing.tmp");
+        state::fs::write_sensitive_file(&path, "existing content")?;
+
+        let Err(error) = create_download_file(&path) else {
+            anyhow::bail!("expected existing download path to be rejected");
+        };
+
+        let state::StateError::Filesystem {
+            path: error_path,
+            source,
+        } = error
+        else {
+            anyhow::bail!("expected filesystem error for existing download path");
+        };
+        assert_eq!(error_path, path);
+        assert_eq!(source.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(state::fs::read_to_string(&path)?, "existing content");
+
+        Ok(())
+    }
 }

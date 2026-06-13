@@ -124,7 +124,7 @@ fn require_no_update_in_progress(
     command: &Command,
     environment: &impl Environment,
 ) -> Result<(), ExecuteError> {
-    if !command_mutates_during_update(command) {
+    if !command_blocked_during_update(command) {
         return Ok(());
     }
 
@@ -132,54 +132,57 @@ fn require_no_update_in_progress(
     state::UpdateLock::require_no_update_in_progress(&paths).map_err(update_lock_error)
 }
 
-fn command_mutates_during_update(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Setup(_)
-            | Command::Uninstall(_)
-            | Command::DaemonEnable
-            | Command::DaemonDisable
-            | Command::DaemonRestart
-            | Command::DnsInstall
-            | Command::DnsUninstall
-            | Command::PortsInstall
-            | Command::PortsUninstall
-            | Command::CaTrust
-            | Command::CaUntrust
-            | Command::Link(_)
-            | Command::Unlink(_)
-            | Command::PhpUse(_)
-            | Command::PhpInstall(_)
-            | Command::PhpUpdate
-            | Command::PhpUninstall(_)
-            | Command::ComposerInstall
-            | Command::ComposerUpdate
-            | Command::ComposerUninstall(_)
-            | Command::MailpitInstall(_)
-            | Command::MailInstall(_)
-            | Command::MailpitUpdate
-            | Command::MailUpdate
-            | Command::MailpitUninstall(_)
-            | Command::MailUninstall(_)
-            | Command::RedisInstall(_)
-            | Command::RedisUpdate
-            | Command::RedisUninstall(_)
-            | Command::RustfsInstall(_)
-            | Command::S3Install(_)
-            | Command::RustfsUpdate
-            | Command::S3Update
-            | Command::RustfsUninstall(_)
-            | Command::S3Uninstall(_)
-            | Command::MysqlInstall(_)
-            | Command::MysqlUpdate
-            | Command::MysqlUninstall(_)
-            | Command::PostgresInstall(_)
-            | Command::PgInstall(_)
-            | Command::PostgresUpdate
-            | Command::PgUpdate
-            | Command::PostgresUninstall(_)
-            | Command::PgUninstall(_)
-    )
+fn command_blocked_during_update(command: &Command) -> bool {
+    match command {
+        Command::Update(args) => args.check,
+        command => matches!(
+            command,
+            Command::Setup(_)
+                | Command::Uninstall(_)
+                | Command::DaemonEnable
+                | Command::DaemonDisable
+                | Command::DaemonRestart
+                | Command::DnsInstall
+                | Command::DnsUninstall
+                | Command::PortsInstall
+                | Command::PortsUninstall
+                | Command::CaTrust
+                | Command::CaUntrust
+                | Command::Link(_)
+                | Command::Unlink(_)
+                | Command::PhpUse(_)
+                | Command::PhpInstall(_)
+                | Command::PhpUpdate
+                | Command::PhpUninstall(_)
+                | Command::ComposerInstall
+                | Command::ComposerUpdate
+                | Command::ComposerUninstall(_)
+                | Command::MailpitInstall(_)
+                | Command::MailInstall(_)
+                | Command::MailpitUpdate
+                | Command::MailUpdate
+                | Command::MailpitUninstall(_)
+                | Command::MailUninstall(_)
+                | Command::RedisInstall(_)
+                | Command::RedisUpdate
+                | Command::RedisUninstall(_)
+                | Command::RustfsInstall(_)
+                | Command::S3Install(_)
+                | Command::RustfsUpdate
+                | Command::S3Update
+                | Command::RustfsUninstall(_)
+                | Command::S3Uninstall(_)
+                | Command::MysqlInstall(_)
+                | Command::MysqlUpdate
+                | Command::MysqlUninstall(_)
+                | Command::PostgresInstall(_)
+                | Command::PgInstall(_)
+                | Command::PostgresUpdate
+                | Command::PgUpdate
+                | Command::PostgresUninstall(_)
+                | Command::PgUninstall(_)
+        ),
+    }
 }
 
 fn update_lock_error(error: StateError) -> ExecuteError {

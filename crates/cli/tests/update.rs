@@ -10,6 +10,7 @@ mod update_tests {
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
     use std::thread;
+    use std::time::{Duration, Instant};
 
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
@@ -32,6 +33,7 @@ mod update_tests {
         operations: RefCell<Vec<String>>,
         delete_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
         lock_probe: RefCell<Option<PvPaths>>,
+        startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
     }
 
     impl TestEnvironment {
@@ -42,6 +44,7 @@ mod update_tests {
                 operations: RefCell::new(Vec::new()),
                 delete_on_first_kickstart: RefCell::new(None),
                 lock_probe: RefCell::new(None),
+                startup_marker_on_first_kickstart: RefCell::new(None),
             }
         }
 
@@ -56,6 +59,12 @@ mod update_tests {
 
         fn with_update_lock_probe(self, paths: PvPaths) -> Self {
             self.lock_probe.replace(Some(paths));
+            self
+        }
+
+        fn with_startup_marker_on_first_kickstart(self, path: Utf8PathBuf, content: &str) -> Self {
+            self.startup_marker_on_first_kickstart
+                .replace(Some((path, content.to_string())));
             self
         }
     }
@@ -136,6 +145,12 @@ mod update_tests {
             }
             if let Some(path) = self.delete_on_first_kickstart.borrow_mut().take() {
                 state::fs::remove_file_if_exists(&path)
+                    .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
+            }
+            if let Some((path, content)) =
+                self.startup_marker_on_first_kickstart.borrow_mut().take()
+            {
+                state::fs::write_sensitive_file(&path, &content)
                     .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
             }
 
@@ -640,6 +655,28 @@ mod update_tests {
     }
 
     #[test]
+    fn update_check_rejects_update_lock_before_daemon_or_manifest() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let _update_lock = state::UpdateLock::acquire(&paths)?;
+        let environment = TestEnvironment::new(&home, PanickingClient);
+
+        let output = run_pv(&["update", "--check"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains(paths.update_lock().as_str()));
+        assert_update_snapshot(
+            "update_check_rejects_update_lock_before_daemon_or_manifest",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_checksum_mismatch_leaves_active_release_untouched() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
@@ -849,6 +886,57 @@ mod update_tests {
     }
 
     #[test]
+    fn update_accepts_protocol_mismatch_health_after_activation() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start_until_idle(
+            &paths,
+            vec![
+                health_response_with_protocol(daemon::PROTOCOL_VERSION + 1),
+                health_response(),
+            ],
+            Duration::from_millis(100),
+        )?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+        let daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(
+            environment.operations(),
+            vec![format!("kickstart {LAUNCH_AGENT_LABEL}")]
+        );
+        assert_eq!(
+            daemon_requests,
+            vec![json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "health"
+            })]
+        );
+        assert_update_snapshot(
+            "update_accepts_protocol_mismatch_health_after_activation",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_reports_rollback_symlink_restore_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
@@ -929,9 +1017,55 @@ mod update_tests {
         state::fs::ensure_layout(&paths)?;
         let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(
+            &paths,
+            vec![
+                daemon_error_response("daemon boot failed"),
+                health_response(),
+            ],
+        )?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        )
+        .with_startup_marker_on_first_kickstart(
+            paths.daemon_startup_error(),
+            r#"{"kind":"migration_failed","message":"migration 7 (resource_port_roles) failed"}"#,
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert!(!state::fs::path_entry_exists(
+            &paths.app_release_binary("0.2.0")
+        )?);
+        assert_update_snapshot(
+            "update_reports_migration_failure_marker_after_health_failure",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_ignores_stale_startup_failure_marker_after_health_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
         state::fs::write_sensitive_file(
             &paths.daemon_startup_error(),
-            r#"{"kind":"migration_failed","message":"migration 7 (resource_port_roles) failed"}"#,
+            r#"{"kind":"migration_failed","message":"stale migration failure"}"#,
         )?;
         let daemon = FakeDaemon::start(
             &paths,
@@ -956,11 +1090,9 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
-        assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
-        )?);
+        assert!(!output.stderr.contains("stale migration failure"));
         assert_update_snapshot(
-            "update_reports_migration_failure_marker_after_health_failure",
+            "update_ignores_stale_startup_failure_marker_after_health_failure",
             output,
         );
 
@@ -1154,6 +1286,47 @@ mod update_tests {
                     BufReader::new(stream.try_clone()?).read_line(&mut request)?;
                     stream.write_all(format!("{response}\n").as_bytes())?;
                     requests.push(serde_json::from_str(request.trim_end())?);
+                }
+
+                Ok(requests)
+            });
+
+            Ok(Self { handle })
+        }
+
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "update tests use a bounded fake Unix socket daemon"
+        )]
+        fn start_until_idle(
+            paths: &PvPaths,
+            responses: Vec<serde_json::Value>,
+            idle_timeout: Duration,
+        ) -> anyhow::Result<Self> {
+            let listener = UnixListener::bind(paths.daemon_socket())?;
+            listener.set_nonblocking(true)?;
+            let handle = thread::spawn(move || {
+                let mut requests = Vec::new();
+                let mut responses = VecDeque::from(responses);
+                let mut last_activity = Instant::now();
+                while let Some(response) = responses.front() {
+                    match listener.accept() {
+                        Ok((mut stream, _address)) => {
+                            let mut request = String::new();
+                            BufReader::new(stream.try_clone()?).read_line(&mut request)?;
+                            stream.write_all(format!("{response}\n").as_bytes())?;
+                            requests.push(serde_json::from_str(request.trim_end())?);
+                            responses.pop_front();
+                            last_activity = Instant::now();
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            if !requests.is_empty() && last_activity.elapsed() >= idle_timeout {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
 
                 Ok(requests)
@@ -1361,9 +1534,13 @@ mod update_tests {
     }
 
     fn health_response() -> serde_json::Value {
+        health_response_with_protocol(daemon::PROTOCOL_VERSION)
+    }
+
+    fn health_response_with_protocol(protocol_version: u16) -> serde_json::Value {
         json!({
             "type": "response",
-            "protocol_version": daemon::PROTOCOL_VERSION,
+            "protocol_version": protocol_version,
             "status": "ok",
             "message": "daemon healthy"
         })
