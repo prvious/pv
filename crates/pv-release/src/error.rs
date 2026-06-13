@@ -5,6 +5,9 @@ pub enum ReleaseError {
     #[error("invalid release record `{path}`: {reason}")]
     InvalidReleaseRecord { path: String, reason: String },
 
+    #[error("invalid app release record `{path}`: {reason}")]
+    InvalidAppReleaseRecord { path: String, reason: String },
+
     #[error("invalid revocation record `{path}`: {reason}")]
     InvalidRevocationRecord { path: String, reason: String },
 
@@ -16,6 +19,19 @@ pub enum ReleaseError {
 
     #[error("duplicate artifact identity `{identity}`")]
     DuplicateArtifactIdentity { identity: String },
+
+    #[error("duplicate app release record for {platform}")]
+    DuplicateAppReleasePlatform { platform: String },
+
+    #[error(
+        "app release records must agree on {field}: expected `{expected}`, got `{actual}` in `{path}`"
+    )]
+    AppReleaseMetadataMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+        path: String,
+    },
 
     #[error("revocation `{revocation}` references missing artifact `{identity}`")]
     RevocationTargetMissing {
@@ -67,6 +83,9 @@ pub enum ReleaseError {
 
     #[error("generated manifest is invalid: {reason}")]
     GeneratedManifestInvalid { reason: String },
+
+    #[error("generated app manifest is invalid: {reason}")]
+    GeneratedAppManifestInvalid { reason: String },
 
     #[error("filesystem error at `{path}`: {reason}")]
     Filesystem { path: String, reason: String },

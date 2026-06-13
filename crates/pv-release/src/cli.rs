@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use resources::ArtifactPlatform;
 use std::io::{self, Write};
 
+use crate::app::WriteAppReleaseRecordRequest;
 use crate::publication::PublicationRequest;
 use crate::recipe::BackingRecipeKind;
 use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
@@ -17,10 +18,6 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "pv-release parses CLI subcommands once at process startup"
-)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -29,6 +26,14 @@ enum Command {
         revocations: Utf8PathBuf,
         #[arg(long)]
         defaults: Option<Utf8PathBuf>,
+        #[arg(long)]
+        output: Utf8PathBuf,
+        #[arg(long)]
+        base_url: String,
+    },
+    GenerateAppManifest {
+        #[arg(long)]
+        records: Utf8PathBuf,
         #[arg(long)]
         output: Utf8PathBuf,
         #[arg(long)]
@@ -126,6 +131,34 @@ enum Command {
         #[arg(long = "source-input", num_args = 3, value_names = ["NAME", "URL", "SHA256"])]
         source_inputs: Vec<String>,
     },
+    WriteAppReleaseRecord {
+        #[arg(long)]
+        record: Utf8PathBuf,
+        #[arg(long)]
+        binary: Utf8PathBuf,
+        #[arg(long)]
+        channel: String,
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        minimum_pv_version: String,
+        #[arg(long)]
+        published_at: String,
+        #[arg(long)]
+        platform: String,
+        #[arg(long)]
+        object_key: String,
+        #[arg(long)]
+        source_url: String,
+        #[arg(long)]
+        source_sha256: String,
+        #[arg(long)]
+        recipe: String,
+        #[arg(long)]
+        pv_commit: String,
+        #[arg(long)]
+        build_run_id: String,
+    },
     PrintRecipeEnv {
         #[arg(long)]
         php: Option<Utf8PathBuf>,
@@ -167,6 +200,12 @@ pub fn run() -> anyhow::Result<()> {
             &base_url,
         )
         .with_context(|| format!("failed to generate manifest at `{output}`")),
+        Command::GenerateAppManifest {
+            records,
+            output,
+            base_url,
+        } => crate::app::generate_app_manifest_file(&records, &output, &base_url)
+            .map_err(anyhow::Error::from),
         Command::StagePublication {
             source_archives,
             candidate_records,
@@ -269,6 +308,36 @@ pub fn run() -> anyhow::Result<()> {
             })
             .context(context)
         }
+        Command::WriteAppReleaseRecord {
+            record,
+            binary,
+            channel,
+            version,
+            minimum_pv_version,
+            published_at,
+            platform,
+            object_key,
+            source_url,
+            source_sha256,
+            recipe,
+            pv_commit,
+            build_run_id,
+        } => crate::app::write_app_release_record(&WriteAppReleaseRecordRequest {
+            record,
+            binary,
+            channel,
+            version,
+            minimum_pv_version,
+            published_at,
+            platform,
+            object_key,
+            source_url,
+            source_sha256,
+            recipe,
+            pv_commit,
+            build_run_id,
+        })
+        .map_err(anyhow::Error::from),
         Command::PrintRecipeEnv {
             php,
             composer,
