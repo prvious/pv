@@ -92,13 +92,15 @@ fn validate_active_release(
 fn normalize_launch_agent(
     environment: &impl Environment,
     paths: &PvPaths,
-) -> Result<(), ExecuteError> {
+) -> Result<LaunchAgentReload, ExecuteError> {
     let expected = launch_agent_config(paths);
     let path = launch_agent_path(environment)?;
     match platform::inspect_launch_agent_file(&path, Some(&expected)) {
-        LaunchAgentFileState::Current { .. } => Ok(()),
+        LaunchAgentFileState::Current { .. } => Ok(LaunchAgentReload::NotRequired),
         LaunchAgentFileState::Stale { .. } => {
-            Ok(platform::write_launch_agent_file(&path, &expected)?)
+            platform::write_launch_agent_file(&path, &expected)?;
+
+            Ok(LaunchAgentReload::Required { path })
         }
         LaunchAgentFileState::Missing { path } => Err(CliError::AppUpdateLaunchAgentMissing {
             path: path.to_string(),
@@ -112,6 +114,12 @@ fn normalize_launch_agent(
             Err(CliError::AppUpdateLaunchAgentUnreadable { message }.into())
         }
     }
+}
+
+#[derive(Clone, Debug)]
+enum LaunchAgentReload {
+    NotRequired,
+    Required { path: Utf8PathBuf },
 }
 
 fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
@@ -139,6 +147,7 @@ fn download_app_asset(
     environment: &impl Environment,
     paths: &PvPaths,
     asset: &AppUpdateAsset,
+    stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
     state::fs::ensure_user_dir(paths.downloads())?;
     let path = temporary_app_download_path(paths);
@@ -148,13 +157,13 @@ fn download_app_asset(
         client.download(asset.url(), &mut writer)
     });
     if let Err(error) = download_result {
-        remove_download(&path)?;
+        write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(error);
     }
 
     let stats = writer.finish();
     if stats.size != asset.size() {
-        remove_download(&path)?;
+        write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(CliError::AppUpdateSizeMismatch {
             url: asset.url().to_string(),
             expected: asset.size(),
@@ -163,7 +172,7 @@ fn download_app_asset(
         .into());
     }
     if stats.sha256 != asset.sha256().as_str() {
-        remove_download(&path)?;
+        write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(CliError::AppUpdateChecksumMismatch {
             url: asset.url().to_string(),
             expected: asset.sha256().as_str().to_string(),
@@ -197,11 +206,37 @@ fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
 fn restart_daemon_without_reconciliation(
     environment: &impl Environment,
     paths: &PvPaths,
+    reload: &LaunchAgentReload,
 ) -> Result<(), ExecuteError> {
+    if let LaunchAgentReload::Required { path } = reload {
+        bootout_launch_agent_if_loaded(environment)?;
+        environment.bootstrap_launch_agent(path)?;
+    }
     environment.kickstart_launch_agent()?;
     daemon::wait_until_healthy_blocking(paths.clone())?;
 
     Ok(())
+}
+
+fn bootout_launch_agent_if_loaded(environment: &impl Environment) -> Result<(), ExecuteError> {
+    match environment.bootout_launch_agent() {
+        Ok(()) => Ok(()),
+        Err(error) if launch_agent_is_already_unloaded(&error) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
+    match error {
+        platform::PlatformError::LaunchAgent(message) => {
+            let message = message.to_ascii_lowercase();
+            message.contains("already unloaded")
+                || message.contains("not loaded")
+                || message.contains("not running")
+        }
+        platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
+        _ => false,
+    }
 }
 
 fn update_state_error(error: StateError) -> ExecuteError {
@@ -288,7 +323,7 @@ fn run_app_update(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     let previous_version = validate_active_release(&layout, &current_version)?;
-    normalize_launch_agent(environment, &paths)?;
+    let launch_agent_reload = normalize_launch_agent(environment, &paths)?;
 
     let manifest = fetch_app_update_manifest(environment)?;
     if manifest.version() <= &current_version {
@@ -302,17 +337,29 @@ fn run_app_update(
         .map(Ok)
         .unwrap_or_else(AppUpdatePlatform::current)?;
     let asset = manifest.select_platform(platform)?;
-    let downloaded = download_app_asset(environment, &paths, asset)?;
+    let downloaded = download_app_asset(environment, &paths, asset, stderr)?;
     let install_result = layout.install_release_binary(manifest.version().as_str(), &downloaded);
-    remove_download(&downloaded)?;
-    install_result?;
+    let cleanup_result = remove_download(&downloaded);
+    match (install_result, cleanup_result) {
+        (Ok(_install), Ok(())) => {}
+        (Ok(_install), Err(cleanup_error)) => return Err(cleanup_error),
+        (Err(install_error), cleanup_result) => {
+            write_download_cleanup_warning(stderr, cleanup_result.err())?;
+            return Err(install_error.into());
+        }
+    }
     let updated_version = manifest.version().as_str().to_string();
     layout.activate_release(&updated_version)?;
-    if let Err(error) = restart_daemon_without_reconciliation(environment, &paths) {
+    if let Err(error) =
+        restart_daemon_without_reconciliation(environment, &paths, &launch_agent_reload)
+    {
         return rollback_app_update(
             environment,
-            &paths,
-            &layout,
+            RollbackContext {
+                paths: &paths,
+                layout: &layout,
+                launch_agent_reload: &launch_agent_reload,
+            },
             RollbackVersions {
                 previous: &previous_version,
                 failed: &updated_version,
@@ -344,17 +391,22 @@ struct RollbackVersions<'a> {
     failed: &'a str,
 }
 
+struct RollbackContext<'a> {
+    paths: &'a PvPaths,
+    layout: &'a state::AppReleaseLayout,
+    launch_agent_reload: &'a LaunchAgentReload,
+}
+
 fn rollback_app_update(
     environment: &impl Environment,
-    paths: &PvPaths,
-    layout: &state::AppReleaseLayout,
+    context: RollbackContext<'_>,
     versions: RollbackVersions<'_>,
     original_error: ExecuteError,
     output: &mut Output<'_, impl Write>,
     stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let original_message = app_update_failure_message(paths, &original_error);
-    if let Err(restore_error) = layout.activate_release(versions.previous) {
+    let original_message = app_update_failure_message(context.paths, &original_error);
+    if let Err(restore_error) = context.layout.activate_release(versions.previous) {
         output.line("PV application: update failed; rollback failed")?;
 
         return Err(CliError::AppUpdateRollbackFailed {
@@ -364,8 +416,12 @@ fn rollback_app_update(
         .into());
     }
 
-    let cleanup_error = layout.remove_release(versions.failed).err();
-    if let Err(rollback_error) = restart_daemon_without_reconciliation(environment, paths) {
+    let cleanup_error = context.layout.remove_release(versions.failed).err();
+    if let Err(rollback_error) = restart_daemon_without_reconciliation(
+        environment,
+        context.paths,
+        context.launch_agent_reload,
+    ) {
         output.line(&format!(
             "PV application: update failed; restored {}",
             versions.previous
@@ -399,6 +455,20 @@ fn write_cleanup_warning(
         let mut output = Output::new(stderr, OutputMode::plain());
         output.line(&format!(
             "warning: failed to remove failed PV app release: {error}"
+        ))?;
+    }
+
+    Ok(())
+}
+
+fn write_download_cleanup_warning(
+    stderr: &mut impl Write,
+    cleanup_error: Option<ExecuteError>,
+) -> Result<(), ExecuteError> {
+    if let Some(error) = cleanup_error {
+        let mut output = Output::new(stderr, OutputMode::plain());
+        output.line(&format!(
+            "warning: failed to remove temporary PV app download: {error}"
         ))?;
     }
 
@@ -516,9 +586,7 @@ struct AppUpdateAssetStatus {
 }
 
 fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, ExecuteError> {
-    let url = app_update_manifest_url(environment);
-    let json = with_resource_http_client(environment, |client| client.get_text(&url))?;
-    let manifest = AppUpdateManifest::parse(&json)?;
+    let manifest = fetch_app_update_manifest(environment)?;
     let current_version = AppUpdateVersion::current()?;
     let platform = match environment.app_update_platform() {
         Some(platform) => Ok(platform),

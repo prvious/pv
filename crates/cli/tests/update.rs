@@ -3,7 +3,9 @@ mod update_tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::ffi::OsString;
+    use std::fs::Permissions;
     use std::io::{self, BufRead, BufReader, Write};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
@@ -29,6 +31,7 @@ mod update_tests {
         client: Box<dyn ResourceHttpClient>,
         operations: RefCell<Vec<String>>,
         delete_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
+        lock_probe: RefCell<Option<PvPaths>>,
     }
 
     impl TestEnvironment {
@@ -38,6 +41,7 @@ mod update_tests {
                 client: Box::new(client),
                 operations: RefCell::new(Vec::new()),
                 delete_on_first_kickstart: RefCell::new(None),
+                lock_probe: RefCell::new(None),
             }
         }
 
@@ -47,6 +51,11 @@ mod update_tests {
 
         fn with_delete_on_first_kickstart(self, path: Utf8PathBuf) -> Self {
             self.delete_on_first_kickstart.replace(Some(path));
+            self
+        }
+
+        fn with_update_lock_probe(self, paths: PvPaths) -> Self {
+            self.lock_probe.replace(Some(paths));
             self
         }
     }
@@ -115,6 +124,16 @@ mod update_tests {
             self.operations
                 .borrow_mut()
                 .push(format!("kickstart {LAUNCH_AGENT_LABEL}"));
+            if let Some(paths) = self.lock_probe.borrow().as_ref() {
+                let probe = match state::UpdateLock::acquire(paths) {
+                    Ok(_lock) => "lock probe free".to_string(),
+                    Err(state::StateError::UpdateInProgress { .. }) => {
+                        "lock probe held".to_string()
+                    }
+                    Err(error) => format!("lock probe failed: {error}"),
+                };
+                self.operations.borrow_mut().push(probe);
+            }
             if let Some(path) = self.delete_on_first_kickstart.borrow_mut().take() {
                 state::fs::remove_file_if_exists(&path)
                     .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
@@ -481,6 +500,82 @@ mod update_tests {
     }
 
     #[test]
+    fn update_reloads_stale_launch_agent_before_restarting_updated_app() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &tempdir.path().join("old-pv"))?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(
+            environment.operations(),
+            vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_holds_lock_until_daemon_transition_finishes() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        )
+        .with_update_lock_probe(paths.clone());
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+        let reacquired = state::UpdateLock::acquire(&paths);
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(
+            environment.operations(),
+            vec![
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                "lock probe held".to_string(),
+            ]
+        );
+        assert!(reacquired.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
     fn update_normalizes_stale_launch_agent_without_restarting_when_current() -> anyhow::Result<()>
     {
         let tempdir = tempdir()?;
@@ -580,6 +675,102 @@ mod update_tests {
             "update_checksum_mismatch_leaves_active_release_untouched",
             output,
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_download_failure_removes_temporary_download() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.2.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download_error(ResourcesError::HttpRequestFailed {
+                    url: APP_BINARY_URL.to_string(),
+                    reason: "connection reset".to_string(),
+                }),
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+        let temporary_downloads = app_temporary_downloads(&paths)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(output.stdout, "PV update\n");
+        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert!(!state::fs::path_entry_exists(
+            &paths.app_release_binary("0.2.0")
+        )?);
+        assert!(temporary_downloads.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_preserves_checksum_error_when_download_cleanup_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let environment = TestEnvironment::new(
+            &home,
+            ReadOnlyDownloadsClient {
+                manifest: app_manifest(
+                    "0.2.0",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    u64::try_from(APP_BINARY.len())?,
+                ),
+                bytes: APP_BINARY.to_vec(),
+                downloads: paths.downloads().to_path_buf(),
+            },
+        );
+
+        let result = run_pv(&["update"], &environment);
+        set_permissions(paths.downloads(), 0o700)?;
+        let output = result?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(output.stdout, "PV update\n");
+        assert!(output.stderr.contains("checksum mismatch"));
+        assert!(output.stderr.contains("warning: failed to remove"));
+        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_accepts_non_utf8_installed_binary_fixture() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_active_release(&paths, "0.1.0", b"\xffpv 0.1.0\n")?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new().with_text(&app_manifest(
+                "0.1.0",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                12_345_678,
+            )),
+        );
+
+        let output = run_pv(&["update"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
 
         Ok(())
     }
@@ -1036,6 +1227,11 @@ mod update_tests {
                 .push_back(Ok(bytes.to_vec()));
             self
         }
+
+        fn with_download_error(self, error: ResourcesError) -> Self {
+            self.download_responses.borrow_mut().push_back(Err(error));
+            self
+        }
     }
 
     impl ResourceHttpClient for ScriptedClient {
@@ -1068,6 +1264,34 @@ mod update_tests {
                     url: url.to_string(),
                     reason: source.to_string(),
                 })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReadOnlyDownloadsClient {
+        manifest: String,
+        bytes: Vec<u8>,
+        downloads: Utf8PathBuf,
+    }
+
+    impl ResourceHttpClient for ReadOnlyDownloadsClient {
+        fn get_text(&self, _url: &str) -> resources::Result<String> {
+            Ok(self.manifest.clone())
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            writer
+                .write_all(&self.bytes)
+                .map_err(|source| ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: source.to_string(),
+                })?;
+            set_permissions(&self.downloads, 0o500).map_err(|source| {
+                ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: source.to_string(),
+                }
+            })
         }
     }
 
@@ -1176,7 +1400,7 @@ mod update_tests {
     ) -> anyhow::Result<AppReleaseLayout> {
         let layout = AppReleaseLayout::new(paths.clone());
         let source = paths.downloads().join(format!("pv-{version}"));
-        state::fs::write_sensitive_file(&source, &String::from_utf8(content.to_vec())?)?;
+        write_bytes(&source, content)?;
         layout.install_release_binary(version, &source)?;
         layout.activate_release(version)?;
 
@@ -1210,6 +1434,36 @@ mod update_tests {
         paths
             .home()
             .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
+    }
+
+    fn app_temporary_downloads(paths: &PvPaths) -> anyhow::Result<Vec<Utf8PathBuf>> {
+        Ok(state::fs::read_dir_paths(paths.downloads())?
+            .into_iter()
+            .filter(|path| path.file_name().unwrap_or("").starts_with("pv-app-"))
+            .collect())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "update tests write raw binary fixture bytes"
+    )]
+    fn write_bytes(path: &Utf8Path, content: &[u8]) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            state::fs::ensure_user_dir(parent)?;
+        }
+        std::fs::write(path, content)?;
+
+        Ok(())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "update tests force cleanup failures with temporary permissions"
+    )]
+    fn set_permissions(path: &Utf8Path, mode: u32) -> anyhow::Result<()> {
+        std::fs::set_permissions(path, Permissions::from_mode(mode))?;
+
+        Ok(())
     }
 
     fn app_manifest(version: &str, sha256: &str, size: u64) -> String {

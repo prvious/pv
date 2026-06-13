@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/project_open.rs
+expression: link
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: PV update is already in progress; update lock is held at <tempdir>/home/.pv/run/update.lock\n",
+}

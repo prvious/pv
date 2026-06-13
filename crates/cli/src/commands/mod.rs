@@ -1,9 +1,12 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use camino::Utf8PathBuf;
+use state::{PvPaths, StateError};
+
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
-use crate::error::ExecuteError;
+use crate::error::{CliError, ExecuteError};
 use crate::output::Output;
 
 mod artifact_resource;
@@ -34,6 +37,8 @@ pub(crate) fn execute(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
+    require_no_update_in_progress(&cli.command, environment)?;
+
     match cli.command {
         Command::Env(args) => env::run(args, cli.no_color, environment, stdout),
         Command::Completions(args) => Ok(completions::run(args, stdout)),
@@ -113,6 +118,85 @@ pub(crate) fn execute(
             postgres::list(args, environment, stdout)
         }
     }
+}
+
+fn require_no_update_in_progress(
+    command: &Command,
+    environment: &impl Environment,
+) -> Result<(), ExecuteError> {
+    if !command_mutates_during_update(command) {
+        return Ok(());
+    }
+
+    let paths = pv_paths(environment)?;
+    state::UpdateLock::require_no_update_in_progress(&paths).map_err(update_lock_error)
+}
+
+fn command_mutates_during_update(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Setup(_)
+            | Command::Uninstall(_)
+            | Command::DaemonEnable
+            | Command::DaemonDisable
+            | Command::DaemonRestart
+            | Command::DnsInstall
+            | Command::DnsUninstall
+            | Command::PortsInstall
+            | Command::PortsUninstall
+            | Command::CaTrust
+            | Command::CaUntrust
+            | Command::Link(_)
+            | Command::Unlink(_)
+            | Command::PhpUse(_)
+            | Command::PhpInstall(_)
+            | Command::PhpUpdate
+            | Command::PhpUninstall(_)
+            | Command::ComposerInstall
+            | Command::ComposerUpdate
+            | Command::ComposerUninstall(_)
+            | Command::MailpitInstall(_)
+            | Command::MailInstall(_)
+            | Command::MailpitUpdate
+            | Command::MailUpdate
+            | Command::MailpitUninstall(_)
+            | Command::MailUninstall(_)
+            | Command::RedisInstall(_)
+            | Command::RedisUpdate
+            | Command::RedisUninstall(_)
+            | Command::RustfsInstall(_)
+            | Command::S3Install(_)
+            | Command::RustfsUpdate
+            | Command::S3Update
+            | Command::RustfsUninstall(_)
+            | Command::S3Uninstall(_)
+            | Command::MysqlInstall(_)
+            | Command::MysqlUpdate
+            | Command::MysqlUninstall(_)
+            | Command::PostgresInstall(_)
+            | Command::PgInstall(_)
+            | Command::PostgresUpdate
+            | Command::PgUpdate
+            | Command::PostgresUninstall(_)
+            | Command::PgUninstall(_)
+    )
+}
+
+fn update_lock_error(error: StateError) -> ExecuteError {
+    match error {
+        StateError::UpdateInProgress { path } => CliError::UpdateInProgress {
+            path: path.to_string(),
+        }
+        .into(),
+        error => error.into(),
+    }
+}
+
+fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
+    let home = environment.home_dir().ok_or(StateError::MissingHome)?;
+    let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
+
+    Ok(PvPaths::for_home(home))
 }
 
 fn write_revoked_latest_warnings(
