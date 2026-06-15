@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/mysql.rs
+expression: snapshot
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Installed MySQL track 8.0\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "mysql",
+            track: "8.0",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.0.36-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    1,
+    0,
+)

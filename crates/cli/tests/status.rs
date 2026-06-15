@@ -290,7 +290,7 @@ fn status_reports_runtime_and_resource_states() -> anyhow::Result<()> {
 
     let output = run_pv(&["status"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
     assert_status_snapshot(
         "status_reports_runtime_and_resource_states",
@@ -311,9 +311,12 @@ fn status_json_redacts_secret_context() -> anyhow::Result<()> {
 
     let output = run_pv(&["status", "--json"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
     assert!(!output.stdout.contains("root-secret"));
+    assert!(!output.stdout.contains("postgres-secret"));
+    assert!(!output.stdout.contains("redis-secret"));
+    assert!(!output.stdout.contains("rustfs-secret"));
     assert_status_snapshot("status_json_redacts_secret_context", tempdir.path(), output);
 
     Ok(())
@@ -340,16 +343,31 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
 }
 
 fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {
-    let artifact_path = paths.resources().join("mysql/8.0/artifact");
     let mut database = Database::open(paths)?;
-    database.record_managed_resource_tracks_desired_and_installed(&[
-        ManagedResourceTrackInstallInput {
-            resource_name: "mysql",
-            track: "8.0",
-            installed_version: "1.0.0",
-            current_artifact_path: &artifact_path,
-        },
-    ])?;
+
+    for (resource_name, track, installed_version) in [
+        ("php", "8.4", "8.4.8-pv1"),
+        ("mysql", "8.0", "8.0.36-pv1"),
+        ("postgres", "16", "16.4-pv1"),
+        ("redis", "7", "7.2.5-pv1"),
+        ("mailpit", "1", "1.20.0-pv1"),
+        ("rustfs", "1", "1.0.0-pv1"),
+    ] {
+        let artifact_path = paths
+            .resources()
+            .join(resource_name)
+            .join(track)
+            .join("artifact");
+        database.record_managed_resource_tracks_desired_and_installed(&[
+            ManagedResourceTrackInstallInput {
+                resource_name,
+                track,
+                installed_version,
+                current_artifact_path: &artifact_path,
+            },
+        ])?;
+    }
+
     database.record_managed_resource_track_env_context(
         "mysql",
         "8.0",
@@ -360,6 +378,41 @@ fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {
             ("username".to_string(), "root".to_string()),
         ]),
     )?;
+    database.record_managed_resource_track_env_context(
+        "postgres",
+        "16",
+        &BTreeMap::from([
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("password".to_string(), "postgres-secret".to_string()),
+            ("port".to_string(), "5432".to_string()),
+            ("username".to_string(), "postgres".to_string()),
+        ]),
+    )?;
+    database.record_managed_resource_track_env_context(
+        "redis",
+        "7",
+        &BTreeMap::from([
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("password".to_string(), "redis-secret".to_string()),
+            ("port".to_string(), "6379".to_string()),
+        ]),
+    )?;
+    database.record_managed_resource_track_env_context(
+        "rustfs",
+        "1",
+        &BTreeMap::from([
+            ("access_key".to_string(), "rustfs-access".to_string()),
+            ("endpoint".to_string(), "http://127.0.0.1:9000".to_string()),
+            ("secret_key".to_string(), "rustfs-secret".to_string()),
+        ]),
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpWorker {
+            php_track: "8.4".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("PHP worker is ready"),
+    )?;
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Resource {
             name: "mysql".to_string(),
@@ -368,6 +421,40 @@ fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {
         RuntimeObservedStatus::Running,
         Some("Managed Resource runtime is ready"),
     )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "postgres".to_string(),
+            track: "16".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "redis".to_string(),
+            track: "7".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "mailpit".to_string(),
+            track: "1".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "rustfs".to_string(),
+            track: "1".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
+    let job = database.start_job("reconcile", "resource:redis:7")?;
+    database.fail_job(&job.id, "Redis failed readiness")?;
 
     Ok(())
 }

@@ -1,0 +1,18 @@
+---
+source: crates/cli/tests/list_json.rs
+expression: snapshot
+---
+{
+    "installed_but_without_public_list_command": [
+        "composer",
+        "frankenphp",
+    ],
+    "listed_resources": [
+        "mailpit",
+        "mysql",
+        "php",
+        "postgres",
+        "redis",
+        "rustfs",
+    ],
+}

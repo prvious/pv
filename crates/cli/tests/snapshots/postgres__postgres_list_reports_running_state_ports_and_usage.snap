@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/postgres.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "Track  Status  Ports  Projects  Version  Path\n16  running  tcp=5432  0  16.4-pv1  <tempdir>/home/.pv/resources/postgres/16/releases/16.4-pv1\n",
+    stderr: "",
+}

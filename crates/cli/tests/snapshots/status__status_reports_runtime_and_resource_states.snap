@@ -5,9 +5,9 @@ expression: snapshot
 RunOutput {
     exit_code: ExitCode(
         unix_exit_status(
-            0,
+            1,
         ),
     ),
-    stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  mysql 8.0 running projects=0 version=1.0.0\nProjects:\n  none\nRecent errors:\n  none\n",
+    stdout: "PV status\nOverall: failed\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  mailpit 1 running projects=0 version=1.20.0-pv1\n  mysql 8.0 running projects=0 version=8.0.36-pv1\n  php 8.4 not-running projects=0 version=8.4.8-pv1\n  postgres 16 running projects=0 version=16.4-pv1\n  redis 7 running projects=0 version=7.2.5-pv1\n  rustfs 1 running projects=0 version=1.0.0-pv1\nRuntimes:\n  worker:8.4 running PHP worker is ready\nProjects:\n  none\nRecent errors:\n  job_000001 reconcile resource:redis:7 failed: Redis failed readiness\n",
     stderr: "",
 }

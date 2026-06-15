@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/redis.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "Track  Status  Ports  Projects  Version  Path\n7  running  tcp=6379  0  7.2.5-pv1  <tempdir>/home/.pv/resources/redis/7/releases/7.2.5-pv1\n",
+    stderr: "",
+}
