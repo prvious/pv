@@ -202,7 +202,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         release_workflow.contains("generate-app-installer"),
         app_binary_object_key_reference_present(release_workflow),
         app_record_object_key_reference_present(release_workflow),
-        release_workflow.matches("uses: actions/upload-artifact@v7").count(),
+        uses_action_references(release_workflow, "actions/upload-artifact").len(),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64")
             && release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
@@ -294,6 +294,102 @@ fn app_publication_uses_immutable_upload_checks_for_app_objects() -> Result<()> 
     Ok(())
 }
 
+#[test]
+fn app_workflows_pin_actions_and_disable_checkout_credentials() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let combined = format!(
+        "{}\n{}",
+        release.as_deref().unwrap_or(""),
+        publication.as_deref().unwrap_or("")
+    );
+    let summary = format!(
+        "unpinned_uses={:?}\ncheckout_persist_credentials_false_count={}",
+        unpinned_uses_references(&combined),
+        combined.matches("persist-credentials: false").count(),
+    );
+
+    assert_snapshot!(summary, @r#"
+    unpinned_uses=[]
+    checkout_persist_credentials_false_count=4
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let summary = format!(
+        "passes_base_url={}\npasses_current_app_manifest={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable={}",
+        publication_workflow.contains("--base-url \"$R2_PUBLIC_BASE_URL\""),
+        publication_workflow.contains("--current-app-manifest"),
+        publication_workflow.contains("--app-manifest"),
+        publication_workflow.contains("--installer"),
+        publication_workflow.contains("current-pv-app-manifest.json"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    passes_base_url=true
+    passes_current_app_manifest=true
+    passes_app_manifest_path=false
+    passes_installer_path=false
+    fetches_current_stable=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_publication_retries_matching_immutable_uploads() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let summary = format!(
+        "downloads_existing_immutable={}\ncompares_existing_immutable={}\nrejects_different_existing_immutable={}",
+        publication_workflow.contains("get-object"),
+        publication_workflow.contains("cmp -s"),
+        publication_workflow.contains("different content"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    downloads_existing_immutable=true
+    compares_existing_immutable=true
+    rejects_different_existing_immutable=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn app_publication_publishes_stable_installer_before_manifest() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
+    let publication_workflow = publication.as_deref().unwrap_or("");
+    let installer_index = publication_workflow.find("- name: Publish stable installer");
+    let manifest_index = publication_workflow.find("- name: Publish stable app manifest");
+    let summary = format!(
+        "installer_step_present={}\nmanifest_step_present={}\ninstaller_before_manifest={}",
+        installer_index.is_some(),
+        manifest_index.is_some(),
+        installer_index
+            .zip(manifest_index)
+            .map(|(installer_index, manifest_index)| installer_index < manifest_index)
+            .unwrap_or(false),
+    );
+
+    assert_snapshot!(summary, @r#"
+    installer_step_present=true
+    manifest_step_present=true
+    installer_before_manifest=true
+    "#);
+
+    Ok(())
+}
+
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
     let input_header = format!("      {input}:");
     let mut in_input = false;
@@ -317,6 +413,36 @@ fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
     }
 
     None
+}
+
+fn unpinned_uses_references(workflow: &str) -> Vec<&str> {
+    workflow
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("uses: "))
+        .filter(|reference| !uses_reference_is_pinned(reference))
+        .collect()
+}
+
+fn uses_reference_is_pinned(reference: &str) -> bool {
+    reference
+        .rsplit_once('@')
+        .map(|(_, revision)| {
+            revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .unwrap_or(false)
+}
+
+fn uses_action_references<'a>(workflow: &'a str, action: &str) -> Vec<&'a str> {
+    workflow
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("uses: "))
+        .filter(|reference| {
+            reference
+                .split_once('@')
+                .map(|(repository, _)| repository == action)
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 fn input_description<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {

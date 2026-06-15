@@ -45,6 +45,9 @@ fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
     non_interactive_flag_present=true
     pv_env_block_present=true
     checksum_verification_present=true
+    curl_connect_timeout_present=true
+    curl_max_time_present=true
+    curl_retry_present=true
     "#);
 
     Ok(())
@@ -105,7 +108,7 @@ fn installer_default_mode_invokes_pv_setup() -> Result<()> {
         &fixture.release_binary()
     )?);
 
-    assert_snapshot!(fixture.command_logs()?, @r#"
+    assert_snapshot!(fixture.command_logs()?, @"
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
     output=<download>
@@ -115,7 +118,7 @@ fn installer_default_mode_invokes_pv_setup() -> Result<()> {
 
     pv:
     setup
-    "#);
+    ");
 
     Ok(())
 }
@@ -193,11 +196,78 @@ fn installer_checksum_mismatch_deletes_bad_download_and_does_not_install() -> Re
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn installer_downloads_amd64_asset_on_native_x86_64() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let output = fixture.run_installer_with_platform(
+        &["--no-setup"],
+        ChecksumMode::Match,
+        "/bin/pv-unsupported-shell",
+        "x86_64",
+        false,
+    )?;
+
+    assert!(
+        output.status.success(),
+        "installer should succeed on native x86_64: {}",
+        command_output_summary(&output)
+    );
+
+    assert_snapshot!(fixture.command_logs()?, @"
+    curl:
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-amd64
+    output=<download>
+
+    checksum:
+    tool=<checksum-tool> target=<download> sha=<amd64-sha256>
+
+    pv:
+    <missing>
+    ");
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_downloads_arm64_asset_under_rosetta() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let output = fixture.run_installer_with_platform(
+        &["--no-setup"],
+        ChecksumMode::Match,
+        "/bin/pv-unsupported-shell",
+        "x86_64",
+        true,
+    )?;
+
+    assert!(
+        output.status.success(),
+        "installer should succeed under Rosetta: {}",
+        command_output_summary(&output)
+    );
+
+    assert_snapshot!(fixture.command_logs()?, @r#"
+    curl:
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+
+    checksum:
+    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+
+    pv:
+    <missing>
+    "#);
+
+    Ok(())
+}
+
 struct AppInstallerFixture {
     tempdir: Utf8TempDir,
     records: Utf8PathBuf,
     output: Utf8PathBuf,
     arm64_sha256: String,
+    amd64_sha256: String,
 }
 
 impl AppInstallerFixture {
@@ -231,6 +301,7 @@ impl AppInstallerFixture {
             records,
             output,
             arm64_sha256,
+            amd64_sha256,
         })
     }
 
@@ -262,6 +333,7 @@ struct InstallerExecutionFixture {
     home: Utf8PathBuf,
     fake_bin: Utf8PathBuf,
     download_source: Utf8PathBuf,
+    amd64_download_source: Utf8PathBuf,
     curl_log: Utf8PathBuf,
     checksum_log: Utf8PathBuf,
     pv_log: Utf8PathBuf,
@@ -274,6 +346,7 @@ impl InstallerExecutionFixture {
         let home = app.tempdir.path().join("home");
         let fake_bin = app.tempdir.path().join("fake-bin");
         let download_source = app.tempdir.path().join("fake-download/pv");
+        let amd64_download_source = app.tempdir.path().join("fake-download/pv-amd64");
         let curl_log = app.tempdir.path().join("curl.log");
         let checksum_log = app.tempdir.path().join("checksum.log");
         let pv_log = app.tempdir.path().join("pv.log");
@@ -282,6 +355,10 @@ impl InstallerExecutionFixture {
         create_dir_all(&fake_bin)?;
         create_dir_all(download_source.parent().context("download source parent")?)?;
         write_executable(&download_source, fake_pv_binary())?;
+        write_executable(
+            &amd64_download_source,
+            "#!/bin/sh\nprintf '%s\\n' pv-amd64-fixture\n",
+        )?;
         write_fake_curl(&fake_bin.join("curl"))?;
         write_fake_checksum_tool(&fake_bin.join("shasum"))?;
         write_fake_checksum_tool(&fake_bin.join("sha256sum"))?;
@@ -293,6 +370,7 @@ impl InstallerExecutionFixture {
             home,
             fake_bin,
             download_source,
+            amd64_download_source,
             curl_log,
             checksum_log,
             pv_log,
@@ -309,6 +387,17 @@ impl InstallerExecutionFixture {
         checksum_mode: ChecksumMode,
         shell: &str,
     ) -> Result<Output> {
+        self.run_installer_with_platform(args, checksum_mode, shell, "arm64", false)
+    }
+
+    fn run_installer_with_platform(
+        &self,
+        args: &[&str],
+        checksum_mode: ChecksumMode,
+        shell: &str,
+        machine: &str,
+        translated: bool,
+    ) -> Result<Output> {
         let installer = self.app.generate_installer()?;
         write_executable(&self.app.output, &installer)?;
 
@@ -324,8 +413,15 @@ impl InstallerExecutionFixture {
             .env("PV_TEST_CHECKSUM_LOG", &self.checksum_log)
             .env("PV_TEST_PV_LOG", &self.pv_log)
             .env("PV_TEST_DOWNLOAD_SOURCE", &self.download_source)
-            .env("PV_TEST_FAKE_SHA256", &self.app.arm64_sha256)
-            .env("PV_TEST_CHECKSUM_MODE", checksum_mode.as_env_value());
+            .env("PV_TEST_AMD64_DOWNLOAD_SOURCE", &self.amd64_download_source)
+            .env("PV_TEST_ARM64_SHA256", &self.app.arm64_sha256)
+            .env("PV_TEST_AMD64_SHA256", &self.app.amd64_sha256)
+            .env("PV_TEST_CHECKSUM_MODE", checksum_mode.as_env_value())
+            .env("PV_TEST_UNAME_MACHINE", machine)
+            .env(
+                "PV_TEST_SYSCTL_TRANSLATED",
+                if translated { "1" } else { "0" },
+            );
 
         Ok(command.output()?)
     }
@@ -397,7 +493,10 @@ no_path_flag_present={}
 yes_flag_present={}
 non_interactive_flag_present={}
 pv_env_block_present={}
-checksum_verification_present={}",
+checksum_verification_present={}
+curl_connect_timeout_present={}
+curl_max_time_present={}
+curl_retry_present={}",
         installer.contains(APP_VERSION),
         installer.contains(STAGING_BASE_URL),
         installer.contains(&fixture.arm64_url),
@@ -416,6 +515,9 @@ checksum_verification_present={}",
         installer.contains("--non-interactive"),
         installer.contains("PV ENV"),
         installer.contains("checksum") || installer.contains("sha256"),
+        installer.contains("--connect-timeout"),
+        installer.contains("--max-time"),
+        installer.contains("--retry"),
     )
 }
 
@@ -465,7 +567,7 @@ fn write_app_record(
         "provenance": {
             "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.9.0.tar.gz",
             "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "recipe": ".github/workflows/pv-app-release.yml",
+            "recipe": ".github/workflows/app-release.yml",
             "pv_commit": "0123456789abcdef0123456789abcdef01234567",
             "build_run_id": "installer-contract-test",
         },
@@ -544,7 +646,14 @@ done
 } >>"$PV_TEST_CURL_LOG"
 if [ -n "$output" ]; then
   mkdir -p "$(dirname "$output")"
-  cp "$PV_TEST_DOWNLOAD_SOURCE" "$output"
+  case "$url" in
+    *darwin-amd64)
+      cp "$PV_TEST_AMD64_DOWNLOAD_SOURCE" "$output"
+      ;;
+    *)
+      cp "$PV_TEST_DOWNLOAD_SOURCE" "$output"
+      ;;
+  esac
 else
   cat "$PV_TEST_DOWNLOAD_SOURCE"
 fi
@@ -573,7 +682,11 @@ case "${PV_TEST_CHECKSUM_MODE:-match}" in
     sha=0000000000000000000000000000000000000000000000000000000000000000
     ;;
   *)
-    sha=$PV_TEST_FAKE_SHA256
+    if grep -q pv-amd64-fixture "$target"; then
+      sha=$PV_TEST_AMD64_SHA256
+    else
+      sha=$PV_TEST_ARM64_SHA256
+    fi
     ;;
 esac
 printf '%s  %s\n' "$sha" "$target"
@@ -593,7 +706,7 @@ case "${1:-}" in
     printf '%s\n' Darwin
     ;;
   -m)
-    printf '%s\n' arm64
+    printf '%s\n' "${PV_TEST_UNAME_MACHINE:-arm64}"
     ;;
   *)
     printf '%s\n' Darwin
@@ -611,7 +724,7 @@ fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
 set -eu
 case "$*" in
   *sysctl.proc_translated*)
-    printf '%s\n' 0
+    printf '%s\n' "${PV_TEST_SYSCTL_TRANSLATED:-0}"
     ;;
   *)
     exit 1
@@ -643,6 +756,7 @@ fn normalize_log_file(path: &Utf8Path, fixture: &InstallerExecutionFixture) -> R
 fn normalize_output(output: &str, fixture: &InstallerExecutionFixture) -> String {
     output
         .replace(&fixture.app.arm64_sha256, "<arm64-sha256>")
+        .replace(&fixture.app.amd64_sha256, "<amd64-sha256>")
         .replace(fixture.app.tempdir.path().as_str(), "<tmp>")
 }
 

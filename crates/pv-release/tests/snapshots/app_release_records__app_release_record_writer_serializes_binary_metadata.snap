@@ -15,7 +15,7 @@ expression: json
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "recipe": ".github/workflows/pv-app-release.yml",
+    "recipe": ".github/workflows/app-release.yml",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "123456789"
   }

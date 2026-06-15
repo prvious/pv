@@ -58,8 +58,6 @@ fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
         .arg(record.as_str())
         .arg("--binary")
         .arg(binary.as_str())
-        .arg("--channel")
-        .arg("stable")
         .arg("--version")
         .arg("0.2.0")
         .arg("--minimum-pv-version")
@@ -75,7 +73,7 @@ fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
         .arg("--source-sha256")
         .arg("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
         .arg("--recipe")
-        .arg(".github/workflows/pv-app-release.yml")
+        .arg(".github/workflows/app-release.yml")
         .arg("--pv-commit")
         .arg("0123456789abcdef0123456789abcdef01234567")
         .arg("--build-run-id")
@@ -86,6 +84,50 @@ fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
     assert_command_success(&output, "write-app-release-record")?;
     let json = read_file(&record)?;
     assert_snapshot!(json);
+
+    Ok(())
+}
+
+#[test]
+fn app_release_generators_accept_relative_output_file_names() -> Result<()> {
+    let fixture = AppManifestFixture::new()?;
+    fixture.write_record("01-pv-darwin-arm64.json", PV_APP_ARM64)?;
+    fixture.write_record("02-pv-darwin-amd64.json", PV_APP_AMD64)?;
+
+    let manifest_output = StdCommand::new(env!("CARGO_BIN_EXE_pv-release"))
+        .current_dir(fixture.tempdir.path())
+        .arg("generate-app-manifest")
+        .arg("--records")
+        .arg(fixture.records.as_str())
+        .arg("--output")
+        .arg("pv-app-manifest.json")
+        .arg("--base-url")
+        .arg(STAGING_BASE_URL)
+        .output()
+        .context("failed to execute pv-release generate-app-manifest")?;
+    assert_command_success(&manifest_output, "generate-app-manifest")?;
+
+    let installer_output = StdCommand::new(env!("CARGO_BIN_EXE_pv-release"))
+        .current_dir(fixture.tempdir.path())
+        .arg("generate-app-installer")
+        .arg("--records")
+        .arg(fixture.records.as_str())
+        .arg("--output")
+        .arg("install.sh")
+        .arg("--base-url")
+        .arg(STAGING_BASE_URL)
+        .output()
+        .context("failed to execute pv-release generate-app-installer")?;
+    assert_command_success(&installer_output, "generate-app-installer")?;
+
+    assert!(
+        fixture
+            .tempdir
+            .path()
+            .join("pv-app-manifest.json")
+            .is_file()
+    );
+    assert!(fixture.tempdir.path().join("install.sh").is_file());
 
     Ok(())
 }
@@ -283,7 +325,7 @@ const PV_APP_ARM64: &str = r#"{
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "recipe": ".github/workflows/pv-app-release.yml",
+    "recipe": ".github/workflows/app-release.yml",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "123456789"
   }
@@ -302,7 +344,7 @@ const PV_APP_AMD64: &str = r#"{
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "recipe": ".github/workflows/pv-app-release.yml",
+    "recipe": ".github/workflows/app-release.yml",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "123456789"
   }

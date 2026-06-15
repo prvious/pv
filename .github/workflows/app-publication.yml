@@ -33,10 +33,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
 
       - name: Install app publication dependencies
         run: |
@@ -122,16 +124,17 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          set -eu
+          set -euo pipefail
           download_dir="$RUNNER_TEMP/pv-app-publication-download"
           candidate_record_dir="$RUNNER_TEMP/pv-app-publication-record-files"
           stage="$RUNNER_TEMP/pv-app-publication-stage"
 
-          app_manifest=$(find "$download_dir" -type f -name pv-app-manifest.json -print -quit)
-          if [ -z "$app_manifest" ]; then
+          app_manifest_count=$(find "$download_dir" -type f -name pv-app-manifest.json | wc -l | tr -d '[:space:]')
+          if [ "$app_manifest_count" -ne 1 ]; then
             printf '%s\n' "source run did not contain pv-app-manifest.json" >&2
             exit 1
           fi
+          app_manifest=$(find "$download_dir" -type f -name pv-app-manifest.json -print -quit)
           handoff_dir=$(dirname "$app_manifest")
           installer="$handoff_dir/install.sh"
           if [ ! -f "$installer" ]; then
@@ -162,13 +165,31 @@ jobs:
             exit 1
           fi
 
+          current_app_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
+          current_app_manifest_args=()
+          current_app_manifest_error="$RUNNER_TEMP/current-pv-app-manifest.err"
+          if aws s3api get-object \
+            --bucket "$R2_BUCKET" \
+            --key "$STABLE_APP_MANIFEST_KEY" \
+            --endpoint-url "$R2_ENDPOINT" \
+            "$current_app_manifest" \
+            > /dev/null 2>"$current_app_manifest_error"; then
+            current_app_manifest_args=(--current-app-manifest "$current_app_manifest")
+          elif grep -Eiq 'NoSuchKey|Not Found|404' "$current_app_manifest_error"; then
+            printf '%s\n' "no current stable app manifest found; publishing first app release"
+          else
+            printf '%s\n' "failed to read current stable app manifest" >&2
+            cat "$current_app_manifest_error" >&2
+            exit 1
+          fi
+
           cargo run --locked -p pv-release -- stage-app-publication \
             --source-binaries "$handoff_dir" \
             --candidate-records "$candidate_record_dir" \
-            --app-manifest "$app_manifest" \
-            --installer "$installer" \
             --stage "$stage" \
-            --source-run-id "$SOURCE_RUN_ID"
+            --source-run-id "$SOURCE_RUN_ID" \
+            --base-url "$R2_PUBLIC_BASE_URL" \
+            "${current_app_manifest_args[@]}"
 
           expected_app_manifest_key="pv/manifests/runs/$SOURCE_RUN_ID/pv-app-manifest.json"
           expected_installer_key="pv/manifests/runs/$SOURCE_RUN_ID/install.sh"
@@ -179,7 +200,7 @@ jobs:
             "$stage/publication-plan.json" >/dev/null
 
       - name: Upload staged app publication plan
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pv-app-publication-plan-${{ inputs.source_run_id }}-${{ github.run_id }}
           path: ${{ runner.temp }}/pv-app-publication-stage/publication-plan.json
@@ -205,7 +226,21 @@ jobs:
               return 0
             fi
             if grep -Eiq 'PreconditionFailed|Precondition Failed|412' "$error_file"; then
-              printf '%s\n' "immutable app object already exists: $object_key" >&2
+              existing_file="$RUNNER_TEMP/pv-app-existing-object"
+              if aws s3api get-object \
+                --bucket "$R2_BUCKET" \
+                --key "$object_key" \
+                --endpoint-url "$R2_ENDPOINT" \
+                "$existing_file" \
+                > /dev/null 2>>"$error_file" \
+                && cmp -s "$local_path" "$existing_file"; then
+                rm -f "$existing_file"
+                printf '%s\n' "immutable app object already exists with matching content: $object_key"
+                return 0
+              fi
+              rm -f "$existing_file"
+              printf '%s\n' "immutable app object already exists with different content: $object_key" >&2
+              cat "$error_file" >&2
               exit 1
             fi
             printf '%s\n' "failed to upload immutable app object: $object_key" >&2
@@ -224,25 +259,6 @@ jobs:
             upload_immutable_object "$local_path" "$object_key"
           done < "$upload_rows"
 
-      - name: Publish stable app manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/pv-app-publication-stage"
-          local_path=$(jq -e -r '.stable_app_manifest.local_path' publication-plan.json)
-          object_key=$(jq -e -r '.stable_app_manifest.object_key' publication-plan.json)
-          if [ "$object_key" != "$STABLE_APP_MANIFEST_KEY" ]; then
-            printf '%s\n' "stable app manifest object key must be $STABLE_APP_MANIFEST_KEY" >&2
-            exit 1
-          fi
-          aws s3api put-object \
-            --bucket "$R2_BUCKET" \
-            --key "$object_key" \
-            --body "$local_path" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type application/json \
-            > /dev/null
-
       - name: Publish stable installer
         shell: bash
         run: |
@@ -260,4 +276,23 @@ jobs:
             --body "$local_path" \
             --endpoint-url "$R2_ENDPOINT" \
             --content-type text/x-shellscript \
+            > /dev/null
+
+      - name: Publish stable app manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_app_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_app_manifest.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_APP_MANIFEST_KEY" ]; then
+            printf '%s\n' "stable app manifest object key must be $STABLE_APP_MANIFEST_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json \
             > /dev/null

@@ -61,14 +61,14 @@ pub enum ReleaseError {
     #[error("publication would overwrite immutable object `{key}`")]
     ImmutablePublicationObjectExists { key: String },
 
-    #[error("artifact archive `{path}` checksum mismatch: expected {expected}, got {actual}")]
+    #[error("artifact file `{path}` checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
         expected: String,
         actual: String,
     },
 
-    #[error("artifact archive `{path}` size mismatch: expected {expected}, got {actual}")]
+    #[error("artifact file `{path}` size mismatch: expected {expected}, got {actual}")]
     SizeMismatch {
         path: String,
         expected: u64,

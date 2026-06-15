@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "command_failure(&output, fixture.root())"
+---
+CommandFailure {
+    status_code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: app release record build_run_id `123456789` does not match source_run_id `987654321`\n",
+}

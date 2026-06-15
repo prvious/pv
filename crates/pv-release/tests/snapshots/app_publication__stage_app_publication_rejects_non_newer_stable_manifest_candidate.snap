@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "command_failure(&output, fixture.root())"
+---
+CommandFailure {
+    status_code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: candidate app version `0.2.0` must be newer than current stable `0.3.0`\n",
+}

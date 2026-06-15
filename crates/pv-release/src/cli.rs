@@ -19,6 +19,10 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "CLI subcommands intentionally keep parsed clap arguments inline"
+)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -76,13 +80,13 @@ enum Command {
         #[arg(long)]
         candidate_records: Utf8PathBuf,
         #[arg(long)]
-        app_manifest: Utf8PathBuf,
-        #[arg(long)]
-        installer: Utf8PathBuf,
-        #[arg(long)]
         stage: Utf8PathBuf,
         #[arg(long)]
         source_run_id: String,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long)]
+        current_app_manifest: Option<Utf8PathBuf>,
     },
     GenerateRecipeFixtures {
         #[arg(long)]
@@ -159,8 +163,6 @@ enum Command {
         record: Utf8PathBuf,
         #[arg(long)]
         binary: Utf8PathBuf,
-        #[arg(long)]
-        channel: String,
         #[arg(long)]
         version: String,
         #[arg(long)]
@@ -262,17 +264,17 @@ pub fn run() -> anyhow::Result<()> {
         Command::StageAppPublication {
             source_binaries,
             candidate_records,
-            app_manifest,
-            installer,
             stage,
             source_run_id,
+            base_url,
+            current_app_manifest,
         } => crate::app_publication::stage_app_publication(&AppPublicationRequest {
             source_binaries,
             candidate_records,
-            app_manifest,
-            installer,
             stage,
             source_run_id,
+            base_url,
+            current_app_manifest,
         })
         .context("failed to stage app publication"),
         Command::GenerateRecipeFixtures {
@@ -356,7 +358,6 @@ pub fn run() -> anyhow::Result<()> {
         Command::WriteAppReleaseRecord {
             record,
             binary,
-            channel,
             version,
             minimum_pv_version,
             published_at,
@@ -370,7 +371,6 @@ pub fn run() -> anyhow::Result<()> {
         } => crate::app::write_app_release_record(&WriteAppReleaseRecordRequest {
             record,
             binary,
-            channel,
             version,
             minimum_pv_version,
             published_at,

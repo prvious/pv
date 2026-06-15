@@ -1,5 +1,6 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use data_encoding::HEXLOWER;
+use self_update::{AppUpdateManifest, AppUpdateVersion};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -16,10 +17,10 @@ const STABLE_INSTALLER_KEY: &str = "install.sh";
 pub struct AppPublicationRequest {
     pub source_binaries: Utf8PathBuf,
     pub candidate_records: Utf8PathBuf,
-    pub app_manifest: Utf8PathBuf,
-    pub installer: Utf8PathBuf,
     pub stage: Utf8PathBuf,
     pub source_run_id: String,
+    pub base_url: String,
+    pub current_app_manifest: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug)]
@@ -49,7 +50,10 @@ struct AppPublicationPlanObject {
 pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<()> {
     validate_source_run_id(&request.source_run_id)?;
     let records = crate::app::load_app_release_records(&request.candidate_records)?;
-    crate::app::generate_app_manifest_json(&records, "https://example.invalid")?;
+    validate_records_match_source_run(&records, &request.source_run_id)?;
+    validate_candidate_is_newer_than_current(&records, request.current_app_manifest.as_deref())?;
+    let manifest = crate::app::generate_app_manifest_json(&records, &request.base_url)?;
+    let installer = crate::app::generate_app_installer_script(&records, &request.base_url)?;
 
     let candidates = app_publication_candidates(request, &records)?;
     let versioned_app_manifest_key =
@@ -71,29 +75,27 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
         verify_binary(&candidate.record, &candidate.source_binary)?;
         let binary_stage_path = request.stage.join(&candidate.binary_local_path);
         ensure_immutable_target_absent(&candidate.binary_object_key, &binary_stage_path)?;
-        copy_file(&candidate.source_binary, &binary_stage_path)?;
-
         let record_stage_path = request.stage.join(&candidate.record_local_path);
         ensure_immutable_target_absent(&candidate.record_object_key, &record_stage_path)?;
-        copy_file(&candidate.source_record, &record_stage_path)?;
     }
 
     let versioned_manifest_path = request.stage.join(&versioned_app_manifest_key);
     ensure_immutable_target_absent(&versioned_app_manifest_key, &versioned_manifest_path)?;
-    copy_file(&request.app_manifest, &versioned_manifest_path)?;
-
     let versioned_installer_path = request.stage.join(&versioned_installer_key);
     ensure_immutable_target_absent(&versioned_installer_key, &versioned_installer_path)?;
-    copy_file(&request.installer, &versioned_installer_path)?;
 
-    copy_file(
-        &request.app_manifest,
-        &request.stage.join(STABLE_APP_MANIFEST_KEY),
-    )?;
-    copy_file(
-        &request.installer,
-        &request.stage.join(STABLE_INSTALLER_KEY),
-    )?;
+    for candidate in &candidates {
+        let binary_stage_path = request.stage.join(&candidate.binary_local_path);
+        copy_file(&candidate.source_binary, &binary_stage_path)?;
+
+        let record_stage_path = request.stage.join(&candidate.record_local_path);
+        copy_file(&candidate.source_record, &record_stage_path)?;
+    }
+
+    write(&versioned_manifest_path, &manifest)?;
+    write(&versioned_installer_path, &installer)?;
+    write(&request.stage.join(STABLE_APP_MANIFEST_KEY), &manifest)?;
+    write(&request.stage.join(STABLE_INSTALLER_KEY), &installer)?;
 
     let plan = app_publication_plan(
         &candidates,
@@ -120,10 +122,12 @@ fn app_publication_candidates(
         .iter()
         .map(|record| {
             validate_app_binary_object_key(record.object_key())?;
-            let binary_name = object_file_name(record.object_key())?;
-            let source_binary = find_source_binary(&request.source_binaries, binary_name)?;
-            let record_name = object_file_name(record.path().as_str())?;
-            let record_object_key = format!("pv/records/{}/{}", record.version(), record_name);
+            let source_binary = request.source_binaries.join(record.object_key());
+            let record_object_key = format!(
+                "pv/records/{}/pv-{}.json",
+                record.version(),
+                record.platform().as_str()
+            );
             validate_app_record_object_key(&record_object_key)?;
 
             Ok(AppPublicationCandidate {
@@ -137,6 +141,64 @@ fn app_publication_candidates(
             })
         })
         .collect()
+}
+
+fn validate_records_match_source_run(
+    records: &[AppReleaseRecord],
+    source_run_id: &str,
+) -> crate::Result<()> {
+    for record in records {
+        if record.provenance().build_run_id() != source_run_id {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: format!(
+                    "app release record build_run_id `{}` does not match source_run_id `{source_run_id}`",
+                    record.provenance().build_run_id()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_candidate_is_newer_than_current(
+    records: &[AppReleaseRecord],
+    current_app_manifest: Option<&Utf8Path>,
+) -> crate::Result<()> {
+    let Some(current_app_manifest) = current_app_manifest else {
+        return Ok(());
+    };
+    let Some(first_record) = records.first() else {
+        return Ok(());
+    };
+
+    let current_json = read_to_string(current_app_manifest)?;
+    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse current stable app manifest: {error}"),
+        }
+    })?;
+    let candidate_version =
+        AppUpdateVersion::parse(first_record.version().to_string()).map_err(|error| {
+            crate::ReleaseError::InvalidPublicationInput {
+                path: first_record.path().to_string(),
+                reason: format!("failed to parse candidate app version: {error}"),
+            }
+        })?;
+
+    if candidate_version <= *current_manifest.version() {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: first_record.path().to_string(),
+            reason: format!(
+                "candidate app version `{candidate_version}` must be newer than current stable `{}`",
+                current_manifest.version()
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_app_binary_object_key(object_key: &str) -> crate::Result<()> {
@@ -382,61 +444,6 @@ fn digest_and_size(path: &Utf8Path) -> crate::Result<(String, u64)> {
     Ok((HEXLOWER.encode(&hasher.finalize()), size))
 }
 
-fn find_source_binary(source_root: &Utf8Path, binary_name: &str) -> crate::Result<Utf8PathBuf> {
-    let mut matches = Vec::new();
-    collect_named_files(source_root, binary_name, &mut matches)?;
-
-    match matches.len() {
-        0 => Err(crate::ReleaseError::InvalidPublicationInput {
-            path: source_root.to_string(),
-            reason: format!("missing source app binary `{binary_name}`"),
-        }),
-        1 => {
-            matches
-                .into_iter()
-                .next()
-                .ok_or_else(|| crate::ReleaseError::InvalidPublicationInput {
-                    path: source_root.to_string(),
-                    reason: format!("missing source app binary `{binary_name}`"),
-                })
-        }
-        count => Err(crate::ReleaseError::InvalidPublicationInput {
-            path: source_root.to_string(),
-            reason: format!("found {count} source app binaries named `{binary_name}`"),
-        }),
-    }
-}
-
-fn collect_named_files(
-    root: &Utf8Path,
-    file_name: &str,
-    matches: &mut Vec<Utf8PathBuf>,
-) -> crate::Result<()> {
-    for entry in root
-        .read_dir_utf8()
-        .map_err(|error| filesystem_error(root, error))?
-    {
-        let entry = entry.map_err(|error| filesystem_error(root, error))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_named_files(path, file_name, matches)?;
-        } else if path.file_name() == Some(file_name) {
-            matches.push(path.to_path_buf());
-        }
-    }
-
-    Ok(())
-}
-
-fn object_file_name(object_key: &str) -> crate::Result<&str> {
-    Utf8Path::new(object_key).file_name().ok_or_else(|| {
-        crate::ReleaseError::InvalidPublicationInput {
-            path: object_key.to_string(),
-            reason: "object key must end with a file name".to_string(),
-        }
-    })
-}
-
 fn ensure_immutable_target_absent(key: &str, path: &Utf8Path) -> crate::Result<()> {
     if path_exists(path) {
         Err(crate::ReleaseError::ImmutablePublicationObjectExists {
@@ -484,6 +491,14 @@ fn create_dir_all(path: &Utf8Path) -> crate::Result<()> {
 )]
 fn open_file(path: &Utf8Path) -> crate::Result<std::fs::File> {
     std::fs::File::open(path).map_err(|error| filesystem_error(path, error))
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV release tooling reads current stable app publication metadata"
+)]
+fn read_to_string(path: &Utf8Path) -> crate::Result<String> {
+    std::fs::read_to_string(path).map_err(|error| filesystem_error(path, error))
 }
 
 fn path_exists(path: &Utf8Path) -> bool {

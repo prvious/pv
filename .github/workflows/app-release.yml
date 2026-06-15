@@ -27,7 +27,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
 
       - name: Prepare release metadata
         id: metadata
@@ -102,10 +104,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           targets: ${{ matrix.rust_target }}
 
@@ -139,7 +143,6 @@ jobs:
           cargo run --locked -p pv-release -- write-app-release-record \
             --record "$PV_APP_RECORD" \
             --binary "$PV_APP_BINARY" \
-            --channel stable \
             --version "$PV_APP_VERSION" \
             --minimum-pv-version "$PV_MINIMUM_PV_VERSION" \
             --published-at "$PV_PUBLISHED_AT" \
@@ -152,7 +155,7 @@ jobs:
             --build-run-id "$PV_BUILD_RUN_ID"
 
       - name: Upload app binary and record
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pv-app-release-build-${{ matrix.platform }}-${{ github.run_id }}
           path: |
@@ -169,13 +172,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
 
       - name: Download app build artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           pattern: pv-app-release-build-*-${{ github.run_id }}
           path: ${{ runner.temp }}/pv-app-release-download
@@ -219,7 +224,7 @@ jobs:
           chmod 755 "$stage/install.sh"
 
       - name: Upload app release handoff artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pv-app-release-${{ needs.prepare-release.outputs.version }}-${{ github.run_id }}
           path: |

@@ -179,7 +179,13 @@ download_asset() {
   mkdir -p "${TMP_DIR}"
   download="${TMP_DIR}/pv"
 
-  curl --fail --location --silent --show-error --output "${download}" "${ASSET_URL}" || {
+  curl --fail --location --silent --show-error \
+    --connect-timeout 15 \
+    --max-time 300 \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-connrefused \
+    --output "${download}" "${ASSET_URL}" || {
     rm -f "${download}"
     die "failed to download ${ASSET_URL}"
   }
@@ -427,7 +433,6 @@ info "PV ${PV_VERSION} installed at ${PV_ACTIVE_BIN}"
 pub struct WriteAppReleaseRecordRequest {
     pub record: Utf8PathBuf,
     pub binary: Utf8PathBuf,
-    pub channel: String,
     pub version: String,
     pub minimum_pv_version: String,
     pub published_at: String,
@@ -569,6 +574,13 @@ impl AppReleaseRecord {
             ));
         }
         validate_relative_path(path, "object_key", &raw.object_key)?;
+        let expected_object_key = format!("pv/{}/pv-{}", raw.version, platform.as_str());
+        if raw.object_key != expected_object_key {
+            return Err(invalid_app(
+                path,
+                format!("object_key must be `{expected_object_key}`"),
+            ));
+        }
         raw.provenance.validate(path)?;
 
         Ok(Self {
@@ -669,7 +681,7 @@ pub fn write_app_release_record(request: &WriteAppReleaseRecordRequest) -> crate
     let (sha256, size) = digest_and_size(&request.binary)?;
     let record = AppReleaseRecordJson {
         schema_version: SUPPORTED_SCHEMA_VERSION,
-        channel: &request.channel,
+        channel: STABLE_CHANNEL,
         version: &request.version,
         minimum_pv_version: &request.minimum_pv_version,
         published_at: &request.published_at,
@@ -709,7 +721,7 @@ pub fn generate_app_manifest_file(
     let records = load_app_release_records(records)?;
     let manifest = generate_app_manifest_json(&records, base_url)?;
 
-    if let Some(parent) = output.parent() {
+    if let Some(parent) = output.parent().filter(|parent| !parent.as_str().is_empty()) {
         create_dir_all(parent)?;
     }
     write_string(output, &manifest)
@@ -723,7 +735,7 @@ pub fn generate_app_installer_file(
     let records = load_app_release_records(records)?;
     let installer = generate_app_installer_script(&records, base_url)?;
 
-    if let Some(parent) = output.parent() {
+    if let Some(parent) = output.parent().filter(|parent| !parent.as_str().is_empty()) {
         create_dir_all(parent)?;
     }
     write_string(output, &installer)
