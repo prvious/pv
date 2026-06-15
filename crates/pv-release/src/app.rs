@@ -207,7 +207,7 @@ install_binary() {
 
   link_tmp="${PV_ACTIVE_BIN}.tmp.$$"
   rm -f "${link_tmp}"
-  ln -s "${PV_RELEASE_BIN}" "${link_tmp}"
+  ln -s "releases/${PV_VERSION}/pv" "${link_tmp}"
   mv -f "${link_tmp}" "${PV_ACTIVE_BIN}"
 }
 
@@ -244,7 +244,7 @@ profile_block() {
       cat <<'FISH'
 # >>> PV ENV
 if test -x "$HOME/.pv/bin/pv"
-  "$HOME/.pv/bin/pv" env --shell fish | source
+  eval ("$HOME/.pv/bin/pv" env --shell fish | string collect)
 end
 # <<< PV ENV
 FISH

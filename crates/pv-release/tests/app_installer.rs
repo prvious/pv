@@ -69,6 +69,10 @@ fn installer_no_setup_installs_binary_and_symlink_only() -> Result<()> {
         &fixture.active_binary(),
         &fixture.release_binary()
     )?);
+    assert_eq!(
+        read_link(&fixture.active_binary())?,
+        Utf8PathBuf::from(format!("releases/{APP_VERSION}/pv"))
+    );
     assert!(!path_exists(&fixture.pv_log()));
     assert!(!path_exists(&fixture.home().join(".zprofile")));
     assert!(!path_exists(&fixture.home().join(".bash_profile")));
@@ -119,6 +123,30 @@ fn installer_default_mode_invokes_pv_setup() -> Result<()> {
     pv:
     setup
     ");
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_fish_profile_block_matches_setup_block() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let output = fixture.run_installer_with_shell(&["--yes"], ChecksumMode::Match, "/bin/fish")?;
+
+    assert!(
+        output.status.success(),
+        "installer should succeed for fish profile setup: {}",
+        command_output_summary(&output)
+    );
+
+    assert_snapshot!(read_file(&fixture.home().join(".config/fish/config.fish"))?, @r##"
+    # >>> PV ENV
+    if test -x "$HOME/.pv/bin/pv"
+      eval ("$HOME/.pv/bin/pv" env --shell fish | string collect)
+    end
+    # <<< PV ENV
+
+    "##);
 
     Ok(())
 }
