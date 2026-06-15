@@ -127,7 +127,16 @@ esac
         &command_bin.join("curl"),
         r#"#!/bin/sh
 set -eu
-printf '%s\n' 'pv-frankenphp-ok'
+i=0
+while [ "$i" -lt 5 ]; do
+  if grep -F 'php-server 127.0.0.1:' "$PV_FRANKENPHP_LOG" >/dev/null; then
+    printf '%s\n' 'pv-frankenphp-ok'
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+exit 28
 "#,
     )?;
 
