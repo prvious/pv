@@ -130,91 +130,87 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
         return Ok(());
     };
 
-    timeout(TEST_TIMEOUT, async move {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let client = resources::UreqResourceHttpClient::new();
-        let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let client = resources::UreqResourceHttpClient::new();
+    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
 
-        let mysql = commands.install(
-            &mysql_adapter()?,
-            TrackSelector::Track(TrackName::new("8.4")?),
+    let mysql = commands.install(
+        &mysql_adapter()?,
+        TrackSelector::Track(TrackName::new("8.4")?),
+        &client,
+    )?;
+    let postgres = commands.install(
+        &postgres_adapter()?,
+        TrackSelector::Track(TrackName::new("18")?),
+        &client,
+    )?;
+    let redis = commands.install(
+        &redis_adapter()?,
+        TrackSelector::Track(TrackName::new("8.8")?),
+        &client,
+    )?;
+    let mailpit = commands.install(
+        &mailpit_adapter()?,
+        TrackSelector::Track(TrackName::new("1")?),
+        &client,
+    )?;
+    let rustfs = commands.install(
+        &rustfs_adapter()?,
+        TrackSelector::Track(TrackName::new("1")?),
+        &client,
+    )?;
+    let composer = if target_platform() == TargetPlatform::DarwinArm64 {
+        Some(commands.install_composer_with_php_pair(
+            TrackSelector::Track(TrackName::new("8.5")?),
             &client,
-        )?;
-        let postgres = commands.install(
-            &postgres_adapter()?,
-            TrackSelector::Track(TrackName::new("18")?),
-            &client,
-        )?;
-        let redis = commands.install(
-            &redis_adapter()?,
-            TrackSelector::Track(TrackName::new("8.8")?),
-            &client,
-        )?;
-        let mailpit = commands.install(
-            &mailpit_adapter()?,
-            TrackSelector::Track(TrackName::new("1")?),
-            &client,
-        )?;
-        let rustfs = commands.install(
-            &rustfs_adapter()?,
-            TrackSelector::Track(TrackName::new("1")?),
-            &client,
-        )?;
-        let composer = if target_platform() == TargetPlatform::DarwinArm64 {
-            Some(commands.install_composer_with_php_pair(
-                TrackSelector::Track(TrackName::new("8.5")?),
-                &client,
-            )?)
-        } else {
-            None
-        };
+        )?)
+    } else {
+        None
+    };
 
-        let project = link_resource_matrix_project(
-            &paths,
-            &tempdir.path().join("project"),
-            mysql.track().as_str(),
-            postgres.track().as_str(),
-            redis.track().as_str(),
-            mailpit.track().as_str(),
-            rustfs.track().as_str(),
-        )?;
-        let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-        let result = async {
-            run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
-            assert_resource_matrix_evidence(&paths, &project)?;
-            if composer.is_some() {
-                assert_composer_shim_reports_version(&paths).await?;
-            }
-            Ok::<(), anyhow::Error>(())
+    let project = link_resource_matrix_project(
+        &paths,
+        &tempdir.path().join("project"),
+        mysql.track().as_str(),
+        postgres.track().as_str(),
+        redis.track().as_str(),
+        mailpit.track().as_str(),
+        rustfs.track().as_str(),
+    )?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let result = timeout(TEST_TIMEOUT, async {
+        run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
+        assert_resource_matrix_evidence(&paths, &project)?;
+        if composer.is_some() {
+            assert_composer_shim_reports_version(&paths).await?;
         }
-        .await;
-
-        let cleanup = async {
-            write_project_config(
-                &project,
-                r#"env:
-  APP_URL: "${project_url}"
-"#,
-            )?;
-            let _cleanup_job =
-                run_reconciliation_job(&paths, &format!("project:{}", project.id)).await;
-            daemon.shutdown().await?;
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-
-        result?;
-        cleanup?;
-
-        if let Some(composer) = composer {
-            assert_eq!(composer.composer().track().as_str(), "2");
-        }
-
         Ok::<(), anyhow::Error>(())
     })
     .await
-    .context("real artifact resource matrix timed out")??;
+    .context("real artifact resource matrix timed out")
+    .and_then(|result| result);
+
+    let demand_cleanup = async {
+        write_project_config(
+            &project,
+            r#"env:
+  APP_URL: "${project_url}"
+"#,
+        )?;
+        let _cleanup_job = run_reconciliation_job(&paths, &format!("project:{}", project.id)).await;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let daemon_cleanup = daemon.shutdown().await;
+
+    result?;
+    demand_cleanup?;
+    daemon_cleanup?;
+
+    if let Some(composer) = composer {
+        assert_eq!(composer.composer().track().as_str(), "2");
+    }
 
     Ok(())
 }
