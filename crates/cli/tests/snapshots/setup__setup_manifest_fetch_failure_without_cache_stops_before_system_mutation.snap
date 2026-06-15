@@ -1,0 +1,17 @@
+---
+source: crates/cli/tests/setup.rs
+assertion_line: 469
+expression: "(output, fixture.environment.operations())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\n",
+        stderr: "error: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: offline; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error 2)\n",
+    },
+    [],
+)

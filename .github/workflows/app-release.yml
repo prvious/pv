@@ -116,6 +116,7 @@ jobs:
       - name: Build app binary
         env:
           PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json
+          PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/manifest.json
           PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
         run: |
           set -eu

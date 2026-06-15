@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader, Write as _};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -17,8 +17,11 @@ use platform::{
     KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL, LaunchAgentConfig,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, generate_local_ca,
 };
+use resources::{ResourceHttpClient, ResourcesError};
 use serde_json::json;
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
+
+const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -35,6 +38,7 @@ struct TestEnvironment {
     operations: Mutex<Vec<String>>,
     stdin_terminal: bool,
     input: Mutex<VecDeque<String>>,
+    client: ScriptedClient,
 }
 
 impl TestEnvironment {
@@ -53,6 +57,7 @@ impl TestEnvironment {
             operations: Mutex::new(Vec::new()),
             stdin_terminal: false,
             input: Mutex::new(VecDeque::new()),
+            client: ScriptedClient::new(),
         }
     }
 
@@ -66,6 +71,68 @@ impl TestEnvironment {
 
     fn set_active_pf_config(&self, config: PfRedirectConfig) {
         *lock(&self.active_pf_config) = Some(config);
+    }
+
+    fn script_manifest_text(&self, text: String) {
+        self.client.with_text(text);
+    }
+
+    fn script_manifest_error(&self, error: ResourcesError) {
+        self.client.with_text_error(error);
+    }
+
+    fn text_request_count(&self) -> usize {
+        self.client.text_request_count()
+    }
+}
+
+#[derive(Debug)]
+struct ScriptedClient {
+    text_responses: Mutex<VecDeque<resources::Result<String>>>,
+    text_request_count: Mutex<usize>,
+    byte_request_count: Mutex<usize>,
+}
+
+impl ScriptedClient {
+    fn new() -> Self {
+        Self {
+            text_responses: Mutex::new(VecDeque::new()),
+            text_request_count: Mutex::new(0),
+            byte_request_count: Mutex::new(0),
+        }
+    }
+
+    fn with_text(&self, text: String) {
+        lock(&self.text_responses).push_back(Ok(text));
+    }
+
+    fn with_text_error(&self, error: ResourcesError) {
+        lock(&self.text_responses).push_back(Err(error));
+    }
+
+    fn text_request_count(&self) -> usize {
+        *lock(&self.text_request_count)
+    }
+}
+
+impl ResourceHttpClient for ScriptedClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        *lock(&self.text_request_count) += 1;
+        lock(&self.text_responses).pop_front().unwrap_or_else(|| {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_string(),
+                reason: "no scripted text response".to_string(),
+            })
+        })
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+        let _writer = writer;
+        *lock(&self.byte_request_count) += 1;
+        Err(ResourcesError::HttpRequestFailed {
+            url: url.to_string(),
+            reason: "no scripted byte response".to_string(),
+        })
     }
 }
 
@@ -251,6 +318,14 @@ impl Environment for TestEnvironment {
 
         Ok(())
     }
+
+    fn artifact_manifest_url(&self) -> Option<String> {
+        Some(MANIFEST_URL.to_string())
+    }
+
+    fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
+        Some(&self.client)
+    }
 }
 
 #[test]
@@ -258,7 +333,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
 {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -303,7 +378,7 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
 
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -332,11 +407,123 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
 }
 
 #[test]
-fn setup_installs_php_and_composer_shims() -> anyhow::Result<()> {
+fn setup_fetches_manifest_before_recording_default_resources() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json()?);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let daemon_requests = daemon.finish()?;
+    let database = Database::open(&fixture.paths)?;
+    let tracks = database.managed_resource_tracks()?;
+    let observed = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.resource_name.as_str(),
+                track.track.as_str(),
+                track.desired_state,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(read_optional_file(&fixture.paths.downloads().join("manifest.json"))?.is_some());
+    assert_eq!(observed, expected_setup_tracks());
+    assert!(daemon_requests.iter().any(|request| {
+        request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
 
     seed_setup_manifest(&fixture.paths)?;
+    fixture
+        .environment
+        .script_manifest_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let daemon_requests = daemon.finish()?;
+    let database = Database::open(&fixture.paths)?;
+    let tracks = database.managed_resource_tracks()?;
+    let observed = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.resource_name.as_str(),
+                track.track.as_str(),
+                track.desired_state,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(
+        output
+            .stdout
+            .contains("warning: artifact manifest refresh failed")
+    );
+    assert_eq!(observed, expected_setup_tracks());
+    assert!(daemon_requests.iter().any(|request| {
+        request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
+    }));
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, fixture.environment.operations()));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    fixture
+        .environment
+        .script_manifest_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(output.stderr.contains("artifact manifest is unavailable"));
+    assert!(fixture.environment.operations().is_empty());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, fixture.environment.operations()));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_installs_php_and_composer_shims() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -372,11 +559,7 @@ fn setup_requires_manifest_before_daemon_registration() -> anyhow::Result<()> {
     let operations = fixture.environment.operations();
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(
-        output
-            .stderr
-            .contains("setup cannot plan default Managed Resources")
-    );
+    assert!(output.stderr.contains("artifact manifest is unavailable"));
     assert!(
         !operations
             .iter()
@@ -394,6 +577,7 @@ fn setup_requires_manifest_before_daemon_registration() -> anyhow::Result<()> {
 fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
 
     let output = run_pv(
         &["setup", "--no-path", "--non-interactive"],
@@ -424,7 +608,7 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     let pf_config = PfRedirectConfig::new(48080, 48443);
     let generated = generate_local_ca()?;
 
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     write_file(&fixture.paths.resolver_config(), &resolver_config)?;
     write_file(&fixture.system_resolver_path, &resolver_config)?;
     write_file(
@@ -476,7 +660,7 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
 fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -514,7 +698,7 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
 fn uninstall_removes_stale_ca_trust_when_local_ca_files_are_missing() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -576,7 +760,7 @@ fn uninstall_prune_requires_confirmation_without_force() -> anyhow::Result<()> {
 fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
@@ -608,7 +792,7 @@ fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
 fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
-    seed_setup_manifest(&fixture.paths)?;
+    seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
     let profile_path = fixture.paths.home().join(".zprofile");
 
@@ -619,6 +803,7 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
     let profile_after_setup = read_required_file(&profile_path)?;
 
     let second_daemon = DaemonFixture::start(&fixture.paths)?;
+    script_setup_manifest(&fixture)?;
     let second_setup = run_pv(
         &["setup", "--yes", "--non-interactive"],
         fixture.environment.as_ref(),
@@ -863,23 +1048,42 @@ fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
     state::fs::ensure_layout(paths)?;
     state::fs::write_sensitive_file(
         &paths.downloads().join("manifest.json"),
-        &serde_json::to_string(&json!({
-            "schema_version": 1,
-            "minimum_pv_version": "0.1.0",
-            "resources": [
-                setup_manifest_resource_with_tracks("frankenphp", "1.5", &["1.5", "8.4"]),
-                setup_manifest_resource("php", "8.4"),
-                setup_manifest_resource("mysql", "8.4"),
-                setup_manifest_resource("postgres", "17"),
-                setup_manifest_resource("redis", "7.2"),
-                setup_manifest_resource("mailpit", "1"),
-                setup_manifest_resource("rustfs", "1"),
-                setup_manifest_resource("composer", "2"),
-            ],
-        }))?,
+        &setup_manifest_json()?,
     )?;
 
     Ok(())
+}
+
+fn seed_online_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
+    seed_setup_manifest(&fixture.paths)?;
+    script_setup_manifest(fixture)?;
+
+    Ok(())
+}
+
+fn script_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json()?);
+
+    Ok(())
+}
+
+fn setup_manifest_json() -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&json!({
+        "schema_version": 1,
+        "minimum_pv_version": "0.1.0",
+        "resources": [
+            setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
+            setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
+            setup_manifest_resource("mysql", "8.4"),
+            setup_manifest_resource("postgres", "18"),
+            setup_manifest_resource("redis", "8.8"),
+            setup_manifest_resource("mailpit", "1"),
+            setup_manifest_resource("rustfs", "1"),
+            setup_manifest_resource("composer", "2"),
+        ],
+    }))?)
 }
 
 fn setup_manifest_resource(name: &str, track: &str) -> serde_json::Value {
@@ -920,12 +1124,12 @@ fn setup_manifest_resource_with_tracks(
 fn expected_setup_tracks() -> Vec<(&'static str, &'static str, ManagedResourceDesiredState)> {
     vec![
         ("composer", "2", ManagedResourceDesiredState::Installed),
-        ("frankenphp", "8.4", ManagedResourceDesiredState::Installed),
+        ("frankenphp", "8.5", ManagedResourceDesiredState::Installed),
         ("mailpit", "1", ManagedResourceDesiredState::Installed),
         ("mysql", "8.4", ManagedResourceDesiredState::Installed),
-        ("php", "8.4", ManagedResourceDesiredState::Installed),
-        ("postgres", "17", ManagedResourceDesiredState::Installed),
-        ("redis", "7.2", ManagedResourceDesiredState::Installed),
+        ("php", "8.5", ManagedResourceDesiredState::Installed),
+        ("postgres", "18", ManagedResourceDesiredState::Installed),
+        ("redis", "8.8", ManagedResourceDesiredState::Installed),
         ("rustfs", "1", ManagedResourceDesiredState::Installed),
     ]
 }

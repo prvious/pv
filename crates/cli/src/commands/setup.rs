@@ -5,12 +5,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::{CaFileState, PfFileState, ResolverConfig, ResolverFileState, TrustDomainState};
-use resources::{ArtifactManifestCache, ResourceName, TrackName, TrackSelector};
+use resources::{
+    ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient, ResourceName, TrackName,
+    TrackSelector, UreqResourceHttpClient,
+};
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 use super::{ca, daemon as daemon_command, dns, ports};
 use crate::args::{SetupArgs, UninstallArgs};
-use crate::environment::Environment;
+use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 use crate::shell::Shell;
@@ -73,6 +76,7 @@ pub(crate) fn setup(
         output.line(&format!("Ensured PV state layout: {}", paths.root()))?;
     }
     install_command_shims(environment, &paths)?;
+    refresh_setup_artifact_manifest(environment, &paths, stdout)?;
 
     if args.non_interactive && setup_requires_privileged_auth(environment, &paths)? {
         let mut output = Output::new(stdout, OutputMode::plain());
@@ -119,6 +123,41 @@ pub(crate) fn setup(
     output.line("PV setup complete")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_setup_artifact_manifest(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    stdout: &mut impl Write,
+) -> Result<(), ExecuteError> {
+    let cache = ArtifactManifestCache::new(paths.downloads());
+    let manifest_url = artifact_manifest_url(environment);
+
+    let refresh =
+        with_resource_http_client(environment, |client| cache.refresh(&manifest_url, client))?;
+
+    if let ArtifactManifestSource::Cached { reason } = refresh.source() {
+        let mut output = Output::new(stdout, OutputMode::plain());
+        output.line(&format!(
+            "warning: artifact manifest refresh failed ({reason}); using cached manifest at {}",
+            cache.path()
+        ))?;
+    }
+
+    Ok(())
+}
+
+fn with_resource_http_client<T>(
+    environment: &impl Environment,
+    operation: impl FnOnce(&dyn ResourceHttpClient) -> resources::Result<T>,
+) -> resources::Result<T> {
+    if let Some(client) = environment.resource_http_client() {
+        return operation(client);
+    }
+
+    let client = UreqResourceHttpClient::default();
+
+    operation(&client)
 }
 
 fn install_command_shims(

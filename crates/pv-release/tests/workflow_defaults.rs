@@ -186,7 +186,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
     let release_workflow = release.as_deref().unwrap_or("");
     let summary = format!(
-        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nmanifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
         release.is_some(),
         workflow_name(release_workflow).unwrap_or(""),
         workflow_job_ids(release_workflow),
@@ -194,6 +194,8 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
         release_workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL")
             && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json"),
+        release_workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL")
+            && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/manifest.json"),
         release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
         release_workflow.contains("pv-staging"),
         release_workflow.contains("artifacts-staging.pv.prvious.dev"),
@@ -216,7 +218,8 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     jobs=["prepare-release", "build-app", "generate-release"]
     platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
     uses_native_macos_runners=true
-    manifest_url_env=true
+    app_update_manifest_url_env=true
+    artifact_manifest_url_env=true
     uses_r2_public_base_url_var=true
     hardcodes_staging_bucket=false
     hardcodes_staging_public_base_url=false
