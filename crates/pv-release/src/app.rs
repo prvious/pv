@@ -325,10 +325,6 @@ write_profile_block() {
     return 0
   fi
 
-  timestamp="$(date +%Y%m%d-%H%M%S)"
-  backup="${profile}.${timestamp}.pv.bak"
-  cp "${profile}" "${backup}" || return 1
-
   tmp="${profile}.pv.tmp.$$"
   : >"${tmp}" || return 1
   inserted=0
@@ -353,11 +349,24 @@ write_profile_block() {
     printf '%s\n' "${line}" >>"${tmp}" || return 1
   done <"${profile}"
 
+  if [ "${skipping}" -eq 1 ]; then
+    rm -f "${tmp}"
+    warn "incomplete PV ENV block in ${profile}; leaving shell profile unchanged"
+    return 1
+  fi
+
   if [ "${inserted}" -eq 0 ]; then
     if [ -s "${tmp}" ]; then
       printf '\n' >>"${tmp}" || return 1
     fi
     printf '%s\n' "${block}" >>"${tmp}" || return 1
+  fi
+
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  backup="${profile}.${timestamp}.pv.bak"
+  if ! cp "${profile}" "${backup}"; then
+    rm -f "${tmp}"
+    return 1
   fi
 
   mv "${tmp}" "${profile}" || return 1

@@ -153,6 +153,47 @@ fn installer_fish_profile_block_matches_setup_block() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
+fn installer_leaves_incomplete_profile_block_unchanged() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let profile = fixture.home().join(".zprofile");
+    let original_profile = "export BEFORE=1\n# >>> PV ENV\nexport SHOULD_STAY=1\n";
+    write_file(&profile, original_profile)?;
+
+    let output = fixture.run_installer_with_shell(&["--yes"], ChecksumMode::Match, "/bin/zsh")?;
+
+    assert!(
+        output.status.success(),
+        "installer should continue setup after skipping incomplete shell profile block: {}",
+        command_output_summary(&output)
+    );
+    assert_eq!(read_file(&profile)?, original_profile);
+    assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
+    assert!(active_pv_symlink_points_to_release(
+        &fixture.active_binary(),
+        &fixture.release_binary()
+    )?);
+
+    assert_snapshot!(incomplete_profile_block_summary(&output, &fixture, &profile, original_profile)?, @r#"
+    status_success=true
+    stderr_mentions_incomplete_profile=true
+    profile_unchanged=true
+    logs:
+    curl:
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+
+    checksum:
+    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+
+    pv:
+    setup --yes
+    "#);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn installer_non_interactive_fails_when_shell_profile_confirmation_is_required() -> Result<()> {
     let fixture = InstallerExecutionFixture::new()?;
     let output = fixture.run_installer_with_shell(
@@ -833,6 +874,24 @@ fn non_interactive_shell_profile_confirmation_summary(
         "status_success={}\nstderr_mentions_shell_profile_confirmation={}\nlogs:\n{}",
         output.status.success(),
         stderr.contains("shell profile") && stderr.contains("confirmation"),
+        fixture.command_logs()?
+    ))
+}
+
+#[cfg(unix)]
+fn incomplete_profile_block_summary(
+    output: &Output,
+    fixture: &InstallerExecutionFixture,
+    profile: &Utf8Path,
+    original_profile: &str,
+) -> Result<String> {
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    Ok(format!(
+        "status_success={}\nstderr_mentions_incomplete_profile={}\nprofile_unchanged={}\nlogs:\n{}",
+        output.status.success(),
+        stderr.contains("incomplete pv env block")
+            && stderr.contains("leaving shell profile unchanged"),
+        read_file(profile)? == original_profile,
         fixture.command_logs()?
     ))
 }
