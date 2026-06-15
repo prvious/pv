@@ -165,22 +165,39 @@ jobs:
             exit 1
           fi
 
-          current_app_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
-          current_app_manifest_args=()
-          current_app_manifest_error="$RUNNER_TEMP/current-pv-app-manifest.err"
-          if aws s3api get-object \
-            --bucket "$R2_BUCKET" \
-            --key "$STABLE_APP_MANIFEST_KEY" \
-            --endpoint-url "$R2_ENDPOINT" \
-            "$current_app_manifest" \
-            > /dev/null 2>"$current_app_manifest_error"; then
-            current_app_manifest_args=(--current-app-manifest "$current_app_manifest")
-          elif grep -Eiq 'NoSuchKey|Not Found|404' "$current_app_manifest_error"; then
-            printf '%s\n' "no current stable app manifest found; publishing first app release"
-          else
-            printf '%s\n' "failed to read current stable app manifest" >&2
-            cat "$current_app_manifest_error" >&2
+          current_stable_args=()
+          fetch_current_stable_object() {
+            local object_key=$1
+            local local_path=$2
+            local label=$3
+            local error_file=$4
+            if aws s3api get-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              "$local_path" \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'NoSuchKey|Not Found|404' "$error_file"; then
+              printf '%s\n' "no current stable $label found"
+              return 1
+            fi
+            printf '%s\n' "failed to read current stable $label" >&2
+            cat "$error_file" >&2
             exit 1
+          }
+
+          current_app_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
+          current_app_manifest_error="$RUNNER_TEMP/current-pv-app-manifest.err"
+          if fetch_current_stable_object "$STABLE_APP_MANIFEST_KEY" "$current_app_manifest" "app manifest" "$current_app_manifest_error"; then
+            current_stable_args+=(--current-app-manifest "$current_app_manifest")
+          fi
+
+          current_app_installer="$RUNNER_TEMP/current-install.sh"
+          current_app_installer_error="$RUNNER_TEMP/current-install.err"
+          if fetch_current_stable_object "$STABLE_INSTALLER_KEY" "$current_app_installer" "installer" "$current_app_installer_error"; then
+            current_stable_args+=(--current-app-installer "$current_app_installer")
           fi
 
           cargo run --locked -p pv-release -- stage-app-publication \
@@ -189,7 +206,7 @@ jobs:
             --stage "$stage" \
             --source-run-id "$SOURCE_RUN_ID" \
             --base-url "$R2_PUBLIC_BASE_URL" \
-            "${current_app_manifest_args[@]}"
+            "${current_stable_args[@]}"
 
           expected_app_manifest_key="pv/manifests/runs/$SOURCE_RUN_ID/pv-app-manifest.json"
           expected_installer_key="pv/manifests/runs/$SOURCE_RUN_ID/install.sh"

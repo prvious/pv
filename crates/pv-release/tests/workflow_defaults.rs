@@ -319,25 +319,54 @@ fn app_workflows_pin_actions_and_disable_checkout_credentials() -> Result<()> {
 }
 
 #[test]
+fn workflow_uses_scanners_include_shorthand_step_references() {
+    let workflow = r#"
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/setup-node@v5
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+"#;
+    let summary = format!(
+        "unpinned_uses={:?}\ncheckout_refs={:?}\nupload_refs={:?}",
+        unpinned_uses_references(workflow),
+        uses_action_references(workflow, "actions/checkout"),
+        uses_action_references(workflow, "actions/upload-artifact"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    unpinned_uses=["actions/setup-node@v5"]
+    checkout_refs=["actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"]
+    upload_refs=["actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]
+    "#);
+}
+
+#[test]
 fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "passes_base_url={}\npasses_current_app_manifest={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable={}",
+        "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}",
         publication_workflow.contains("--base-url \"$R2_PUBLIC_BASE_URL\""),
         publication_workflow.contains("--current-app-manifest"),
+        publication_workflow.contains("--current-app-installer"),
         publication_workflow.contains("--app-manifest"),
         publication_workflow.contains("--installer"),
         publication_workflow.contains("current-pv-app-manifest.json"),
+        publication_workflow.contains("current-install.sh"),
     );
 
     assert_snapshot!(summary, @r#"
     passes_base_url=true
     passes_current_app_manifest=true
+    passes_current_app_installer=true
     passes_app_manifest_path=false
     passes_installer_path=false
-    fetches_current_stable=true
+    fetches_current_stable_manifest=true
+    fetches_current_stable_installer=true
     "#);
 
     Ok(())
@@ -418,9 +447,15 @@ fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
 fn unpinned_uses_references(workflow: &str) -> Vec<&str> {
     workflow
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("uses: "))
+        .filter_map(uses_reference)
         .filter(|reference| !uses_reference_is_pinned(reference))
         .collect()
+}
+
+fn uses_reference(line: &str) -> Option<&str> {
+    let line = line.trim();
+    line.strip_prefix("uses: ")
+        .or_else(|| line.strip_prefix("- uses: "))
 }
 
 fn uses_reference_is_pinned(reference: &str) -> bool {
@@ -435,7 +470,7 @@ fn uses_reference_is_pinned(reference: &str) -> bool {
 fn uses_action_references<'a>(workflow: &'a str, action: &str) -> Vec<&'a str> {
     workflow
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("uses: "))
+        .filter_map(uses_reference)
         .filter(|reference| {
             reference
                 .split_once('@')

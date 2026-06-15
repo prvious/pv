@@ -244,6 +244,72 @@ fn stage_app_publication_rejects_non_newer_stable_manifest_candidate() -> Result
     Ok(())
 }
 
+#[test]
+fn stage_app_publication_rejects_candidate_older_than_current_stable_installer() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_installer = fixture.root().join("current-install.sh");
+    write_file(
+        &current_installer,
+        &app_installer_script_with_version("0.3.0"),
+    )?;
+
+    let output = run_stage_app_publication_with_current_installer(&fixture, &current_installer)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication accepted a candidate older than the current stable installer");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_allows_same_version_current_stable_for_retry() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if !output.status.success() {
+        assert_debug_snapshot!(command_failure(&output, fixture.root()));
+        bail!("stage-app-publication should allow same-version stable reruns");
+    }
+
+    assert!(path_exists(&fixture.stage.join("publication-plan.json")));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_empty_candidates_when_current_stable_is_provided() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication accepted empty candidates with current stable metadata");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn app_manifest_fixture_uses_requested_version_in_asset_urls() -> Result<()> {
+    assert_snapshot!(app_manifest_json_with_version("0.3.0")?);
+
+    Ok(())
+}
+
 struct AppPublicationFixture {
     tempdir: camino_tempfile::Utf8TempDir,
     source_binaries: Utf8PathBuf,
@@ -370,6 +436,16 @@ fn run_stage_app_publication_with_current_manifest(
     )
 }
 
+fn run_stage_app_publication_with_current_installer(
+    fixture: &AppPublicationFixture,
+    current_installer: &Utf8Path,
+) -> Result<Output> {
+    run_stage_app_publication_with_extra_args(
+        fixture,
+        ["--current-app-installer", current_installer.as_str()],
+    )
+}
+
 fn run_stage_app_publication_with_extra_args<'a>(
     fixture: &AppPublicationFixture,
     extra_args: impl IntoIterator<Item = &'a str>,
@@ -472,13 +548,13 @@ fn app_manifest_json_with_version(version: &str) -> Result<String> {
   "assets": [
     {{
       "platform": "darwin-amd64",
-      "url": "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-darwin-amd64",
+      "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-darwin-amd64",
       "sha256": "{}",
       "size": 8
     }},
     {{
       "platform": "darwin-arm64",
-      "url": "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-darwin-arm64",
+      "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-darwin-arm64",
       "sha256": "{}",
       "size": 8
     }}
@@ -487,6 +563,10 @@ fn app_manifest_json_with_version(version: &str) -> Result<String> {
         sha256(b"pv amd64"),
         sha256(b"pv arm64"),
     ))
+}
+
+fn app_installer_script_with_version(version: &str) -> String {
+    format!("#!/usr/bin/env bash\nPV_VERSION='{version}'\n")
 }
 
 fn installer_entrypoint_summary(installer: &str) -> String {

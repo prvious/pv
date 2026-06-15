@@ -7,5 +7,5 @@ CommandFailure {
         1,
     ),
     stdout: "",
-    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: candidate app version `0.2.0` must be newer than current stable `0.3.0`\n",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: candidate app version `0.2.0` must not be older than current stable app manifest `0.3.0`\n",
 }

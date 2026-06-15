@@ -21,6 +21,7 @@ pub struct AppPublicationRequest {
     pub source_run_id: String,
     pub base_url: String,
     pub current_app_manifest: Option<Utf8PathBuf>,
+    pub current_app_installer: Option<Utf8PathBuf>,
 }
 
 #[derive(Debug)]
@@ -51,7 +52,11 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
     validate_source_run_id(&request.source_run_id)?;
     let records = crate::app::load_app_release_records(&request.candidate_records)?;
     validate_records_match_source_run(&records, &request.source_run_id)?;
-    validate_candidate_is_newer_than_current(&records, request.current_app_manifest.as_deref())?;
+    validate_candidate_is_not_older_than_current(
+        &records,
+        request.current_app_manifest.as_deref(),
+        request.current_app_installer.as_deref(),
+    )?;
     let manifest = crate::app::generate_app_manifest_json(&records, &request.base_url)?;
     let installer = crate::app::generate_app_installer_script(&records, &request.base_url)?;
 
@@ -162,24 +167,27 @@ fn validate_records_match_source_run(
     Ok(())
 }
 
-fn validate_candidate_is_newer_than_current(
+fn validate_candidate_is_not_older_than_current(
     records: &[AppReleaseRecord],
     current_app_manifest: Option<&Utf8Path>,
+    current_app_installer: Option<&Utf8Path>,
 ) -> crate::Result<()> {
-    let Some(current_app_manifest) = current_app_manifest else {
+    if current_app_manifest.is_none() && current_app_installer.is_none() {
         return Ok(());
-    };
+    }
+
     let Some(first_record) = records.first() else {
-        return Ok(());
+        let path = current_app_manifest
+            .or(current_app_installer)
+            .map(Utf8Path::to_string)
+            .unwrap_or_else(|| "current-stable-app".to_string());
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path,
+            reason: "current stable app metadata was provided but no candidate records were found"
+                .to_string(),
+        });
     };
 
-    let current_json = read_to_string(current_app_manifest)?;
-    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
-        crate::ReleaseError::InvalidPublicationInput {
-            path: current_app_manifest.to_string(),
-            reason: format!("failed to parse current stable app manifest: {error}"),
-        }
-    })?;
     let candidate_version =
         AppUpdateVersion::parse(first_record.version().to_string()).map_err(|error| {
             crate::ReleaseError::InvalidPublicationInput {
@@ -187,18 +195,98 @@ fn validate_candidate_is_newer_than_current(
                 reason: format!("failed to parse candidate app version: {error}"),
             }
         })?;
+    let Some(current_version) =
+        current_stable_app_version(current_app_manifest, current_app_installer)?
+    else {
+        return Ok(());
+    };
 
-    if candidate_version <= *current_manifest.version() {
+    if candidate_version < current_version.version {
         return Err(crate::ReleaseError::InvalidPublicationInput {
             path: first_record.path().to_string(),
             reason: format!(
-                "candidate app version `{candidate_version}` must be newer than current stable `{}`",
-                current_manifest.version()
+                "candidate app version `{candidate_version}` must not be older than current stable {} `{}`",
+                current_version.source, current_version.version
             ),
         });
     }
 
     Ok(())
+}
+
+struct CurrentStableAppVersion {
+    version: AppUpdateVersion,
+    source: &'static str,
+}
+
+fn current_stable_app_version(
+    current_app_manifest: Option<&Utf8Path>,
+    current_app_installer: Option<&Utf8Path>,
+) -> crate::Result<Option<CurrentStableAppVersion>> {
+    let mut current_version = None;
+    if let Some(current_app_manifest) = current_app_manifest {
+        let version = current_stable_app_manifest_version(current_app_manifest)?;
+        record_current_stable_app_version(&mut current_version, version, "app manifest");
+    }
+
+    if let Some(current_app_installer) = current_app_installer {
+        let version = current_stable_app_installer_version(current_app_installer)?;
+        record_current_stable_app_version(&mut current_version, version, "installer");
+    }
+
+    Ok(current_version)
+}
+
+fn record_current_stable_app_version(
+    current_version: &mut Option<CurrentStableAppVersion>,
+    version: AppUpdateVersion,
+    source: &'static str,
+) {
+    let should_replace = current_version
+        .as_ref()
+        .map(|current_version| version > current_version.version)
+        .unwrap_or(true);
+    if should_replace {
+        *current_version = Some(CurrentStableAppVersion { version, source });
+    }
+}
+
+fn current_stable_app_manifest_version(
+    current_app_manifest: &Utf8Path,
+) -> crate::Result<AppUpdateVersion> {
+    let current_json = read_to_string(current_app_manifest)?;
+    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse current stable app manifest: {error}"),
+        }
+    })?;
+
+    Ok(current_manifest.version().clone())
+}
+
+fn current_stable_app_installer_version(
+    current_app_installer: &Utf8Path,
+) -> crate::Result<AppUpdateVersion> {
+    let installer = read_to_string(current_app_installer)?;
+    let Some(version) = installer.lines().find_map(installer_version_line) else {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_installer.to_string(),
+            reason: "current stable installer does not define PV_VERSION".to_string(),
+        });
+    };
+
+    AppUpdateVersion::parse(version.to_string()).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_installer.to_string(),
+            reason: format!("failed to parse current stable installer version: {error}"),
+        }
+    })
+}
+
+fn installer_version_line(line: &str) -> Option<&str> {
+    let value = line.trim().strip_prefix("PV_VERSION=")?;
+    value.strip_prefix('\'')?.strip_suffix('\'')
 }
 
 fn validate_app_binary_object_key(object_key: &str) -> crate::Result<()> {

@@ -87,6 +87,8 @@ enum Command {
         base_url: String,
         #[arg(long)]
         current_app_manifest: Option<Utf8PathBuf>,
+        #[arg(long)]
+        current_app_installer: Option<Utf8PathBuf>,
     },
     GenerateRecipeFixtures {
         #[arg(long)]
@@ -268,6 +270,7 @@ pub fn run() -> anyhow::Result<()> {
             source_run_id,
             base_url,
             current_app_manifest,
+            current_app_installer,
         } => crate::app_publication::stage_app_publication(&AppPublicationRequest {
             source_binaries,
             candidate_records,
@@ -275,6 +278,7 @@ pub fn run() -> anyhow::Result<()> {
             source_run_id,
             base_url,
             current_app_manifest,
+            current_app_installer,
         })
         .context("failed to stage app publication"),
         Command::GenerateRecipeFixtures {
