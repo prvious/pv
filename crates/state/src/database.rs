@@ -516,6 +516,29 @@ impl Database {
         Ok(())
     }
 
+    pub fn fail_running_jobs(&mut self, error: &str) -> Result<usize, StateError> {
+        let finished_at = timestamp()?;
+
+        let updated = self.transaction(|transaction| {
+            let updated = transaction.execute(
+                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE status = ?4",
+                params![
+                    JobStatus::Failed.as_str(),
+                    finished_at,
+                    error,
+                    JobStatus::Running.as_str()
+                ],
+            )?;
+            if updated > 0 {
+                prune_old_jobs(transaction)?;
+            }
+
+            Ok(updated)
+        })?;
+
+        Ok(updated)
+    }
+
     pub fn recent_jobs(&self) -> Result<Vec<JobRecord>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",

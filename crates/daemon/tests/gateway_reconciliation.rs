@@ -975,6 +975,49 @@ document_root: public
 }
 
 #[test]
+fn runtime_plan_uses_project_root_not_original_or_config_path() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("canonical-project");
+    let original_path = tempdir.path().join("typed-project-path");
+    let stored_config_path = tempdir.path().join("stale-config-location/pv.yml");
+
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+    fs::write_sensitive_file(
+        &stored_config_path,
+        r#"php: "8.3"
+document_root: other-public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path,
+        primary_hostname: "acme.test".to_owned(),
+        config_path: stored_config_path,
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+
+    let plan = build_runtime_plan(&paths)?;
+
+    assert_runtime_plan_snapshot(
+        "runtime_plan_uses_project_root_not_original_or_config_path",
+        plan,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn gateway_config_validation_failure_preserves_active_config_and_cleans_candidate() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

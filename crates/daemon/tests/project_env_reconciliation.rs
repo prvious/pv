@@ -43,6 +43,53 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
 }
 
 #[tokio::test]
+async fn project_env_reconciliation_uses_project_root_not_config_path_for_dotenv() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("canonical-project");
+    let original_path = tempdir.path().join("typed-project-path");
+    let stored_config_path = tempdir.path().join("stale-config-location/pv.yml");
+
+    state::fs::write_sensitive_file(
+        &project_root.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: canonical\n",
+    )?;
+    state::fs::write_sensitive_file(
+        &original_path.join(".env"),
+        "ORIGINAL_PATH_VALUE=must-not-change\n",
+    )?;
+    state::fs::write_sensitive_file(&stored_config_path, "env:\n  APP_NAME: stale-config-path\n")?;
+
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: original_path.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: stored_config_path.clone(),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    drop(database);
+
+    let lines = run_project_reconciliation(&paths, &project.project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "project_env_reconciliation_uses_project_root_not_config_path_for_dotenv",
+        (
+            lines,
+            read_dotenv(&project.project)?,
+            state::fs::read_to_string(&original_path.join(".env"))?,
+            state::fs::read_to_string(&stored_config_path)?,
+            database.project_env_observed_state(&project.project.id)?,
+            latest_job(&database, &format!("project:{}", project.project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn project_env_reconciliation_updates_persisted_php_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

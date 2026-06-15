@@ -224,6 +224,29 @@ async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()>
 }
 
 #[tokio::test]
+async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    database.start_job("reconcile", "system")?;
+    database.start_job("update", "system")?;
+    drop(database);
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "daemon_start_marks_abandoned_running_jobs_failed",
+        database.recent_jobs()?,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn managed_resource_update_check_returns_success_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

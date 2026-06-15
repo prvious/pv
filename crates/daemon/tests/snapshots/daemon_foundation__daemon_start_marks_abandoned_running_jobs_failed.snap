@@ -1,0 +1,35 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 973
+expression: snapshot
+---
+[
+    JobRecord {
+        id: "job_000002",
+        kind: "update",
+        scope: "system",
+        status: Failed,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: None,
+        error: Some(
+            "daemon was interrupted before job completed",
+        ),
+    },
+    JobRecord {
+        id: "job_000001",
+        kind: "reconcile",
+        scope: "system",
+        status: Failed,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: None,
+        error: Some(
+            "daemon was interrupted before job completed",
+        ),
+    },
+]

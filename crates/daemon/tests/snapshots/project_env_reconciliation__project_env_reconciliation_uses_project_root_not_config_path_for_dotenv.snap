@@ -1,0 +1,65 @@
+---
+source: crates/daemon/tests/project_env_reconciliation.rs
+assertion_line: 1400
+expression: snapshot
+---
+(
+    [
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("job accepted"),
+            "protocol_version": Number(2),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "kind": String("reconcile"),
+            "scope": String("project:<project_id>"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env reconciliation started"),
+            "type": String("log"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("Project env rendered"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "summary": String("Project env rendered"),
+            "type": String("job_completed"),
+        },
+    ],
+    "# >>> PV MANAGED\nAPP_NAME=canonical\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+    "ORIGINAL_PATH_VALUE=must-not-change\n",
+    "env:\n  APP_NAME: stale-config-path\n",
+    Some(
+        ProjectEnvObservedStateRecord {
+            project_id: "<project_id>",
+            status: Rendered,
+            message: Some(
+                "rendered Project env",
+            ),
+            observed_at: "<timestamp>",
+            warnings: [],
+        },
+    ),
+    JobRecord {
+        id: "job_000001",
+        kind: "reconcile",
+        scope: "project:<project_id>",
+        status: Succeeded,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: Some(
+            "Project env rendered",
+        ),
+        error: None,
+    },
+)

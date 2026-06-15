@@ -101,7 +101,8 @@ impl RunningDaemon {
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
-        Database::open(&paths)?;
+        let mut database = Database::open(&paths)?;
+        database.fail_running_jobs("daemon was interrupted before job completed")?;
         clear_startup_failure_marker(&paths)?;
         structured_log::daemon_started(&paths);
         ipc::prepare_endpoint(&paths).await?;

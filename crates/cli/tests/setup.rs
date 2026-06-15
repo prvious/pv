@@ -666,6 +666,12 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
     let _daemon_requests = daemon.finish()?;
     seed_uninstall_files(&fixture.paths)?;
+    let project_path = tempdir.path().join("project-outside-pv");
+    let project_env_path = project_path.join(".env");
+    write_file(
+        &project_env_path,
+        "APP_NAME=user-project\n# >>> PV MANAGED\nAPP_URL=https://project.test\n# <<< PV MANAGED\n",
+    )?;
 
     let uninstall = run_pv(&["uninstall"], fixture.environment.as_ref())?;
 
@@ -686,6 +692,10 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     assert!(read_optional_file(&fixture.paths.run().join("runtime.json"))?.is_none());
     assert!(read_optional_file(&fixture.paths.config().join("generated.txt"))?.is_none());
     assert!(read_optional_file(&fixture.paths.downloads().join("artifact.tar"))?.is_none());
+    assert_eq!(
+        read_required_file(&project_env_path)?,
+        "APP_NAME=user-project\n# >>> PV MANAGED\nAPP_URL=https://project.test\n# <<< PV MANAGED\n"
+    );
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((uninstall, fixture.environment.operations()));
@@ -813,6 +823,7 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
 
     let uninstall = run_pv(&["uninstall"], fixture.environment.as_ref())?;
     let profile_after_uninstall = read_required_file(&profile_path)?;
+    let backups = shell_profile_backups(&fixture.paths.home().join(".zprofile"))?;
 
     assert_eq!(setup.exit_code, ExitCode::SUCCESS);
     assert_eq!(second_setup.exit_code, ExitCode::SUCCESS);
@@ -822,6 +833,12 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
     assert_eq!(profile_after_second_setup, profile_after_setup);
     assert_eq!(profile_after_uninstall, "export EXISTING=1\n\n");
     assert!(!profile_after_uninstall.contains("# >>> PV ENV"));
+    assert!(!backups.is_empty());
+    assert!(
+        backups
+            .iter()
+            .any(|backup| backup == "export EXISTING=1\n\n" || backup == &profile_after_setup)
+    );
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -1203,6 +1220,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn path_exists(path: &Utf8Path) -> bool {
     path.exists()
+}
+
+fn shell_profile_backups(profile_path: &Utf8Path) -> anyhow::Result<Vec<String>> {
+    let Some(parent) = profile_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let Some(file_name) = profile_path.file_name() else {
+        return Ok(Vec::new());
+    };
+
+    let mut backups = Vec::new();
+    for entry in parent.read_dir_utf8()? {
+        let entry = entry?;
+        let entry_file_name = entry.file_name();
+        if entry_file_name.starts_with(&format!("{file_name}."))
+            && entry_file_name.ends_with(".pv.bak")
+        {
+            backups.push(read_required_file(entry.path())?);
+        }
+    }
+    backups.sort();
+
+    Ok(backups)
 }
 
 #[expect(
