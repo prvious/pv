@@ -13,7 +13,7 @@ use resources::{
 };
 use serde::Deserialize;
 use state::{
-    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
+    Database, EnvContextValues, JobStatus, LinkProjectInput, PortOwner, PortRequest,
     ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
     ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
     StateError,
@@ -22,6 +22,7 @@ use state::{
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
+    reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
@@ -1110,6 +1111,71 @@ async fn system_reconciliation_rejects_unsupported_composer_default_track_withou
     assert!(
         record.current_artifact_path.is_none(),
         "failed composer install must not record a current artifact path"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_job_fails_unsupported_manifest_track_without_partial_install()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mysql_fixture = setup_default_fixture("mysql")?;
+    let unsupported_track = "9.9";
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture])?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &[("mysql", unsupported_track)])?;
+    drop(database);
+
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+    let result = crate::jobs::run_background_reconciliation_job(
+        paths.clone(),
+        ReconciliationQueue::new(),
+        ReconciliationScope::System,
+        Some(&catalog),
+    )
+    .await;
+    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+        ResourcesError::TrackNotFound { resource, track },
+    ))) = result
+    else {
+        bail!("expected unsupported mysql manifest track to fail system reconciliation job");
+    };
+
+    assert_eq!(resource, "mysql");
+    assert_eq!(track, unsupported_track);
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.scope == "system")
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+
+    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(
+        job.error.as_deref(),
+        Some(
+            "Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`"
+        )
+    );
+    let tracks = database.managed_resource_tracks()?;
+    let record = find_managed_resource_track(&tracks, "mysql", unsupported_track)?;
+
+    assert_eq!(
+        record.desired_state,
+        state::ManagedResourceDesiredState::Installed
+    );
+    assert!(
+        record.installed_version.is_none(),
+        "failed mysql install must not record an installed artifact version"
+    );
+    assert!(
+        record.current_artifact_path.is_none(),
+        "failed mysql install must not record a current artifact path"
     );
 
     Ok(())
