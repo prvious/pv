@@ -9,6 +9,7 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
 ];
 const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
 const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
+const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
 
 #[test]
 fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
@@ -417,6 +418,40 @@ fn app_publication_publishes_stable_installer_before_manifest() -> Result<()> {
     installer_step_present=true
     manifest_step_present=true
     installer_before_manifest=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(REAL_ARTIFACT_E2E_WORKFLOW_PATH))?;
+    let summary = format!(
+        "workflow_name={}\nmanifest_url_required={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nrun_ignored_count={}",
+        workflow_name(&workflow).unwrap_or(""),
+        workflow.contains("manifest_url:") && workflow.contains("required: true"),
+        workflow.matches("PV_E2E_REAL_ARTIFACTS: \"1\"").count(),
+        workflow
+            .matches("PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}")
+            .count(),
+        workflow.contains(
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(real_artifact_gateway_e2e_serves_tiny_php_project)'"
+        ),
+        workflow.contains(
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
+        ),
+        workflow.matches("--run-ignored ignored-only").count(),
+    );
+
+    assert_snapshot!(summary, @r#"
+    workflow_name=Real Artifact E2E
+    manifest_url_required=true
+    real_artifact_env_count=2
+    manifest_url_env_count=2
+    gateway_command=true
+    resource_matrix_command=true
+    run_ignored_count=2
     "#);
 
     Ok(())
