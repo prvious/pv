@@ -1,0 +1,40 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: expected_plan
+---
+{
+  "immutable_uploads": [
+    {
+      "local_path": "pv/0.2.0/pv-darwin-amd64",
+      "object_key": "pv/0.2.0/pv-darwin-amd64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/pv-darwin-amd64.json",
+      "object_key": "pv/records/0.2.0/pv-darwin-amd64.json"
+    },
+    {
+      "local_path": "pv/0.2.0/pv-darwin-arm64",
+      "object_key": "pv/0.2.0/pv-darwin-arm64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/pv-darwin-arm64.json",
+      "object_key": "pv/records/0.2.0/pv-darwin-arm64.json"
+    },
+    {
+      "local_path": "pv/manifests/runs/987654321/pv-app-manifest.json",
+      "object_key": "pv/manifests/runs/987654321/pv-app-manifest.json"
+    },
+    {
+      "local_path": "pv/manifests/runs/987654321/install.sh",
+      "object_key": "pv/manifests/runs/987654321/install.sh"
+    }
+  ],
+  "stable_app_manifest": {
+    "local_path": "pv-app-manifest.json",
+    "object_key": "pv-app-manifest.json"
+  },
+  "stable_installer": {
+    "local_path": "install.sh",
+    "object_key": "install.sh"
+  }
+}

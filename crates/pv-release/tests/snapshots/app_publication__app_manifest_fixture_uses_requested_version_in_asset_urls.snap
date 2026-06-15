@@ -1,0 +1,25 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "app_manifest_json_with_version(\"0.3.0\")?"
+---
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.3.0",
+  "minimum_pv_version": "0.1.0",
+  "published_at": "2026-06-13T15:00:00Z",
+  "assets": [
+    {
+      "platform": "darwin-amd64",
+      "url": "https://downloads.prvious.test/pv/0.3.0/pv-darwin-amd64",
+      "sha256": "74d2dd713a41a55013390be7118c03f6db008ed6778344a3b5a7f351fc2758df",
+      "size": 8
+    },
+    {
+      "platform": "darwin-arm64",
+      "url": "https://downloads.prvious.test/pv/0.3.0/pv-darwin-arm64",
+      "sha256": "86be0807a02eee20d5b7a39b650742bfd15703d9067387247d8c2573920ee466",
+      "size": 8
+    }
+  ]
+}

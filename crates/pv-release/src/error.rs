@@ -5,6 +5,9 @@ pub enum ReleaseError {
     #[error("invalid release record `{path}`: {reason}")]
     InvalidReleaseRecord { path: String, reason: String },
 
+    #[error("invalid app release record `{path}`: {reason}")]
+    InvalidAppReleaseRecord { path: String, reason: String },
+
     #[error("invalid revocation record `{path}`: {reason}")]
     InvalidRevocationRecord { path: String, reason: String },
 
@@ -16,6 +19,19 @@ pub enum ReleaseError {
 
     #[error("duplicate artifact identity `{identity}`")]
     DuplicateArtifactIdentity { identity: String },
+
+    #[error("duplicate app release record for {platform}")]
+    DuplicateAppReleasePlatform { platform: String },
+
+    #[error(
+        "app release records must agree on {field}: expected `{expected}`, got `{actual}` in `{path}`"
+    )]
+    AppReleaseMetadataMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+        path: String,
+    },
 
     #[error("revocation `{revocation}` references missing artifact `{identity}`")]
     RevocationTargetMissing {
@@ -45,14 +61,14 @@ pub enum ReleaseError {
     #[error("publication would overwrite immutable object `{key}`")]
     ImmutablePublicationObjectExists { key: String },
 
-    #[error("artifact archive `{path}` checksum mismatch: expected {expected}, got {actual}")]
+    #[error("artifact file `{path}` checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
         expected: String,
         actual: String,
     },
 
-    #[error("artifact archive `{path}` size mismatch: expected {expected}, got {actual}")]
+    #[error("artifact file `{path}` size mismatch: expected {expected}, got {actual}")]
     SizeMismatch {
         path: String,
         expected: u64,
@@ -67,6 +83,12 @@ pub enum ReleaseError {
 
     #[error("generated manifest is invalid: {reason}")]
     GeneratedManifestInvalid { reason: String },
+
+    #[error("generated app manifest is invalid: {reason}")]
+    GeneratedAppManifestInvalid { reason: String },
+
+    #[error("generated app installer is invalid: {reason}")]
+    GeneratedAppInstallerInvalid { reason: String },
 
     #[error("filesystem error at `{path}`: {reason}")]
     Filesystem { path: String, reason: String },

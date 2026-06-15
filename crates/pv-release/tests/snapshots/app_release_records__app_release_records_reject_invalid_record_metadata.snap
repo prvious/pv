@@ -1,0 +1,48 @@
+---
+source: crates/pv-release/tests/app_release_records.rs
+expression: failures
+---
+[
+    InvalidAppReleaseRecordSnapshot {
+        name: "invalid_version",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: invalid app release record `<tempdir>/records/invalid-version.json`: invalid version: invalid PV app update version `0.02.0`\n",
+    },
+    InvalidAppReleaseRecordSnapshot {
+        name: "invalid_platform",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: invalid app release record `<tempdir>/records/invalid-platform.json`: unsupported PV app update platform `linux-amd64`\n",
+    },
+    InvalidAppReleaseRecordSnapshot {
+        name: "invalid_checksum",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: invalid app release record `<tempdir>/records/invalid-checksum.json`: invalid PV app update sha256 `not-a-sha256`\n",
+    },
+    InvalidAppReleaseRecordSnapshot {
+        name: "invalid_size",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: invalid app release record `<tempdir>/records/invalid-size.json`: invalid PV app update asset size 0 for darwin-arm64\n",
+    },
+    InvalidAppReleaseRecordSnapshot {
+        name: "duplicate_platform",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: duplicate app release record for darwin-arm64\n",
+    },
+    InvalidAppReleaseRecordSnapshot {
+        name: "inconsistent_metadata",
+        status: Some(
+            1,
+        ),
+        stderr: "Error: app release records must agree on version: expected `0.2.0`, got `0.3.0` in `<tempdir>/records/02-pv-darwin-amd64.json`\n",
+    },
+]

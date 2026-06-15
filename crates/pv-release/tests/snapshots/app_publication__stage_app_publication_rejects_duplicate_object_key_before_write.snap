@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "command_failure(&output, fixture.root())"
+---
+CommandFailure {
+    status_code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid app release record `<tempdir>/candidate-records/pv-darwin-arm64.json`: object_key must be `pv/0.2.0/pv-darwin-amd64`\n",
+}

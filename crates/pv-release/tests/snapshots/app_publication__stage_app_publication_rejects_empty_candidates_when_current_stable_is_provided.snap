@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "command_failure(&output, fixture.root())"
+---
+CommandFailure {
+    status_code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/current-pv-app-manifest.json`: current stable app metadata was provided but no candidate records were found\n",
+}
