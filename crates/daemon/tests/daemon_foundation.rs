@@ -247,6 +247,35 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
 }
 
 #[tokio::test]
+async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    database.start_job("reconcile", "system")?;
+    drop(database);
+
+    let _listener = UnixListener::bind(paths.daemon_socket())?;
+
+    let result =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await;
+
+    assert!(matches!(
+        result,
+        Err(daemon::DaemonError::SocketInUse { path }) if path == paths.daemon_socket()
+    ));
+
+    let database = Database::open(&paths)?;
+    let jobs = database.recent_jobs()?;
+
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].status, JobStatus::Running);
+    assert!(jobs[0].finished_at.is_none());
+    assert!(jobs[0].error.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn managed_resource_update_check_returns_success_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -958,6 +987,7 @@ async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() 
         } if port == bound_dns_port
     ));
     assert_eq!(persisted_port, bound_dns_port);
+    assert!(!state::fs::path_entry_exists(&paths.daemon_socket())?);
 
     Ok(())
 }

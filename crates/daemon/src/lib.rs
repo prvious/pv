@@ -102,18 +102,26 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
         let mut database = Database::open(&paths)?;
-        database.fail_running_jobs("daemon was interrupted before job completed")?;
-        clear_startup_failure_marker(&paths)?;
-        structured_log::daemon_started(&paths);
         ipc::prepare_endpoint(&paths).await?;
-        let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
-        let listener = match ipc::bind(&paths) {
-            Ok(listener) => listener,
+        let listener = ipc::bind(&paths)?;
+        if let Err(error) =
+            database.fail_running_jobs("daemon was interrupted before job completed")
+        {
+            ipc::remove_endpoint(&paths)?;
+            return Err(error.into());
+        }
+        if let Err(error) = clear_startup_failure_marker(&paths) {
+            ipc::remove_endpoint(&paths)?;
+            return Err(error);
+        }
+        let dns = match dns::RunningDnsResolver::start(paths.clone()).await {
+            Ok(dns) => dns,
             Err(error) => {
-                let _dns_result = dns.shutdown().await;
+                ipc::remove_endpoint(&paths)?;
                 return Err(error);
             }
         };
+        structured_log::daemon_started(&paths);
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
         let runtime_catalog = runtime_catalog.map(Arc::new);
