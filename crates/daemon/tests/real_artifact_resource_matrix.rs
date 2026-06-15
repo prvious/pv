@@ -198,7 +198,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
   APP_URL: "${project_url}"
 "#,
         )?;
-        let _cleanup_job = run_reconciliation_job(&paths, &format!("project:{}", project.id)).await;
+        run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
