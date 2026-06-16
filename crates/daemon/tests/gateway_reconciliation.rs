@@ -1543,6 +1543,8 @@ fn seed_runtime_ports(
 }
 
 fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
+    // Keep these hostnames in sync with gateway reconciliation fixtures that
+    // perform HTTPS readiness checks against the seeded CA.
     let certified_key = generate_simple_self_signed(vec![
         "acme.test".to_owned(),
         "api.acme.test".to_owned(),

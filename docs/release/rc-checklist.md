@@ -56,7 +56,7 @@ Default-track matrix under validation: PHP/FrankenPHP `8.5`, Composer `2`, MySQL
 | ----- | -------- |
 | `pv link` records a Project and requests reconciliation. |  |
 | `pv open` opens the primary Project hostname. |  |
-| `pv list` reports Project, PHP, serving, resource, and env status. |  |
+| `pv list` reports Project, PHP, observed serving, declared resource, and env status; `pv status` covers whole-system runtime status. |  |
 | `pv.yml` with YAML anchors is accepted after YAML merge resolution. |  |
 | `pv project:env` renders expected values without mutating `.env`. |  |
 

@@ -154,7 +154,7 @@ Resource uninstall preserves data by default. Use `--prune` to delete resource d
 pv mysql:uninstall 8.4 --prune --force
 ```
 
-If a Project still declares a forced-uninstalled track, reconciliation may reinstall it.
+If a Project still declares a forced-uninstalled track, reconciliation fails until you remove that declaration or explicitly reinstall the track.
 
 ## Update
 
