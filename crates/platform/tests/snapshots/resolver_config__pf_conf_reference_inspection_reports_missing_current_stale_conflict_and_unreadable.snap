@@ -1,5 +1,6 @@
 ---
 source: crates/platform/tests/resolver_config.rs
+assertion_line: 251
 expression: normalized_states
 ---
 [
@@ -8,6 +9,7 @@ expression: normalized_states
     "Stale { path: \"[tempdir]/stale-pf-conf\", expected: Some(PfConfReference), actual: None }",
     "Conflict { path: \"[tempdir]/conflict-pf-conf\" }",
     "Conflict { path: \"[tempdir]/active-anchor-conflict-pf-conf\" }",
+    "Conflict { path: \"[tempdir]/active-rdr-anchor-conflict-pf-conf\" }",
     "Conflict { path: \"[tempdir]/active-load-conflict-pf-conf\" }",
     "Missing { path: \"[tempdir]/commented-reference-pf-conf\" }",
     "Missing { path: \"[tempdir]/prose-reference-pf-conf\" }",

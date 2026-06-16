@@ -179,10 +179,12 @@ jobs:
           }
 
           pv_pf_rules_absent() {
-            local rules
-            rules=$(sudo pfctl -sr)
-            printf '%s\n' "$rules"
-            if printf '%s\n' "$rules" | grep -Fq "com.prvious.pv"; then
+            local filter_rules
+            local nat_rules
+            filter_rules=$(sudo pfctl -sr) || return 1
+            nat_rules=$(sudo pfctl -s nat) || return 1
+            printf 'filter rules:\n%s\nnat rules:\n%s\n' "$filter_rules" "$nat_rules"
+            if printf '%s\n%s\n' "$filter_rules" "$nat_rules" | grep -Fq "com.prvious.pv"; then
               return 1
             fi
 
@@ -214,6 +216,7 @@ jobs:
           collect_file resolver-system /etc/resolver/test
           record_status resolver-status required pv dns:status
           record_status pf-rules evidence sudo pfctl -sr
+          record_status pf-nat-rules evidence sudo pfctl -s nat
           collect_file pf-anchor /etc/pf.anchors/com.prvious.pv
           record_status ports-status required pv ports:status
           record_status ca-status required pv ca:status
@@ -235,6 +238,7 @@ jobs:
           collect_file resolver-after-uninstall /etc/resolver/test
           record_status resolver-removed required test ! -e /etc/resolver/test
           record_status pf-rules-after-uninstall evidence sudo pfctl -sr
+          record_status pf-nat-rules-after-uninstall evidence sudo pfctl -s nat
           record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv
           record_status pf-rules-removed required pv_pf_rules_absent
           record_status ca-status-after-uninstall evidence "$PV_RC_BIN" ca:status

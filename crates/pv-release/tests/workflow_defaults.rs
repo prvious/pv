@@ -585,7 +585,9 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
         workflow.contains("sudo sh -c 'cat \"$1\" > \"$2\" 2> \"$3\"'"),
         !workflow.contains("sudo cat \"$path\" >"),
         workflow.contains("/etc/resolver/test"),
-        workflow.contains("pfctl -sr") && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
+        workflow.contains("pfctl -sr")
+            && workflow.contains("pfctl -s nat")
+            && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
         workflow.contains("security verify-cert") && workflow.contains("ca.pem"),
         workflow.contains("launchctl print") && workflow.contains("com.prvious.pv.daemon"),
         workflow.contains("record_blocked"),
@@ -615,6 +617,7 @@ fn privileged_macos_rc_system_summary(workflow: &str) -> String {
         workflow.contains("record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv"),
         workflow.contains("pv_pf_rules_absent()")
             && workflow.contains("record_status pf-rules-removed required pv_pf_rules_absent")
+            && workflow.contains("record_status pf-nat-rules-after-uninstall evidence sudo pfctl -s nat")
             && workflow.contains("grep -Fq \"com.prvious.pv\""),
         workflow.contains("PV_RC_BIN=\"${RUNNER_TEMP:?}/pv-privileged-rc-bin/pv\"")
             && workflow.contains("install -m 755 \"$HOME/.pv/bin/pv\" \"$PV_RC_BIN\"")

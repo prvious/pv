@@ -12,7 +12,8 @@ const PV_MARKER: &str = "# Managed by PV";
 const PF_ANCHOR_SOURCE_MARKER: &str =
     "# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv";
 const PF_CONF_SOURCE_MARKER: &str = "# Source: PV prepared pf.conf reference for /etc/pf.conf";
-const PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
+const PF_RDR_ANCHOR_DIRECTIVE: &str = "rdr-anchor \"com.prvious.pv\"";
+const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
 
@@ -128,23 +129,23 @@ impl PfRedirectConfig {
 impl PfConfReference {
     pub fn render(self) -> String {
         format!(
-            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_ANCHOR_DIRECTIVE}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n"
+            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_RDR_ANCHOR_DIRECTIVE}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n"
         )
     }
 
     pub fn parse_block(content: &str) -> Option<Self> {
-        let mut has_anchor = false;
+        let mut has_rdr_anchor = false;
         let mut has_load = false;
         let mut active_line_count = 0;
 
         for line in content.lines().filter_map(active_pf_line) {
             active_line_count += 1;
 
-            if line == PF_ANCHOR_DIRECTIVE {
-                if has_anchor {
+            if line == PF_RDR_ANCHOR_DIRECTIVE {
+                if has_rdr_anchor {
                     return None;
                 }
-                has_anchor = true;
+                has_rdr_anchor = true;
                 continue;
             }
 
@@ -163,7 +164,7 @@ impl PfConfReference {
             return None;
         }
 
-        if active_line_count == 2 && has_anchor && has_load {
+        if active_line_count == 2 && has_rdr_anchor && has_load {
             Some(Self)
         } else {
             None
@@ -546,7 +547,8 @@ fn active_pf_line(line: &str) -> Option<&str> {
 }
 
 fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
-    line.starts_with("anchor \"com.prvious.pv\"")
+    line.starts_with("rdr-anchor \"com.prvious.pv\"")
+        || line.starts_with("anchor \"com.prvious.pv\"")
         || line.starts_with("load anchor \"com.prvious.pv\"")
 }
 
@@ -563,15 +565,15 @@ fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
 }
 
 fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
-    let mut has_anchor = false;
+    let mut has_rdr_anchor = false;
     let mut has_load = false;
 
     for line in content.lines().filter_map(active_pf_line) {
-        if line == PF_ANCHOR_DIRECTIVE {
-            if has_anchor {
+        if line == PF_RDR_ANCHOR_DIRECTIVE {
+            if has_rdr_anchor {
                 return None;
             }
-            has_anchor = true;
+            has_rdr_anchor = true;
             continue;
         }
 
@@ -588,7 +590,7 @@ fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
         }
     }
 
-    if has_anchor && has_load {
+    if has_rdr_anchor && has_load {
         Some(PfConfReference)
     } else {
         None
@@ -653,7 +655,11 @@ fn remove_pf_reference_lines(content: &str) -> String {
         let trimmed = line.trim();
         if matches!(
             trimmed,
-            PV_MARKER | PF_CONF_SOURCE_MARKER | PF_ANCHOR_DIRECTIVE | PF_LOAD_ANCHOR_DIRECTIVE
+            PV_MARKER
+                | PF_CONF_SOURCE_MARKER
+                | PF_RDR_ANCHOR_DIRECTIVE
+                | LEGACY_PF_ANCHOR_DIRECTIVE
+                | PF_LOAD_ANCHOR_DIRECTIVE
         ) {
             continue;
         }
