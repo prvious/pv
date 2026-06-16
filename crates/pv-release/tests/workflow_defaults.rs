@@ -482,6 +482,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     summary_avoids_manifest_expressions=true
     evidence_dir_uses_step_shell_runner_temp=true
     evidence_dir_avoids_job_runner_context=true
+    evidence_step_disables_errexit=true
     collect_file_uses_root_shell_redirect=true
     collect_file_avoids_sudo_redirect=true
     resolver_evidence=true
@@ -562,9 +563,10 @@ fn privileged_macos_rc_manifest_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
     format!(
-        "evidence_dir_uses_step_shell_runner_temp={}\nevidence_dir_avoids_job_runner_context={}\ncollect_file_uses_root_shell_redirect={}\ncollect_file_avoids_sudo_redirect={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrecords_blocked_steps={}\nuploads_evidence={}",
+        "evidence_dir_uses_step_shell_runner_temp={}\nevidence_dir_avoids_job_runner_context={}\nevidence_step_disables_errexit={}\ncollect_file_uses_root_shell_redirect={}\ncollect_file_avoids_sudo_redirect={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrecords_blocked_steps={}\nuploads_evidence={}",
         workflow.contains("PV_RC_EVIDENCE_DIR=\"${RUNNER_TEMP:?}/pv-privileged-rc-evidence\""),
         !workflow.contains("PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence"),
+        workflow.contains("set +e"),
         workflow.contains("sudo sh -c 'cat \"$1\" > \"$2\" 2> \"$3\"'"),
         !workflow.contains("sudo cat \"$path\" >"),
         workflow.contains("/etc/resolver/test"),
@@ -596,9 +598,9 @@ fn privileged_macos_rc_system_summary(workflow: &str) -> String {
         workflow.contains("pv uninstall"),
         workflow.contains("record_status resolver-removed required test ! -e /etc/resolver/test"),
         workflow.contains("record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv"),
-        workflow.contains("record_status pf-rules-removed required bash -c")
-            && workflow.contains("rules=$(sudo pfctl -sr)")
-            && workflow.contains("grep -F \"com.prvious.pv\""),
+        workflow.contains("pv_pf_rules_absent()")
+            && workflow.contains("record_status pf-rules-removed required pv_pf_rules_absent")
+            && workflow.contains("grep -Fq \"com.prvious.pv\""),
         workflow.contains(
             "record_status ca-trust-removed required sh -c 'pv ca:status | grep -F \"System keychain trust: not trusted\"'"
         ),

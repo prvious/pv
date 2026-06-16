@@ -109,6 +109,7 @@ jobs:
           RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}
         run: |
           set -u
+          set +e
 
           PV_RC_EVIDENCE_DIR="${RUNNER_TEMP:?}/pv-privileged-rc-evidence"
           mkdir -p "$PV_RC_EVIDENCE_DIR"
@@ -162,6 +163,17 @@ jobs:
             fi
           }
 
+          pv_pf_rules_absent() {
+            local rules
+            rules=$(sudo pfctl -sr)
+            printf '%s\n' "$rules"
+            if printf '%s\n' "$rules" | grep -Fq "com.prvious.pv"; then
+              return 1
+            fi
+
+            return 0
+          }
+
           record_status environment evidence sw_vers
           record_status sudo-preflight required sudo -n true || record_blocked sudo-required "passwordless sudo is unavailable on this runner"
 
@@ -205,7 +217,7 @@ jobs:
           record_status resolver-removed required test ! -e /etc/resolver/test
           record_status pf-rules-after-uninstall evidence sudo pfctl -sr
           record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv
-          record_status pf-rules-removed required bash -c 'rules=$(sudo pfctl -sr) && printf "%s\n" "$rules" && ! printf "%s\n" "$rules" | grep -F "com.prvious.pv"'
+          record_status pf-rules-removed required pv_pf_rules_absent
           record_status ca-status-after-uninstall evidence pv ca:status
           record_status ca-trust-removed required sh -c 'pv ca:status | grep -F "System keychain trust: not trusted"'
           record_status launch-agent-removed required test ! -e "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
