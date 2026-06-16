@@ -9,6 +9,7 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
 ];
 const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
 const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
+const PRIVILEGED_MACOS_RC_WORKFLOW_PATH: &str = ".github/workflows/privileged-macos-rc.yml";
 const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
 
 #[test]
@@ -452,6 +453,69 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     gateway_command=true
     resource_matrix_command=true
     run_ignored_count=2
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_optional_file(&workspace_root.join(PRIVILEGED_MACOS_RC_WORKFLOW_PATH))?;
+    let workflow = workflow.as_deref().unwrap_or("");
+    let summary = format!(
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}\nuses_compiled_artifact_manifest_env={}\nuses_compiled_app_manifest_env={}\nresolves_manifest_from_input_or_public_var={}\nsetup_command={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrestart_command={}\nlink_command={}\nserve_curl={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nrecords_blocked_steps={}\nuploads_evidence={}",
+        !workflow.is_empty(),
+        workflow_name(workflow).unwrap_or(""),
+        workflow.contains("workflow_dispatch:"),
+        !workflow.contains("pull_request:") && !workflow.contains("push:"),
+        input_default(workflow, "artifact_manifest_url").unwrap_or(""),
+        input_default(workflow, "app_update_manifest_url").unwrap_or(""),
+        workflow.contains("runs-on: macos-14"),
+        workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"),
+        workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"),
+        workflow.contains("${{ inputs.artifact_manifest_url }}")
+            && workflow.contains("R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}")
+            && workflow.contains("artifact_manifest_url=\"${R2_PUBLIC_BASE_URL%/}/manifest.json\""),
+        workflow.contains("pv setup --yes --no-path"),
+        workflow.contains("/etc/resolver/test"),
+        workflow.contains("pfctl -sr") && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
+        workflow.contains("security verify-cert") && workflow.contains("ca.pem"),
+        workflow.contains("launchctl print") && workflow.contains("com.prvious.pv.daemon"),
+        workflow.contains("pv daemon:restart"),
+        workflow.contains("pv link \"$PV_RC_PROJECT\""),
+        workflow.contains("curl --fail --show-error --silent --retry"),
+        workflow.contains("pv update --check --json"),
+        workflow.contains("pv doctor"),
+        workflow.contains("pv uninstall"),
+        workflow.contains("record_blocked"),
+        workflow.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    workflow_exists=true
+    workflow_name=Privileged macOS RC
+    manual_dispatch=true
+    no_push_or_pull_request=true
+    artifact_manifest_input_default=
+    app_manifest_input_default=
+    runs_on_macos_14=true
+    uses_compiled_artifact_manifest_env=true
+    uses_compiled_app_manifest_env=true
+    resolves_manifest_from_input_or_public_var=true
+    setup_command=true
+    resolver_evidence=true
+    pf_evidence=true
+    ca_trust_evidence=true
+    launch_agent_evidence=true
+    restart_command=true
+    link_command=true
+    serve_curl=true
+    update_check_json=true
+    doctor_command=true
+    uninstall_command=true
+    records_blocked_steps=true
+    uploads_evidence=true
     "#);
 
     Ok(())

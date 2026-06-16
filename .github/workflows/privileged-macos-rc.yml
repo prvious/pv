@@ -1,0 +1,198 @@
+name: Privileged macOS RC
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_manifest_url:
+        description: "Managed Resource artifact manifest URL; defaults to R2_PUBLIC_BASE_URL/manifest.json"
+        required: false
+        default: ""
+        type: string
+      app_update_manifest_url:
+        description: "PV app update manifest URL; defaults to R2_PUBLIC_BASE_URL/pv-app-manifest.json"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  privileged-rc:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    env:
+      PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Resolve manifest endpoints
+        id: manifest
+        env:
+          ARTIFACT_MANIFEST_INPUT: ${{ inputs.artifact_manifest_url }}
+          APP_UPDATE_MANIFEST_INPUT: ${{ inputs.app_update_manifest_url }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -eu
+
+          artifact_manifest_url="$ARTIFACT_MANIFEST_INPUT"
+          app_update_manifest_url="$APP_UPDATE_MANIFEST_INPUT"
+
+          if [ -z "$artifact_manifest_url" ] || [ -z "$app_update_manifest_url" ]; then
+            if [ -z "$R2_PUBLIC_BASE_URL" ]; then
+              printf '%s\n' "R2_PUBLIC_BASE_URL is required when manifest inputs are omitted" >&2
+              exit 1
+            fi
+          fi
+
+          if [ -z "$artifact_manifest_url" ]; then
+            artifact_manifest_url="${R2_PUBLIC_BASE_URL%/}/manifest.json"
+          fi
+          if [ -z "$app_update_manifest_url" ]; then
+            app_update_manifest_url="${R2_PUBLIC_BASE_URL%/}/pv-app-manifest.json"
+          fi
+
+          case "$artifact_manifest_url" in
+            https://*) ;;
+            *)
+              printf '%s\n' "artifact_manifest_url must use https" >&2
+              exit 1
+              ;;
+          esac
+          case "$app_update_manifest_url" in
+            https://*) ;;
+            *)
+              printf '%s\n' "app_update_manifest_url must use https" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'artifact_manifest_url=%s\n' "$artifact_manifest_url"
+            printf 'app_update_manifest_url=%s\n' "$app_update_manifest_url"
+          } >>"${GITHUB_OUTPUT:?}"
+
+      - name: Build PV with RC manifest endpoints
+        env:
+          PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}
+          PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}
+        run: |
+          set -eu
+          cargo build --locked --release --package pv --bin pv
+          install -d "$HOME/.pv/bin/releases/rc"
+          install -m 755 target/release/pv "$HOME/.pv/bin/releases/rc/pv"
+          ln -sfn "$HOME/.pv/bin/releases/rc/pv" "$HOME/.pv/bin/pv"
+          "$HOME/.pv/bin/pv" --version
+
+      - name: Run privileged RC workflow
+        shell: bash
+        run: |
+          set -u
+
+          mkdir -p "$PV_RC_EVIDENCE_DIR"
+          export PATH="$HOME/.pv/bin:$PATH"
+          PV_RC_PROJECT="${RUNNER_TEMP:?}/pv-rc-project"
+          failure_count=0
+
+          record_blocked() {
+            local label=$1
+            local reason=$2
+            printf 'blocked: %s\n' "$reason" > "$PV_RC_EVIDENCE_DIR/$label.status"
+            printf '::error title=%s::%s\n' "$label" "$reason"
+            failure_count=$((failure_count + 1))
+          }
+
+          record_status() {
+            local label=$1
+            local required=$2
+            shift 2
+            printf 'command: %s\n' "$*" > "$PV_RC_EVIDENCE_DIR/$label.status"
+            "$@" > "$PV_RC_EVIDENCE_DIR/$label.out" 2> "$PV_RC_EVIDENCE_DIR/$label.err"
+            local status=$?
+            printf 'exit_status: %s\n' "$status" >> "$PV_RC_EVIDENCE_DIR/$label.status"
+            if [ "$status" -ne 0 ] && [ "$required" = "required" ]; then
+              printf '::error title=%s failed::exit status %s\n' "$label" "$status"
+              failure_count=$((failure_count + 1))
+            fi
+            return "$status"
+          }
+
+          collect_file() {
+            local label=$1
+            local path=$2
+            if [ -e "$path" ]; then
+              sudo cat "$path" > "$PV_RC_EVIDENCE_DIR/$label.out" 2> "$PV_RC_EVIDENCE_DIR/$label.err"
+              printf 'path: %s\nexit_status: %s\n' "$path" "$?" > "$PV_RC_EVIDENCE_DIR/$label.status"
+            else
+              printf 'missing: %s\n' "$path" > "$PV_RC_EVIDENCE_DIR/$label.status"
+            fi
+          }
+
+          record_status environment evidence sw_vers
+          record_status sudo-preflight required sudo -n true || record_blocked sudo-required "passwordless sudo is unavailable on this runner"
+
+          mkdir -p "$PV_RC_PROJECT/public"
+          printf '%s\n' "<?php echo 'pv-privileged-rc-ok';" > "$PV_RC_PROJECT/public/index.php"
+          printf '%s\n' "document_root: public" > "$PV_RC_PROJECT/pv.yml"
+          cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
+          Privileged macOS RC evidence checklist:
+          - /etc/resolver/test installed and removed
+          - pf redirect rules installed and removed
+          - System keychain CA trust installed and removed
+          - LaunchAgent installed, printed, restarted, and uninstalled
+          - Project linked and served through .test
+          - Update check and diagnostics executed
+          CHECKLIST
+
+          record_status setup required pv setup --yes --no-path
+
+          collect_file resolver-system /etc/resolver/test
+          record_status resolver-status required pv dns:status
+          record_status pf-rules evidence sudo pfctl -sr
+          collect_file pf-anchor /etc/pf.anchors/com.prvious.pv
+          record_status ports-status required pv ports:status
+          record_status ca-status required pv ca:status
+          record_status ca-verify evidence security verify-cert -c "$HOME/.pv/certificates/ca.pem" -p ssl -L
+          collect_file launch-agent-plist "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
+          record_status launch-agent-print required launchctl print "gui/$(id -u)/com.prvious.pv.daemon"
+
+          record_status daemon-restart required pv daemon:restart
+          record_status link required pv link "$PV_RC_PROJECT"
+          record_status status-json required pv status --json
+          record_status serve required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/
+          record_status update-check required pv update --check --json
+          record_status diagnostics required pv doctor
+          record_status jobs evidence pv jobs
+          record_status logs evidence pv logs
+
+          record_status uninstall required pv uninstall
+          collect_file resolver-after-uninstall /etc/resolver/test
+          record_status pf-rules-after-uninstall evidence sudo pfctl -sr
+          record_status ca-status-after-uninstall evidence pv ca:status
+
+          {
+            printf 'artifact_manifest_url=%s\n' "${{ steps.manifest.outputs.artifact_manifest_url }}"
+            printf 'app_update_manifest_url=%s\n' "${{ steps.manifest.outputs.app_update_manifest_url }}"
+            printf 'failure_count=%s\n' "$failure_count"
+            find "$PV_RC_EVIDENCE_DIR" -maxdepth 1 -type f -print | sort
+          } > "$PV_RC_EVIDENCE_DIR/summary.txt"
+
+          if [ "$failure_count" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload privileged RC evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: privileged-macos-rc-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-privileged-rc-evidence
+          if-no-files-found: error
