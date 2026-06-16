@@ -174,12 +174,13 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         )
         .await?;
     }
-    let promoted_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
-    let gateway_readiness = gateway_readiness_check(&plan)?;
+    let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    let gateway_readiness =
+        gateway_readiness_check(&plan, gateway_config.readiness_hostname.clone())?;
     start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
-        promoted_config,
+        gateway_config.promoted_config,
         gateway_process_spec(paths, &gateway_command),
         gateway_readiness,
         RuntimeSubject::Gateway,
@@ -190,9 +191,12 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
 
-fn gateway_readiness_check(plan: &RuntimePlan) -> Result<ReadinessCheck, DaemonError> {
+fn gateway_readiness_check(
+    plan: &RuntimePlan,
+    readiness_hostname: Option<String>,
+) -> Result<ReadinessCheck, DaemonError> {
     let ca_certificate_exists = fs::modified_at(&plan.gateway.ca_certificate_path)?.is_some();
-    let readiness = match (ca_certificate_exists, gateway_readiness_hostname(plan)) {
+    let readiness = match (ca_certificate_exists, readiness_hostname) {
         (true, Some(server_name)) => ReadinessCheck::GatewayHttps {
             http_host: "127.0.0.1".to_owned(),
             http_port: plan.gateway.http_port,
@@ -210,12 +214,10 @@ fn gateway_readiness_check(plan: &RuntimePlan) -> Result<ReadinessCheck, DaemonE
     Ok(readiness)
 }
 
-fn gateway_readiness_hostname(plan: &RuntimePlan) -> Option<String> {
-    plan.workers
-        .iter()
-        .flat_map(|worker| worker.projects.iter())
-        .find(|project| project.render_config)
-        .map(|project| project.primary_hostname.clone())
+fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<String> {
+    fragments
+        .first()
+        .map(|fragment| fragment.primary_hostname.clone())
 }
 
 pub async fn validate_config(
@@ -533,11 +535,12 @@ async fn reconcile_gateway_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
     plan: &RuntimePlan,
-) -> Result<PromotedConfigTree, DaemonError> {
+) -> Result<GatewayConfigReconciliation, DaemonError> {
     let routes = gateway_project_routes(plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = gateway_project_config_fragments(paths, &routes)?;
+    let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
     let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
@@ -591,7 +594,15 @@ async fn reconcile_gateway_config(
     };
     let _cleanup_result = delete_optional_dir(&candidate_dir);
 
-    result
+    result.map(|promoted_config| GatewayConfigReconciliation {
+        promoted_config,
+        readiness_hostname,
+    })
+}
+
+struct GatewayConfigReconciliation {
+    promoted_config: PromotedConfigTree,
+    readiness_hostname: Option<String>,
 }
 
 async fn reconcile_worker_config(
@@ -811,6 +822,7 @@ fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
 struct ProjectConfigFragment {
     project_id: String,
     file_name: String,
+    primary_hostname: String,
     content: String,
 }
 
@@ -835,6 +847,7 @@ fn gateway_project_config_fragments(
         fragments.push(ProjectConfigFragment {
             project_id: route.id.clone(),
             file_name,
+            primary_hostname: route.primary_hostname.clone(),
             content,
         });
     }
@@ -870,6 +883,7 @@ fn worker_project_config_fragments(
         fragments.push(ProjectConfigFragment {
             project_id: project.id.clone(),
             file_name,
+            primary_hostname: project.primary_hostname.clone(),
             content,
         });
     }
@@ -1166,4 +1180,49 @@ fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<Stri
         "--adapter".to_owned(),
         "caddyfile".to_owned(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use camino_tempfile::tempdir;
+    use state::PvPaths;
+
+    use crate::gateway_config::GatewayProjectRoute;
+
+    use super::{
+        gateway_project_config_fragments, gateway_readiness_hostname, project_config_file_name,
+    };
+
+    #[test]
+    fn gateway_readiness_hostname_uses_imported_project_fragments() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_id = "project-1";
+        let preserved_content = "preserved.test {\n    respond 200\n}\n";
+        let fragment_path = paths
+            .gateway_projects_config_dir()
+            .join(project_config_file_name(project_id));
+        state::fs::write_sensitive_file(&fragment_path, preserved_content)?;
+
+        let fragments = gateway_project_config_fragments(
+            &paths,
+            &[GatewayProjectRoute {
+                id: project_id.to_owned(),
+                render_config: false,
+                primary_hostname: "preserved.test".to_owned(),
+                hostnames: Vec::new(),
+                worker_port: 8123,
+            }],
+        )?;
+
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].content, preserved_content);
+        assert_eq!(
+            gateway_readiness_hostname(&fragments).as_deref(),
+            Some("preserved.test")
+        );
+
+        Ok(())
+    }
 }

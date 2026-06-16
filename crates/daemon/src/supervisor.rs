@@ -339,7 +339,9 @@ pub async fn wait_for_readiness(
                 sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
             }
             Err(elapsed) => {
-                last_error = Some(elapsed.to_string());
+                if last_error.is_none() {
+                    last_error = Some(elapsed.to_string());
+                }
                 break;
             }
         }
@@ -452,10 +454,7 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
 
             let mut response = [0_u8; 12];
             let bytes = stream.read(&mut response).await?;
-            let status_is_success = bytes >= 10
-                && (response.starts_with(b"HTTP/1.1 2") || response.starts_with(b"HTTP/1.0 2"));
-
-            if status_is_success {
+            if http_status_is_success(&response, bytes) {
                 return Ok(());
             }
 
@@ -492,13 +491,22 @@ async fn check_https_once(
 
     let mut response = [0_u8; 12];
     let bytes = stream.read(&mut response).await?;
-    let has_http_status_line =
-        bytes >= 9 && (response.starts_with(b"HTTP/1.1 ") || response.starts_with(b"HTTP/1.0 "));
-    if has_http_status_line {
+    if http_status_is_success(&response, bytes) {
         return Ok(());
+    }
+    if http_has_status_line(&response, bytes) {
+        return Err(io::Error::other("HTTPS readiness returned non-success status").into());
     }
 
     Err(io::Error::other("HTTPS readiness returned a non-HTTP response").into())
+}
+
+fn http_status_is_success(response: &[u8], bytes: usize) -> bool {
+    bytes >= 10 && (response.starts_with(b"HTTP/1.1 2") || response.starts_with(b"HTTP/1.0 2"))
+}
+
+fn http_has_status_line(response: &[u8], bytes: usize) -> bool {
+    bytes >= 9 && (response.starts_with(b"HTTP/1.1 ") || response.starts_with(b"HTTP/1.0 "))
 }
 
 fn tls_client_config(

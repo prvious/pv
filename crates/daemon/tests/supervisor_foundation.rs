@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -9,11 +10,13 @@ use daemon::{
 };
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, test_kill_process};
+use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
 use state::PvPaths;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
+use tokio_rustls::TlsAcceptor;
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -114,6 +117,80 @@ async fn http_readiness_succeeds_for_successful_responses() -> Result<()> {
     )
     .await?;
     server.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_https_readiness_rejects_non_success_responses() -> Result<()> {
+    let tempdir = tempdir()?;
+    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let certified_key = rcgen::generate_simple_self_signed(vec!["acme.test".to_owned()])?;
+    state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| anyhow!("TLS protocol configuration failed: {error}"))?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certified_key.cert.der().clone()],
+        PrivateKeyDer::Pkcs8(certified_key.signing_key.serialize_der().into()),
+    )?;
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let result: Result<(), std::io::Error> = async {
+            loop {
+                let (stream, _address) = https_listener.accept().await?;
+                let mut stream = match acceptor.accept(stream).await {
+                    Ok(stream) => stream,
+                    Err(_error) => continue,
+                };
+                let mut request = [0_u8; 1024];
+                let _bytes = stream.read(&mut request).await?;
+                stream
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+            }
+
+            #[expect(unreachable_code, reason = "test server runs until aborted")]
+            Ok(())
+        }
+        .await;
+
+        result
+    });
+
+    let result = wait_for_readiness(
+        ReadinessCheck::GatewayHttps {
+            http_host: "127.0.0.1".to_owned(),
+            http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port,
+            server_name: "acme.test".to_owned(),
+            ca_certificate_path,
+        },
+        Duration::from_millis(30),
+    )
+    .await;
+
+    let Err(daemon::DaemonError::ReadinessTimedOut {
+        last_error: Some(reason),
+        ..
+    }) = &result
+    else {
+        anyhow::bail!("expected HTTPS readiness timeout, got {result:?}");
+    };
+    assert!(
+        reason.contains("HTTPS readiness returned non-success status"),
+        "unexpected HTTPS readiness error: {reason}"
+    );
+    server.abort();
+    drop(http_listener);
 
     Ok(())
 }

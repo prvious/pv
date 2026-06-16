@@ -38,6 +38,7 @@ camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
 platform = { path = "../platform" }
+rcgen = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

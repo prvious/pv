@@ -1051,6 +1051,7 @@ dependencies = [
  "object_store",
  "platform",
  "protocol",
+ "rcgen",
  "redis",
  "resources",
  "rusqlite",
