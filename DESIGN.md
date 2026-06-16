@@ -1363,7 +1363,7 @@ If the daemon is intentionally disabled while DNS, ports, or CA integrations rem
 | pv project:env [hostname] [--json] | Print generated Project environment values without editing `.env`                                         |
 | pv list [--json]         | List linked Projects with PHP, serving, Managed Resource, and env status                                           |
 | pv logs [--follow]       | Show PV daemon/reconciliation logs                                                                                |
-| pv status                | Show whole-system PV status                                                                                       |
+| pv status [--json]       | Show whole-system PV status                                                                                       |
 | pv setup [--yes] [--non-interactive] [--no-path] | Configure macOS resolver, `pf` redirects, CA trust, daemon registration, and default Managed Resources |
 | pv uninstall [--prune] [--force] | Uninstall PV, preserving data by default                                                                  |
 | pv unlink [hostname]     | Unlink a Project by current directory or Project hostname                                                         |
