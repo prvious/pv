@@ -7,6 +7,7 @@ use daemon::gateway::{
     reconcile_gateway_runtimes, validate_config, worker_process_spec,
 };
 use insta::{Settings, assert_debug_snapshot};
+use rcgen::generate_simple_self_signed;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::json;
 use state::{
@@ -61,7 +62,13 @@ document_root: public
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     let summary = reconcile_gateway_runtimes(&paths).await?;
@@ -100,7 +107,7 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
         &release_path,
     )?;
     let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[])?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
     let summary = reconcile_gateway_runtimes(&paths).await?;
@@ -146,7 +153,13 @@ document_root: public
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -202,7 +215,13 @@ document_root: public
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -254,7 +273,13 @@ document_root: public
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -350,7 +375,13 @@ document_root: public
         &gateway_release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -424,7 +455,13 @@ hostnames:
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -519,7 +556,13 @@ document_root: public
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -593,6 +636,7 @@ document_root: public
     )?;
     let ports = available_loopback_ports(4)?;
     seed_runtime_ports(
+        &paths,
         &mut database,
         ports[0],
         ports[1],
@@ -702,6 +746,7 @@ document_root: public
     )?;
     let ports = available_loopback_ports(4)?;
     seed_runtime_ports(
+        &paths,
         &mut database,
         ports[0],
         ports[1],
@@ -794,7 +839,13 @@ hostnames:
         &release_path,
     )?;
     let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(&mut database, ports[0], ports[1], &[("8.4", ports[2])])?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -857,7 +908,7 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
         "fake-frankenphp-pv1",
         &release_path,
     )?;
-    seed_runtime_ports(&mut database, old_http_port, old_https_port, &[])?;
+    seed_runtime_ports(&paths, &mut database, old_http_port, old_https_port, &[])?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -868,7 +919,7 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     let mut database = Database::open(&paths)?;
     database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
     database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
-    seed_runtime_ports(&mut database, new_http_port, new_https_port, &[])?;
+    seed_runtime_ports(&paths, &mut database, new_http_port, new_https_port, &[])?;
     drop(database);
 
     let result = reconcile_gateway_runtimes(&paths).await;
@@ -1256,13 +1307,54 @@ if [ "$1" = "validate" ]; then
 fi
 
 if [ "$1" = "run" ]; then
-  port="$(awk '/^# PV_FAKE_PORT / { print $3; exit }' "$3")"
-  python3 -c 'import http.server, signal, sys
+  python3 - "$3" <<'PY' &
+import http.server
+import re
+import signal
+import ssl
+import sys
+import threading
+
 signal.signal(signal.SIGUSR1, signal.SIG_IGN)
-port = int(sys.argv[1])
-with http.server.ThreadingHTTPServer(("127.0.0.1", port), http.server.SimpleHTTPRequestHandler) as server:
+
+config = open(sys.argv[1], encoding="utf-8").read()
+
+def required(pattern):
+    match = re.search(pattern, config, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"missing fake runtime setting: {pattern}")
+    return match.group(1)
+
+def optional(pattern):
+    match = re.search(pattern, config, re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1)
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+http_port = int(required(r"^# PV_FAKE_PORT (\d+)$"))
+https_port = optional(r"^\s*https_port (\d+)$")
+cert_path = optional(r'^\s*cert "([^"]+)"$')
+key_path = optional(r'^\s*key "([^"]+)"$')
+servers = [http.server.ThreadingHTTPServer(("127.0.0.1", http_port), Handler)]
+
+if https_port is not None and cert_path is not None and key_path is not None:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    https_server = http.server.ThreadingHTTPServer(("127.0.0.1", int(https_port)), Handler)
+    https_server.socket = context.wrap_socket(https_server.socket, server_side=True)
+    servers.append(https_server)
+
+for server in servers[1:]:
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+with servers[0] as server:
     server.serve_forever()
-' "$port" &
+PY
   child="$!"
   trap ':' USR1
   trap 'kill "$child"; wait "$child"; exit 0' TERM INT
@@ -1355,11 +1447,13 @@ fn seed_stable_runtime_plan_ports(database: &mut Database, php_tracks: &[&str]) 
 }
 
 fn seed_runtime_ports(
+    paths: &PvPaths,
     database: &mut Database,
     gateway_http_port: u16,
     gateway_https_port: u16,
     php_workers: &[(&str, u16)],
 ) -> Result<()> {
+    seed_gateway_test_tls(paths)?;
     database.assign_port(
         PortRequest::gateway(
             GatewayPort::Http,
@@ -1385,6 +1479,23 @@ fn seed_runtime_ports(
             |_port| true,
         )?;
     }
+
+    Ok(())
+}
+
+fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
+    let certified_key = generate_simple_self_signed(vec![
+        "acme.test".to_owned(),
+        "api.acme.test".to_owned(),
+        "broken.test".to_owned(),
+        "changed.acme.test".to_owned(),
+        "other.test".to_owned(),
+    ])?;
+    fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+    fs::write_sensitive_file(
+        &paths.ca_private_key(),
+        &certified_key.signing_key.serialize_pem(),
+    )?;
 
     Ok(())
 }
