@@ -215,6 +215,36 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
 }
 
 #[tokio::test]
+async fn readiness_retries_after_one_probe_hangs() -> Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let (_hanging_stream, _address) = listener.accept().await?;
+        let (mut stream, _address) = listener.accept().await?;
+        let mut request = [0_u8; 1024];
+        let _bytes = stream.read(&mut request).await?;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+
+        Ok::<(), std::io::Error>(())
+    });
+
+    wait_for_readiness(
+        ReadinessCheck::Http {
+            host: "127.0.0.1".to_string(),
+            port,
+            path: "/health".to_string(),
+        },
+        Duration::from_secs(2),
+    )
+    .await?;
+    server.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_readiness_retries_until_the_check_succeeds() -> Result<()> {
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let check_attempts = std::sync::Arc::clone(&attempts);

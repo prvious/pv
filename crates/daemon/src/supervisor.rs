@@ -21,6 +21,7 @@ use tokio_rustls::TlsConnector;
 use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 
@@ -332,17 +333,15 @@ pub async fn wait_for_readiness(
     let mut last_error = None;
 
     while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        match timeout(remaining, check_once(&check)).await {
+        let probe_timeout = remaining.min(READINESS_PROBE_TIMEOUT);
+        match timeout(probe_timeout, check_once(&check)).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(error)) => {
                 last_error = Some(error.to_string());
                 sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
             }
             Err(elapsed) => {
-                if last_error.is_none() {
-                    last_error = Some(elapsed.to_string());
-                }
-                break;
+                last_error = Some(elapsed.to_string());
             }
         }
     }
