@@ -95,17 +95,27 @@ php: "8.5"
 document_root: public
 hostnames:
   - api.acme.test
-resources:
-  mysql:
-    databases:
-      - app
-  redis:
-    prefixes:
-      - cache
 env:
-  DB_CONNECTION: mysql
-  DB_DATABASE: ${mysql.database.app.name}
-  REDIS_PREFIX: ${redis.prefix.cache}
+  APP_URL: "${project_url}"
+mysql:
+  version: "8.4"
+  allocations:
+    app:
+      env:
+        DB_CONNECTION: mysql
+        DB_HOST: "${host}"
+        DB_PORT: "${port}"
+        DB_DATABASE: "${database}"
+        DB_USERNAME: "${username}"
+        DB_PASSWORD: "${password}"
+redis:
+  version: "8.8"
+  allocations:
+    cache:
+      env:
+        REDIS_HOST: "${host}"
+        REDIS_PORT: "${port}"
+        REDIS_PREFIX: "${prefix}"
 ```
 
 Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV resolves them before validating keys and values. Unknown keys that remain after YAML resolution fail validation.
@@ -175,7 +185,7 @@ pv logs --all
 pv jobs --json
 ```
 
-Lower-level repair commands are available for specific system integrations:
+Targeted commands are also available for specific system integrations:
 
 ```shell
 pv daemon:restart
