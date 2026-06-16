@@ -119,7 +119,10 @@ fn postgres_adapter_validates_expected_executable_and_initdb_layout() -> Result<
     let executable_path = release.join("bin/postgres");
     write_sensitive_file(&executable_path, "postgres executable")?;
     write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
-    write_sensitive_file(&release.join("share/postgres.bki"), "postgres catalog")?;
+    write_sensitive_file(
+        &release.join("share/postgresql/postgres.bki"),
+        "postgres catalog",
+    )?;
 
     adapter.validate_installation(release)?;
 
@@ -162,7 +165,10 @@ fn postgres_adapter_rejects_missing_support_files() -> Result<()> {
     };
 
     assert_eq!(resource, "postgres");
-    assert_eq!(reason, "missing required file `share/postgres.bki`");
+    assert_eq!(
+        reason,
+        "missing required file `share/postgresql/postgres.bki`"
+    );
 
     Ok(())
 }
