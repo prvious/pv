@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use platform::{CaFileState, PfFileState, ResolverConfig, ResolverFileState, TrustDomainState};
 use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
-    ResourceName, TrackName, TrackSelector, UreqResourceHttpClient,
+    ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
@@ -150,11 +150,12 @@ fn refresh_setup_artifact_manifest(
         ))?;
     }
 
-    resolve_default_resource_plan(refresh.manifest())
+    resolve_default_resource_plan(refresh.manifest(), target_platform(environment))
 }
 
 fn resolve_default_resource_plan(
     manifest: &ArtifactManifest,
+    target_platform: TargetPlatform,
 ) -> Result<Vec<SetupResourcePlan>, ExecuteError> {
     let php_resource = ResourceName::new("php")?;
     let php_default_track = manifest.resolve_track(&php_resource, TrackSelector::Latest)?;
@@ -177,6 +178,8 @@ fn resolve_default_resource_plan(
             manifest.resolve_track(&resource_name, track_selector)?
         };
 
+        manifest.select_latest(&resource_name, &track, target_platform)?;
+
         plan.push(SetupResourcePlan {
             resource_name,
             track: track.clone(),
@@ -197,6 +200,20 @@ fn with_resource_http_client<T>(
     let client = UreqResourceHttpClient::default();
 
     operation(&client)
+}
+
+fn target_platform(environment: &impl Environment) -> TargetPlatform {
+    environment
+        .target_platform()
+        .unwrap_or_else(current_target_platform)
+}
+
+fn current_target_platform() -> TargetPlatform {
+    if cfg!(target_arch = "aarch64") {
+        TargetPlatform::DarwinArm64
+    } else {
+        TargetPlatform::DarwinAmd64
+    }
 }
 
 fn install_command_shims(

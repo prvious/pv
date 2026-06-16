@@ -17,7 +17,7 @@ use platform::{
     KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL, LaunchAgentConfig,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, generate_local_ca,
 };
-use resources::{ResourceHttpClient, ResourcesError};
+use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
@@ -39,10 +39,15 @@ struct TestEnvironment {
     stdin_terminal: bool,
     input: Mutex<VecDeque<String>>,
     client: ScriptedClient,
+    target_platform: TargetPlatform,
 }
 
 impl TestEnvironment {
-    fn new(paths: TestEnvironmentPaths<'_>, shell: Option<OsString>) -> Self {
+    fn new(
+        paths: TestEnvironmentPaths<'_>,
+        shell: Option<OsString>,
+        target_platform: TargetPlatform,
+    ) -> Self {
         Self {
             home: paths.home.as_std_path().to_path_buf(),
             current_dir: paths.current_dir.as_std_path().to_path_buf(),
@@ -58,6 +63,7 @@ impl TestEnvironment {
             stdin_terminal: false,
             input: Mutex::new(VecDeque::new()),
             client: ScriptedClient::new(),
+            target_platform,
         }
     }
 
@@ -326,6 +332,10 @@ impl Environment for TestEnvironment {
     fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
         Some(&self.client)
     }
+
+    fn target_platform(&self) -> Option<TargetPlatform> {
+        Some(self.target_platform)
+    }
 }
 
 #[test]
@@ -535,6 +545,33 @@ fn setup_manifest_missing_default_stops_before_system_mutation() -> anyhow::Resu
         output
             .stderr
             .contains("artifact manifest does not include Managed Resource `mysql`")
+    );
+    assert!(fixture.environment.operations().is_empty());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+    assert_no_managed_resource_tracks(&fixture.paths)?;
+
+    Ok(())
+}
+
+#[test]
+fn setup_manifest_platform_mismatch_stops_before_system_mutation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new_with_target_platform(tempdir.path(), TargetPlatform::DarwinAmd64);
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json()?);
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(
+        output
+            .stderr
+            .contains("no installable artifact exists for frankenphp track 8.5 on darwin-amd64")
     );
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
@@ -895,14 +932,26 @@ struct Fixture {
 
 impl Fixture {
     fn new(root: &Utf8Path) -> Self {
-        Self::new_inner(root, None)
+        Self::new_inner(root, None, TargetPlatform::DarwinArm64)
     }
 
     fn new_with_shell(root: &Utf8Path, shell: &str) -> Self {
-        Self::new_inner(root, Some(OsString::from(shell)))
+        Self::new_inner(
+            root,
+            Some(OsString::from(shell)),
+            TargetPlatform::DarwinArm64,
+        )
     }
 
-    fn new_inner(root: &Utf8Path, shell: Option<OsString>) -> Self {
+    fn new_with_target_platform(root: &Utf8Path, target_platform: TargetPlatform) -> Self {
+        Self::new_inner(root, None, target_platform)
+    }
+
+    fn new_inner(
+        root: &Utf8Path,
+        shell: Option<OsString>,
+        target_platform: TargetPlatform,
+    ) -> Self {
         let home = root.join("home");
         let current_dir = root.join("work");
         let current_exe = root.join("bin/pv");
@@ -922,6 +971,7 @@ impl Fixture {
                 pf_conf_path: &system_pf_conf_path,
             },
             shell,
+            target_platform,
         ));
 
         Self {
