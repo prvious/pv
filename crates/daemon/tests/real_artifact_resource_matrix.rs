@@ -170,6 +170,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
         mailpit.track().as_str(),
         rustfs.track().as_str(),
     )?;
+    seed_local_ca(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let result = timeout(TEST_TIMEOUT, async {
         run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
@@ -220,6 +221,14 @@ fn real_artifact_manifest_url() -> Result<Option<String>> {
         Ok(url) => Ok(Some(url)),
         Err(error) => bail!("PV_E2E_ARTIFACT_MANIFEST_URL is required: {error}"),
     }
+}
+
+fn seed_local_ca(paths: &PvPaths) -> Result<()> {
+    let local_ca = platform::generate_local_ca()?;
+    state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+    state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
+
+    Ok(())
 }
 
 fn target_platform() -> TargetPlatform {
@@ -330,9 +339,9 @@ fn assert_resource_matrix_evidence(paths: &PvPaths, project: &ProjectRecord) -> 
         "MYSQL_URL=mysql://",
         "POSTGRES_URL=postgres://",
         "REDIS_URL=redis://",
-        "REDIS_PREFIX=real-artifact-resources-cache-",
+        "REDIS_PREFIX=real-artifact-resources-test-cache-",
         "MAILPIT_DASHBOARD=http://127.0.0.1:",
-        "AWS_BUCKET=real-artifact-resources-uploads",
+        "AWS_BUCKET=real-artifact-resources-test-uploads",
         "AWS_ENDPOINT=http://127.0.0.1:",
     ] {
         if !dotenv.contains(expected) {
