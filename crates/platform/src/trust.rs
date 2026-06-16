@@ -3,26 +3,23 @@ use std::collections::BTreeSet;
 use camino::Utf8Path;
 
 use crate::LocalCaMetadata;
-use crate::ca::{certificate_der_from_pem, is_pv_ca_metadata};
+use crate::ca::is_pv_ca_metadata;
 use crate::error::PlatformError;
 
 #[cfg(target_os = "macos")]
 use crate::ca::pem_from_der;
+#[cfg(target_os = "macos")]
+use crate::command::run_system_command;
 
 #[cfg(target_os = "macos")]
-use security_framework::certificate::SecCertificate;
-#[cfg(target_os = "macos")]
-use security_framework::os::macos::keychain::SecKeychain;
+use data_encoding::HEXUPPER;
 #[cfg(target_os = "macos")]
 use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+#[cfg(target_os = "macos")]
+use sha1::{Digest, Sha1};
 
 #[cfg(target_os = "macos")]
 const SYSTEM_KEYCHAIN_PATH: &str = "/Library/Keychains/System.keychain";
-#[cfg(target_os = "macos")]
-const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
-#[cfg(target_os = "macos")]
-const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeychainCertificate {
     pub metadata: LocalCaMetadata,
@@ -151,24 +148,7 @@ pub fn trusted_pv_ca_fingerprints(
 pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        let certificate_pem = state::fs::read_to_string(certificate_path)
-            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
-        let certificate_der = certificate_der_from_pem(&certificate_pem)
-            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
-        let certificate = SecCertificate::from_der(&certificate_der)
-            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
-        let keychain = SecKeychain::open(SYSTEM_KEYCHAIN_PATH)
-            .map_err(|error| PlatformError::Keychain(error.to_string()))?;
-
-        match certificate.add_to_keychain(Some(keychain)) {
-            Ok(()) => {}
-            Err(error) if error.code() == ERR_SEC_DUPLICATE_ITEM => {}
-            Err(error) => return Err(PlatformError::Keychain(error.to_string())),
-        }
-
-        TrustSettings::new(Domain::Admin)
-            .set_trust_settings_always(&certificate)
-            .map_err(|error| PlatformError::Keychain(error.to_string()))
+        trust_system_ca_with_runner(certificate_path, &mut run_system_command)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -178,6 +158,29 @@ pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError>
             feature: "System keychain trust mutation",
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn trust_system_ca_with_runner(
+    certificate_path: &Utf8Path,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    run_system(
+        "/usr/bin/sudo",
+        &[
+            "-n",
+            "/usr/bin/security",
+            "add-trusted-cert",
+            "-d",
+            "-r",
+            "trustRoot",
+            "-p",
+            "ssl",
+            "-k",
+            SYSTEM_KEYCHAIN_PATH,
+            certificate_path.as_str(),
+        ],
+    )
 }
 
 pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
@@ -197,11 +200,8 @@ pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
                 continue;
             }
 
-            match certificate.delete() {
-                Ok(()) => {}
-                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
-                Err(error) => return Err(PlatformError::Keychain(error.to_string())),
-            }
+            let sha1_fingerprint = certificate_sha1_fingerprint(&certificate.to_der());
+            delete_system_ca_by_sha1_with_runner(&sha1_fingerprint, &mut run_system_command)?;
         }
 
         Ok(())
@@ -214,6 +214,30 @@ pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
             feature: "System keychain trust mutation",
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+fn delete_system_ca_by_sha1_with_runner(
+    sha1_fingerprint: &str,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    run_system(
+        "/usr/bin/sudo",
+        &[
+            "-n",
+            "/usr/bin/security",
+            "delete-certificate",
+            "-Z",
+            sha1_fingerprint,
+            SYSTEM_KEYCHAIN_PATH,
+        ],
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn certificate_sha1_fingerprint(certificate_der: &[u8]) -> String {
+    let digest = Sha1::digest(certificate_der);
+    HEXUPPER.encode(&digest)
 }
 
 impl SystemTrustInspector for NativeSystemTrustInspector {
@@ -258,5 +282,63 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
                 feature: "System keychain trust inspection",
             })
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use camino_tempfile::tempdir;
+
+    use super::{
+        certificate_sha1_fingerprint, delete_system_ca_by_sha1_with_runner,
+        trust_system_ca_with_runner,
+    };
+
+    #[test]
+    fn trust_system_ca_uses_noninteractive_security_command() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let certificate_path = tempdir.path().join("ca.pem");
+        let mut commands = Vec::new();
+
+        trust_system_ca_with_runner(&certificate_path, &mut |program, args| {
+            commands.push(format!("{program} {}", args.join(" ")));
+            Ok(())
+        })?;
+
+        assert_eq!(
+            commands,
+            [format!(
+                "/usr/bin/sudo -n /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain {certificate_path}"
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn delete_system_ca_uses_noninteractive_security_command() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        delete_system_ca_by_sha1_with_runner("ABC123", &mut |program, args| {
+            commands.push(format!("{program} {}", args.join(" ")));
+            Ok(())
+        })?;
+
+        assert_eq!(
+            commands,
+            [
+                "/usr/bin/sudo -n /usr/bin/security delete-certificate -Z ABC123 /Library/Keychains/System.keychain"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_sha1_fingerprint_renders_upper_hex() {
+        assert_eq!(
+            certificate_sha1_fingerprint(b"abc"),
+            "A9993E364706816ABA3E25717850C26C9CD0D89D"
+        );
     }
 }
