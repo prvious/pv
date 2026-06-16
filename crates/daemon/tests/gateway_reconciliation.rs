@@ -4,7 +4,8 @@ use camino_tempfile::tempdir;
 use daemon::DaemonError;
 use daemon::gateway::{
     FrankenphpCommand, build_runtime_plan, gateway_process_spec, promote_validated_config_for_test,
-    reconcile_gateway_runtimes, validate_config, worker_process_spec,
+    reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_readiness_timeout, validate_config,
+    worker_process_spec,
 };
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
@@ -981,7 +982,8 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     seed_runtime_ports(&paths, &mut database, new_http_port, new_https_port, &[])?;
     drop(database);
 
-    let result = reconcile_gateway_runtimes(&paths).await;
+    let result =
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)).await;
     let root_config = fs::read_to_string(&paths.gateway_root_config())?;
     let first_gateway_is_alive = process_is_alive(first_gateway_pid)?;
     if first_gateway_is_alive {

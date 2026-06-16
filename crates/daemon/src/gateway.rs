@@ -35,7 +35,7 @@ use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_fo
 type FrankenphpProcessCommand = tokio::process::Command;
 
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
     "Gateway runtime skipped; FrankenPHP is not installed";
@@ -107,6 +107,14 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
+}
+
+#[doc(hidden)]
+pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+) -> Result<String, DaemonError> {
     let Some(gateway_command) = first_installed_frankenphp_command(paths)? else {
         record_runtime_observed(
             paths,
@@ -171,6 +179,7 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
                 port: worker.port,
             },
             subject,
+            readiness_timeout,
         )
         .await?;
     }
@@ -184,6 +193,7 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         gateway_process_spec(paths, &gateway_command),
         gateway_readiness,
         RuntimeSubject::Gateway,
+        readiness_timeout,
     )
     .await?;
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
@@ -718,8 +728,17 @@ async fn start_or_adopt_promoted_runtime(
     spec: ProcessSpec,
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
+    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
-    let result = start_or_adopt_runtime(paths, supervisor, spec, readiness, subject.clone()).await;
+    let result = start_or_adopt_runtime(
+        paths,
+        supervisor,
+        spec,
+        readiness,
+        subject.clone(),
+        readiness_timeout,
+    )
+    .await;
 
     match result {
         Ok(()) => {
@@ -750,11 +769,12 @@ async fn start_or_adopt_runtime(
     spec: ProcessSpec,
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
+    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     let result = async {
         if supervisor.adopt(&spec)?.is_some() {
             if supervisor.reload(&spec)? {
-                wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await?;
+                wait_for_readiness(readiness, readiness_timeout).await?;
 
                 return Ok(());
             }
@@ -779,7 +799,7 @@ async fn start_or_adopt_runtime(
         }
 
         let mut process = supervisor.start(spec.clone()).await?;
-        if let Err(error) = wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await {
+        if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
             process.stop(Duration::from_secs(1)).await?;
 
             return Err(error);

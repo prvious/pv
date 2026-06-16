@@ -232,7 +232,7 @@ jobs:
           record_status update-check required pv update --check --json
           record_status diagnostics required pv doctor
           record_status jobs evidence pv jobs
-          record_status logs evidence pv logs
+          record_status logs evidence pv logs --all
 
           record_status uninstall required pv uninstall
           collect_file resolver-after-uninstall /etc/resolver/test
