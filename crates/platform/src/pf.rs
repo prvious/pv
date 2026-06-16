@@ -293,12 +293,12 @@ fn install_pf_redirects_with_runner(
 
     state::fs::write_sensitive_file(&candidate_path, &candidate)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-    run_system(
-        "/usr/bin/sudo",
-        &["/sbin/pfctl", "-nf", candidate_path.as_str()],
-    )?;
     install_pf_anchor_with_runner(prepared_anchor_path, system_anchor_path, run_system)?;
     let post_anchor_result = (|| {
+        run_system(
+            "/usr/bin/sudo",
+            &["/sbin/pfctl", "-nf", candidate_path.as_str()],
+        )?;
         run_system(
             "/usr/bin/sudo",
             &[
@@ -702,7 +702,7 @@ mod tests {
     };
 
     #[test]
-    fn install_pf_redirects_validates_candidate_before_installing_anchor() -> anyhow::Result<()> {
+    fn install_pf_redirects_validates_candidate_after_installing_anchor() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let prepared_anchor_path = tempdir.path().join("prepared-anchor");
         let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
@@ -746,7 +746,59 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("anchor install command was not recorded"))?;
 
         assert!(candidate.contains("load anchor \"com.prvious.pv\""));
-        assert!(validate_candidate_index < install_anchor_index);
+        assert!(install_anchor_index < validate_candidate_index);
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_removes_new_anchor_when_candidate_validation_fails()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.contains("/sbin/pfctl -nf") && command.contains("pf.conf.candidate") {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "validate pf.conf candidate failed".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "validate pf.conf candidate failed"
+        ));
+        assert!(commands.iter().any(|command| {
+            command.contains("/usr/bin/install")
+                && command.contains(prepared_anchor_path.as_str())
+                && command.contains(system_anchor_path.as_str())
+        }));
+        assert!(commands.iter().any(|command| {
+            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
+        }));
 
         Ok(())
     }
