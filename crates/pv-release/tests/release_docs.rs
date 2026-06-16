@@ -1,5 +1,3 @@
-use std::fs;
-
 use anyhow::Result;
 use camino::Utf8Path;
 use pv_release::defaults::ManifestDefaults;
@@ -102,6 +100,10 @@ fn default_track(defaults: &ManifestDefaults, resource: &str) -> Result<String> 
         .unwrap_or_default())
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release docs sync test reads committed documentation fixtures directly"
+)]
 fn read_to_string(path: &Utf8Path) -> Result<String> {
-    Ok(fs::read_to_string(path)?)
+    Ok(std::fs::read_to_string(path)?)
 }

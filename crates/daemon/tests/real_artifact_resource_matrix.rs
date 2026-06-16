@@ -83,10 +83,6 @@ struct SetupDefault {
 
 #[tokio::test]
 #[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "ignored real-artifact E2E uses environment variables as an explicit opt-in gate"
-)]
 async fn real_artifact_manifest_contains_setup_defaults_for_current_platform() -> Result<()> {
     let Some(manifest_url) = real_artifact_manifest_url()? else {
         return Ok(());
@@ -121,10 +117,6 @@ async fn real_artifact_manifest_contains_setup_defaults_for_current_platform() -
 
 #[tokio::test]
 #[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "ignored real-artifact E2E uses environment variables as an explicit opt-in gate"
-)]
 async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() -> Result<()> {
     let Some(manifest_url) = real_artifact_manifest_url()? else {
         return Ok(());
@@ -215,6 +207,10 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     Ok(())
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "ignored real-artifact E2E uses environment variables as an explicit opt-in gate"
+)]
 fn real_artifact_manifest_url() -> Result<Option<String>> {
     if std::env::var("PV_E2E_REAL_ARTIFACTS").as_deref() != Ok("1") {
         return Ok(None);
