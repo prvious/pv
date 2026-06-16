@@ -37,6 +37,8 @@ type FrankenphpProcessCommand = tokio::process::Command;
 
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const PUBLIC_HTTP_PORT: u16 = 80;
+const PUBLIC_HTTPS_PORT: u16 = 443;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
     "Gateway runtime skipped; FrankenPHP is not installed";
@@ -206,18 +208,57 @@ fn gateway_readiness_check(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
 ) -> Result<ReadinessCheck, DaemonError> {
+    let ports = gateway_readiness_ports(plan);
+
+    gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct GatewayReadinessPorts {
+    http: u16,
+    https: u16,
+}
+
+fn gateway_readiness_ports(plan: &RuntimePlan) -> GatewayReadinessPorts {
+    if active_gateway_redirects_match_plan(plan) {
+        return GatewayReadinessPorts {
+            http: PUBLIC_HTTP_PORT,
+            https: PUBLIC_HTTPS_PORT,
+        };
+    }
+
+    GatewayReadinessPorts {
+        http: plan.gateway.http_port,
+        https: plan.gateway.https_port,
+    }
+}
+
+fn active_gateway_redirects_match_plan(plan: &RuntimePlan) -> bool {
+    matches!(
+        platform::active_pf_redirect_config(),
+        Ok(Some(config))
+            if config
+                == platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port)
+    )
+}
+
+fn gateway_readiness_check_for_ports(
+    plan: &RuntimePlan,
+    readiness_hostname: Option<String>,
+    ports: GatewayReadinessPorts,
+) -> Result<ReadinessCheck, DaemonError> {
     let readiness = match readiness_hostname {
         Some(server_name) => ReadinessCheck::GatewayHttps {
             http_host: "127.0.0.1".to_owned(),
-            http_port: plan.gateway.http_port,
+            http_port: ports.http,
             https_host: "127.0.0.1".to_owned(),
-            https_port: plan.gateway.https_port,
+            https_port: ports.https,
             server_name,
             ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         },
         None => ReadinessCheck::Tcp {
             host: "127.0.0.1".to_owned(),
-            port: plan.gateway.http_port,
+            port: ports.http,
         },
     };
 
@@ -1270,15 +1311,22 @@ mod tests {
     use crate::gateway_config::GatewayProjectRoute;
 
     use super::{
-        GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments, gateway_readiness_check,
-        gateway_readiness_hostname, project_config_file_name,
+        GatewayReadinessPorts, GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments,
+        gateway_readiness_check_for_ports, gateway_readiness_hostname, project_config_file_name,
     };
 
     #[test]
     fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
         let plan = runtime_plan();
 
-        let readiness = gateway_readiness_check(&plan, Some("project.test".to_string()))?;
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            Some("project.test".to_string()),
+            GatewayReadinessPorts {
+                http: plan.gateway.http_port,
+                https: plan.gateway.https_port,
+            },
+        )?;
 
         assert_eq!(
             readiness,
@@ -1289,6 +1337,58 @@ mod tests {
                 https_port: 45443,
                 server_name: "project.test".to_string(),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_public_ports_when_redirects_are_active() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            Some("project.test".to_string()),
+            GatewayReadinessPorts {
+                http: 80,
+                https: 443,
+            },
+        )?;
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::GatewayHttps {
+                http_host: "127.0.0.1".to_string(),
+                http_port: 80,
+                https_host: "127.0.0.1".to_string(),
+                https_port: 443,
+                server_name: "project.test".to_string(),
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_public_http_for_empty_gateway() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            None,
+            GatewayReadinessPorts {
+                http: 80,
+                https: 443,
+            },
+        )?;
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 80,
             }
         );
 
