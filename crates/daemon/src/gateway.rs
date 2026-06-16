@@ -195,9 +195,8 @@ fn gateway_readiness_check(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
 ) -> Result<ReadinessCheck, DaemonError> {
-    let ca_certificate_exists = fs::modified_at(&plan.gateway.ca_certificate_path)?.is_some();
-    let readiness = match (ca_certificate_exists, readiness_hostname) {
-        (true, Some(server_name)) => ReadinessCheck::GatewayHttps {
+    let readiness = match readiness_hostname {
+        Some(server_name) => ReadinessCheck::GatewayHttps {
             http_host: "127.0.0.1".to_owned(),
             http_port: plan.gateway.http_port,
             https_host: "127.0.0.1".to_owned(),
@@ -205,7 +204,7 @@ fn gateway_readiness_check(
             server_name,
             ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         },
-        _ => ReadinessCheck::Tcp {
+        None => ReadinessCheck::Tcp {
             host: "127.0.0.1".to_owned(),
             port: plan.gateway.http_port,
         },
@@ -1205,14 +1204,38 @@ fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use state::PvPaths;
 
+    use crate::ReadinessCheck;
     use crate::gateway_config::GatewayProjectRoute;
 
     use super::{
-        gateway_project_config_fragments, gateway_readiness_hostname, project_config_file_name,
+        GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments, gateway_readiness_check,
+        gateway_readiness_hostname, project_config_file_name,
     };
+
+    #[test]
+    fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check(&plan, Some("project.test".to_string()))?;
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::GatewayHttps {
+                http_host: "127.0.0.1".to_string(),
+                http_port: 45080,
+                https_host: "127.0.0.1".to_string(),
+                https_port: 45443,
+                server_name: "project.test".to_string(),
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn gateway_readiness_hostname_uses_imported_project_fragments() -> Result<()> {
@@ -1244,5 +1267,18 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    fn runtime_plan() -> RuntimePlan {
+        RuntimePlan {
+            gateway: GatewayRuntimePlan {
+                http_port: 45080,
+                https_port: 45443,
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+                ca_private_key_path: Utf8PathBuf::from("/tmp/pv-missing-ca-key.pem"),
+                storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),
+            },
+            workers: Vec::new(),
+        }
     }
 }
