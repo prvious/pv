@@ -16,6 +16,15 @@ pub enum DaemonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    #[error(
+        "{source}; additionally failed to remove daemon socket during startup cleanup: {cleanup}"
+    )]
+    StartupCleanupFailed {
+        #[source]
+        source: Box<DaemonError>,
+        cleanup: Box<DaemonError>,
+    },
+
     #[error("daemon socket is already in use at {path}")]
     SocketInUse { path: String },
 
