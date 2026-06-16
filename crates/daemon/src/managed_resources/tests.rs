@@ -76,7 +76,7 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
 ];
 const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "#!/bin/sh\nexit 0\n"),
-    ("share/postgresql/postgres.bki", "postgres catalog"),
+    ("share/postgres.bki", "postgres catalog"),
 ];
 const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
     SetupDefaultFixture {
@@ -349,10 +349,7 @@ async fn postgres_project_demand_rejects_cached_fixture_missing_support_files() 
     let runtime_states = database.runtime_observed_states()?;
 
     assert_eq!(resource, "postgres");
-    assert_eq!(
-        reason,
-        "missing required file `share/postgresql/postgres.bki`"
-    );
+    assert_eq!(reason, "missing required file `share/postgres.bki`");
     assert_eq!(
         read_optional_dotenv(&project)?,
         None,
@@ -3757,10 +3754,7 @@ fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path
 }
 
 fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
-    state::fs::write_sensitive_file(
-        &release_path.join("share/postgresql/postgres.bki"),
-        "postgres catalog",
-    )?;
+    state::fs::write_sensitive_file(&release_path.join("share/postgres.bki"), "postgres catalog")?;
 
     Ok(())
 }

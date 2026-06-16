@@ -826,7 +826,7 @@ The artifact manifest stores upstream version and PV build revision as separate 
 
 The artifact manifest may include artifact provenance metadata such as upstream source URL, upstream checksum, applied patch identifiers, PV repository commit SHA, recipe path/version, build run ID, and build timestamp. Provenance metadata is for diagnostics, audit, and release operations; it is not a client-side build instruction set.
 
-The artifact manifest does not define Managed Resource lifecycle behavior or resource-specific archive layout requirements. Install, start, init, readiness, allocation, reconciliation behavior, and required file/path validation live in PV's resource adapters because each Managed Resource has different lifecycle rules. For example, the Redis adapter knows it needs `bin/redis-server`, while the Postgres adapter knows it needs `bin/postgres`, `bin/initdb`, and supporting `share/postgresql` files.
+The artifact manifest does not define Managed Resource lifecycle behavior or resource-specific archive layout requirements. Install, start, init, readiness, allocation, reconciliation behavior, and required file/path validation live in PV's resource adapters because each Managed Resource has different lifecycle rules. For example, the Redis adapter knows it needs `bin/redis-server`, while the Postgres adapter knows it needs `bin/postgres`, `bin/initdb`, and supporting files such as `share/postgres.bki`.
 
 PV resource adapters are compiled into the Rust binary. PV will not support plugin resource adapters; all control-plane and adapter behavior lives in the single `pv` binary. Managed Resources remain external binaries/artifacts managed by PV.
 
