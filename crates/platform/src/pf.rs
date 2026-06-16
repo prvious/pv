@@ -222,7 +222,13 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let rules = run_system_command_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-sr"])?;
+    active_pf_redirect_config_with_runner(&mut run_system_command_output)
+}
+
+fn active_pf_redirect_config_with_runner(
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let rules = run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
 
     Ok(PfRedirectConfig::parse_active_rules(&rules))
 }
@@ -697,9 +703,28 @@ mod tests {
     use camino_tempfile::tempdir;
 
     use super::{
-        PfConfReference, PfRedirectConfig, install_pf_redirects_with_runner, read_platform_file,
-        remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
+        PfConfReference, PfRedirectConfig, active_pf_redirect_config_with_runner,
+        install_pf_redirects_with_runner, read_platform_file, remove_pf_redirects_with_runner,
+        temporary_pf_conf_candidate_path,
     };
+
+    #[test]
+    fn active_pf_redirect_config_reads_nat_rules_from_anchor() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+        let config = active_pf_redirect_config_with_runner(&mut |program, args| {
+            commands.push(format!("{program} {}", args.join(" ")));
+
+            Ok(
+                "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 48443\n"
+                    .to_string(),
+            )
+        })?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(commands, ["/sbin/pfctl -a com.prvious.pv -s nat"]);
+
+        Ok(())
+    }
 
     #[test]
     fn install_pf_redirects_validates_candidate_after_installing_anchor() -> anyhow::Result<()> {

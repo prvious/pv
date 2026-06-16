@@ -123,7 +123,7 @@ impl Environment for TestEnvironment {
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
         if self.active_pf_read_fails_when_unloaded && self.active_pf_config.borrow().is_none() {
             return Err(platform::PlatformError::SystemIntegrationCommandStatus {
-                command: "/sbin/pfctl -a com.prvious.pv -sr".to_string(),
+                command: "/sbin/pfctl -a com.prvious.pv -s nat".to_string(),
                 status: "exit status: 1".to_string(),
             });
         }
