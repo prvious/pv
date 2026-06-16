@@ -765,6 +765,10 @@ async fn start_or_adopt_runtime(
                     spec.name
                 ),
             });
+        } else if let Some(adopted) =
+            supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        {
+            adopted.stop(Duration::from_secs(1)).await?;
         } else if probe_readiness_once(&readiness).await.is_ok() {
             return Err(DaemonError::UnexpectedProtocolResponse {
                 reason: format!(

@@ -184,6 +184,65 @@ document_root: public
 }
 
 #[tokio::test]
+async fn gateway_reconciliation_restarts_recorded_runtime_with_legacy_metadata() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    remove_private_environment_fingerprint(&paths.gateway_runtime_metadata())?;
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+
+    wait_for_process_exit(first_gateway_pid).await?;
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    assert_ne!(second_gateway_pid, first_gateway_pid);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_restarts_when_reload_is_unavailable() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1611,6 +1670,21 @@ fn process_is_alive(pid: u32) -> Result<bool> {
         Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
 
     Ok(test_kill_process(process).is_ok())
+}
+
+fn remove_private_environment_fingerprint(path: &Utf8Path) -> Result<()> {
+    let metadata = fs::read_to_string(path)?;
+    let mut metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    let Some(object) = metadata.as_object_mut() else {
+        anyhow::bail!("runtime metadata must be a JSON object");
+    };
+    if object.remove("private_environment_fingerprint").is_none() {
+        anyhow::bail!("runtime metadata is missing private_environment_fingerprint");
+    }
+    let metadata = serde_json::to_string(&metadata)?;
+    fs::write_sensitive_file(path, &metadata)?;
+
+    Ok(())
 }
 
 fn seed_php_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
