@@ -510,6 +510,7 @@ fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> 
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
     assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
+    assert_no_managed_resource_tracks(&fixture.paths)?;
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, fixture.environment.operations()));
@@ -540,6 +541,7 @@ fn setup_manifest_missing_default_stops_before_system_mutation() -> anyhow::Resu
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
     assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
+    assert_no_managed_resource_tracks(&fixture.paths)?;
 
     Ok(())
 }
@@ -1260,6 +1262,16 @@ fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn assert_no_managed_resource_tracks(paths: &PvPaths) -> anyhow::Result<()> {
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Ok(());
+    };
+
+    assert!(database.managed_resource_tracks()?.is_empty());
+
+    Ok(())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
