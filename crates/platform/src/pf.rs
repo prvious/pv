@@ -233,7 +233,7 @@ fn active_pf_redirect_config_with_runner(
     system_anchor_path: &Utf8Path,
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let main_nat_rules = run_system_output("/sbin/pfctl", &["-s", "nat"])?;
+    let main_nat_rules = active_pf_nat_rules_with_runner(run_system_output)?;
 
     if !main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
         return Ok(None);
@@ -245,6 +245,20 @@ fn active_pf_redirect_config_with_runner(
         | PfFileState::Stale { .. }
         | PfFileState::Conflict { .. }
         | PfFileState::Unreadable { .. } => Ok(None),
+    }
+}
+
+fn active_pf_nat_rules_with_runner(
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+) -> Result<String, PlatformError> {
+    match run_system_output("/sbin/pfctl", &["-s", "nat"]) {
+        Ok(rules) => Ok(rules),
+        Err(non_sudo_error) => {
+            match run_system_output("/usr/bin/sudo", &["-n", "/sbin/pfctl", "-s", "nat"]) {
+                Ok(rules) => Ok(rules),
+                Err(_) => Err(non_sudo_error),
+            }
+        }
     }
 }
 
@@ -802,6 +816,43 @@ mod tests {
 
         assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
         assert_eq!(commands, ["/sbin/pfctl -s nat"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_uses_noninteractive_sudo_when_nat_rules_require_privilege()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let mut commands = Vec::new();
+        state::fs::write_sensitive_file(
+            &system_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+
+        let config = active_pf_redirect_config_with_runner(
+            &system_anchor_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == "/sbin/pfctl -s nat" {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            ["/sbin/pfctl -s nat", "/usr/bin/sudo -n /sbin/pfctl -s nat"]
+        );
 
         Ok(())
     }
