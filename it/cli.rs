@@ -266,6 +266,53 @@ fn diagnostic_command_options_are_documented() -> Result<()> {
 }
 
 #[test]
+fn core_workflow_command_help_is_documented() -> Result<()> {
+    let output = [
+        run_pv(&["setup", "--help"])?,
+        run_pv(&["uninstall", "--help"])?,
+        run_pv(&["link", "--help"])?,
+        run_pv(&["unlink", "--help"])?,
+        run_pv(&["open", "--help"])?,
+        run_pv(&["project:env", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn system_integration_command_help_is_documented() -> Result<()> {
+    let output = [
+        run_pv(&["ca:status", "--help"])?,
+        run_pv(&["ca:trust", "--help"])?,
+        run_pv(&["ca:untrust", "--help"])?,
+        run_pv(&["dns:status", "--help"])?,
+        run_pv(&["dns:install", "--help"])?,
+        run_pv(&["dns:uninstall", "--help"])?,
+        run_pv(&["ports:status", "--help"])?,
+        run_pv(&["ports:install", "--help"])?,
+        run_pv(&["ports:uninstall", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn shell_command_help_is_documented() -> Result<()> {
+    let output = [
+        run_pv(&["env", "--help"])?,
+        run_pv(&["completions", "--help"])?,
+    ];
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
 

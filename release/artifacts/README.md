@@ -76,7 +76,7 @@ cargo run -p pv-release -- generate-manifest \
 
 These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real managed-resource artifacts. Real artifacts are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
 
-The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` currently resolves native resource lanes to `darwin-arm64` while `darwin-amd64` remains explicitly dispatchable; Composer remains a single `platform=any` artifact so full-resource runs do not duplicate Composer identities.
+The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` currently resolves native resource lanes to `darwin-arm64` for the Apple Silicon/staging RC, while `darwin-amd64` remains explicitly dispatchable for diagnostics and the conditional `darwin-amd64` gate. Composer remains a single `platform=any` artifact so full-resource runs do not duplicate Composer identities.
 
 ## Cloudflare R2 Publication
 
@@ -92,4 +92,4 @@ Required configuration:
 
 Publication downloads the selected workflow run artifacts, downloads existing release records and revocations from R2 when present, validates archives and release records again, stages immutable archive and record uploads, writes a versioned manifest under `manifests/runs/$SOURCE_RUN_ID/manifest.json`, and overwrites stable `manifest.json` last. Failed validation or immutable object collision stops before the stable manifest update.
 
-`required_native_platforms` controls which native platforms must be present in the public manifest before publication. It defaults to `darwin-arm64` for the initial Apple Silicon preview while Intel FrankenPHP builds remain deferred. Set it to `darwin-arm64,darwin-amd64` when the full intended public v1 native platform matrix is ready to publish.
+`required_native_platforms` controls which native platforms must be present in the public manifest before publication. It defaults to `darwin-arm64` for the current preview/default Apple Silicon/staging RC validation while Intel FrankenPHP builds remain deferred. Set it to `darwin-arm64,darwin-amd64` when the future/full public v1 native platform matrix is ready to publish.
