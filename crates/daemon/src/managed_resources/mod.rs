@@ -402,7 +402,7 @@ pub(crate) async fn reconcile_system_resources_with_catalog(
 async fn install_missing_desired_resource_tracks(
     paths: &PvPaths,
     install_options: ManagedResourceInstallOptions,
-    installs: Vec<DesiredResourceInstall>,
+    installs: DesiredResourceInstallPlan,
 ) -> Result<(), DaemonError> {
     if installs.is_empty() {
         return Ok(());
@@ -429,13 +429,60 @@ enum DesiredResourceInstall {
     },
 }
 
+#[derive(Debug, Default)]
+struct DesiredResourceInstallPlan {
+    installs: Vec<DesiredResourceInstall>,
+    failures: Vec<DesiredResourceInstallFailure>,
+}
+
+impl DesiredResourceInstallPlan {
+    fn is_empty(&self) -> bool {
+        self.installs.is_empty() && self.failures.is_empty()
+    }
+}
+
+#[derive(Debug)]
+struct DesiredResourceInstallFailure {
+    label: String,
+    error: DaemonError,
+}
+
+impl DesiredResourceInstallFailure {
+    fn new(label: String, error: DaemonError) -> Self {
+        Self { label, error }
+    }
+
+    fn message(&self) -> String {
+        format!("{}: {}", self.label, self.error)
+    }
+}
+
+impl DesiredResourceInstall {
+    fn label(&self) -> String {
+        match self {
+            DesiredResourceInstall::PhpPair { track } => {
+                format!("php/frankenphp {track}")
+            }
+            DesiredResourceInstall::Composer => "composer 2".to_string(),
+            DesiredResourceInstall::Runtime {
+                resource_name,
+                track,
+                ..
+            } => {
+                format!("{resource_name} {track}")
+            }
+        }
+    }
+}
+
 fn missing_desired_resource_installs(
     database: &Database,
     catalog: &ManagedResourceRuntimeCatalog,
-) -> Result<Vec<DesiredResourceInstall>, DaemonError> {
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
     let mut composer_missing = false;
     let mut runtime_installs = Vec::new();
+    let mut failures = Vec::new();
 
     for record in database.managed_resource_tracks()? {
         if record.desired_state != ManagedResourceDesiredState::Installed
@@ -450,23 +497,43 @@ fn missing_desired_resource_installs(
             }
             "composer" => {
                 if record.track != "2" {
-                    return Err(DaemonError::UnexpectedProtocolResponse {
+                    let error = DaemonError::UnexpectedProtocolResponse {
                         reason: format!(
                             "Composer setup default expected track `2`, got `{}`",
                             record.track
                         ),
-                    });
+                    };
+                    failures.push(DesiredResourceInstallFailure::new(
+                        format!("composer {}", record.track),
+                        error,
+                    ));
+                    continue;
                 }
                 composer_missing = true;
             }
             resource_name => {
                 let Some(adapter) = catalog.adapter(resource_name) else {
-                    return Err(DaemonError::UnsupportedManagedResourceRuntime {
+                    let error = DaemonError::UnsupportedManagedResourceRuntime {
                         resource: resource_name.to_string(),
-                    });
+                    };
+                    failures.push(DesiredResourceInstallFailure::new(
+                        format!("{} {}", record.resource_name, record.track),
+                        error,
+                    ));
+                    continue;
+                };
+                let artifact_adapter = match adapter.artifact_adapter() {
+                    Ok(adapter) => adapter,
+                    Err(error) => {
+                        failures.push(DesiredResourceInstallFailure::new(
+                            format!("{} {}", record.resource_name, record.track),
+                            error,
+                        ));
+                        continue;
+                    }
                 };
                 runtime_installs.push(DesiredResourceInstall::Runtime {
-                    adapter: adapter.artifact_adapter()?,
+                    adapter: artifact_adapter,
                     resource_name: record.resource_name,
                     track: record.track,
                 });
@@ -483,13 +550,13 @@ fn missing_desired_resource_installs(
     }
     installs.extend(runtime_installs);
 
-    Ok(installs)
+    Ok(DesiredResourceInstallPlan { installs, failures })
 }
 
 fn install_missing_desired_resource_tracks_blocking(
     paths: PvPaths,
     install_options: ManagedResourceInstallOptions,
-    installs: Vec<DesiredResourceInstall>,
+    installs: DesiredResourceInstallPlan,
 ) -> Result<(), DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
@@ -497,36 +564,63 @@ fn install_missing_desired_resource_tracks_blocking(
         install_options.target_platform,
     );
     let client = resources::UreqResourceHttpClient::default();
+    let DesiredResourceInstallPlan {
+        installs,
+        mut failures,
+    } = installs;
 
     for install in installs {
-        match install {
-            DesiredResourceInstall::PhpPair { track } => {
-                commands.install_php_pair(TrackSelector::Track(TrackName::new(track)?), &client)?;
-            }
-            DesiredResourceInstall::Composer => {
-                commands.install_composer(&client)?;
-            }
+        let label = install.label();
+        let result = match install {
+            DesiredResourceInstall::PhpPair { track } => TrackName::new(track)
+                .map_err(DaemonError::from)
+                .and_then(|track| {
+                    commands
+                        .install_php_pair(TrackSelector::Track(track), &client)
+                        .map(|_install| ())
+                        .map_err(DaemonError::from)
+                }),
+            DesiredResourceInstall::Composer => commands
+                .install_composer(&client)
+                .map(|_install| ())
+                .map_err(DaemonError::from),
             DesiredResourceInstall::Runtime {
                 adapter,
                 resource_name,
                 track,
-            } => {
-                let track = TrackName::new(track)?;
+            } => TrackName::new(track)
+                .map_err(DaemonError::from)
+                .and_then(|track| {
+                    install_runtime_resource_track(
+                        &commands,
+                        &client,
+                        &adapter,
+                        &resource_name,
+                        track,
+                    )
+                }),
+        };
 
-                commands.install(&adapter, TrackSelector::Track(track), &client)?;
-                if adapter.resource_name().as_str() != resource_name {
-                    return Err(DaemonError::UnexpectedProtocolResponse {
-                        reason: format!(
-                            "runtime adapter installed `{}` while reconciling `{resource_name}`",
-                            adapter.resource_name()
-                        ),
-                    });
-                }
-            }
+        if let Err(error) = result {
+            failures.push(DesiredResourceInstallFailure::new(label, error));
         }
     }
 
-    Ok(())
+    match failures.len() {
+        0 => Ok(()),
+        1 => {
+            let Some(failure) = failures.pop() else {
+                return Ok(());
+            };
+            Err(failure.error)
+        }
+        _ => Err(DaemonError::ManagedResourceDefaultInstallFailures {
+            failures: failures
+                .into_iter()
+                .map(|failure| failure.message())
+                .collect(),
+        }),
+    }
 }
 
 async fn reconcile_resource_track(
@@ -766,7 +860,17 @@ fn install_missing_track_blocking(
     let client = resources::UreqResourceHttpClient::default();
     let track = TrackName::new(track)?;
 
-    commands.install(&adapter, TrackSelector::Track(track), &client)?;
+    install_runtime_resource_track(&commands, &client, &adapter, &resource_name, track)
+}
+
+fn install_runtime_resource_track(
+    commands: &ManagedResourceCommands,
+    client: &(impl resources::ResourceHttpClient + ?Sized),
+    adapter: &resources::RuntimeArtifactAdapter,
+    resource_name: &str,
+    track: TrackName,
+) -> Result<(), DaemonError> {
+    commands.install(adapter, TrackSelector::Track(track), client)?;
     if adapter.resource_name().as_str() != resource_name {
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: format!(

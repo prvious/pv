@@ -1179,6 +1179,112 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
 }
 
 #[tokio::test]
+async fn system_reconciliation_continues_independent_setup_defaults_after_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mysql_fixture = setup_default_fixture("mysql")?;
+    let redis_fixture = setup_default_fixture("redis")?;
+    let unsupported_track = "1";
+    let missing_mysql_track = "9.9";
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture, redis_fixture])?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[
+            ("mysql", missing_mysql_track),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+            ("unsupported", unsupported_track),
+        ],
+    )?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+    let result =
+        super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected multiple setup default install failures to be aggregated");
+    };
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        "unsupported 1: Managed Resource runtime `unsupported` is not supported yet",
+        "mysql 9.9: Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`",
+    ]
+    "###);
+
+    let tracks = database.managed_resource_tracks()?;
+    let redis_record = find_managed_resource_track(&tracks, "redis", SETUP_DEFAULT_REDIS_TRACK)?;
+    assert!(
+        redis_record.installed_version.is_some(),
+        "successful independent setup default must still record an installed artifact version"
+    );
+    let Some(redis_artifact_path) = &redis_record.current_artifact_path else {
+        bail!("successful independent setup default must record a current artifact path");
+    };
+    assert!(
+        path_exists(redis_artifact_path)?,
+        "expected installed redis artifact path `{redis_artifact_path}` to exist"
+    );
+
+    for (resource_name, track) in [
+        ("mysql", missing_mysql_track),
+        ("unsupported", unsupported_track),
+    ] {
+        let record = find_managed_resource_track(&tracks, resource_name, track)?;
+
+        assert!(
+            record.installed_version.is_none(),
+            "failed setup default must not record {resource_name} as installed"
+        );
+        assert!(
+            record.current_artifact_path.is_none(),
+            "failed setup default must not record a current path for {resource_name}"
+        );
+    }
+
+    assert!(
+        database.assigned_ports()?.is_empty(),
+        "setup default installs must not assign runtime ports"
+    );
+    let runtime_states = database.runtime_observed_states()?;
+    for (resource_name, track) in [
+        ("mysql", missing_mysql_track),
+        ("redis", SETUP_DEFAULT_REDIS_TRACK),
+    ] {
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Running,
+            ),
+            "setup default install unexpectedly started {resource_name}"
+        );
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Failed,
+            ),
+            "setup default install unexpectedly failed runtime state for {resource_name}"
+        );
+        assert_eq!(
+            runtime_files_exist_for_resource(&paths, resource_name, track)?,
+            RuntimeFilePresence {
+                pid: false,
+                metadata: false,
+                config: false,
+            },
+            "setup default install unexpectedly wrote runtime files for {resource_name}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it() -> Result<()>
 {
     let tempdir = tempdir()?;
