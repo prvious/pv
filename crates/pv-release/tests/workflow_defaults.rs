@@ -616,9 +616,16 @@ fn privileged_macos_rc_system_summary(workflow: &str) -> String {
         workflow.contains("pv_pf_rules_absent()")
             && workflow.contains("record_status pf-rules-removed required pv_pf_rules_absent")
             && workflow.contains("grep -Fq \"com.prvious.pv\""),
-        workflow.contains(
-            "record_status ca-trust-removed required sh -c 'pv ca:status | grep -F \"System keychain trust: not trusted\"'"
-        ),
+        workflow.contains("PV_RC_BIN=\"${RUNNER_TEMP:?}/pv-privileged-rc-bin/pv\"")
+            && workflow.contains("install -m 755 \"$HOME/.pv/bin/pv\" \"$PV_RC_BIN\"")
+            && workflow.contains(
+                "record_status ca-status-after-uninstall evidence \"$PV_RC_BIN\" ca:status"
+            )
+            && workflow.contains("pv_ca_trust_removed()")
+            && workflow.contains(
+                "\"$PV_RC_BIN\" ca:status | grep -F \"System keychain trust: not trusted\""
+            )
+            && workflow.contains("record_status ca-trust-removed required pv_ca_trust_removed"),
         workflow.contains(
             "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
         ),
