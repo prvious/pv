@@ -75,6 +75,19 @@ jobs:
               ;;
           esac
 
+          case "$artifact_manifest_url" in
+            *$'\n'*|*$'\r'*)
+              printf '%s\n' "artifact_manifest_url must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+          case "$app_update_manifest_url" in
+            *$'\n'*|*$'\r'*)
+              printf '%s\n' "app_update_manifest_url must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+
           {
             printf 'artifact_manifest_url=%s\n' "$artifact_manifest_url"
             printf 'app_update_manifest_url=%s\n' "$app_update_manifest_url"
@@ -94,6 +107,9 @@ jobs:
 
       - name: Run privileged RC workflow
         shell: bash
+        env:
+          RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}
+          RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}
         run: |
           set -u
 
@@ -179,8 +195,8 @@ jobs:
           record_status ca-status-after-uninstall evidence pv ca:status
 
           {
-            printf 'artifact_manifest_url=%s\n' "${{ steps.manifest.outputs.artifact_manifest_url }}"
-            printf 'app_update_manifest_url=%s\n' "${{ steps.manifest.outputs.app_update_manifest_url }}"
+            printf 'artifact_manifest_url=%s\n' "$RESOLVED_ARTIFACT_MANIFEST_URL"
+            printf 'app_update_manifest_url=%s\n' "$RESOLVED_APP_UPDATE_MANIFEST_URL"
             printf 'failure_count=%s\n' "$failure_count"
             find "$PV_RC_EVIDENCE_DIR" -maxdepth 1 -type f -print | sort
           } > "$PV_RC_EVIDENCE_DIR/summary.txt"

@@ -464,7 +464,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     let workflow = read_optional_file(&workspace_root.join(PRIVILEGED_MACOS_RC_WORKFLOW_PATH))?;
     let workflow = workflow.as_deref().unwrap_or("");
     let summary = format!(
-        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}\nuses_compiled_artifact_manifest_env={}\nuses_compiled_app_manifest_env={}\nresolves_manifest_from_input_or_public_var={}\nsetup_command={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrestart_command={}\nlink_command={}\nserve_curl={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nrecords_blocked_steps={}\nuploads_evidence={}",
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}\nuses_compiled_artifact_manifest_env={}\nuses_compiled_app_manifest_env={}\nresolves_manifest_from_input_or_public_var={}\nrejects_manifest_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nsummary_uses_manifest_env={}\nsummary_avoids_manifest_expressions={}\nsetup_command={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrestart_command={}\nlink_command={}\nserve_curl={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nrecords_blocked_steps={}\nuploads_evidence={}",
         !workflow.is_empty(),
         workflow_name(workflow).unwrap_or(""),
         workflow.contains("workflow_dispatch:"),
@@ -477,6 +477,22 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
         workflow.contains("${{ inputs.artifact_manifest_url }}")
             && workflow.contains("R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}")
             && workflow.contains("artifact_manifest_url=\"${R2_PUBLIC_BASE_URL%/}/manifest.json\""),
+        workflow.matches("must not contain newlines").count() == 2,
+        workflow.contains(
+            "RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"
+        ) && workflow.contains(
+            "RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"
+        ),
+        workflow.contains(
+            "printf 'artifact_manifest_url=%s\\n' \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
+        ) && workflow.contains(
+            "printf 'app_update_manifest_url=%s\\n' \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
+        ),
+        !workflow.contains(
+            "printf 'artifact_manifest_url=%s\\n' \"${{ steps.manifest.outputs.artifact_manifest_url }}\""
+        ) && !workflow.contains(
+            "printf 'app_update_manifest_url=%s\\n' \"${{ steps.manifest.outputs.app_update_manifest_url }}\""
+        ),
         workflow.contains("pv setup --yes --no-path"),
         workflow.contains("/etc/resolver/test"),
         workflow.contains("pfctl -sr") && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
@@ -503,6 +519,10 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     uses_compiled_artifact_manifest_env=true
     uses_compiled_app_manifest_env=true
     resolves_manifest_from_input_or_public_var=true
+    rejects_manifest_output_newlines=true
+    rc_step_uses_resolved_manifest_env=true
+    summary_uses_manifest_env=true
+    summary_avoids_manifest_expressions=true
     setup_command=true
     resolver_evidence=true
     pf_evidence=true
