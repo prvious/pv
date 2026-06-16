@@ -25,7 +25,8 @@ use crate::gateway_config::{
     render_php_worker_project_config,
 };
 use crate::project_env::{resolve_project_php_track, validate_project_config_for_gateway};
-use crate::supervisor::probe_readiness_once;
+use crate::structured_log;
+use crate::supervisor::{ManagedProcess, probe_readiness_once};
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 #[expect(
@@ -800,6 +801,7 @@ async fn start_or_adopt_runtime(
 
         let mut process = supervisor.start(spec.clone()).await?;
         if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+            record_runtime_readiness_diagnostics(paths, &spec, &mut process, &error);
             process.stop(Duration::from_secs(1)).await?;
 
             return Err(error);
@@ -830,6 +832,38 @@ async fn start_or_adopt_runtime(
 
             Err(error)
         }
+    }
+}
+
+fn record_runtime_readiness_diagnostics(
+    paths: &PvPaths,
+    spec: &ProcessSpec,
+    process: &mut ManagedProcess,
+    error: &DaemonError,
+) {
+    let process_exited = runtime_process_exit_state(process);
+    let loopback_listener_ports = loopback_listener_port_snapshot();
+
+    structured_log::runtime_readiness_diagnostics(
+        paths,
+        &spec.name,
+        &error.to_string(),
+        &process_exited,
+        &loopback_listener_ports,
+    );
+}
+
+fn runtime_process_exit_state(process: &mut ManagedProcess) -> String {
+    match process.has_exited() {
+        Ok(exited) => exited.to_string(),
+        Err(error) => format!("unknown: {error}"),
+    }
+}
+
+fn loopback_listener_port_snapshot() -> String {
+    match platform::loopback_tcp_listener_ports() {
+        Ok(ports) => format!("{ports:?}"),
+        Err(error) => format!("unavailable: {error}"),
     }
 }
 
