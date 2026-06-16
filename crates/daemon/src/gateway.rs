@@ -175,21 +175,47 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
         .await?;
     }
     let promoted_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    let gateway_readiness = gateway_readiness_check(&plan)?;
     start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
         promoted_config,
         gateway_process_spec(paths, &gateway_command),
-        ReadinessCheck::Tcp {
-            host: "127.0.0.1".to_owned(),
-            port: plan.gateway.http_port,
-        },
+        gateway_readiness,
         RuntimeSubject::Gateway,
     )
     .await?;
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+}
+
+fn gateway_readiness_check(plan: &RuntimePlan) -> Result<ReadinessCheck, DaemonError> {
+    let ca_certificate_exists = fs::modified_at(&plan.gateway.ca_certificate_path)?.is_some();
+    let readiness = match (ca_certificate_exists, gateway_readiness_hostname(plan)) {
+        (true, Some(server_name)) => ReadinessCheck::GatewayHttps {
+            http_host: "127.0.0.1".to_owned(),
+            http_port: plan.gateway.http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port: plan.gateway.https_port,
+            server_name,
+            ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
+        },
+        _ => ReadinessCheck::Tcp {
+            host: "127.0.0.1".to_owned(),
+            port: plan.gateway.http_port,
+        },
+    };
+
+    Ok(readiness)
+}
+
+fn gateway_readiness_hostname(plan: &RuntimePlan) -> Option<String> {
+    plan.workers
+        .iter()
+        .flat_map(|worker| worker.projects.iter())
+        .find(|project| project.render_config)
+        .map(|project| project.primary_hostname.clone())
 }
 
 pub async fn validate_config(

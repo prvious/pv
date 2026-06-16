@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, future::Future, io};
 
@@ -7,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
 };
+use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
@@ -14,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::time::{Instant, sleep, timeout};
+use tokio_rustls::TlsConnector;
 
 use crate::DaemonError;
 
@@ -109,6 +112,14 @@ pub enum ReadinessCheck {
     Tcp {
         host: String,
         port: u16,
+    },
+    GatewayHttps {
+        http_host: String,
+        http_port: u16,
+        https_host: String,
+        https_port: u16,
+        server_name: String,
+        ca_certificate_path: Utf8PathBuf,
     },
     RedisPing {
         host: String,
@@ -388,6 +399,18 @@ impl ReadinessCheck {
     fn name(&self) -> String {
         match self {
             Self::Tcp { host, port } => format!("tcp:{host}:{port}"),
+            Self::GatewayHttps {
+                http_host,
+                http_port,
+                https_host,
+                https_port,
+                server_name,
+                ..
+            } => {
+                format!(
+                    "gateway:https:{server_name}:{https_host}:{https_port};tcp:{http_host}:{http_port}"
+                )
+            }
             Self::RedisPing { host, port } => format!("redis-ping:{host}:{port}"),
             Self::Http { host, port, path } => format!("http:{host}:{port}{path}"),
         }
@@ -396,9 +419,17 @@ impl ReadinessCheck {
 
 async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
     match check {
-        ReadinessCheck::Tcp { host, port } => {
-            let _stream = TcpStream::connect((host.as_str(), *port)).await?;
-            Ok(())
+        ReadinessCheck::Tcp { host, port } => check_tcp_once(host, *port).await,
+        ReadinessCheck::GatewayHttps {
+            http_host,
+            http_port,
+            https_host,
+            https_port,
+            server_name,
+            ca_certificate_path,
+        } => {
+            check_tcp_once(http_host, *http_port).await?;
+            check_https_once(https_host, *https_port, server_name, ca_certificate_path).await
         }
         ReadinessCheck::RedisPing { host, port } => {
             let url = format!("redis://{host}:{port}/");
@@ -431,6 +462,69 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
             Err(io::Error::other("HTTP readiness returned non-success status").into())
         }
     }
+}
+
+async fn check_tcp_once(host: &str, port: u16) -> Result<(), DaemonError> {
+    let _stream = TcpStream::connect((host, port)).await?;
+
+    Ok(())
+}
+
+async fn check_https_once(
+    host: &str,
+    port: u16,
+    server_name: &str,
+    ca_certificate_path: &Utf8Path,
+) -> Result<(), DaemonError> {
+    let tcp_stream = TcpStream::connect((host, port)).await?;
+    let connector = TlsConnector::from(tls_client_config(ca_certificate_path)?);
+    let server_name_text = server_name.to_owned();
+    let server_name = ServerName::try_from(server_name_text.clone()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid TLS server name `{server_name_text}`: {error}"),
+        )
+    })?;
+    let mut stream = connector.connect(server_name, tcp_stream).await?;
+    let request =
+        format!("GET / HTTP/1.1\r\nHost: {server_name_text}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut response = [0_u8; 12];
+    let bytes = stream.read(&mut response).await?;
+    let has_http_status_line =
+        bytes >= 9 && (response.starts_with(b"HTTP/1.1 ") || response.starts_with(b"HTTP/1.0 "));
+    if has_http_status_line {
+        return Ok(());
+    }
+
+    Err(io::Error::other("HTTPS readiness returned a non-HTTP response").into())
+}
+
+fn tls_client_config(
+    ca_certificate_path: &Utf8Path,
+) -> Result<Arc<rustls::ClientConfig>, DaemonError> {
+    let certificate_pem = fs::read_to_string(ca_certificate_path)?;
+    let mut reader = certificate_pem.as_bytes();
+    let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    let mut root_store = rustls::RootCertStore::empty();
+    let (added, _ignored) = root_store.add_parsable_certificates(certificates);
+    if added == 0 {
+        return Err(io::Error::other(format!(
+            "no CA certificates could be loaded from {ca_certificate_path}"
+        ))
+        .into());
+    }
+
+    Ok(Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|error| io::Error::other(format!("TLS protocol configuration failed: {error}")))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth(),
+    ))
 }
 
 fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {

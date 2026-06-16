@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use daemon::ProcessSupervisor;
 use daemon::gateway::{FrankenphpCommand, gateway_process_spec, worker_process_spec};
@@ -57,6 +58,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     let response = match request_real_artifact_project(&paths).await {
         Ok(response) => response,
         Err(error) => {
+            let diagnostics = real_artifact_diagnostics(&paths, php_install.track().as_str());
             stop_gateway_runtimes(
                 &paths,
                 php_install.track().as_str(),
@@ -68,7 +70,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
             )
             .await?;
 
-            return Err(error);
+            return Err(error.context(diagnostics));
         }
     };
     stop_gateway_runtimes(
@@ -86,6 +88,31 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     assert_eq!(frankenphp_install.track(), php_install.track());
 
     Ok(())
+}
+
+fn real_artifact_diagnostics(paths: &PvPaths, php_track: &str) -> String {
+    let mut diagnostics = format!("PV real-artifact diagnostics root: {}\n", paths.root());
+    for path in [
+        paths.gateway_root_config(),
+        paths.worker_root_config(php_track),
+        paths.gateway_log(),
+        paths.worker_log(php_track),
+        paths.gateway_access_log(),
+        paths.gateway_error_log(),
+        paths.gateway_runtime_metadata(),
+        paths.worker_runtime_metadata(php_track),
+    ] {
+        append_optional_file(&mut diagnostics, &path);
+    }
+
+    diagnostics
+}
+
+fn append_optional_file(diagnostics: &mut String, path: &Utf8Path) {
+    match state::fs::read_to_string(path) {
+        Ok(content) => diagnostics.push_str(&format!("--- {path} ---\n{content}\n")),
+        Err(error) => diagnostics.push_str(&format!("--- {path} unavailable: {error} ---\n")),
+    }
 }
 
 async fn request_real_artifact_project(paths: &PvPaths) -> Result<String> {
