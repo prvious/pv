@@ -14,7 +14,7 @@ mod support;
 
 const POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "fixture initdb\n"),
-    ("share/postgresql/postgres.bki", "fixture bki\n"),
+    ("share/postgres.bki", "fixture bki\n"),
 ];
 const RESOURCE: ResourceCliSpec = ResourceCliSpec {
     resource_name: "postgres",
