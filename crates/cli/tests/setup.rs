@@ -519,6 +519,32 @@ fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> 
 }
 
 #[test]
+fn setup_manifest_missing_default_stops_before_system_mutation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json_without("mysql")?);
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(
+        output
+            .stderr
+            .contains("artifact manifest does not include Managed Resource `mysql`")
+    );
+    assert!(fixture.environment.operations().is_empty());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn setup_installs_php_and_composer_shims() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
@@ -1087,19 +1113,44 @@ fn script_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
 }
 
 fn setup_manifest_json() -> anyhow::Result<String> {
+    setup_manifest_json_with_resources([
+        setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
+        setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
+        setup_manifest_resource("mysql", "8.4"),
+        setup_manifest_resource("postgres", "18"),
+        setup_manifest_resource("redis", "8.8"),
+        setup_manifest_resource("mailpit", "1"),
+        setup_manifest_resource("rustfs", "1"),
+        setup_manifest_resource("composer", "2"),
+    ])
+}
+
+fn setup_manifest_json_without(resource_name: &str) -> anyhow::Result<String> {
+    let resources = [
+        setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
+        setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
+        setup_manifest_resource("mysql", "8.4"),
+        setup_manifest_resource("postgres", "18"),
+        setup_manifest_resource("redis", "8.8"),
+        setup_manifest_resource("mailpit", "1"),
+        setup_manifest_resource("rustfs", "1"),
+        setup_manifest_resource("composer", "2"),
+    ]
+    .into_iter()
+    .filter(|resource| {
+        resource.get("name").and_then(serde_json::Value::as_str) != Some(resource_name)
+    });
+
+    setup_manifest_json_with_resources(resources)
+}
+
+fn setup_manifest_json_with_resources(
+    resources: impl IntoIterator<Item = serde_json::Value>,
+) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&json!({
         "schema_version": 1,
         "minimum_pv_version": "0.1.0",
-        "resources": [
-            setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
-            setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
-            setup_manifest_resource("mysql", "8.4"),
-            setup_manifest_resource("postgres", "18"),
-            setup_manifest_resource("redis", "8.8"),
-            setup_manifest_resource("mailpit", "1"),
-            setup_manifest_resource("rustfs", "1"),
-            setup_manifest_resource("composer", "2"),
-        ],
+        "resources": resources.into_iter().collect::<Vec<_>>(),
     }))?)
 }
 
