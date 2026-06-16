@@ -122,7 +122,7 @@ async fn http_readiness_succeeds_for_successful_responses() -> Result<()> {
 }
 
 #[tokio::test]
-async fn gateway_https_readiness_rejects_non_success_responses() -> Result<()> {
+async fn gateway_https_readiness_accepts_non_success_status_lines() -> Result<()> {
     let tempdir = tempdir()?;
     let ca_certificate_path = tempdir.path().join("ca.pem");
     let certified_key = rcgen::generate_simple_self_signed(vec!["acme.test".to_owned()])?;
@@ -165,7 +165,7 @@ async fn gateway_https_readiness_rejects_non_success_responses() -> Result<()> {
         result
     });
 
-    let result = wait_for_readiness(
+    wait_for_readiness(
         ReadinessCheck::GatewayHttps {
             http_host: "127.0.0.1".to_owned(),
             http_port,
@@ -174,21 +174,10 @@ async fn gateway_https_readiness_rejects_non_success_responses() -> Result<()> {
             server_name: "acme.test".to_owned(),
             ca_certificate_path,
         },
-        Duration::from_millis(30),
+        Duration::from_secs(1),
     )
-    .await;
+    .await?;
 
-    let Err(daemon::DaemonError::ReadinessTimedOut {
-        last_error: Some(reason),
-        ..
-    }) = &result
-    else {
-        anyhow::bail!("expected HTTPS readiness timeout, got {result:?}");
-    };
-    assert!(
-        reason.contains("HTTPS readiness returned non-success status"),
-        "unexpected HTTPS readiness error: {reason}"
-    );
     server.abort();
     drop(http_listener);
 

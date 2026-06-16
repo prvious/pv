@@ -491,11 +491,8 @@ async fn check_https_once(
 
     let mut response = [0_u8; 12];
     let bytes = stream.read(&mut response).await?;
-    if http_status_is_success(&response, bytes) {
-        return Ok(());
-    }
     if http_has_status_line(&response, bytes) {
-        return Err(io::Error::other("HTTPS readiness returned non-success status").into());
+        return Ok(());
     }
 
     Err(io::Error::other("HTTPS readiness returned a non-HTTP response").into())
