@@ -644,8 +644,45 @@ fn append_pf_reference(content: &str, reference: &str) -> String {
     if !candidate.ends_with('\n') {
         candidate.push('\n');
     }
-    candidate.push_str(reference);
+    let rdr_reference =
+        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_RDR_ANCHOR_DIRECTIVE}\n");
+    let load_reference =
+        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n");
+
+    if let Some(index) = first_pf_filter_rule_index(&candidate) {
+        candidate.insert_str(index, &rdr_reference);
+    } else {
+        candidate.push_str(&rdr_reference);
+    }
+
+    if !candidate.ends_with('\n') {
+        candidate.push('\n');
+    }
+    candidate.push_str(&load_reference);
     candidate
+}
+
+fn first_pf_filter_rule_index(content: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if let Some(active_line) = active_pf_line(line)
+            && is_pf_filter_rule(active_line)
+        {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+
+    None
+}
+
+fn is_pf_filter_rule(line: &str) -> bool {
+    line == "block"
+        || line.starts_with("block ")
+        || line == "pass"
+        || line.starts_with("pass ")
+        || line.starts_with("anchor ")
+        || line.starts_with("antispoof ")
 }
 
 fn remove_pf_reference_lines(content: &str) -> String {
@@ -778,6 +815,51 @@ mod tests {
 
         assert!(candidate.contains("load anchor \"com.prvious.pv\""));
         assert!(install_anchor_index < validate_candidate_index);
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_inserts_rdr_anchor_before_filter_rules() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+        state::fs::write_sensitive_file(
+            &system_pf_conf_path,
+            "scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\nload anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"\n",
+        )?;
+
+        install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |_program, _args| Ok(()),
+        )?;
+
+        let candidate =
+            read_platform_file(&prepared_reference_path.with_file_name("pf.conf.candidate"))?;
+        let rdr_index = candidate
+            .find("rdr-anchor \"com.prvious.pv\"")
+            .ok_or_else(|| anyhow::anyhow!("candidate did not contain PV rdr-anchor"))?;
+        let filter_index = candidate
+            .find("\nanchor \"com.apple/*\" all")
+            .map(|index| index + 1)
+            .ok_or_else(|| anyhow::anyhow!("candidate did not preserve filter anchor"))?;
+        let load_index = candidate
+            .find("load anchor \"com.prvious.pv\"")
+            .ok_or_else(|| anyhow::anyhow!("candidate did not contain PV load anchor"))?;
+
+        assert!(rdr_index < filter_index);
+        assert!(filter_index < load_index);
 
         Ok(())
     }
