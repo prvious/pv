@@ -13,6 +13,7 @@ use state::{
     Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, PvPaths,
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
 };
+use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -286,7 +287,12 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
     write_hanging_frankenphp_validator(&validator, &validator_child_pid)?;
     fs::write_sensitive_file(&config_path, "{}\n")?;
 
-    let result = validate_config(&FrankenphpCommand::new(&validator), &config_path).await;
+    let result = validate_config(
+        &FrankenphpCommand::new(&validator),
+        &config_path,
+        &BTreeMap::new(),
+    )
+    .await;
 
     assert!(matches!(
         result,
@@ -1059,7 +1065,12 @@ async fn frankenphp_config_validation_reports_process_failures() -> Result<()> {
     let config_path = tempdir.path().join("Caddyfile");
     fs::write_sensitive_file(&config_path, "invalid config\n")?;
 
-    let result = validate_config(&FrankenphpCommand::new(validator), &config_path).await;
+    let result = validate_config(
+        &FrankenphpCommand::new(validator),
+        &config_path,
+        &BTreeMap::new(),
+    )
+    .await;
 
     assert!(matches!(
         result,
@@ -1078,6 +1089,35 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
     let gateway = gateway_process_spec(&paths, &command);
     let worker = worker_process_spec(&paths, "8.4", &command);
 
+    assert_eq!(
+        gateway
+            .private_environment
+            .get("XDG_CONFIG_HOME")
+            .map(String::as_str),
+        Some(paths.config().as_str())
+    );
+    assert_eq!(
+        gateway
+            .private_environment
+            .get("XDG_DATA_HOME")
+            .map(String::as_str),
+        Some(paths.certificates().as_str())
+    );
+    assert_eq!(
+        worker
+            .private_environment
+            .get("XDG_CONFIG_HOME")
+            .map(String::as_str),
+        Some(paths.config().as_str())
+    );
+    assert_eq!(
+        worker
+            .private_environment
+            .get("XDG_DATA_HOME")
+            .map(String::as_str),
+        Some(paths.certificates().as_str())
+    );
+
     assert_process_spec_snapshot(
         tempdir.path(),
         (
@@ -1086,6 +1126,60 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
             gateway,
             worker,
         ),
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn frankenphp_config_validation_receives_xdg_environment() -> Result<()> {
+    let tempdir = tempdir()?;
+    let validator = tempdir.path().join("env-validator");
+    let config_path = tempdir.path().join("Caddyfile");
+    let xdg_config_home = tempdir.path().join("pv-config");
+    let xdg_data_home = tempdir.path().join("pv-data");
+    let observed_config_home = tempdir.path().join("observed-config-home");
+    let observed_data_home = tempdir.path().join("observed-data-home");
+    fs::write_sensitive_file(
+        &validator,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s' "${{XDG_CONFIG_HOME}}" > {}
+printf '%s' "${{XDG_DATA_HOME}}" > {}
+exit 0
+"#,
+            shell_single_quoted(observed_config_home.as_str()),
+            shell_single_quoted(observed_data_home.as_str()),
+        ),
+    )?;
+    set_executable(&validator)?;
+    fs::write_sensitive_file(&config_path, "{}\n")?;
+    let private_environment = BTreeMap::from([
+        (
+            "XDG_CONFIG_HOME".to_owned(),
+            xdg_config_home.as_str().to_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".to_owned(),
+            xdg_data_home.as_str().to_owned(),
+        ),
+    ]);
+
+    validate_config(
+        &FrankenphpCommand::new(&validator),
+        &config_path,
+        &private_environment,
+    )
+    .await?;
+
+    assert_eq!(
+        state::testing::read_to_string(&observed_config_home)?,
+        xdg_config_home.as_str()
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_data_home)?,
+        xdg_data_home.as_str()
     );
 
     Ok(())

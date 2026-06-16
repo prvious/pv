@@ -223,8 +223,9 @@ fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<Str
 pub async fn validate_config(
     command: &FrankenphpCommand,
     config_path: &Utf8Path,
+    private_environment: &BTreeMap<String, String>,
 ) -> Result<(), DaemonError> {
-    let output = run_validation_command(command, config_path).await?;
+    let output = run_validation_command(command, config_path, private_environment).await?;
 
     if output.status.success() {
         return Ok(());
@@ -250,10 +251,12 @@ struct ValidationOutput {
 async fn run_validation_command(
     command: &FrankenphpCommand,
     config_path: &Utf8Path,
+    private_environment: &BTreeMap<String, String>,
 ) -> Result<ValidationOutput, DaemonError> {
     let mut command_process = FrankenphpProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
+        .envs(private_environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -324,7 +327,7 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &FrankenphpCommand) -> Pro
         name: "gateway".to_owned(),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.gateway_root_config()),
-        private_environment: Default::default(),
+        private_environment: frankenphp_xdg_environment(paths),
         config_path: paths.gateway_root_config(),
         log_path: paths.gateway_log(),
         pid_path: paths.gateway_pid(),
@@ -343,7 +346,7 @@ pub fn worker_process_spec(
         name: format!("php-worker-{php_track}"),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.worker_root_config(php_track)),
-        private_environment: Default::default(),
+        private_environment: frankenphp_xdg_environment(paths),
         config_path: paths.worker_root_config(php_track),
         log_path: paths.worker_log(php_track),
         pid_path: paths.worker_pid(php_track),
@@ -693,7 +696,11 @@ async fn promote_runtime_config_tree(
         &config_path,
         candidate_content,
         active_content,
-        |candidate_path| async move { validate_config(command, &candidate_path).await },
+        |candidate_path| {
+            let private_environment = frankenphp_xdg_environment(paths);
+
+            async move { validate_config(command, &candidate_path, &private_environment).await }
+        },
         promote_fragments,
     )
     .await;
@@ -1180,6 +1187,19 @@ fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<Stri
         "--adapter".to_owned(),
         "caddyfile".to_owned(),
     ]
+}
+
+fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "XDG_CONFIG_HOME".to_owned(),
+            paths.config().as_str().to_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".to_owned(),
+            paths.certificates().as_str().to_owned(),
+        ),
+    ])
 }
 
 #[cfg(test)]

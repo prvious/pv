@@ -1,6 +1,6 @@
 ---
 source: crates/daemon/tests/gateway_reconciliation.rs
-assertion_line: 225
+assertion_line: 1591
 expression: snapshot
 ---
 (
@@ -28,6 +28,10 @@ expression: snapshot
             "--adapter",
             "caddyfile",
         ],
+        private_environment: {
+            "XDG_CONFIG_HOME": "<redacted>",
+            "XDG_DATA_HOME": "<redacted>",
+        },
         config_path: "<tempdir>/home/.pv/config/gateway/Caddyfile",
         log_path: "<tempdir>/home/.pv/logs/gateway/gateway.log",
         pid_path: "<tempdir>/home/.pv/run/gateway.pid",
@@ -45,6 +49,10 @@ expression: snapshot
             "--adapter",
             "caddyfile",
         ],
+        private_environment: {
+            "XDG_CONFIG_HOME": "<redacted>",
+            "XDG_DATA_HOME": "<redacted>",
+        },
         config_path: "<tempdir>/home/.pv/config/workers/php-8.4/Caddyfile",
         log_path: "<tempdir>/home/.pv/logs/workers/php-8.4.log",
         pid_path: "<tempdir>/home/.pv/run/workers/php-8.4.pid",
