@@ -127,21 +127,25 @@ pub(crate) fn install(
 
     let system_files_current = matches!(system_anchor_state, PfFileState::Current { .. })
         && matches!(system_reference_state, PfFileState::Current { .. });
-    let active_config = match environment.active_pf_redirect_config() {
-        Ok(active_config) => active_config,
-        Err(error) => {
-            release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
-
-            return Err(error.into());
-        }
-    };
-
-    if system_files_current && active_config.as_ref() == Some(&config) {
-        output.line("System pf redirect config already matches PV")?;
-
-        return Ok(ExitCode::SUCCESS);
-    }
     if system_files_current {
+        let active_config = match environment.active_pf_redirect_config() {
+            Ok(active_config) => active_config,
+            Err(error) => {
+                release_new_gateway_ports(
+                    &mut database,
+                    had_http_assignment,
+                    had_https_assignment,
+                )?;
+
+                return Err(error.into());
+            }
+        };
+
+        if active_config.as_ref() == Some(&config) {
+            output.line("System pf redirect config already matches PV")?;
+
+            return Ok(ExitCode::SUCCESS);
+        }
         output
             .line("System pf redirect config matches PV, but active redirects are not loaded.")?;
     }
