@@ -212,6 +212,12 @@ jobs:
           CHECKLIST
 
           record_status setup required pv setup --yes --no-path
+          collect_file gateway-caddyfile "$HOME/.pv/config/gateway/Caddyfile"
+          collect_file gateway-runtime-pid "$HOME/.pv/run/gateway.pid"
+          collect_file gateway-runtime-metadata "$HOME/.pv/run/gateway.json"
+          record_status gateway-listeners evidence sh -c 'lsof -nP -iTCP:48080 -sTCP:LISTEN || true; netstat -anv -p tcp | grep -E "48080|48443" || true'
+          record_status gateway-loopback-nc evidence nc -vz -G 2 127.0.0.1 48080
+          record_status gateway-loopback-http evidence curl --show-error --silent --max-time 5 --write-out '\nhttp_code:%{http_code}\n' http://127.0.0.1:48080/
 
           collect_file resolver-system /etc/resolver/test
           record_status resolver-status required pv dns:status
