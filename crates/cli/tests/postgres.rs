@@ -349,10 +349,7 @@ fn prepare_existing_release(
     create_dir(parent)?;
     write_file(&executable, "fixture executable\n")?;
     write_file(&release.join("bin/initdb"), "fixture initdb\n")?;
-    write_file(
-        &release.join("share/postgresql/postgres.bki"),
-        "fixture bki\n",
-    )
+    write_file(&release.join("share/postgres.bki"), "fixture bki\n")
 }
 
 fn record_installed_resource(
