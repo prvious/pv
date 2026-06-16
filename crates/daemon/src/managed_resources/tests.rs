@@ -144,17 +144,6 @@ const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
         support_files: &[],
     },
 ];
-const SETUP_DEFAULT_TRACKS: &[(&str, &str)] = &[
-    ("composer", SETUP_DEFAULT_COMPOSER_TRACK),
-    ("frankenphp", SETUP_DEFAULT_PHP_TRACK),
-    ("mailpit", SETUP_DEFAULT_MAILPIT_TRACK),
-    ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
-    ("php", SETUP_DEFAULT_PHP_TRACK),
-    ("postgres", SETUP_DEFAULT_POSTGRES_TRACK),
-    ("redis", SETUP_DEFAULT_REDIS_TRACK),
-    ("rustfs", SETUP_DEFAULT_RUSTFS_TRACK),
-];
-
 #[derive(Clone, Copy, Debug)]
 struct SetupDefaultFixture {
     resource_name: &'static str,
@@ -947,14 +936,15 @@ async fn system_reconciliation_installs_desired_setup_defaults_without_starting_
 
     seed_setup_default_cached_fixture(&paths, tempdir.path(), SETUP_DEFAULT_FIXTURES)?;
     let mut database = Database::open(&paths)?;
-    record_desired_setup_tracks(&mut database, SETUP_DEFAULT_TRACKS)?;
+    let setup_default_tracks = setup_default_tracks();
+    record_desired_setup_tracks(&mut database, &setup_default_tracks)?;
     let mut catalog = super::ManagedResourceRuntimeCatalog::production();
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
     super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
     let tracks = database.managed_resource_tracks()?;
-    for (resource_name, track) in SETUP_DEFAULT_TRACKS {
+    for (resource_name, track) in setup_default_tracks {
         let record = find_managed_resource_track(&tracks, resource_name, track)?;
 
         assert_eq!(
@@ -3175,6 +3165,13 @@ fn record_desired_setup_tracks(database: &mut Database, tracks: &[(&str, &str)])
     }
 
     Ok(())
+}
+
+fn setup_default_tracks() -> Vec<(&'static str, &'static str)> {
+    SETUP_DEFAULT_FIXTURES
+        .iter()
+        .map(|fixture| (fixture.resource_name, fixture.track))
+        .collect()
 }
 
 fn find_managed_resource_track<'records>(
