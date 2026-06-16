@@ -178,7 +178,7 @@ fn resolve_default_resource_plan(
             manifest.resolve_track(&resource_name, track_selector)?
         };
 
-        manifest.select_latest(&resource_name, &track, target_platform)?;
+        manifest.select_latest(&resource_name, track, target_platform)?;
 
         plan.push(SetupResourcePlan {
             resource_name,
