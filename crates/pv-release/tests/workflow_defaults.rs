@@ -429,9 +429,13 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(REAL_ARTIFACT_E2E_WORKFLOW_PATH))?;
     let summary = format!(
-        "workflow_name={}\nmanifest_url_required={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nrun_ignored_count={}",
+        "workflow_name={}\nmanifest_url_required={}\napp_update_manifest_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nrun_ignored_count={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_passes_manifest_inputs={}",
         workflow_name(&workflow).unwrap_or(""),
         workflow.contains("manifest_url:") && workflow.contains("required: true"),
+        workflow.contains("app_update_manifest_url:") && workflow.contains("required: false"),
+        workflow.contains("privileged_rc:")
+            && workflow.contains("description: Run the privileged macOS RC workflow")
+            && workflow.contains("default: false"),
         workflow.matches("PV_E2E_REAL_ARTIFACTS: \"1\"").count(),
         workflow
             .matches("PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}")
@@ -443,16 +447,25 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
             "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
         ),
         workflow.matches("--run-ignored ignored-only").count(),
+        workflow.contains("uses: ./.github/workflows/privileged-macos-rc.yml"),
+        workflow.contains("if: ${{ inputs.privileged_rc }}"),
+        workflow.contains("artifact_manifest_url: ${{ inputs.manifest_url }}")
+            && workflow.contains("app_update_manifest_url: ${{ inputs.app_update_manifest_url }}"),
     );
 
     assert_snapshot!(summary, @r#"
     workflow_name=Real Artifact E2E
     manifest_url_required=true
+    app_update_manifest_input=true
+    privileged_rc_input=true
     real_artifact_env_count=2
     manifest_url_env_count=2
     gateway_command=true
     resource_matrix_command=true
     run_ignored_count=2
+    privileged_job_uses_rc_workflow=true
+    privileged_job_is_optional=true
+    privileged_job_passes_manifest_inputs=true
     "#);
 
     Ok(())
@@ -469,6 +482,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     workflow_exists=true
     workflow_name=Privileged macOS RC
     manual_dispatch=true
+    reusable_call=true
     no_push_or_pull_request=true
     artifact_manifest_input_default=
     app_manifest_input_default=
@@ -523,10 +537,11 @@ fn privileged_macos_rc_workflow_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
     format!(
-        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
         !workflow.is_empty(),
         workflow_name(workflow).unwrap_or(""),
         workflow.contains("workflow_dispatch:"),
+        workflow.contains("workflow_call:"),
         !workflow.contains("pull_request:") && !workflow.contains("push:"),
         input_default(workflow, "artifact_manifest_url").unwrap_or(""),
         input_default(workflow, "app_update_manifest_url").unwrap_or(""),

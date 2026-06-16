@@ -7,6 +7,16 @@ on:
         description: Candidate artifact manifest URL
         required: true
         type: string
+      app_update_manifest_url:
+        description: Candidate PV app update manifest URL for privileged RC
+        required: false
+        default: ""
+        type: string
+      privileged_rc:
+        description: Run the privileged macOS RC workflow
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   real-artifact-e2e:
@@ -28,3 +38,11 @@ jobs:
           PV_E2E_REAL_ARTIFACTS: "1"
           PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}
         run: cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix
+
+  privileged-rc:
+    if: ${{ inputs.privileged_rc }}
+    needs: real-artifact-e2e
+    uses: ./.github/workflows/privileged-macos-rc.yml
+    with:
+      artifact_manifest_url: ${{ inputs.manifest_url }}
+      app_update_manifest_url: ${{ inputs.app_update_manifest_url }}

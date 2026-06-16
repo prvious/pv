@@ -13,6 +13,18 @@ on:
         required: false
         default: ""
         type: string
+  workflow_call:
+    inputs:
+      artifact_manifest_url:
+        description: "Managed Resource artifact manifest URL; defaults to R2_PUBLIC_BASE_URL/manifest.json"
+        required: false
+        default: ""
+        type: string
+      app_update_manifest_url:
+        description: "PV app update manifest URL; defaults to R2_PUBLIC_BASE_URL/pv-app-manifest.json"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
