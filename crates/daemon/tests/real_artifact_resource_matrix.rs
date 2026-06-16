@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -191,7 +192,11 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
   APP_URL: "${project_url}"
 "#,
         )?;
-        run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
+        await_cleanup_reconciliation(run_reconciliation_job(
+            &paths,
+            &format!("project:{}", project.id),
+        ))
+        .await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -237,6 +242,41 @@ fn resource_matrix_cleanup_errors_are_reported_without_masking_primary_error() -
     Ok(())
 }
 
+#[tokio::test]
+async fn cleanup_reconciliation_timeout_reports_bounded_cleanup() -> Result<()> {
+    let result = await_cleanup_reconciliation_with_timeout(
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok::<String, anyhow::Error>("reconciled".to_string())
+        },
+        Duration::from_millis(1),
+    )
+    .await;
+    let Err(error) = result else {
+        bail!("expected cleanup reconciliation timeout");
+    };
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("cleanup reconciliation timed out"));
+
+    Ok(())
+}
+
+#[test]
+fn resource_matrix_dotenv_assertion_redacts_contents() -> Result<()> {
+    let result = assert_dotenv_contains("MYSQL_PASSWORD=secret\n", "POSTGRES_URL=postgres://");
+    let Err(error) = result else {
+        bail!("expected missing dotenv assertion");
+    };
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("expected .env to contain `POSTGRES_URL=postgres://`"));
+    assert!(rendered.contains("redacted"));
+    assert!(!rendered.contains("secret"));
+
+    Ok(())
+}
+
 fn preserve_primary_result_with_cleanup<const N: usize>(
     result: Result<()>,
     cleanup_results: [(&'static str, Result<()>); N],
@@ -262,6 +302,23 @@ fn cleanup_failure_context<const N: usize>(
     } else {
         Some(format!("cleanup also failed:\n{}", failures.join("\n")))
     }
+}
+
+async fn await_cleanup_reconciliation(
+    reconciliation: impl Future<Output = Result<String>>,
+) -> Result<()> {
+    await_cleanup_reconciliation_with_timeout(reconciliation, TEST_TIMEOUT).await
+}
+
+async fn await_cleanup_reconciliation_with_timeout(
+    reconciliation: impl Future<Output = Result<String>>,
+    duration: Duration,
+) -> Result<()> {
+    timeout(duration, reconciliation)
+        .await
+        .context("cleanup reconciliation timed out")??;
+
+    Ok(())
 }
 
 #[expect(
@@ -400,9 +457,7 @@ fn assert_resource_matrix_evidence(paths: &PvPaths, project: &ProjectRecord) -> 
         "AWS_BUCKET=real-artifact-resources-test-uploads",
         "AWS_ENDPOINT=http://127.0.0.1:",
     ] {
-        if !dotenv.contains(expected) {
-            bail!("expected .env to contain `{expected}`; .env was:\n{dotenv}");
-        }
+        assert_dotenv_contains(&dotenv, expected)?;
     }
 
     assert_ready_allocations(&database, &project.id, "mysql", 1)?;
@@ -433,6 +488,14 @@ fn assert_resource_matrix_evidence(paths: &PvPaths, project: &ProjectRecord) -> 
     }
 
     Ok(())
+}
+
+fn assert_dotenv_contains(dotenv: &str, expected: &str) -> Result<()> {
+    if dotenv.contains(expected) {
+        return Ok(());
+    }
+
+    bail!("expected .env to contain `{expected}`; .env content redacted");
 }
 
 fn setup_track(resource: &str) -> Result<&'static str> {
