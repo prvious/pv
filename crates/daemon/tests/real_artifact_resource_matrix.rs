@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use futures_util::StreamExt;
@@ -197,15 +197,71 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     .await;
     let daemon_cleanup = daemon.shutdown().await;
 
-    result?;
-    demand_cleanup?;
-    daemon_cleanup?;
+    preserve_primary_result_with_cleanup(
+        result,
+        [
+            ("demand cleanup", demand_cleanup),
+            (
+                "daemon shutdown",
+                daemon_cleanup.map_err(anyhow::Error::from),
+            ),
+        ],
+    )?;
 
     if let Some(composer) = composer {
         assert_eq!(composer.composer().track().as_str(), "2");
     }
 
     Ok(())
+}
+
+#[test]
+fn resource_matrix_cleanup_errors_are_reported_without_masking_primary_error() -> Result<()> {
+    let result = preserve_primary_result_with_cleanup(
+        Err(anyhow!("matrix failed")),
+        [
+            ("demand cleanup", Err(anyhow!("demand cleanup failed"))),
+            ("daemon shutdown", Err(anyhow!("daemon shutdown failed"))),
+        ],
+    );
+    let Err(error) = result else {
+        bail!("expected matrix failure");
+    };
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("matrix failed"));
+    assert!(rendered.contains("cleanup also failed"));
+    assert!(rendered.contains("demand cleanup failed"));
+    assert!(rendered.contains("daemon shutdown failed"));
+
+    Ok(())
+}
+
+fn preserve_primary_result_with_cleanup<const N: usize>(
+    result: Result<()>,
+    cleanup_results: [(&'static str, Result<()>); N],
+) -> Result<()> {
+    let cleanup_context = cleanup_failure_context(cleanup_results);
+    match (result, cleanup_context) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(cleanup_context)) => bail!("{cleanup_context}"),
+        (Err(error), None) => Err(error),
+        (Err(error), Some(cleanup_context)) => Err(error.context(cleanup_context)),
+    }
+}
+
+fn cleanup_failure_context<const N: usize>(
+    cleanup_results: [(&'static str, Result<()>); N],
+) -> Option<String> {
+    let failures = cleanup_results
+        .into_iter()
+        .filter_map(|(label, result)| result.err().map(|error| format!("{label}: {error:#}")))
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        None
+    } else {
+        Some(format!("cleanup also failed:\n{}", failures.join("\n")))
+    }
 }
 
 #[expect(
