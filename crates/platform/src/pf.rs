@@ -223,15 +223,51 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    active_pf_redirect_config_with_runner(&mut run_system_command_output)
+    active_pf_redirect_config_with_runner(
+        Utf8Path::new(SYSTEM_PF_ANCHOR_PATH),
+        &mut run_system_command_output,
+    )
 }
 
 fn active_pf_redirect_config_with_runner(
+    system_anchor_path: &Utf8Path,
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let rules = run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
+    let rules = match run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"]) {
+        Ok(rules) => rules,
+        Err(anchor_error) => {
+            return active_pf_redirect_config_from_loaded_anchor_reference(
+                system_anchor_path,
+                run_system_output,
+                anchor_error,
+            );
+        }
+    };
 
     Ok(PfRedirectConfig::parse_active_rules(&rules))
+}
+
+fn active_pf_redirect_config_from_loaded_anchor_reference(
+    system_anchor_path: &Utf8Path,
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+    anchor_error: PlatformError,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let main_nat_rules = match run_system_output("/sbin/pfctl", &["-s", "nat"]) {
+        Ok(rules) => rules,
+        Err(_) => return Err(anchor_error),
+    };
+
+    if !main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
+        return Ok(None);
+    }
+
+    match inspect_pf_anchor_file(system_anchor_path, None) {
+        PfFileState::Current { value, .. } => Ok(Some(value)),
+        PfFileState::Missing { .. }
+        | PfFileState::Stale { .. }
+        | PfFileState::Conflict { .. }
+        | PfFileState::Unreadable { .. } => Ok(None),
+    }
 }
 
 pub fn install_pf_redirects(
@@ -564,6 +600,21 @@ fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
     redirect_port.parse::<u16>().ok()
 }
 
+fn main_nat_rules_load_pv_rdr_anchor(content: &str) -> bool {
+    content
+        .lines()
+        .filter_map(active_pf_line)
+        .any(is_loaded_pv_rdr_anchor_rule)
+}
+
+fn is_loaded_pv_rdr_anchor_rule(line: &str) -> bool {
+    let Some(tail) = line.strip_prefix("rdr-anchor \"com.prvious.pv\"") else {
+        return false;
+    };
+
+    tail.is_empty() || tail.starts_with(' ')
+}
+
 fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
     let mut has_rdr_anchor = false;
     let mut has_load = false;
@@ -753,18 +804,59 @@ mod tests {
 
     #[test]
     fn active_pf_redirect_config_reads_nat_rules_from_anchor() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
         let mut commands = Vec::new();
-        let config = active_pf_redirect_config_with_runner(&mut |program, args| {
-            commands.push(format!("{program} {}", args.join(" ")));
+        let config = active_pf_redirect_config_with_runner(
+            &system_anchor_path,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
 
-            Ok(
+                Ok(
                 "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 48443\n"
                     .to_string(),
             )
-        })?;
+            },
+        )?;
 
         assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
         assert_eq!(commands, ["/sbin/pfctl -a com.prvious.pv -s nat"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_falls_back_to_loaded_rdr_anchor_reference() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let mut commands = Vec::new();
+        state::fs::write_sensitive_file(
+            &system_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+
+        let config = active_pf_redirect_config_with_runner(
+            &system_anchor_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            ["/sbin/pfctl -a com.prvious.pv -s nat", "/sbin/pfctl -s nat"]
+        );
 
         Ok(())
     }
