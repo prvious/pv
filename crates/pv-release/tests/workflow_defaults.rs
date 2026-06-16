@@ -463,54 +463,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_optional_file(&workspace_root.join(PRIVILEGED_MACOS_RC_WORKFLOW_PATH))?;
     let workflow = workflow.as_deref().unwrap_or("");
-    let summary = format!(
-        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}\nuses_compiled_artifact_manifest_env={}\nuses_compiled_app_manifest_env={}\nresolves_manifest_from_input_or_public_var={}\nrejects_manifest_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nevidence_dir_uses_step_shell_runner_temp={}\nevidence_dir_avoids_job_runner_context={}\ncollect_file_uses_root_shell_redirect={}\ncollect_file_avoids_sudo_redirect={}\nsummary_uses_manifest_env={}\nsummary_avoids_manifest_expressions={}\nsetup_command={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrestart_command={}\nlink_command={}\nserve_curl={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nrecords_blocked_steps={}\nuploads_evidence={}",
-        !workflow.is_empty(),
-        workflow_name(workflow).unwrap_or(""),
-        workflow.contains("workflow_dispatch:"),
-        !workflow.contains("pull_request:") && !workflow.contains("push:"),
-        input_default(workflow, "artifact_manifest_url").unwrap_or(""),
-        input_default(workflow, "app_update_manifest_url").unwrap_or(""),
-        workflow.contains("runs-on: macos-14"),
-        workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"),
-        workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"),
-        workflow.contains("${{ inputs.artifact_manifest_url }}")
-            && workflow.contains("R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}")
-            && workflow.contains("artifact_manifest_url=\"${R2_PUBLIC_BASE_URL%/}/manifest.json\""),
-        workflow.matches("must not contain newlines").count() == 2,
-        workflow.contains(
-            "RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"
-        ) && workflow.contains(
-            "RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"
-        ),
-        workflow.contains("PV_RC_EVIDENCE_DIR=\"${RUNNER_TEMP:?}/pv-privileged-rc-evidence\""),
-        !workflow.contains("PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence"),
-        workflow.contains("sudo sh -c 'cat \"$1\" > \"$2\" 2> \"$3\"'"),
-        !workflow.contains("sudo cat \"$path\" >"),
-        workflow.contains(
-            "printf 'artifact_manifest_url=%s\\n' \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
-        ) && workflow.contains(
-            "printf 'app_update_manifest_url=%s\\n' \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
-        ),
-        !workflow.contains(
-            "printf 'artifact_manifest_url=%s\\n' \"${{ steps.manifest.outputs.artifact_manifest_url }}\""
-        ) && !workflow.contains(
-            "printf 'app_update_manifest_url=%s\\n' \"${{ steps.manifest.outputs.app_update_manifest_url }}\""
-        ),
-        workflow.contains("pv setup --yes --no-path"),
-        workflow.contains("/etc/resolver/test"),
-        workflow.contains("pfctl -sr") && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
-        workflow.contains("security verify-cert") && workflow.contains("ca.pem"),
-        workflow.contains("launchctl print") && workflow.contains("com.prvious.pv.daemon"),
-        workflow.contains("pv daemon:restart"),
-        workflow.contains("pv link \"$PV_RC_PROJECT\""),
-        workflow.contains("curl --fail --show-error --silent --retry"),
-        workflow.contains("pv update --check --json"),
-        workflow.contains("pv doctor"),
-        workflow.contains("pv uninstall"),
-        workflow.contains("record_blocked"),
-        workflow.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
-    );
+    let summary = privileged_macos_rc_workflow_summary(workflow);
 
     assert_snapshot!(summary, @r#"
     workflow_exists=true
@@ -525,28 +478,134 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     resolves_manifest_from_input_or_public_var=true
     rejects_manifest_output_newlines=true
     rc_step_uses_resolved_manifest_env=true
+    summary_uses_manifest_env=true
+    summary_avoids_manifest_expressions=true
     evidence_dir_uses_step_shell_runner_temp=true
     evidence_dir_avoids_job_runner_context=true
     collect_file_uses_root_shell_redirect=true
     collect_file_avoids_sudo_redirect=true
-    summary_uses_manifest_env=true
-    summary_avoids_manifest_expressions=true
-    setup_command=true
     resolver_evidence=true
     pf_evidence=true
     ca_trust_evidence=true
     launch_agent_evidence=true
+    records_blocked_steps=true
+    uploads_evidence=true
+    setup_command=true
     restart_command=true
     link_command=true
-    serve_curl=true
+    serve_http_curl=true
+    serve_https_curl=true
+    serve_https_uses_pv_ca=true
+    serve_body_checked=true
     update_check_json=true
     doctor_command=true
     uninstall_command=true
-    records_blocked_steps=true
-    uploads_evidence=true
+    resolver_cleanup_required=true
+    pf_anchor_cleanup_required=true
+    pf_rules_cleanup_required=true
+    ca_trust_cleanup_required=true
+    launch_agent_cleanup_required=true
     "#);
 
     Ok(())
+}
+
+fn privileged_macos_rc_workflow_summary(workflow: &str) -> String {
+    [
+        privileged_macos_rc_dispatch_summary(workflow),
+        privileged_macos_rc_manifest_summary(workflow),
+        privileged_macos_rc_evidence_summary(workflow),
+        privileged_macos_rc_system_summary(workflow),
+    ]
+    .join("\n")
+}
+
+fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
+    format!(
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
+        !workflow.is_empty(),
+        workflow_name(workflow).unwrap_or(""),
+        workflow.contains("workflow_dispatch:"),
+        !workflow.contains("pull_request:") && !workflow.contains("push:"),
+        input_default(workflow, "artifact_manifest_url").unwrap_or(""),
+        input_default(workflow, "app_update_manifest_url").unwrap_or(""),
+        workflow.contains("runs-on: macos-14"),
+    )
+}
+
+fn privileged_macos_rc_manifest_summary(workflow: &str) -> String {
+    format!(
+        "uses_compiled_artifact_manifest_env={}\nuses_compiled_app_manifest_env={}\nresolves_manifest_from_input_or_public_var={}\nrejects_manifest_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nsummary_uses_manifest_env={}\nsummary_avoids_manifest_expressions={}",
+        workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"),
+        workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"),
+        workflow.contains("${{ inputs.artifact_manifest_url }}")
+            && workflow.contains("R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}")
+            && workflow.contains("artifact_manifest_url=\"${R2_PUBLIC_BASE_URL%/}/manifest.json\""),
+        workflow.matches("must not contain newlines").count() == 2,
+        workflow.contains(
+            "RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"
+        ) && workflow.contains(
+            "RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"
+        ),
+        workflow.contains(
+            "printf 'artifact_manifest_url=%s\\n' \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
+        ) && workflow.contains(
+            "printf 'app_update_manifest_url=%s\\n' \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
+        ),
+        !workflow.contains(
+            "printf 'artifact_manifest_url=%s\\n' \"${{ steps.manifest.outputs.artifact_manifest_url }}\""
+        ) && !workflow.contains(
+            "printf 'app_update_manifest_url=%s\\n' \"${{ steps.manifest.outputs.app_update_manifest_url }}\""
+        ),
+    )
+}
+
+fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
+    format!(
+        "evidence_dir_uses_step_shell_runner_temp={}\nevidence_dir_avoids_job_runner_context={}\ncollect_file_uses_root_shell_redirect={}\ncollect_file_avoids_sudo_redirect={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrecords_blocked_steps={}\nuploads_evidence={}",
+        workflow.contains("PV_RC_EVIDENCE_DIR=\"${RUNNER_TEMP:?}/pv-privileged-rc-evidence\""),
+        !workflow.contains("PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence"),
+        workflow.contains("sudo sh -c 'cat \"$1\" > \"$2\" 2> \"$3\"'"),
+        !workflow.contains("sudo cat \"$path\" >"),
+        workflow.contains("/etc/resolver/test"),
+        workflow.contains("pfctl -sr") && workflow.contains("/etc/pf.anchors/com.prvious.pv"),
+        workflow.contains("security verify-cert") && workflow.contains("ca.pem"),
+        workflow.contains("launchctl print") && workflow.contains("com.prvious.pv.daemon"),
+        workflow.contains("record_blocked"),
+        workflow.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
+    )
+}
+
+fn privileged_macos_rc_system_summary(workflow: &str) -> String {
+    format!(
+        "setup_command={}\nrestart_command={}\nlink_command={}\nserve_http_curl={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
+        workflow.contains("pv setup --yes --no-path"),
+        workflow.contains("pv daemon:restart"),
+        workflow.contains("pv link \"$PV_RC_PROJECT\""),
+        workflow.contains(
+            "record_status serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/"
+        ),
+        workflow.contains(
+            "record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" https://pv-rc-project.test/"
+        ),
+        workflow.contains("--cacert \"$HOME/.pv/certificates/ca.pem\""),
+        workflow.contains("require_output_contains serve-http pv-privileged-rc-ok")
+            && workflow.contains("require_output_contains serve-https pv-privileged-rc-ok"),
+        workflow.contains("pv update --check --json"),
+        workflow.contains("pv doctor"),
+        workflow.contains("pv uninstall"),
+        workflow.contains("record_status resolver-removed required test ! -e /etc/resolver/test"),
+        workflow.contains("record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv"),
+        workflow.contains("record_status pf-rules-removed required bash -c")
+            && workflow.contains("rules=$(sudo pfctl -sr)")
+            && workflow.contains("grep -F \"com.prvious.pv\""),
+        workflow.contains(
+            "record_status ca-trust-removed required sh -c 'pv ca:status | grep -F \"System keychain trust: not trusted\"'"
+        ),
+        workflow.contains(
+            "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
+        ),
+    )
 }
 
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {

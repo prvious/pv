@@ -139,6 +139,18 @@ jobs:
             return "$status"
           }
 
+          require_output_contains() {
+            local label=$1
+            local expected=$2
+            if grep -Fq "$expected" "$PV_RC_EVIDENCE_DIR/$label.out"; then
+              return 0
+            fi
+            printf 'expected: %s\n' "$expected" > "$PV_RC_EVIDENCE_DIR/$label.assertion"
+            printf '::error title=%s output missing expected body::%s\n' "$label" "$expected"
+            failure_count=$((failure_count + 1))
+            return 1
+          }
+
           collect_file() {
             local label=$1
             local path=$2
@@ -181,7 +193,8 @@ jobs:
           record_status daemon-restart required pv daemon:restart
           record_status link required pv link "$PV_RC_PROJECT"
           record_status status-json required pv status --json
-          record_status serve required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/
+          record_status serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/ && require_output_contains serve-http pv-privileged-rc-ok
+          record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" https://pv-rc-project.test/ && require_output_contains serve-https pv-privileged-rc-ok
           record_status update-check required pv update --check --json
           record_status diagnostics required pv doctor
           record_status jobs evidence pv jobs
@@ -189,8 +202,13 @@ jobs:
 
           record_status uninstall required pv uninstall
           collect_file resolver-after-uninstall /etc/resolver/test
+          record_status resolver-removed required test ! -e /etc/resolver/test
           record_status pf-rules-after-uninstall evidence sudo pfctl -sr
+          record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv
+          record_status pf-rules-removed required bash -c 'rules=$(sudo pfctl -sr) && printf "%s\n" "$rules" && ! printf "%s\n" "$rules" | grep -F "com.prvious.pv"'
           record_status ca-status-after-uninstall evidence pv ca:status
+          record_status ca-trust-removed required sh -c 'pv ca:status | grep -F "System keychain trust: not trusted"'
+          record_status launch-agent-removed required test ! -e "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
 
           {
             printf 'artifact_manifest_url=%s\n' "$RESOLVED_ARTIFACT_MANIFEST_URL"
