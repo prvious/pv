@@ -21,7 +21,6 @@ expression: render_gateway_config(&input)?
     }
 }
 
-:48080 {
-    bind 127.0.0.1 ::1
+http://127.0.0.1:48080 {
     respond "PV Gateway is running" 404
 }
