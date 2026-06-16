@@ -373,7 +373,7 @@ After PR 21 and artifact publication, the first internal usability blocker is ar
 | PR 23  | Artifact release metadata, manifest generation tooling, packaging/validation harness                             | PV-108, PV-109, PV-110                                    | PR 6A                                               | Yes, can overlap PR 6B-6C and PR 14-22F   | Yes (#255)                               |
 | PR 24  | PHP/FrankenPHP and Composer artifact recipes                                                                     | PV-112, PV-113                                            | PR 23                                               | Yes, blocks public setup artifacts        | Yes (#257)                               |
 | PR 25  | Artifact publication workflow and backing Managed Resource artifact recipes                                      | PV-111, PV-114, PV-115, PV-116, PV-117                    | PR 23, PR 24                                        | Yes, can split per resource               | Yes (#265, #266, #267, #268, #269, #278) |
-| PR 26  | End-to-end hardening and release candidate validation                                                            | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125            | PR 14-21, PR 22A-22F, PR 23-25                      | No                                        | No                                       |
+| PR 26  | End-to-end hardening and release candidate validation                                                            | PV-120, PV-121, PV-122, PV-123, PV-124, PV-125            | PR 14-21, PR 22A-22F, PR 23-25                      | No                                        | Yes (#286)                               |
 
 ## First Usable MVP Cut
 
