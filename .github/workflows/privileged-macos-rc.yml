@@ -22,9 +22,6 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 90
 
-    env:
-      PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence
-
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -113,6 +110,7 @@ jobs:
         run: |
           set -u
 
+          PV_RC_EVIDENCE_DIR="${RUNNER_TEMP:?}/pv-privileged-rc-evidence"
           mkdir -p "$PV_RC_EVIDENCE_DIR"
           export PATH="$HOME/.pv/bin:$PATH"
           PV_RC_PROJECT="${RUNNER_TEMP:?}/pv-rc-project"
@@ -145,7 +143,7 @@ jobs:
             local label=$1
             local path=$2
             if [ -e "$path" ]; then
-              sudo cat "$path" > "$PV_RC_EVIDENCE_DIR/$label.out" 2> "$PV_RC_EVIDENCE_DIR/$label.err"
+              sudo sh -c 'cat "$1" > "$2" 2> "$3"' sh "$path" "$PV_RC_EVIDENCE_DIR/$label.out" "$PV_RC_EVIDENCE_DIR/$label.err"
               printf 'path: %s\nexit_status: %s\n' "$path" "$?" > "$PV_RC_EVIDENCE_DIR/$label.status"
             else
               printf 'missing: %s\n' "$path" > "$PV_RC_EVIDENCE_DIR/$label.status"
