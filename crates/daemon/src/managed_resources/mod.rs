@@ -608,12 +608,7 @@ fn install_missing_desired_resource_tracks_blocking(
 
     match failures.len() {
         0 => Ok(()),
-        1 => {
-            let Some(failure) = failures.pop() else {
-                return Ok(());
-            };
-            Err(failure.error)
-        }
+        1 => Err(failures.remove(0).error),
         _ => Err(DaemonError::ManagedResourceDefaultInstallFailures {
             failures: failures
                 .into_iter()

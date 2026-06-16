@@ -10,6 +10,7 @@ use object_store::client::ClientConfigKey;
 use object_store::path::Path;
 use state::{
     Database, EnvContextValues, PvPaths, ResourceAllocationRecord, ResourceAllocationStatus,
+    fs::{ensure_user_dir, write_sensitive_file},
 };
 
 use crate::managed_resources::{
@@ -66,8 +67,8 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
             "data_dir": context.data_dir.as_str(),
         });
 
-        state::fs::ensure_user_dir(&context.data_dir)?;
-        state::fs::write_sensitive_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
+        ensure_user_dir(&context.data_dir)?;
+        write_sensitive_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
 
         Ok(ProcessSpec {
             name: format!("{}-{}", context.resource_name, context.track),
