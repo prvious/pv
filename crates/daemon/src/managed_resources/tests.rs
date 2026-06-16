@@ -4873,7 +4873,7 @@ def object_path(bucket, key):
 class RustfsHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
-        if path == "/":
+        if path in {"/", "/health"}:
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"rustfs")

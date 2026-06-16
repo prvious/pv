@@ -66,6 +66,7 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
             "data_dir": context.data_dir.as_str(),
         });
 
+        state::fs::ensure_user_dir(&context.data_dir)?;
         state::fs::write_sensitive_file(&config_path, &serde_json::to_string_pretty(&config)?)?;
 
         Ok(ProcessSpec {
@@ -74,6 +75,7 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
                 .artifact_adapter()?
                 .executable_path(&context.artifact_path),
             arguments: vec![
+                "server".to_string(),
                 "--address".to_string(),
                 format!("{RESOURCE_HOST}:{api_port}"),
                 "--console-address".to_string(),
@@ -97,7 +99,7 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
         Ok(ReadinessCheck::Http {
             host: RESOURCE_HOST.to_string(),
             port: required_port(context, "api")?,
-            path: "/".to_string(),
+            path: "/health".to_string(),
         }
         .into())
     }
