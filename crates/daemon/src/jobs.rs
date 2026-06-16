@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
@@ -11,6 +13,9 @@ use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
+use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
+
+const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
 pub(crate) async fn run_job(
     paths: PvPaths,
@@ -248,7 +253,18 @@ where
         Ok(())
     };
 
-    let update_result = complete_update_job(&paths, job_id, runtime_catalog).await;
+    let update_result = if stream_is_open && started_stream_result.is_ok() {
+        complete_streamed_job_with_heartbeat(
+            &mut transport,
+            job_id,
+            "Managed Resource update still running",
+            FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+            complete_update_job(&paths, job_id, runtime_catalog),
+        )
+        .await
+    } else {
+        complete_update_job(&paths, job_id, runtime_catalog).await
+    };
     started_stream_result?;
 
     if !stream_is_open {
@@ -331,8 +347,18 @@ where
         Ok(())
     };
 
-    let reconciliation_result =
-        complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await;
+    let reconciliation_result = if stream_is_open && started_stream_result.is_ok() {
+        complete_streamed_job_with_heartbeat(
+            &mut transport,
+            job_id,
+            "Reconciliation still running",
+            FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+            complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog),
+        )
+        .await
+    } else {
+        complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await
+    };
     started_stream_result?;
 
     if !stream_is_open {
@@ -373,6 +399,38 @@ where
     }
 
     Ok(())
+}
+
+async fn complete_streamed_job_with_heartbeat<Stream, Completion>(
+    transport: &mut DaemonTransport<Stream>,
+    job_id: &str,
+    heartbeat_message: &'static str,
+    heartbeat_interval: Duration,
+    completion: Completion,
+) -> Result<String, DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+    Completion: Future<Output = Result<String, DaemonError>>,
+{
+    let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    tokio::pin!(completion);
+
+    loop {
+        tokio::select! {
+            result = &mut completion => return result,
+            _ = heartbeat.tick() => {
+                let _heartbeat_result = write_line(
+                    transport,
+                    &DaemonEvent::Log {
+                        job_id,
+                        message: heartbeat_message,
+                    },
+                )
+                .await;
+            }
+        }
+    }
 }
 
 fn start_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String, DaemonError> {
@@ -906,12 +964,15 @@ mod tests {
     use serde_json::json;
     use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
     use tokio::io::duplex;
+    use tokio::sync::oneshot;
+    use tokio::time::{Duration, timeout};
 
     use super::{
-        complete_or_fail_background_reconciliation, enqueue_reconciliation_job,
-        foreground_reconciliation_result, record_background_reconciliation_error,
-        run_background_reconciliation_job, start_reconciliation_job,
-        stream_started_reconciliation_job, write_coalesced_update_response,
+        complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
+        enqueue_reconciliation_job, foreground_reconciliation_result,
+        record_background_reconciliation_error, run_background_reconciliation_job,
+        start_reconciliation_job, stream_started_reconciliation_job,
+        write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -942,6 +1003,52 @@ mod tests {
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Succeeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_job_writes_heartbeat_before_quiet_completion_finishes() -> anyhow::Result<()>
+    {
+        let (client, server) = duplex(1024);
+        let mut writer = protocol::transport(server);
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_millis(5),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+            )
+            .await
+        });
+
+        let mut reader = protocol::transport(client);
+        let line = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing heartbeat line"))??;
+        let event = serde_json::from_str::<serde_json::Value>(&line)?;
+
+        assert_eq!(
+            event,
+            json!({
+                "type": "log",
+                "job_id": "job_1",
+                "message": "job still running",
+            })
+        );
+
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        assert_eq!(task.await??, "job done");
 
         Ok(())
     }
