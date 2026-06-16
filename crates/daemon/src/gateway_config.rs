@@ -14,6 +14,7 @@ pub struct GatewayConfigInput {
     pub https_port: u16,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
+    pub storage_path: Utf8PathBuf,
     pub projects_config_glob: Utf8PathBuf,
     pub import_project_configs: bool,
 }
@@ -48,6 +49,12 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str(&format!("# PV_FAKE_PORT {}\n", input.http_port));
     output.push_str("{\n");
     output.push_str("    admin off\n");
+    output.push_str("    storage file_system {\n");
+    output.push_str(&format!(
+        "        root {}\n",
+        quoted_caddyfile_token(input.storage_path.as_str())?
+    ));
+    output.push_str("    }\n");
     output.push_str(&format!("    http_port {}\n", input.http_port));
     output.push_str(&format!("    https_port {}\n", input.https_port));
     output.push_str("    pki {\n");

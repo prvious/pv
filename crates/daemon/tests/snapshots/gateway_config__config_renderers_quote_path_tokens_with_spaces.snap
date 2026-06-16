@@ -6,6 +6,9 @@ Gateway:
 # PV_FAKE_PORT 48080
 {
     admin off
+    storage file_system {
+        root "/Users/Alice Smith/.pv/certificates/caddy"
+    }
     http_port 48080
     https_port 48443
     pki {

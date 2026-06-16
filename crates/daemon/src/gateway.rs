@@ -9,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
 use resources::{ResourceAdapter, frankenphp_adapter};
 use rustix::process::{Pid, Signal, kill_process_group};
+use sha2::{Digest, Sha256};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner, PortRequest,
     ProjectEnvObservedStatus, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
@@ -77,6 +78,7 @@ pub struct GatewayRuntimePlan {
     pub https_port: u16,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
+    pub storage_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -425,9 +427,25 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             https_port: gateway_ports.https.port,
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
+            storage_path: gateway_storage_path(paths)?,
         },
         workers,
     })
+}
+
+fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
+    let suffix = match fs::read_to_string(&paths.ca_certificate()) {
+        Ok(certificate) => {
+            let digest = Sha256::digest(certificate.as_bytes());
+            format!("{digest:x}")
+        }
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            "missing-ca".to_owned()
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    Ok(paths.certificates().join(format!("caddy-{suffix}")))
 }
 
 fn append_persisted_runtime_project(
@@ -500,6 +518,7 @@ async fn reconcile_gateway_config(
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        storage_path: plan.gateway.storage_path.clone(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -515,6 +534,7 @@ async fn reconcile_gateway_config(
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        storage_path: plan.gateway.storage_path.clone(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
