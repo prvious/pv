@@ -52,6 +52,12 @@ struct SetupResourcePlan {
     track: TrackName,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SetupResourcePlans {
+    plans: Vec<SetupResourcePlan>,
+    failures: Vec<String>,
+}
+
 impl SetupResourceDefault {
     const fn manifest_default(resource_name: &'static str) -> Self {
         Self {
@@ -116,7 +122,7 @@ pub(crate) fn setup(
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    record_default_resource_desired_state(&paths, &default_resource_plan)?;
+    record_default_resource_desired_state(&paths, &default_resource_plan.plans)?;
     if !run_required_step("daemon registration", stdout, |stdout| {
         daemon_command::enable_without_reconciliation(environment, stdout)
     })? {
@@ -130,6 +136,15 @@ pub(crate) fn setup(
         "System reconciliation completed: {}",
         completed.summary
     ))?;
+    if !default_resource_plan.failures.is_empty() {
+        output.line("Default Managed Resource planning failed for some defaults:")?;
+        for failure in &default_resource_plan.failures {
+            output.line(&format!("  - {failure}"))?;
+        }
+        output.line("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
+
+        return Ok(ExitCode::FAILURE);
+    }
     output.line("PV setup complete")?;
 
     Ok(ExitCode::SUCCESS)
@@ -139,7 +154,7 @@ fn refresh_setup_artifact_manifest(
     environment: &impl Environment,
     paths: &PvPaths,
     stdout: &mut impl Write,
-) -> Result<Vec<SetupResourcePlan>, ExecuteError> {
+) -> Result<SetupResourcePlans, ExecuteError> {
     let cache = ArtifactManifestCache::new(paths.downloads());
     let manifest_url = artifact_manifest_url(environment);
 
@@ -160,37 +175,74 @@ fn refresh_setup_artifact_manifest(
 fn resolve_default_resource_plan(
     manifest: &ArtifactManifest,
     target_platform: TargetPlatform,
-) -> Result<Vec<SetupResourcePlan>, ExecuteError> {
+) -> Result<SetupResourcePlans, ExecuteError> {
     let php_resource = ResourceName::new("php")?;
-    let php_default_track = manifest.resolve_track(&php_resource, TrackSelector::Latest)?;
-    let mut plan = Vec::new();
+    let php_default_track = manifest
+        .resolve_track(&php_resource, TrackSelector::Latest)
+        .map(Clone::clone);
+    let mut plans = SetupResourcePlans::default();
 
     for resource_default in DEFAULT_SETUP_RESOURCES {
-        let resource_name = ResourceName::new(resource_default.resource_name)?;
-        let track = if resource_name.as_str() == "frankenphp" {
-            manifest.resolve_track(
-                &resource_name,
-                TrackSelector::Track(php_default_track.clone()),
-            )?
-        } else {
-            let track_selector = match resource_default.track {
-                SetupResourceTrackDefault::ManifestDefault => TrackSelector::Latest,
-                SetupResourceTrackDefault::Concrete(track) => {
-                    TrackSelector::Track(TrackName::new(track)?)
-                }
-            };
-            manifest.resolve_track(&resource_name, track_selector)?
+        let resource_name = match ResourceName::new(resource_default.resource_name) {
+            Ok(resource_name) => resource_name,
+            Err(error) => {
+                plans.failures.push(error.to_string());
+                continue;
+            }
+        };
+        let track_selector = match setup_resource_track_selector(
+            resource_default,
+            &resource_name,
+            &php_default_track,
+        ) {
+            Ok(track_selector) => track_selector,
+            Err(error) => {
+                plans.failures.push(error);
+                continue;
+            }
+        };
+        let track = match manifest.resolve_track(&resource_name, track_selector) {
+            Ok(track) => track.clone(),
+            Err(error) => {
+                plans.failures.push(error.to_string());
+                continue;
+            }
         };
 
-        manifest.select_latest(&resource_name, track, target_platform)?;
+        if let Err(error) = manifest.select_latest(&resource_name, &track, target_platform) {
+            plans.failures.push(error.to_string());
+            continue;
+        }
 
-        plan.push(SetupResourcePlan {
+        plans.plans.push(SetupResourcePlan {
             resource_name,
-            track: track.clone(),
+            track,
         });
     }
 
-    Ok(plan)
+    Ok(plans)
+}
+
+fn setup_resource_track_selector(
+    resource_default: &SetupResourceDefault,
+    resource_name: &ResourceName,
+    php_default_track: &resources::Result<TrackName>,
+) -> Result<TrackSelector, String> {
+    if resource_name.as_str() == "frankenphp" {
+        return match php_default_track {
+            Ok(track) => Ok(TrackSelector::Track(track.clone())),
+            Err(error) => Err(format!(
+                "could not resolve frankenphp default track from PHP default: {error}"
+            )),
+        };
+    }
+
+    match resource_default.track {
+        SetupResourceTrackDefault::ManifestDefault => Ok(TrackSelector::Latest),
+        SetupResourceTrackDefault::Concrete(track) => TrackName::new(track)
+            .map(TrackSelector::Track)
+            .map_err(|error| error.to_string()),
+    }
 }
 
 fn with_resource_http_client<T>(

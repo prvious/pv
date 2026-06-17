@@ -276,6 +276,13 @@ impl Environment for TestEnvironment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
+    }
+
+    fn active_pf_redirect_config_with_privilege_mode(
+        &self,
+        _privilege_mode: platform::PrivilegeMode,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
         Ok(lock(&self.active_pf_config).clone())
     }
 
@@ -538,55 +545,63 @@ fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> 
 }
 
 #[test]
-fn setup_manifest_missing_default_stops_before_system_mutation() -> anyhow::Result<()> {
+fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_defaults()
+-> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
     fixture
         .environment
         .script_manifest_text(setup_manifest_json_without("mysql")?);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let daemon_requests = daemon.finish()?;
+    let observed = observed_setup_tracks(&fixture.paths)?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert_eq!(fixture.environment.text_request_count(), 1);
     assert!(
         output
-            .stderr
+            .stdout
             .contains("artifact manifest does not include Managed Resource `mysql`")
     );
-    assert!(fixture.environment.operations().is_empty());
-    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
-    assert!(fixture.environment.certificates().is_empty());
-    assert_no_managed_resource_tracks(&fixture.paths)?;
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
+    assert_eq!(fixture.environment.certificates().len(), 1);
+    assert_eq!(observed, expected_setup_tracks_except(&["mysql"]));
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
 }
 
 #[test]
-fn setup_manifest_platform_mismatch_stops_before_system_mutation() -> anyhow::Result<()> {
+fn setup_manifest_platform_mismatch_continues_core_setup_and_records_valid_defaults()
+-> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new_with_target_platform(tempdir.path(), TargetPlatform::DarwinAmd64);
     fixture
         .environment
-        .script_manifest_text(setup_manifest_json()?);
+        .script_manifest_text(setup_manifest_json_with_amd64_gap("frankenphp")?);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let daemon_requests = daemon.finish()?;
+    let observed = observed_setup_tracks(&fixture.paths)?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert_eq!(fixture.environment.text_request_count(), 1);
     assert!(
         output
-            .stderr
+            .stdout
             .contains("no installable artifact exists for frankenphp track 8.5 on darwin-amd64")
     );
-    assert!(fixture.environment.operations().is_empty());
-    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
-    assert!(fixture.environment.certificates().is_empty());
-    assert_no_managed_resource_tracks(&fixture.paths)?;
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
+    assert_eq!(fixture.environment.certificates().len(), 1);
+    assert_eq!(observed, expected_setup_tracks_except(&["frankenphp"]));
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
 }
@@ -1204,6 +1219,37 @@ fn setup_manifest_json_without(resource_name: &str) -> anyhow::Result<String> {
     setup_manifest_json_with_resources(resources)
 }
 
+fn setup_manifest_json_with_amd64_gap(resource_name: &str) -> anyhow::Result<String> {
+    let resource_platforms = |name| {
+        if name == resource_name {
+            vec!["darwin-arm64"]
+        } else {
+            vec!["darwin-arm64", "darwin-amd64"]
+        }
+    };
+
+    setup_manifest_json_with_resources([
+        setup_manifest_resource_with_tracks_and_platforms(
+            "frankenphp",
+            "8.5",
+            &["8.3", "8.4", "8.5"],
+            &resource_platforms("frankenphp"),
+        ),
+        setup_manifest_resource_with_tracks_and_platforms(
+            "php",
+            "8.5",
+            &["8.3", "8.4", "8.5"],
+            &resource_platforms("php"),
+        ),
+        setup_manifest_resource_with_platforms("mysql", "8.4", &resource_platforms("mysql")),
+        setup_manifest_resource_with_platforms("postgres", "18", &resource_platforms("postgres")),
+        setup_manifest_resource_with_platforms("redis", "8.8", &resource_platforms("redis")),
+        setup_manifest_resource_with_platforms("mailpit", "1", &resource_platforms("mailpit")),
+        setup_manifest_resource_with_platforms("rustfs", "1", &resource_platforms("rustfs")),
+        setup_manifest_resource_with_platforms("composer", "2", &resource_platforms("composer")),
+    ])
+}
+
 fn setup_manifest_json_with_resources(
     resources: impl IntoIterator<Item = serde_json::Value>,
 ) -> anyhow::Result<String> {
@@ -1218,10 +1264,32 @@ fn setup_manifest_resource(name: &str, track: &str) -> serde_json::Value {
     setup_manifest_resource_with_tracks(name, track, &[track])
 }
 
+fn setup_manifest_resource_with_platforms(
+    name: &str,
+    track: &str,
+    platforms: &[&str],
+) -> serde_json::Value {
+    setup_manifest_resource_with_tracks_and_platforms(name, track, &[track], platforms)
+}
+
 fn setup_manifest_resource_with_tracks(
     name: &str,
     default_track: &str,
     tracks: &[&str],
+) -> serde_json::Value {
+    setup_manifest_resource_with_tracks_and_platforms(
+        name,
+        default_track,
+        tracks,
+        &["darwin-arm64"],
+    )
+}
+
+fn setup_manifest_resource_with_tracks_and_platforms(
+    name: &str,
+    default_track: &str,
+    tracks: &[&str],
+    platforms: &[&str],
 ) -> serde_json::Value {
     json!({
         "name": name,
@@ -1230,20 +1298,21 @@ fn setup_manifest_resource_with_tracks(
             .iter()
             .map(|track| json!({
                 "name": track,
-                "artifacts": [
-                    {
+                "artifacts": platforms
+                    .iter()
+                    .map(|platform| json!({
                         "artifact_version": format!("{track}.0-pv1"),
                         "upstream_version": format!("{track}.0"),
                         "pv_build_revision": "pv1",
-                        "platform": "darwin-arm64",
+                        "platform": platform,
                         "url": format!(
-                            "https://artifacts.example.test/{name}-{track}.0-pv1-darwin-arm64.tar.gz"
+                            "https://artifacts.example.test/{name}-{track}.0-pv1-{platform}.tar.gz"
                         ),
                         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         "size": 12345,
                         "published_at": "2026-05-26T14:30:00Z"
-                    }
-                ]
+                    }))
+                    .collect::<Vec<_>>()
             }))
             .collect::<Vec<_>>()
     })
@@ -1260,6 +1329,34 @@ fn expected_setup_tracks() -> Vec<(&'static str, &'static str, ManagedResourceDe
         ("redis", "8.8", ManagedResourceDesiredState::Installed),
         ("rustfs", "1", ManagedResourceDesiredState::Installed),
     ]
+}
+
+fn expected_setup_tracks_except(
+    resource_names: &[&str],
+) -> Vec<(String, String, ManagedResourceDesiredState)> {
+    expected_setup_tracks()
+        .into_iter()
+        .filter(|(resource_name, _, _)| !resource_names.contains(resource_name))
+        .map(|(resource_name, track, desired_state)| {
+            (resource_name.to_string(), track.to_string(), desired_state)
+        })
+        .collect()
+}
+
+fn observed_setup_tracks(
+    paths: &PvPaths,
+) -> anyhow::Result<Vec<(String, String, ManagedResourceDesiredState)>> {
+    Ok(Database::open(paths)?
+        .managed_resource_tracks()?
+        .iter()
+        .map(|track| {
+            (
+                track.resource_name.as_str().to_string(),
+                track.track.as_str().to_string(),
+                track.desired_state,
+            )
+        })
+        .collect())
 }
 
 fn accept_with_timeout(
