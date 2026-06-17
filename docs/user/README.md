@@ -165,6 +165,8 @@ pv update --check
 pv update --check --json
 ```
 
+`pv update --check` requires the PV daemon. If the daemon is unavailable, run `pv daemon:restart` or rerun `pv setup`.
+
 Apply updates:
 
 ```shell
@@ -194,7 +196,7 @@ pv ports:status
 pv ca:status
 ```
 
-The real artifact workflow/resource matrix is opt-in for development and release validation with `PV_E2E_REAL_ARTIFACTS=1` and an artifact manifest URL. The privileged macOS RC workflow is manual-only at `.github/workflows/privileged-macos-rc.yml` and uploads evidence.
+The real artifact workflow/resource matrix is opt-in for development and release validation with `PV_E2E_REAL_ARTIFACTS=1` and an artifact manifest URL. The privileged macOS RC workflow can run by manual dispatch or through Real Artifact E2E with `privileged_rc=true`, and uploads evidence.
 
 ## Uninstall
 

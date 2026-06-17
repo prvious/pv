@@ -1280,7 +1280,7 @@ The picker sorts Projects by primary Project hostname.
 
 ## Listing Projects
 
-`pv list` lists desired Projects and enriches them with observed status when available. At minimum, each row should include Project hostname, canonical absolute path, resolved PHP version, serving status when observed, declared Managed Resource demand, and env rendering status.
+`pv list` lists desired Projects and enriches them with the Project config and env rendering status currently stored in `pv.db`. At minimum, each row should include Project hostname, canonical absolute path, resolved PHP version, declared Managed Resource demand, env rendering status, and a serving field that may be `unknown` until Project serving observations are added.
 
 Status values use words such as `ok`, `pending`, `failed`, `degraded`, or `unknown` by default. TTY output may add color or icons, but words remain present.
 
@@ -1361,7 +1361,7 @@ If the daemon is intentionally disabled while DNS, ports, or CA integrations rem
 | pv link [path] [--hostname <hostname>] | Register a Project and request daemon reconciliation                                                    |
 | pv open [hostname]       | Opens a Project in the browser                                                                                    |
 | pv project:env [hostname] [--json] | Print generated Project environment values without editing `.env`                                         |
-| pv list [--json]         | List linked Projects with PHP, observed serving, declared Managed Resource, and env status                         |
+| pv list [--json]         | List linked Projects with PHP, declared Managed Resource demand, env status, and currently known serving status    |
 | pv logs [--follow]       | Show PV daemon/reconciliation logs                                                                                |
 | pv status [--json]       | Show whole-system PV status                                                                                       |
 | pv setup [--yes] [--non-interactive] [--no-path] | Configure macOS resolver, `pf` redirects, CA trust, daemon registration, and default Managed Resources |

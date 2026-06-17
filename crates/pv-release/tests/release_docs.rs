@@ -82,6 +82,8 @@ fn release_docs_cover_rc_sections_and_default_track_matrix() -> Result<()> {
         "RustFS `1`",
         "Apple Silicon/staging RC",
         "conditional `darwin-amd64` gate",
+        "`pv update --check` requires the PV daemon",
+        "privileged macOS RC workflow can run by manual dispatch or through Real Artifact E2E with `privileged_rc=true`",
     ] {
         assert!(
             combined_docs.contains(required_text),
