@@ -518,9 +518,12 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     restart_wait_command=true
     update_check_waits_for_restart_reconciliation=true
     link_command=true
+    link_wait_command=true
     serve_http_curl=true
+    serve_http_follows_https_redirect=true
     serve_https_curl=true
     serve_https_uses_pv_ca=true
+    post_restart_http_follows_https_redirect=true
     serve_body_checked=true
     update_check_json=true
     doctor_command=true
@@ -607,7 +610,7 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(workflow: &str) -> String {
     format!(
-        "setup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nserve_http_curl={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
+        "setup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\npost_restart_http_follows_https_redirect={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
         workflow.contains("pv setup --yes --no-path"),
         workflow.contains("pv daemon:restart"),
         ordered_substrings(
@@ -630,15 +633,31 @@ fn privileged_macos_rc_system_summary(workflow: &str) -> String {
             ],
         ),
         workflow.contains("pv link \"$PV_RC_PROJECT\""),
+        ordered_substrings(
+            workflow,
+            &[
+                "record_status link required pv link \"$PV_RC_PROJECT\"",
+                "record_status link-reconciliation-idle required wait_for_pv_jobs_idle",
+                "record_status status-json required pv status --json",
+            ],
+        ),
         workflow.contains(
-            "record_status serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/"
+            "record_status serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
+        ),
+        workflow.contains(
+            "record_status serve-http required curl --fail --show-error --silent --location"
         ),
         workflow.contains(
             "record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" https://pv-rc-project.test/"
         ),
         workflow.contains("--cacert \"$HOME/.pv/certificates/ca.pem\""),
+        workflow.contains(
+            "record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
+        ),
         workflow.contains("require_output_contains serve-http pv-privileged-rc-ok")
-            && workflow.contains("require_output_contains serve-https pv-privileged-rc-ok"),
+            && workflow.contains("require_output_contains serve-https pv-privileged-rc-ok")
+            && workflow.contains("require_output_contains post-restart-serve-http pv-privileged-rc-ok")
+            && workflow.contains("require_output_contains post-restart-serve-https pv-privileged-rc-ok"),
         workflow.contains("pv update --check --json"),
         workflow.contains("pv doctor"),
         workflow.contains("pv uninstall"),
