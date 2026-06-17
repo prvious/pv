@@ -81,7 +81,11 @@ impl Environment for TestEnvironment {
         Ok(self.certificates.borrow().clone())
     }
 
-    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), PlatformError> {
+    fn trust_system_ca(
+        &self,
+        certificate_path: &Utf8Path,
+        _privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), PlatformError> {
         let certificate_pem = state::fs::read_to_string(certificate_path)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
         let metadata = LocalCaMetadata::from_certificate_pem(&certificate_pem)?;
@@ -99,7 +103,11 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), PlatformError> {
+    fn untrust_system_ca(
+        &self,
+        fingerprint: &str,
+        _privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), PlatformError> {
         self.certificates
             .borrow_mut()
             .retain(|certificate| certificate.metadata.fingerprint != fingerprint);

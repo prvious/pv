@@ -108,7 +108,11 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step("CA trust setup", stdout, |stdout| {
-        ca::trust(environment, stdout)
+        ca::trust_with_mode(
+            environment,
+            stdout,
+            setup_privilege_mode(args.non_interactive),
+        )
     })? {
         return Ok(ExitCode::FAILURE);
     }
@@ -711,7 +715,7 @@ fn untrust_ca_for_uninstall(
         }
 
         for fingerprint in fingerprints {
-            environment.untrust_system_ca(&fingerprint)?;
+            environment.untrust_system_ca(&fingerprint, platform::PrivilegeMode::Interactive)?;
             output.line(&format!(
                 "Removed stale PV local CA trust from the System keychain: {fingerprint}"
             ))?;
@@ -721,6 +725,14 @@ fn untrust_ca_for_uninstall(
     }
 
     ca::untrust(environment, stdout)
+}
+
+const fn setup_privilege_mode(non_interactive: bool) -> platform::PrivilegeMode {
+    if non_interactive {
+        platform::PrivilegeMode::NonInteractive
+    } else {
+        platform::PrivilegeMode::Interactive
+    }
 }
 
 fn remove_default_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {

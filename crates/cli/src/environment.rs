@@ -135,12 +135,20 @@ pub trait Environment {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
     }
 
-    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::trust_system_ca(certificate_path)
+    fn trust_system_ca(
+        &self,
+        certificate_path: &Utf8Path,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), platform::PlatformError> {
+        platform::trust_system_ca(certificate_path, privilege_mode)
     }
 
-    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
-        platform::untrust_system_ca(fingerprint)
+    fn untrust_system_ca(
+        &self,
+        fingerprint: &str,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), platform::PlatformError> {
+        platform::untrust_system_ca(fingerprint, privilege_mode)
     }
 
     fn artifact_manifest_url(&self) -> Option<String> {

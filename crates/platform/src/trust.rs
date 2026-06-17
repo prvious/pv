@@ -20,6 +20,13 @@ use sha1::{Digest, Sha1};
 
 #[cfg(target_os = "macos")]
 const SYSTEM_KEYCHAIN_PATH: &str = "/Library/Keychains/System.keychain";
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PrivilegeMode {
+    Interactive,
+    NonInteractive,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeychainCertificate {
     pub metadata: LocalCaMetadata,
@@ -145,10 +152,13 @@ pub fn trusted_pv_ca_fingerprints(
     Ok(fingerprints.into_iter().collect())
 }
 
-pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError> {
+pub fn trust_system_ca(
+    certificate_path: &Utf8Path,
+    privilege_mode: PrivilegeMode,
+) -> Result<(), PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        trust_system_ca_with_runner(certificate_path, &mut run_system_command)
+        trust_system_ca_with_runner(certificate_path, privilege_mode, &mut run_system_command)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -163,27 +173,30 @@ pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError>
 #[cfg(target_os = "macos")]
 fn trust_system_ca_with_runner(
     certificate_path: &Utf8Path,
+    privilege_mode: PrivilegeMode,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
-    run_system(
-        "/usr/bin/sudo",
-        &[
-            "-n",
-            "/usr/bin/security",
-            "add-trusted-cert",
-            "-d",
-            "-r",
-            "trustRoot",
-            "-p",
-            "ssl",
-            "-k",
-            SYSTEM_KEYCHAIN_PATH,
-            certificate_path.as_str(),
-        ],
-    )
+    let mut args = sudo_args(privilege_mode);
+    args.extend([
+        "/usr/bin/security",
+        "add-trusted-cert",
+        "-d",
+        "-r",
+        "trustRoot",
+        "-p",
+        "ssl",
+        "-k",
+        SYSTEM_KEYCHAIN_PATH,
+        certificate_path.as_str(),
+    ]);
+
+    run_system("/usr/bin/sudo", &args)
 }
 
-pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
+pub fn untrust_system_ca(
+    fingerprint: &str,
+    privilege_mode: PrivilegeMode,
+) -> Result<(), PlatformError> {
     #[cfg(target_os = "macos")]
     {
         let trust_settings = TrustSettings::new(Domain::Admin);
@@ -201,7 +214,11 @@ pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
             }
 
             let sha1_fingerprint = certificate_sha1_fingerprint(&certificate.to_der());
-            delete_system_ca_by_sha1_with_runner(&sha1_fingerprint, &mut run_system_command)?;
+            delete_system_ca_by_sha1_with_runner(
+                &sha1_fingerprint,
+                privilege_mode,
+                &mut run_system_command,
+            )?;
         }
 
         Ok(())
@@ -219,19 +236,27 @@ pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
 #[cfg(target_os = "macos")]
 fn delete_system_ca_by_sha1_with_runner(
     sha1_fingerprint: &str,
+    privilege_mode: PrivilegeMode,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
-    run_system(
-        "/usr/bin/sudo",
-        &[
-            "-n",
-            "/usr/bin/security",
-            "delete-certificate",
-            "-Z",
-            sha1_fingerprint,
-            SYSTEM_KEYCHAIN_PATH,
-        ],
-    )
+    let mut args = sudo_args(privilege_mode);
+    args.extend([
+        "/usr/bin/security",
+        "delete-certificate",
+        "-Z",
+        sha1_fingerprint,
+        SYSTEM_KEYCHAIN_PATH,
+    ]);
+
+    run_system("/usr/bin/sudo", &args)
+}
+
+#[cfg(target_os = "macos")]
+fn sudo_args(privilege_mode: PrivilegeMode) -> Vec<&'static str> {
+    match privilege_mode {
+        PrivilegeMode::Interactive => Vec::new(),
+        PrivilegeMode::NonInteractive => vec!["-n"],
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -290,9 +315,34 @@ mod tests {
     use camino_tempfile::tempdir;
 
     use super::{
-        certificate_sha1_fingerprint, delete_system_ca_by_sha1_with_runner,
+        PrivilegeMode, certificate_sha1_fingerprint, delete_system_ca_by_sha1_with_runner,
         trust_system_ca_with_runner,
     };
+
+    #[test]
+    fn trust_system_ca_uses_interactive_security_command() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let certificate_path = tempdir.path().join("ca.pem");
+        let mut commands = Vec::new();
+
+        trust_system_ca_with_runner(
+            &certificate_path,
+            PrivilegeMode::Interactive,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(
+            commands,
+            [format!(
+                "/usr/bin/sudo /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain {certificate_path}"
+            )]
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn trust_system_ca_uses_noninteractive_security_command() -> anyhow::Result<()> {
@@ -300,10 +350,14 @@ mod tests {
         let certificate_path = tempdir.path().join("ca.pem");
         let mut commands = Vec::new();
 
-        trust_system_ca_with_runner(&certificate_path, &mut |program, args| {
-            commands.push(format!("{program} {}", args.join(" ")));
-            Ok(())
-        })?;
+        trust_system_ca_with_runner(
+            &certificate_path,
+            PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+                Ok(())
+            },
+        )?;
 
         assert_eq!(
             commands,
@@ -316,13 +370,40 @@ mod tests {
     }
 
     #[test]
+    fn delete_system_ca_uses_interactive_security_command() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        delete_system_ca_by_sha1_with_runner(
+            "ABC123",
+            PrivilegeMode::Interactive,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(
+            commands,
+            [
+                "/usr/bin/sudo /usr/bin/security delete-certificate -Z ABC123 /Library/Keychains/System.keychain"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn delete_system_ca_uses_noninteractive_security_command() -> anyhow::Result<()> {
         let mut commands = Vec::new();
 
-        delete_system_ca_by_sha1_with_runner("ABC123", &mut |program, args| {
-            commands.push(format!("{program} {}", args.join(" ")));
-            Ok(())
-        })?;
+        delete_system_ca_by_sha1_with_runner(
+            "ABC123",
+            PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                commands.push(format!("{program} {}", args.join(" ")));
+                Ok(())
+            },
+        )?;
 
         assert_eq!(
             commands,
