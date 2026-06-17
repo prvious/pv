@@ -1,9 +1,8 @@
 ---
 source: crates/resources/tests/manifest_foundation.rs
-assertion_line: 148
 expression: parse_manifest_error(&newer)?
 ---
 RequiresNewerPv {
     minimum_pv_version: "999.0.0",
-    current_pv_version: "0.1.0",
+    current_pv_version: "0.1.1",
 }

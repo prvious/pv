@@ -26,6 +26,7 @@ mod update_tests {
     const APP_BINARY: &[u8] = b"pv 0.2.0\n";
     const APP_BINARY_SHA256: &str =
         "d79d79fc4d676e364eb78445b69d2053de1d3c54b22a9dd664e00ce175103a69";
+    const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     struct TestEnvironment {
         home: PathBuf,
@@ -452,7 +453,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start_with_response_lines(
             &paths,
@@ -464,7 +465,7 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
-                "0.1.0",
+                CURRENT_APP_VERSION,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 12_345_678,
             )),
@@ -475,7 +476,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert_eq!(
             daemon_requests,
             vec![json!({
@@ -502,7 +506,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
@@ -568,7 +572,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start_with_response_lines(
             &paths,
@@ -611,7 +615,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
@@ -659,7 +663,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &tempdir.path().join("old-pv"))?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
@@ -696,7 +700,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
@@ -736,7 +740,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &tempdir.path().join("old-pv"))?;
         let daemon = FakeDaemon::start_with_response_lines(
             &paths,
@@ -748,7 +752,7 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
-                "0.1.0",
+                CURRENT_APP_VERSION,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 12_345_678,
             )),
@@ -770,7 +774,10 @@ mod update_tests {
         );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(environment.operations().is_empty());
         assert_eq!(
             parsed,
@@ -861,7 +868,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(
             &home,
@@ -882,7 +889,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -901,7 +911,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(
             &home,
@@ -922,7 +932,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -937,7 +950,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(
             &home,
@@ -960,7 +973,10 @@ mod update_tests {
         assert_eq!(output.stdout, "PV update\n");
         assert!(output.stderr.contains("checksum mismatch"));
         assert!(output.stderr.contains("warning: failed to remove"));
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
 
         Ok(())
     }
@@ -971,7 +987,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"\xffpv 0.1.0\n")?;
+        let layout = install_active_release(&paths, CURRENT_APP_VERSION, b"\xffpv current\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start_with_response_lines(
             &paths,
@@ -983,7 +999,7 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new().with_text(&app_manifest(
-                "0.1.0",
+                CURRENT_APP_VERSION,
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 12_345_678,
             )),
@@ -1003,7 +1019,10 @@ mod update_tests {
         );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
 
         Ok(())
     }
@@ -1014,7 +1033,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(
             &paths,
@@ -1049,7 +1068,10 @@ mod update_tests {
         };
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -1087,7 +1109,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start_until_idle(
             &paths,
@@ -1138,7 +1160,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start_until_idle(
             &paths,
@@ -1166,7 +1188,10 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert_eq!(
             daemon_requests,
             vec![
@@ -1194,7 +1219,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![daemon_error_response("daemon boot failed")])?;
         let environment = TestEnvironment::new(
@@ -1207,7 +1232,7 @@ mod update_tests {
                 ))
                 .with_download(APP_BINARY),
         )
-        .with_delete_on_first_kickstart(paths.app_release_binary("0.1.0"));
+        .with_delete_on_first_kickstart(paths.app_release_binary(CURRENT_APP_VERSION));
 
         let output = run_pv(&["update"], &environment)?;
         let _daemon_requests = daemon.join()?;
@@ -1225,7 +1250,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(
             &paths,
@@ -1249,7 +1274,10 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -1267,7 +1295,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(
             &paths,
@@ -1295,7 +1323,10 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -1313,7 +1344,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         state::fs::write_sensitive_file(
             &paths.daemon_startup_error(),
@@ -1341,7 +1372,10 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!output.stderr.contains("stale migration failure"));
         assert_update_snapshot(
             "update_ignores_stale_startup_failure_marker_after_health_failure",
@@ -1379,13 +1413,16 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         let environment = TestEnvironment::new(&home, PanickingClient);
 
         let output = run_pv(&["update"], &environment)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert_update_snapshot(
             "update_fails_before_activation_when_launch_agent_is_missing",
             output,
@@ -1400,14 +1437,17 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_conflicting_launch_agent(&paths)?;
         let environment = TestEnvironment::new(&home, PanickingClient);
 
         let output = run_pv(&["update"], &environment)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert_update_snapshot(
             "update_fails_before_activation_when_launch_agent_is_not_pv_owned",
             output,
@@ -1422,7 +1462,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(
             &home,
@@ -1435,7 +1475,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(layout.active_release()?, Some("0.1.0".to_string()));
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
         assert!(!state::fs::path_entry_exists(
             &paths.app_release_binary("0.2.0")
         )?);
@@ -1454,8 +1497,8 @@ mod update_tests {
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
         let layout = install_active_release(&paths, "0.0.9", b"pv 0.0.9\n")?;
-        layout.install_release_binary("0.1.0", &paths.downloads().join("pv-0.0.9"))?;
-        layout.activate_release("0.1.0")?;
+        layout.install_release_binary(CURRENT_APP_VERSION, &paths.downloads().join("pv-0.0.9"))?;
+        layout.activate_release(CURRENT_APP_VERSION)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
         let environment = TestEnvironment::new(
@@ -1479,7 +1522,7 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
-        assert_eq!(releases, vec!["0.1.0", "0.2.0"]);
+        assert_eq!(releases, vec![CURRENT_APP_VERSION, "0.2.0"]);
 
         Ok(())
     }
@@ -1490,7 +1533,7 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.1.0", b"pv 0.1.0\n")?;
+        let layout = install_current_release(&paths)?;
         state::fs::write_sensitive_file(&paths.app_releases_dir().join("0.0.8"), "not a dir")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
@@ -1873,6 +1916,12 @@ mod update_tests {
         layout.activate_release(version)?;
 
         Ok(layout)
+    }
+
+    fn install_current_release(paths: &PvPaths) -> anyhow::Result<AppReleaseLayout> {
+        let content = format!("pv {CURRENT_APP_VERSION}\n");
+
+        install_active_release(paths, CURRENT_APP_VERSION, content.as_bytes())
     }
 
     fn write_launch_agent(paths: &PvPaths, program_path: &Utf8Path) -> anyhow::Result<()> {

@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "PV update\nPV application: update failed; rolled back to 0.1.0\n",
+    stdout: "PV update\nPV application: update failed; rolled back to 0.1.1\n",
     stderr: "error: database migration failed after update: migration 7 (resource_port_roles) failed\n",
 }

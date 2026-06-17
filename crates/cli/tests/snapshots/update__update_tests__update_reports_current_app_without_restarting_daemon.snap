@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV update\nPV application: current 0.1.0\nManaged Resources: current\n",
+    stdout: "PV update\nPV application: current 0.1.1\nManaged Resources: current\n",
     stderr: "",
 }
