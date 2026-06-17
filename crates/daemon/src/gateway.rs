@@ -37,6 +37,7 @@ type FrankenphpProcessCommand = tokio::process::Command;
 
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
@@ -829,7 +830,7 @@ async fn start_or_adopt_runtime(
             supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
         {
             adopted.stop(Duration::from_secs(1)).await?;
-        } else if probe_readiness_once(&readiness).await.is_ok() {
+        } else if foreign_listener_is_ready(&readiness).await {
             return Err(DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
                     "runtime `{}` is listening but no PV-owned process could be verified",
@@ -872,6 +873,17 @@ async fn start_or_adopt_runtime(
             Err(error)
         }
     }
+}
+
+async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
+    matches!(
+        timeout(
+            FOREIGN_LISTENER_PROBE_TIMEOUT,
+            probe_readiness_once(readiness)
+        )
+        .await,
+        Ok(Ok(()))
+    )
 }
 
 fn record_runtime_readiness_diagnostics(

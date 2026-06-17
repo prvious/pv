@@ -483,26 +483,13 @@ async fn check_https_once(
             format!("invalid TLS server name `{server_name_text}`: {error}"),
         )
     })?;
-    let mut stream = connector.connect(server_name, tcp_stream).await?;
-    let request =
-        format!("GET / HTTP/1.1\r\nHost: {server_name_text}\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).await?;
+    let _stream = connector.connect(server_name, tcp_stream).await?;
 
-    let mut response = [0_u8; 12];
-    let bytes = stream.read(&mut response).await?;
-    if http_has_status_line(&response, bytes) {
-        return Ok(());
-    }
-
-    Err(io::Error::other("HTTPS readiness returned a non-HTTP response").into())
+    Ok(())
 }
 
 fn http_status_is_success(response: &[u8], bytes: usize) -> bool {
     bytes >= 10 && (response.starts_with(b"HTTP/1.1 2") || response.starts_with(b"HTTP/1.0 2"))
-}
-
-fn http_has_status_line(response: &[u8], bytes: usize) -> bool {
-    bytes >= 9 && (response.starts_with(b"HTTP/1.1 ") || response.starts_with(b"HTTP/1.0 "))
 }
 
 fn tls_client_config(

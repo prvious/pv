@@ -1,6 +1,7 @@
 ---
 source: crates/daemon/tests/gateway_config.rs
-expression: render_gateway_config(&input)?
+assertion_line: 132
+expression: rendered
 ---
 # PV_FAKE_PORT 48080
 {
@@ -22,5 +23,6 @@ expression: render_gateway_config(&input)?
 }
 
 http://127.0.0.1:48080 {
+    bind 127.0.0.1 ::1
     respond "PV Gateway is running" 404
 }

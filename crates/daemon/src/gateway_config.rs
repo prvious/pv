@@ -83,6 +83,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     } else {
         output.push('\n');
         output.push_str(&format!("http://127.0.0.1:{} {{\n", input.http_port));
+        output.push_str("    bind 127.0.0.1 ::1\n");
         output.push_str("    respond \"PV Gateway is running\" 404\n");
         output.push_str("}\n");
     }

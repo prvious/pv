@@ -76,7 +76,6 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
                 .artifact_adapter()?
                 .executable_path(&context.artifact_path),
             arguments: vec![
-                "server".to_string(),
                 "--address".to_string(),
                 format!("{RESOURCE_HOST}:{api_port}"),
                 "--console-address".to_string(),

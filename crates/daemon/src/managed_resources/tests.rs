@@ -1730,6 +1730,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
     assert_process_credentials_match_recorded_env(&first_snapshot)?;
     assert_runtime_metadata_omits_credentials(&first_snapshot)?;
+    assert_rustfs_runtime_uses_supported_arguments(&first_snapshot);
 
     write_project_config(
         &project,
@@ -1762,6 +1763,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let restarted_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
     assert_process_credentials_match_recorded_env(&restarted_snapshot)?;
     assert_runtime_metadata_omits_credentials(&restarted_snapshot)?;
+    assert_rustfs_runtime_uses_supported_arguments(&restarted_snapshot);
     assert_eq!(
         first_snapshot.recorded_access_key, restarted_snapshot.recorded_access_key,
         "RustFS access key should remain stable from recorded context"
@@ -3116,6 +3118,26 @@ fn assert_runtime_metadata_omits_credentials(
     );
 
     Ok(())
+}
+
+fn assert_rustfs_runtime_uses_supported_arguments(snapshot: &RustfsRuntimeCredentialSnapshot) {
+    assert_eq!(
+        snapshot
+            .runtime_metadata
+            .arguments
+            .first()
+            .map(String::as_str),
+        Some("--address"),
+        "RustFS should receive flags directly without an unsupported subcommand"
+    );
+    assert!(
+        !snapshot
+            .runtime_metadata
+            .arguments
+            .iter()
+            .any(|argument| argument == "server"),
+        "RustFS should not receive the unsupported `server` subcommand"
+    );
 }
 
 fn delete_optional_file(path: &Utf8Path) -> Result<()> {

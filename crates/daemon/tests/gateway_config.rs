@@ -115,7 +115,15 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
         import_project_configs: false,
     };
 
-    assert_snapshot!(render_gateway_config(&input)?);
+    let rendered = render_gateway_config(&input)?;
+
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line == "    bind 127.0.0.1 ::1"),
+        "empty Gateway fallback must bind only loopback interfaces"
+    );
+    assert_snapshot!(rendered);
 
     Ok(())
 }

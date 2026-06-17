@@ -13,9 +13,10 @@ use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
-use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at};
+use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(crate) async fn run_job(
     paths: PvPaths,
@@ -420,14 +421,15 @@ where
         tokio::select! {
             result = &mut completion => return result,
             _ = heartbeat.tick() => {
-                let _heartbeat_result = write_line(
-                    transport,
-                    &DaemonEvent::Log {
-                        job_id,
-                        message: heartbeat_message,
-                    },
-                )
-                .await;
+                let heartbeat_event = DaemonEvent::Log {
+                    job_id,
+                    message: heartbeat_message,
+                };
+                let heartbeat_result = write_line(transport, &heartbeat_event);
+                tokio::select! {
+                    result = &mut completion => return result,
+                    _ = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, heartbeat_result) => {}
+                }
             }
         }
     }
@@ -957,13 +959,15 @@ async fn run_started_job(
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use futures_util::StreamExt;
     use serde_json::json;
     use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
-    use tokio::io::duplex;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::oneshot;
     use tokio::time::{Duration, timeout};
 
@@ -1051,6 +1055,70 @@ mod tests {
         assert_eq!(task.await??, "job done");
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_job_completion_wins_when_heartbeat_write_blocks() -> anyhow::Result<()> {
+        let mut writer = protocol::transport(PendingStream);
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let mut task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_millis(5),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        if outcome.is_err() {
+            task.abort();
+        }
+        assert_eq!(outcome???, "job done");
+
+        Ok(())
+    }
+
+    struct PendingStream;
+
+    impl AsyncRead for PendingStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for PendingStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
     }
 
     #[tokio::test]

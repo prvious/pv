@@ -18,7 +18,7 @@ use state::{
 use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
 
@@ -358,6 +358,84 @@ document_root: public
         Err(DaemonError::UnexpectedProtocolResponse { reason })
             if reason.contains("is listening but no PV-owned process could be verified")
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_bounds_foreign_https_listener_probe() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let http_listener = TcpListener::bind("127.0.0.1:0")?;
+    let https_listener = TcpListener::bind("127.0.0.1:0")?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_port = https_listener.local_addr()?.port();
+    https_listener.set_nonblocking(true)?;
+    let https_server = tokio::spawn(async move {
+        let (_stream, _address) = tokio::net::TcpListener::from_std(https_listener)?
+            .accept()
+            .await?;
+        sleep(Duration::from_secs(5)).await;
+
+        Ok::<(), std::io::Error>(())
+    });
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let worker_port = available_loopback_ports(1)?[0];
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        http_port,
+        https_port,
+        &[("8.4", worker_port)],
+    )?;
+    drop(database);
+
+    let result = timeout(
+        Duration::from_millis(500),
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)),
+    )
+    .await;
+
+    https_server.abort();
+    drop(http_listener);
+    if paths.worker_pid("8.4").exists() {
+        stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    }
+    if paths.gateway_pid().exists() {
+        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    }
+
+    assert!(
+        result.is_ok(),
+        "foreign Gateway listener probe should be bounded"
+    );
 
     Ok(())
 }
