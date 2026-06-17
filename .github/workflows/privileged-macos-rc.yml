@@ -195,6 +195,26 @@ jobs:
             "$PV_RC_BIN" ca:status | grep -F "System keychain trust: not trusted"
           }
 
+          wait_for_pv_jobs_idle() {
+            local deadline=$((SECONDS + 90))
+            local jobs_file="$PV_RC_EVIDENCE_DIR/jobs-idle.json"
+            local jobs_error="$PV_RC_EVIDENCE_DIR/jobs-idle.err"
+
+            while [ "$SECONDS" -le "$deadline" ]; do
+              pv jobs --json > "$jobs_file" 2> "$jobs_error"
+              local status=$?
+              if [ "$status" -eq 0 ] && python3 -c 'import json, sys; jobs = json.load(open(sys.argv[1], encoding="utf-8")).get("jobs", []); sys.exit(0 if all(job.get("status") != "running" for job in jobs) else 1)' "$jobs_file"; then
+                cat "$jobs_file"
+                return 0
+              fi
+              sleep 2
+            done
+
+            cat "$jobs_error" >&2
+            cat "$jobs_file"
+            return 1
+          }
+
           record_status environment evidence sw_vers
           record_status sudo-preflight required sudo -n true || record_blocked sudo-required "passwordless sudo is unavailable on this runner"
 
@@ -230,11 +250,15 @@ jobs:
           collect_file launch-agent-plist "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
           record_status launch-agent-print required launchctl print "gui/$(id -u)/com.prvious.pv.daemon"
 
-          record_status daemon-restart required pv daemon:restart
           record_status link required pv link "$PV_RC_PROJECT"
           record_status status-json required pv status --json
           record_status serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/ && require_output_contains serve-http pv-privileged-rc-ok
           record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" https://pv-rc-project.test/ && require_output_contains serve-https pv-privileged-rc-ok
+          record_status daemon-restart required pv daemon:restart
+          record_status restart-reconciliation-idle required wait_for_pv_jobs_idle
+          record_status post-restart-status-json required pv status --json
+          record_status post-restart-serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/ && require_output_contains post-restart-serve-http pv-privileged-rc-ok
+          record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok
           record_status update-check required pv update --check --json
           record_status diagnostics required pv doctor
           record_status jobs evidence pv jobs

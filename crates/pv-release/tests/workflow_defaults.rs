@@ -507,6 +507,9 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     uploads_evidence=true
     setup_command=true
     restart_command=true
+    restart_after_initial_serving=true
+    restart_wait_command=true
+    update_check_waits_for_restart_reconciliation=true
     link_command=true
     serve_http_curl=true
     serve_https_curl=true
@@ -597,9 +600,28 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(workflow: &str) -> String {
     format!(
-        "setup_command={}\nrestart_command={}\nlink_command={}\nserve_http_curl={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
+        "setup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nserve_http_curl={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
         workflow.contains("pv setup --yes --no-path"),
         workflow.contains("pv daemon:restart"),
+        ordered_substrings(
+            workflow,
+            &[
+                "record_status serve-https required curl",
+                "record_status daemon-restart required pv daemon:restart",
+            ],
+        ),
+        workflow.contains("wait_for_pv_jobs_idle()")
+            && workflow.contains(
+                "record_status restart-reconciliation-idle required wait_for_pv_jobs_idle",
+            ),
+        ordered_substrings(
+            workflow,
+            &[
+                "record_status daemon-restart required pv daemon:restart",
+                "record_status restart-reconciliation-idle required wait_for_pv_jobs_idle",
+                "record_status update-check required pv update --check --json",
+            ],
+        ),
         workflow.contains("pv link \"$PV_RC_PROJECT\""),
         workflow.contains(
             "record_status serve-http required curl --fail --show-error --silent --retry 6 --retry-delay 2 http://pv-rc-project.test/"
@@ -633,6 +655,19 @@ fn privileged_macos_rc_system_summary(workflow: &str) -> String {
             "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
         ),
     )
+}
+
+fn ordered_substrings(haystack: &str, needles: &[&str]) -> bool {
+    let mut offset = 0;
+
+    for needle in needles {
+        let Some(found) = haystack[offset..].find(needle) else {
+            return false;
+        };
+        offset += found + needle.len();
+    }
+
+    true
 }
 
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
