@@ -354,7 +354,7 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}",
+        "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}\nhandles_missing_current_stable_without_empty_array_nounset={}",
         publication_workflow.contains("--base-url \"$R2_PUBLIC_BASE_URL\""),
         publication_workflow.contains("--current-app-manifest"),
         publication_workflow.contains("--current-app-installer"),
@@ -362,6 +362,12 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
         publication_workflow.contains("--installer"),
         publication_workflow.contains("current-pv-app-manifest.json"),
         publication_workflow.contains("current-install.sh"),
+        publication_workflow.contains("run_stage_app_publication()")
+            && publication_workflow.contains("if [ \"${#current_stable_args[@]}\" -eq 0 ]; then")
+            && publication_workflow.contains("run_stage_app_publication")
+            && !publication_workflow.contains(
+                "--base-url \"$R2_PUBLIC_BASE_URL\" \\\n            \"${current_stable_args[@]}\"",
+            ),
     );
 
     assert_snapshot!(summary, @r#"
@@ -372,6 +378,7 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
     passes_installer_path=false
     fetches_current_stable_manifest=true
     fetches_current_stable_installer=true
+    handles_missing_current_stable_without_empty_array_nounset=true
     "#);
 
     Ok(())
