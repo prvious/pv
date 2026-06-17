@@ -142,15 +142,15 @@ jobs:
             exit 1
           fi
 
-          for binary_name in pv-darwin-arm64 pv-darwin-amd64; do
+          for binary_name in pv-darwin-arm64; do
             binary_source=$(find "$handoff_dir" -type f -path "*/pv/*/$binary_name" -print -quit)
             record_source=$(find "$handoff_dir" -type f -path "*/pv/records/*/$binary_name.json" -print -quit)
             if [ -z "$binary_source" ]; then
-              printf '%s\n' "missing app binary for $binary_name" >&2
+              printf '%s\n' "missing required app binary for $binary_name" >&2
               exit 1
             fi
             if [ -z "$record_source" ]; then
-              printf '%s\n' "missing app release record for $binary_name" >&2
+              printf '%s\n' "missing required app release record for $binary_name" >&2
               exit 1
             fi
           done

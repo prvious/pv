@@ -8,6 +8,11 @@ on:
         required: true
         default: "0.1.0"
         type: string
+      app_platforms:
+        description: "Comma-separated app platforms to release; default is the Apple Silicon preview lane"
+        required: true
+        default: "darwin-arm64"
+        type: string
 
 permissions:
   actions: read
@@ -24,6 +29,7 @@ jobs:
       published_at: ${{ steps.metadata.outputs.published_at }}
       source_url: ${{ steps.metadata.outputs.source_url }}
       source_sha256: ${{ steps.metadata.outputs.source_sha256 }}
+      app_platforms: ${{ steps.metadata.outputs.app_platforms }}
 
     steps:
       - name: Checkout
@@ -36,6 +42,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MINIMUM_PV_VERSION: ${{ inputs.minimum_pv_version }}
+          APP_PLATFORMS: ${{ inputs.app_platforms }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
           set -eu
@@ -44,6 +51,31 @@ jobs:
             printf '%s\n' "minimum_pv_version is required" >&2
             exit 1
           fi
+          app_platforms=$(printf '%s' "$APP_PLATFORMS" | tr -d '[:space:]')
+          if [ -z "$app_platforms" ]; then
+            printf '%s\n' "app_platforms is required" >&2
+            exit 1
+          fi
+          IFS=',' read -r -a requested_platforms <<< "$app_platforms"
+          normalized_platforms=
+          for platform in "${requested_platforms[@]}"; do
+            case "$platform" in
+              darwin-arm64|darwin-amd64) ;;
+              "")
+                printf '%s\n' "app_platforms entries must be non-empty" >&2
+                exit 1
+                ;;
+              *)
+                printf '%s\n' "unsupported app platform: $platform" >&2
+                exit 1
+                ;;
+            esac
+            case ",$normalized_platforms," in
+              *",$platform,"*) ;;
+              *) normalized_platforms="${normalized_platforms:+$normalized_platforms,}$platform" ;;
+            esac
+          done
+          app_platforms="$normalized_platforms"
 
           if [ -z "$R2_PUBLIC_BASE_URL" ]; then
             printf '%s\n' "R2_PUBLIC_BASE_URL repository variable is required" >&2
@@ -84,6 +116,7 @@ jobs:
             printf 'published_at=%s\n' "$published_at"
             printf 'source_url=%s\n' "$source_url"
             printf 'source_sha256=%s\n' "$source_sha256"
+            printf 'app_platforms=%s\n' "$app_platforms"
           } >>"${GITHUB_OUTPUT:?}"
 
   build-app:
@@ -104,16 +137,19 @@ jobs:
 
     steps:
       - name: Checkout
+        if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
 
       - name: Install Rust
+        if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           targets: ${{ matrix.rust_target }}
 
       - name: Build app binary
+        if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         env:
           PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json
           PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/manifest.json
@@ -126,6 +162,7 @@ jobs:
           install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
 
       - name: Write app release record
+        if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         env:
           PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
           PV_APP_RECORD: ${{ runner.temp }}/pv-app-stage/pv/records/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}.json
@@ -156,6 +193,7 @@ jobs:
             --build-run-id "$PV_BUILD_RUN_ID"
 
       - name: Upload app binary and record
+        if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: pv-app-release-build-${{ matrix.platform }}-${{ github.run_id }}
@@ -190,6 +228,7 @@ jobs:
       - name: Generate app manifest and installer
         env:
           PV_APP_VERSION: ${{ needs.prepare-release.outputs.version }}
+          PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
           set -eu
@@ -199,7 +238,8 @@ jobs:
           rm -rf "$stage"
           mkdir -p "$stage/pv/$PV_APP_VERSION" "$stage/pv/records/$PV_APP_VERSION"
 
-          for platform in darwin-arm64 darwin-amd64; do
+          IFS=',' read -r -a platforms <<< "$PV_APP_PLATFORMS"
+          for platform in "${platforms[@]}"; do
             binary_source=$(find "$download_dir" -type f -path "*/$PV_APP_VERSION/pv-$platform" -print -quit)
             record_source=$(find "$download_dir" -type f -path "*/records/$PV_APP_VERSION/pv-$platform.json" -print -quit)
             if [ -z "$binary_source" ]; then
@@ -229,8 +269,7 @@ jobs:
         with:
           name: pv-app-release-${{ needs.prepare-release.outputs.version }}-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64
-            ${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64
+            ${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-*
             ${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json
             ${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json
             ${{ runner.temp }}/pv-app-release-stage/install.sh

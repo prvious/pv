@@ -188,12 +188,16 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
     let release_workflow = release.as_deref().unwrap_or("");
     let summary = format!(
-        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\napp_platforms_default={}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nbuild_app_platform_gate={}\ngenerate_uses_selected_platforms={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
         release.is_some(),
         workflow_name(release_workflow).unwrap_or(""),
         workflow_job_ids(release_workflow),
+        input_default(release_workflow, "app_platforms").unwrap_or(""),
         platform_matrices(release_workflow),
         release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform))"),
+        release_workflow.contains("PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}")
+            && release_workflow.contains("IFS=',' read -r -a platforms <<< \"$PV_APP_PLATFORMS\""),
         release_workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL")
             && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json"),
         release_workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL")
@@ -207,8 +211,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         app_binary_object_key_reference_present(release_workflow),
         app_record_object_key_reference_present(release_workflow),
         uses_action_references(release_workflow, "actions/upload-artifact").len(),
-        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64")
-            && release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-*"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/install.sh"),
@@ -218,8 +221,11 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     release_workflow_exists=true
     release_name=PV App Release
     jobs=["prepare-release", "build-app", "generate-release"]
+    app_platforms_default=darwin-arm64
     platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
     uses_native_macos_runners=true
+    build_app_platform_gate=true
+    generate_uses_selected_platforms=true
     app_update_manifest_url_env=true
     artifact_manifest_url_env=true
     uses_r2_public_base_url_var=true
@@ -246,10 +252,16 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nmanaged_resource_key_references={:?}",
+        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
         publication.is_some(),
         stable_key_reference_present(publication_workflow, "pv-app-manifest.json"),
         stable_key_reference_present(publication_workflow, "install.sh"),
+        publication_workflow.contains("for binary_name in pv-darwin-arm64; do")
+            && publication_workflow.contains("missing required app binary for $binary_name"),
+        !publication_workflow.contains("for binary_name in pv-darwin-arm64 pv-darwin-amd64; do")
+            && publication_workflow.contains(
+                "find \"$handoff_dir\" -type f -path \"*/pv/records/*/pv-darwin-*.json\""
+            ),
         managed_resource_key_references(publication_workflow),
     );
 
@@ -257,6 +269,8 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     publication_workflow_exists=true
     stable_app_manifest_key_present=true
     stable_installer_key_present=true
+    requires_arm64_handoff=true
+    allows_amd64_to_be_absent=true
     managed_resource_key_references=[]
     "#);
 
@@ -510,6 +524,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     summary_uses_manifest_env=true
     summary_uses_installer_env=true
     summary_avoids_manifest_expressions=true
+    validates_compiled_manifest_defaults=true
     runs_checked_in_script=true
     workflow_passes_evidence_dir_env=true
     script_defaults_evidence_dir_from_runner_temp=true
@@ -523,6 +538,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     records_blocked_steps=true
     uploads_evidence=true
     installs_from_candidate_installer=true
+    installer_download_restricts_redirect_protocols=true
     setup_command=true
     restart_command=true
     restart_after_initial_serving=true
@@ -544,6 +560,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     pf_rules_cleanup_required=true
     ca_trust_cleanup_required=true
     launch_agent_cleanup_required=true
+    sudo_preflight_exits_when_blocked=true
     "#);
 
     Ok(())
@@ -575,7 +592,7 @@ fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_manifest_summary(workflow: &str) -> String {
     format!(
-        "avoids_source_build={}\nresolves_manifest_from_input_or_public_var={}\nresolves_installer_from_input_or_manifest={}\nrejects_manifest_output_newlines={}\nrejects_installer_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nrc_step_uses_resolved_installer_env={}\nsummary_uses_manifest_env={}\nsummary_uses_installer_env={}\nsummary_avoids_manifest_expressions={}",
+        "avoids_source_build={}\nresolves_manifest_from_input_or_public_var={}\nresolves_installer_from_input_or_manifest={}\nrejects_manifest_output_newlines={}\nrejects_installer_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nrc_step_uses_resolved_installer_env={}\nsummary_uses_manifest_env={}\nsummary_uses_installer_env={}\nsummary_avoids_manifest_expressions={}\nvalidates_compiled_manifest_defaults={}",
         !workflow.contains("cargo build --locked --release --package pv --bin pv")
             && !workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL")
             && !workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL"),
@@ -606,6 +623,11 @@ fn privileged_macos_rc_manifest_summary(workflow: &str) -> String {
         ) && !workflow.contains(
             "printf 'app_update_manifest_url=%s\\n' \"${{ steps.manifest.outputs.app_update_manifest_url }}\""
         ),
+        workflow_contains_privileged_script(
+            "require_binary_contains_url artifact-manifest \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
+        ) && workflow_contains_privileged_script(
+            "require_binary_contains_url app-update-manifest \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
+        ),
     )
 }
 
@@ -635,12 +657,13 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
     format!(
-        "installs_from_candidate_installer={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\npost_restart_http_follows_https_redirect={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}",
+        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\npost_restart_http_follows_https_redirect={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
         workflow_contains_privileged_script(
-            "curl --fail --show-error --silent --location --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
+            "curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
         ) && workflow_contains_privileged_script(
             "bash \"$PV_RC_INSTALLER\" --no-setup --no-path --non-interactive"
         ),
+        workflow_contains_privileged_script("--proto '=https' --proto-redir '=https'"),
         workflow_contains_privileged_script("pv setup --yes --no-path"),
         workflow_contains_privileged_script("pv daemon:restart"),
         privileged_script_contains_ordered(&[
@@ -717,6 +740,11 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
         workflow_contains_privileged_script(
             "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
         ),
+        workflow_contains_privileged_script(
+            "record_status sudo-preflight required sudo -n true || {"
+        ) && workflow_contains_privileged_script(
+            "record_blocked sudo-required \"passwordless sudo is unavailable on this runner\""
+        ) && workflow_contains_privileged_script("exit 1"),
     )
 }
 
@@ -957,8 +985,7 @@ fn managed_resource_key_references(workflow: &str) -> Vec<&str> {
 
 fn app_binary_object_key_reference_present(workflow: &str) -> bool {
     workflow.contains("pv/")
-        && workflow.contains("pv-darwin-arm64")
-        && workflow.contains("pv-darwin-amd64")
+        && (workflow.contains("pv-darwin-arm64") || workflow.contains("pv-${{ matrix.platform }}"))
 }
 
 fn versioned_generated_artifact_reference_present(workflow: &str, artifact: &str) -> bool {

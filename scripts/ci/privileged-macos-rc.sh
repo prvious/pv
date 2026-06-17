@@ -98,12 +98,33 @@ preserve_rc_binary() {
   install -d "$(dirname "$PV_RC_BIN")" && install -m 755 "$HOME/.pv/bin/pv" "$PV_RC_BIN"
 }
 
+require_binary_contains_url() {
+  local label=$1
+  local url=$2
+
+  if [ -z "$url" ]; then
+    return 0
+  fi
+
+  if strings "$PV_RC_BIN" | grep -Fq "$url"; then
+    return 0
+  fi
+
+  printf 'compiled PV binary does not contain %s URL: %s\n' "$label" "$url" >&2
+  return 1
+}
+
 record_status environment evidence sw_vers
-record_status download-installer required curl --fail --show-error --silent --location --retry 3 --retry-delay 2 "$RESOLVED_INSTALLER_URL" -o "$PV_RC_INSTALLER"
+record_status download-installer required curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 "$RESOLVED_INSTALLER_URL" -o "$PV_RC_INSTALLER"
 record_status install-pv required bash "$PV_RC_INSTALLER" --no-setup --no-path --non-interactive
 export PATH="$HOME/.pv/bin:$PATH"
 record_status preserve-rc-binary required preserve_rc_binary
-record_status sudo-preflight required sudo -n true || record_blocked sudo-required "passwordless sudo is unavailable on this runner"
+record_status compiled-artifact-manifest required require_binary_contains_url artifact-manifest "$RESOLVED_ARTIFACT_MANIFEST_URL"
+record_status compiled-app-update-manifest required require_binary_contains_url app-update-manifest "$RESOLVED_APP_UPDATE_MANIFEST_URL"
+record_status sudo-preflight required sudo -n true || {
+  record_blocked sudo-required "passwordless sudo is unavailable on this runner"
+  exit 1
+}
 
 mkdir -p "$PV_RC_PROJECT/public"
 printf '%s\n' "<?php echo 'pv-privileged-rc-ok';" > "$PV_RC_PROJECT/public/index.php"

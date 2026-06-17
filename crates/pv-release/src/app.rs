@@ -140,6 +140,10 @@ select_asset() {
       die "unsupported PV installer platform: ${platform}"
       ;;
   esac
+
+  if [ -z "${ASSET_URL}" ] || [ -z "${EXPECTED_SHA256}" ] || [ -z "${EXPECTED_SIZE}" ]; then
+    die "PV installer asset is unavailable for ${platform}"
+  fi
 }
 
 sha256_file() {
@@ -808,8 +812,8 @@ pub fn generate_app_installer_script(
     validate_app_record_group(first_record, remaining_records, &mut seen_platforms)?;
     generate_app_manifest_json(records, base_url)?;
 
-    let arm64 = require_installer_asset(records, AppUpdatePlatform::DarwinArm64, base_url)?;
-    let amd64 = require_installer_asset(records, AppUpdatePlatform::DarwinAmd64, base_url)?;
+    let arm64 = installer_asset(records, AppUpdatePlatform::DarwinArm64, base_url);
+    let amd64 = installer_asset(records, AppUpdatePlatform::DarwinAmd64, base_url);
 
     Ok(APP_INSTALLER_TEMPLATE
         .replace("@@PV_VERSION@@", &shell_quote(first_record.version()))
@@ -872,22 +876,24 @@ fn validate_app_record_group(
     Ok(())
 }
 
-fn require_installer_asset(
+fn installer_asset(
     records: &[AppReleaseRecord],
     platform: AppUpdatePlatform,
     base_url: &str,
-) -> crate::Result<InstallerAsset> {
+) -> InstallerAsset {
     let Some(record) = records.iter().find(|record| record.platform() == platform) else {
-        return Err(crate::ReleaseError::GeneratedAppInstallerInvalid {
-            reason: format!("app release records must include {platform}"),
-        });
+        return InstallerAsset {
+            url: String::new(),
+            sha256: String::new(),
+            size: 0,
+        };
     };
 
-    Ok(InstallerAsset {
+    InstallerAsset {
         url: artifact_url(base_url, record.object_key()),
         sha256: record.sha256().to_string(),
         size: record.size(),
-    })
+    }
 }
 
 fn require_same_metadata(
