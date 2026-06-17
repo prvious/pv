@@ -5,6 +5,7 @@ use data_encoding::HEXLOWER;
 
 use crate::PlatformError;
 use crate::command::{run_system_command, run_system_command_output};
+use crate::trust::PrivilegeMode;
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -222,42 +223,58 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    active_pf_redirect_config_with_runner(
-        Utf8Path::new(SYSTEM_PF_ANCHOR_PATH),
-        &mut run_system_command_output,
-    )
+    active_pf_redirect_config_with_privilege_mode(PrivilegeMode::NonInteractive)
+}
+
+pub fn active_pf_redirect_config_with_privilege_mode(
+    privilege_mode: PrivilegeMode,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    active_pf_redirect_config_with_runner(privilege_mode, &mut run_system_command_output)
 }
 
 fn active_pf_redirect_config_with_runner(
-    system_anchor_path: &Utf8Path,
+    privilege_mode: PrivilegeMode,
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let main_nat_rules = active_pf_nat_rules_with_runner(run_system_output)?;
+    let main_nat_rules =
+        active_pf_rules_with_runner(&["-s", "nat"], privilege_mode, run_system_output)?;
 
     if !main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
         return Ok(None);
     }
 
-    match inspect_pf_anchor_file(system_anchor_path, None) {
-        PfFileState::Current { value, .. } => Ok(Some(value)),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => Ok(None),
-    }
+    let anchor_nat_rules = active_pf_rules_with_runner(
+        &["-a", "com.prvious.pv", "-s", "nat"],
+        privilege_mode,
+        run_system_output,
+    )?;
+
+    Ok(PfRedirectConfig::parse_active_rules(&anchor_nat_rules))
 }
 
-fn active_pf_nat_rules_with_runner(
+fn active_pf_rules_with_runner(
+    pfctl_args: &[&'static str],
+    privilege_mode: PrivilegeMode,
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<String, PlatformError> {
-    match run_system_output("/sbin/pfctl", &["-s", "nat"]) {
+    match run_system_output("/sbin/pfctl", pfctl_args) {
         Ok(rules) => Ok(rules),
         Err(non_sudo_error) => {
-            match run_system_output("/usr/bin/sudo", &["-n", "/sbin/pfctl", "-s", "nat"]) {
+            let mut sudo_args = sudo_pfctl_args(privilege_mode);
+            sudo_args.extend(pfctl_args);
+
+            match run_system_output("/usr/bin/sudo", &sudo_args) {
                 Ok(rules) => Ok(rules),
                 Err(_) => Err(non_sudo_error),
             }
         }
+    }
+}
+
+fn sudo_pfctl_args(privilege_mode: PrivilegeMode) -> Vec<&'static str> {
+    match privilege_mode {
+        PrivilegeMode::Interactive => vec!["/sbin/pfctl"],
+        PrivilegeMode::NonInteractive => vec!["-n", "/sbin/pfctl"],
     }
 }
 
@@ -726,6 +743,8 @@ fn is_pf_filter_rule(line: &str) -> bool {
         || line.starts_with("block ")
         || line == "pass"
         || line.starts_with("pass ")
+        || line == "dummynet-anchor"
+        || line.starts_with("dummynet-anchor ")
         || line.starts_with("anchor ")
         || line.starts_with("antispoof ")
 }
@@ -798,52 +817,19 @@ mod tests {
 
     #[test]
     fn active_pf_redirect_config_reads_loaded_rdr_anchor_reference() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
         let mut commands = Vec::new();
-        state::fs::write_sensitive_file(
-            &system_anchor_path,
-            &PfRedirectConfig::new(48080, 48443).render_anchor(),
-        )?;
 
         let config = active_pf_redirect_config_with_runner(
-            &system_anchor_path,
+            crate::PrivilegeMode::NonInteractive,
             &mut |program, args| {
                 let command = format!("{program} {}", args.join(" "));
                 commands.push(command.clone());
 
-                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
-            },
-        )?;
-
-        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
-        assert_eq!(commands, ["/sbin/pfctl -s nat"]);
-
-        Ok(())
-    }
-
-    #[test]
-    fn active_pf_redirect_config_uses_noninteractive_sudo_when_nat_rules_require_privilege()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
-        let mut commands = Vec::new();
-        state::fs::write_sensitive_file(
-            &system_anchor_path,
-            &PfRedirectConfig::new(48080, 48443).render_anchor(),
-        )?;
-
-        let config = active_pf_redirect_config_with_runner(
-            &system_anchor_path,
-            &mut |program, args| {
-                let command = format!("{program} {}", args.join(" "));
-                commands.push(command.clone());
-
-                if command == "/sbin/pfctl -s nat" {
-                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
-                        command,
-                        status: "exit status: 1".to_string(),
-                    });
+                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
                 }
 
                 Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
@@ -853,7 +839,122 @@ mod tests {
         assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
         assert_eq!(
             commands,
-            ["/sbin/pfctl -s nat", "/usr/bin/sudo -n /sbin/pfctl -s nat"]
+            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_reads_live_anchor_rules() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48081\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48444\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48081, 48444)));
+        assert_eq!(
+            commands,
+            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_uses_noninteractive_sudo_when_nat_rules_require_privilege()
+    -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.starts_with("/sbin/pfctl ") {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                if command == "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            [
+                "/sbin/pfctl -s nat",
+                "/usr/bin/sudo -n /sbin/pfctl -s nat",
+                "/sbin/pfctl -a com.prvious.pv -s nat",
+                "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_uses_interactive_sudo_when_requested() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::Interactive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.starts_with("/sbin/pfctl ") {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                if command == "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            [
+                "/sbin/pfctl -s nat",
+                "/usr/bin/sudo /sbin/pfctl -s nat",
+                "/sbin/pfctl -a com.prvious.pv -s nat",
+                "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat"
+            ]
         );
 
         Ok(())
@@ -924,7 +1025,7 @@ mod tests {
         state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
         state::fs::write_sensitive_file(
             &system_pf_conf_path,
-            "scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all\nload anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"\n",
+            "scrub-anchor \"com.apple/*\" all fragment reassemble\nnat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\ndummynet-anchor \"com.apple/*\" all\nanchor \"com.apple/*\" all\nload anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"\n",
         )?;
 
         install_pf_redirects_with_runner(
@@ -944,11 +1045,16 @@ mod tests {
             .find("\nanchor \"com.apple/*\" all")
             .map(|index| index + 1)
             .ok_or_else(|| anyhow::anyhow!("candidate did not preserve filter anchor"))?;
+        let dummynet_index = candidate
+            .find("\ndummynet-anchor \"com.apple/*\" all")
+            .map(|index| index + 1)
+            .ok_or_else(|| anyhow::anyhow!("candidate did not preserve dummynet anchor"))?;
         let load_index = candidate
             .find("load anchor \"com.prvious.pv\"")
             .ok_or_else(|| anyhow::anyhow!("candidate did not contain PV load anchor"))?;
 
-        assert!(rdr_index < filter_index);
+        assert!(rdr_index < dummynet_index);
+        assert!(dummynet_index < filter_index);
         assert!(filter_index < load_index);
 
         Ok(())

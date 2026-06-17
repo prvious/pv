@@ -20,6 +20,7 @@ struct TestEnvironment {
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
     active_pf_config: RefCell<Option<PfRedirectConfig>>,
+    active_pf_privilege_modes: RefCell<Vec<platform::PrivilegeMode>>,
     active_pf_read_fails_when_unloaded: bool,
     operations: RefCell<Vec<String>>,
 }
@@ -38,6 +39,7 @@ impl TestEnvironment {
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
             active_pf_config: RefCell::new(None),
+            active_pf_privilege_modes: RefCell::new(Vec::new()),
             active_pf_read_fails_when_unloaded: false,
             operations: RefCell::new(Vec::new()),
         }
@@ -121,6 +123,16 @@ impl Environment for TestEnvironment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
+    }
+
+    fn active_pf_redirect_config_with_privilege_mode(
+        &self,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        self.active_pf_privilege_modes
+            .borrow_mut()
+            .push(privilege_mode);
         if self.active_pf_read_fails_when_unloaded && self.active_pf_config.borrow().is_none() {
             return Err(platform::PlatformError::SystemIntegrationCommandStatus {
                 command: "/sbin/pfctl -s nat".to_string(),
@@ -279,6 +291,13 @@ fn ports_install_reloads_current_files_when_active_redirects_are_missing() -> an
         *environment.active_pf_config.borrow(),
         Some(PfRedirectConfig::new(48080, 48443))
     );
+    assert_eq!(
+        environment.active_pf_privilege_modes.borrow().as_slice(),
+        [
+            platform::PrivilegeMode::Interactive,
+            platform::PrivilegeMode::Interactive
+        ]
+    );
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, environment.operations.borrow().clone()));
@@ -316,6 +335,10 @@ fn ports_install_skips_active_rule_inspection_before_first_install() -> anyhow::
     assert_eq!(
         *environment.active_pf_config.borrow(),
         Some(PfRedirectConfig::new(48080, 48443))
+    );
+    assert_eq!(
+        environment.active_pf_privilege_modes.borrow().as_slice(),
+        [platform::PrivilegeMode::Interactive]
     );
 
     with_normalized_tempdir(tempdir.path(), || {

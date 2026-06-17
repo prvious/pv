@@ -67,8 +67,15 @@ pub(crate) fn trust_with_mode(
             output.line("System keychain trust already matches PV.")?;
             Ok(ExitCode::SUCCESS)
         }
-        TrustDomainState::NotTrusted { .. } | TrustDomainState::Denied { .. } => {
+        TrustDomainState::NotTrusted { .. } => {
             environment.trust_system_ca(&paths.ca_certificate(), privilege_mode)?;
+            output.line("Trusted PV local CA in the System keychain.")?;
+            Ok(ExitCode::SUCCESS)
+        }
+        TrustDomainState::Denied { fingerprint } => {
+            environment.untrust_system_ca(&fingerprint, privilege_mode)?;
+            environment.trust_system_ca(&paths.ca_certificate(), privilege_mode)?;
+            output.line("Removed denied PV local CA trust from the System keychain.")?;
             output.line("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }

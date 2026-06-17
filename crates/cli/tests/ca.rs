@@ -194,6 +194,40 @@ fn ca_trust_repairs_malformed_local_ca_files() -> anyhow::Result<()> {
 }
 
 #[test]
+fn ca_trust_removes_denied_system_ca_before_retrusting() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let environment =
+        TestEnvironment::new(&home, &current_dir).with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::Deny,
+        });
+
+    let output = run_pv(&["ca:trust"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_no_privileged_guidance(&output.stdout);
+    assert_eq!(
+        environment.operations.borrow().as_slice(),
+        [
+            format!("untrust {}", generated.metadata.fingerprint),
+            format!("trust {}", generated.metadata.fingerprint)
+        ]
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

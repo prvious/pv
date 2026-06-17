@@ -22,8 +22,8 @@ pub use launch_agent::{
 };
 pub use pf::{
     PfConfReference, PfFileState, PfRedirectConfig, SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH,
-    active_pf_redirect_config, inspect_pf_anchor_file, inspect_pf_conf_reference,
-    install_pf_redirects, remove_pf_redirects,
+    active_pf_redirect_config, active_pf_redirect_config_with_privilege_mode,
+    inspect_pf_anchor_file, inspect_pf_conf_reference, install_pf_redirects, remove_pf_redirects,
 };
 pub use process::{exec_replace, exec_replace_with_env};
 pub use resolver::{

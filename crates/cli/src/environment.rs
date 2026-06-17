@@ -117,7 +117,14 @@ pub trait Environment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
-        platform::active_pf_redirect_config()
+        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
+    }
+
+    fn active_pf_redirect_config_with_privilege_mode(
+        &self,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
+        platform::active_pf_redirect_config_with_privilege_mode(privilege_mode)
     }
 
     fn remove_pf_redirects(

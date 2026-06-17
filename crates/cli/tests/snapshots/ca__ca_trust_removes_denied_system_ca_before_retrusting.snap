@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/ca.rs
+expression: "(output, environment.operations.borrow().clone())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV local CA\n  existing local CA is current\nSystem keychain trust: denied\n  fingerprint: <fingerprint>\nRemoved denied PV local CA trust from the System keychain.\nTrusted PV local CA in the System keychain.\n",
+        stderr: "",
+    },
+    [
+        "untrust <fingerprint>",
+        "trust <fingerprint>",
+    ],
+)
