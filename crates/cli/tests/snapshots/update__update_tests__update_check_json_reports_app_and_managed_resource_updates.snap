@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "{\"app\":{\"status\":\"update_available\",\"current_version\":\"0.1.1\",\"latest_version\":\"0.2.0\",\"platform\":\"darwin-arm64\",\"asset\":{\"url\":\"https://downloads.example.test/pv/0.2.0/pv-darwin-arm64\",\"sha256\":\"<sha256>\",\"size\":12345678},\"reason\":null},\"managed_resources\":[{\"status\":\"update_available\",\"resource\":\"redis\",\"track\":\"8.8\",\"current_artifact_version\":\"8.8.0-pv1\",\"current_artifact_path\":\"<pv-home>/resources/redis/8.8/releases/8.8.0-pv1\",\"latest_artifact_version\":\"8.8.1-pv1\",\"current_revocation\":null,\"latest_revocation\":null,\"blocked_by\":null,\"reason\":null}]}\n",
+    stdout: "{\"app\":{\"status\":\"update_available\",\"current_version\":\"0.1.2\",\"latest_version\":\"0.2.0\",\"platform\":\"darwin-arm64\",\"asset\":{\"url\":\"https://downloads.example.test/pv/0.2.0/pv-darwin-arm64\",\"sha256\":\"<sha256>\",\"size\":12345678},\"reason\":null},\"managed_resources\":[{\"status\":\"update_available\",\"resource\":\"redis\",\"track\":\"8.8\",\"current_artifact_version\":\"8.8.0-pv1\",\"current_artifact_path\":\"<pv-home>/resources/redis/8.8/releases/8.8.0-pv1\",\"latest_artifact_version\":\"8.8.1-pv1\",\"current_revocation\":null,\"latest_revocation\":null,\"blocked_by\":null,\"reason\":null}]}\n",
     stderr: "",
 }
