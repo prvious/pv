@@ -12,6 +12,11 @@ on:
         required: false
         default: ""
         type: string
+      installer_url:
+        description: Candidate PV installer URL for privileged RC
+        required: false
+        default: ""
+        type: string
       privileged_rc:
         description: Run the privileged macOS RC workflow
         required: false
@@ -22,12 +27,14 @@ jobs:
   real-artifact-e2e:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595
         with:
           tool: cargo-nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Run real artifact Gateway E2E
         env:
           PV_E2E_REAL_ARTIFACTS: "1"
@@ -46,3 +53,4 @@ jobs:
     with:
       artifact_manifest_url: ${{ inputs.manifest_url }}
       app_update_manifest_url: ${{ inputs.app_update_manifest_url }}
+      installer_url: ${{ inputs.installer_url }}
