@@ -189,7 +189,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     }
     let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
     let gateway_readiness =
-        gateway_readiness_check(&plan, gateway_config.readiness_hostname.clone());
+        gateway_readiness_check(paths, &plan, gateway_config.readiness_hostname.clone());
     start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
@@ -206,10 +206,11 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
 }
 
 fn gateway_readiness_check(
+    paths: &PvPaths,
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
 ) -> ReadinessCheck {
-    let ports = gateway_readiness_ports(plan);
+    let ports = gateway_readiness_ports(paths, plan);
 
     gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
 }
@@ -220,8 +221,11 @@ struct GatewayReadinessPorts {
     https: u16,
 }
 
-fn gateway_readiness_ports(plan: &RuntimePlan) -> GatewayReadinessPorts {
-    if active_gateway_redirects_match_plan(plan) {
+fn gateway_readiness_ports(paths: &PvPaths, plan: &RuntimePlan) -> GatewayReadinessPorts {
+    // macOS pf can make direct connections to an active rdr target port hang.
+    if active_gateway_redirects_match_plan(plan)
+        || prepared_gateway_redirects_match_plan(paths, plan)
+    {
         return GatewayReadinessPorts {
             http: PUBLIC_HTTP_PORT,
             https: PUBLIC_HTTPS_PORT,
@@ -240,6 +244,15 @@ fn active_gateway_redirects_match_plan(plan: &RuntimePlan) -> bool {
         Ok(Some(config))
             if config
                 == platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port)
+    )
+}
+
+fn prepared_gateway_redirects_match_plan(paths: &PvPaths, plan: &RuntimePlan) -> bool {
+    let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+
+    matches!(
+        platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), Some(&expected)),
+        platform::PfFileState::Current { .. }
     )
 }
 
@@ -1315,6 +1328,7 @@ mod tests {
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
+    use platform::PfRedirectConfig;
     use state::PvPaths;
 
     use crate::ReadinessCheck;
@@ -1322,7 +1336,8 @@ mod tests {
 
     use super::{
         GatewayReadinessPorts, GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments,
-        gateway_readiness_check_for_ports, gateway_readiness_hostname, project_config_file_name,
+        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_ports,
+        project_config_file_name,
     };
 
     #[test]
@@ -1399,6 +1414,46 @@ mod tests {
             ReadinessCheck::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 80,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_public_ports_when_prepared_redirect_matches_plan() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let plan = runtime_plan();
+        let prepared_redirect =
+            PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+        state::fs::write_sensitive_file(
+            &paths.pf_anchor_config(),
+            &prepared_redirect.render_anchor(),
+        )?;
+
+        assert_eq!(
+            gateway_readiness_ports(&paths, &plan),
+            GatewayReadinessPorts {
+                http: 80,
+                https: 443,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_backend_ports_without_prepared_redirect() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let plan = runtime_plan();
+
+        assert_eq!(
+            gateway_readiness_ports(&paths, &plan),
+            GatewayReadinessPorts {
+                http: plan.gateway.http_port,
+                https: plan.gateway.https_port,
             }
         );
 
