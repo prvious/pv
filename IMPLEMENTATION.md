@@ -2,6 +2,10 @@
 
 This roadmap turns `DESIGN.md` into implementation-sized work packages. The goal is to keep PRs small, unblock parallel work, and avoid building every Managed Resource in one branch.
 
+## Current Status
+
+PR 26 (#286) merged on 2026-06-17, completing the planned M11 hardening and release-candidate implementation work. Remaining release work is operational validation and publication, tracked by `docs/release/rc-checklist.md`.
+
 ## Working Rules
 
 - Build shared foundations first, then implement individual Managed Resources independently.
