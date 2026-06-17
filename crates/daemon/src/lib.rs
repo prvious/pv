@@ -101,18 +101,24 @@ impl RunningDaemon {
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
-        Database::open(&paths)?;
-        clear_startup_failure_marker(&paths)?;
-        structured_log::daemon_started(&paths);
+        let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
-        let dns = dns::RunningDnsResolver::start(paths.clone()).await?;
-        let listener = match ipc::bind(&paths) {
-            Ok(listener) => listener,
+        let listener = ipc::bind(&paths)?;
+        if let Err(error) =
+            database.fail_running_jobs("daemon was interrupted before job completed")
+        {
+            return Err(cleanup_startup_endpoint(&paths, error.into()));
+        }
+        if let Err(error) = clear_startup_failure_marker(&paths) {
+            return Err(cleanup_startup_endpoint(&paths, error));
+        }
+        let dns = match dns::RunningDnsResolver::start(paths.clone()).await {
+            Ok(dns) => dns,
             Err(error) => {
-                let _dns_result = dns.shutdown().await;
-                return Err(error);
+                return Err(cleanup_startup_endpoint(&paths, error));
             }
         };
+        structured_log::daemon_started(&paths);
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
         let runtime_catalog = runtime_catalog.map(Arc::new);
@@ -173,10 +179,28 @@ fn write_startup_failure_marker(paths: &PvPaths, error: &DaemonError) {
 
 fn startup_failure_kind(error: &DaemonError) -> &'static str {
     match error {
+        DaemonError::StartupCleanupFailed { source, .. } => startup_failure_kind(source),
         DaemonError::State(
             StateError::MigrationFailed { .. } | StateError::MigrationNameMismatch { .. },
         ) => "migration_failed",
         _ => "startup_failed",
+    }
+}
+
+fn cleanup_startup_endpoint(paths: &PvPaths, startup_error: DaemonError) -> DaemonError {
+    startup_error_after_endpoint_cleanup(startup_error, ipc::remove_endpoint(paths))
+}
+
+fn startup_error_after_endpoint_cleanup(
+    startup_error: DaemonError,
+    cleanup_result: Result<(), DaemonError>,
+) -> DaemonError {
+    match cleanup_result {
+        Ok(()) => startup_error,
+        Err(cleanup) => DaemonError::StartupCleanupFailed {
+            source: Box::new(startup_error),
+            cleanup: Box::new(cleanup),
+        },
     }
 }
 
@@ -279,7 +303,10 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
-    use super::{DaemonError, RunningDaemon, build_runtime, wait_for_shutdown};
+    use super::{
+        DaemonError, RunningDaemon, build_runtime, startup_error_after_endpoint_cleanup,
+        wait_for_shutdown,
+    };
 
     #[test]
     fn daemon_runtime_enables_tokio_timers() -> anyhow::Result<()> {
@@ -290,6 +317,37 @@ mod tests {
         });
 
         Ok(())
+    }
+
+    #[test]
+    fn startup_cleanup_failure_keeps_startup_error_primary() {
+        let startup_error = DaemonError::DnsBind {
+            protocol: "UDP",
+            port: 5353,
+            source: io::Error::new(io::ErrorKind::AddrInUse, "dns port is busy"),
+        };
+        let cleanup_error = DaemonError::Io(io::Error::other("socket cleanup failed"));
+
+        let error = startup_error_after_endpoint_cleanup(startup_error, Err(cleanup_error));
+        let message = error.to_string();
+
+        assert!(matches!(
+            error,
+            DaemonError::StartupCleanupFailed { source, .. }
+                if matches!(
+                    *source,
+                    DaemonError::DnsBind {
+                        protocol: "UDP",
+                        port: 5353,
+                        ..
+                    }
+                )
+        ));
+        assert!(
+            message.starts_with("DNS resolver failed to bind UDP on 127.0.0.1:5353"),
+            "{message}"
+        );
+        assert!(message.contains("socket cleanup failed"), "{message}");
     }
 
     #[tokio::test]

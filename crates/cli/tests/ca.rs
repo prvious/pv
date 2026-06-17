@@ -81,7 +81,11 @@ impl Environment for TestEnvironment {
         Ok(self.certificates.borrow().clone())
     }
 
-    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), PlatformError> {
+    fn trust_system_ca(
+        &self,
+        certificate_path: &Utf8Path,
+        _privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), PlatformError> {
         let certificate_pem = state::fs::read_to_string(certificate_path)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
         let metadata = LocalCaMetadata::from_certificate_pem(&certificate_pem)?;
@@ -99,7 +103,11 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), PlatformError> {
+    fn untrust_system_ca(
+        &self,
+        fingerprint: &str,
+        _privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), PlatformError> {
         self.certificates
             .borrow_mut()
             .retain(|certificate| certificate.metadata.fingerprint != fingerprint);
@@ -181,6 +189,40 @@ fn ca_trust_repairs_malformed_local_ca_files() -> anyhow::Result<()> {
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(certificate_after.contains("BEGIN CERTIFICATE"));
     assert!(private_key_after.contains("BEGIN PRIVATE KEY"));
+
+    Ok(())
+}
+
+#[test]
+fn ca_trust_removes_denied_system_ca_before_retrusting() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let environment =
+        TestEnvironment::new(&home, &current_dir).with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::Deny,
+        });
+
+    let output = run_pv(&["ca:trust"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_no_privileged_guidance(&output.stdout);
+    assert_eq!(
+        environment.operations.borrow().as_slice(),
+        [
+            format!("untrust {}", generated.metadata.fingerprint),
+            format!("trust {}", generated.metadata.fingerprint)
+        ]
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
+    });
 
     Ok(())
 }

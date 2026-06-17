@@ -9,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
 use resources::{ResourceAdapter, frankenphp_adapter};
 use rustix::process::{Pid, Signal, kill_process_group};
+use sha2::{Digest, Sha256};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner, PortRequest,
     ProjectEnvObservedStatus, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
@@ -24,7 +25,8 @@ use crate::gateway_config::{
     render_php_worker_project_config,
 };
 use crate::project_env::{resolve_project_php_track, validate_project_config_for_gateway};
-use crate::supervisor::probe_readiness_once;
+use crate::structured_log;
+use crate::supervisor::{ManagedProcess, probe_readiness_once};
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 #[expect(
@@ -34,7 +36,10 @@ use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_fo
 type FrankenphpProcessCommand = tokio::process::Command;
 
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
+const PUBLIC_HTTP_PORT: u16 = 80;
+const PUBLIC_HTTPS_PORT: u16 = 443;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
     "Gateway runtime skipped; FrankenPHP is not installed";
@@ -77,6 +82,7 @@ pub struct GatewayRuntimePlan {
     pub https_port: u16,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
+    pub storage_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +111,14 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
+}
+
+#[doc(hidden)]
+pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+) -> Result<String, DaemonError> {
     let Some(gateway_command) = first_installed_frankenphp_command(paths)? else {
         record_runtime_observed(
             paths,
@@ -169,20 +183,21 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
                 port: worker.port,
             },
             subject,
+            readiness_timeout,
         )
         .await?;
     }
-    let promoted_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
+    let gateway_readiness =
+        gateway_readiness_check(&plan, gateway_config.readiness_hostname.clone());
     start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
-        promoted_config,
+        gateway_config.promoted_config,
         gateway_process_spec(paths, &gateway_command),
-        ReadinessCheck::Tcp {
-            host: "127.0.0.1".to_owned(),
-            port: plan.gateway.http_port,
-        },
+        gateway_readiness,
         RuntimeSubject::Gateway,
+        readiness_timeout,
     )
     .await?;
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
@@ -190,11 +205,77 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
 
+fn gateway_readiness_check(
+    plan: &RuntimePlan,
+    readiness_hostname: Option<String>,
+) -> ReadinessCheck {
+    let ports = gateway_readiness_ports(plan);
+
+    gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct GatewayReadinessPorts {
+    http: u16,
+    https: u16,
+}
+
+fn gateway_readiness_ports(plan: &RuntimePlan) -> GatewayReadinessPorts {
+    if active_gateway_redirects_match_plan(plan) {
+        return GatewayReadinessPorts {
+            http: PUBLIC_HTTP_PORT,
+            https: PUBLIC_HTTPS_PORT,
+        };
+    }
+
+    GatewayReadinessPorts {
+        http: plan.gateway.http_port,
+        https: plan.gateway.https_port,
+    }
+}
+
+fn active_gateway_redirects_match_plan(plan: &RuntimePlan) -> bool {
+    matches!(
+        platform::active_pf_redirect_config(),
+        Ok(Some(config))
+            if config
+                == platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port)
+    )
+}
+
+fn gateway_readiness_check_for_ports(
+    plan: &RuntimePlan,
+    readiness_hostname: Option<String>,
+    ports: GatewayReadinessPorts,
+) -> ReadinessCheck {
+    match readiness_hostname {
+        Some(server_name) => ReadinessCheck::GatewayHttps {
+            http_host: "127.0.0.1".to_owned(),
+            http_port: ports.http,
+            https_host: "127.0.0.1".to_owned(),
+            https_port: ports.https,
+            server_name,
+            ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
+        },
+        None => ReadinessCheck::Tcp {
+            host: "127.0.0.1".to_owned(),
+            port: ports.http,
+        },
+    }
+}
+
+fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<String> {
+    fragments
+        .first()
+        .map(|fragment| fragment.primary_hostname.clone())
+}
+
 pub async fn validate_config(
     command: &FrankenphpCommand,
     config_path: &Utf8Path,
+    private_environment: &BTreeMap<String, String>,
 ) -> Result<(), DaemonError> {
-    let output = run_validation_command(command, config_path).await?;
+    let output = run_validation_command(command, config_path, private_environment).await?;
 
     if output.status.success() {
         return Ok(());
@@ -220,10 +301,12 @@ struct ValidationOutput {
 async fn run_validation_command(
     command: &FrankenphpCommand,
     config_path: &Utf8Path,
+    private_environment: &BTreeMap<String, String>,
 ) -> Result<ValidationOutput, DaemonError> {
     let mut command_process = FrankenphpProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
+        .envs(private_environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -294,7 +377,7 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &FrankenphpCommand) -> Pro
         name: "gateway".to_owned(),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.gateway_root_config()),
-        private_environment: Default::default(),
+        private_environment: frankenphp_xdg_environment(paths),
         config_path: paths.gateway_root_config(),
         log_path: paths.gateway_log(),
         pid_path: paths.gateway_pid(),
@@ -313,7 +396,7 @@ pub fn worker_process_spec(
         name: format!("php-worker-{php_track}"),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.worker_root_config(php_track)),
-        private_environment: Default::default(),
+        private_environment: frankenphp_xdg_environment(paths),
         config_path: paths.worker_root_config(php_track),
         log_path: paths.worker_log(php_track),
         pid_path: paths.worker_pid(php_track),
@@ -425,9 +508,25 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             https_port: gateway_ports.https.port,
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
+            storage_path: gateway_storage_path(paths)?,
         },
         workers,
     })
+}
+
+fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
+    let suffix = match fs::read_to_string(&paths.ca_certificate()) {
+        Ok(certificate) => {
+            let digest = Sha256::digest(certificate.as_bytes());
+            format!("{digest:x}")
+        }
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            "missing-ca".to_owned()
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    Ok(paths.certificates().join(format!("caddy-{suffix}")))
 }
 
 fn append_persisted_runtime_project(
@@ -489,17 +588,19 @@ async fn reconcile_gateway_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
     plan: &RuntimePlan,
-) -> Result<PromotedConfigTree, DaemonError> {
+) -> Result<GatewayConfigReconciliation, DaemonError> {
     let routes = gateway_project_routes(plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = gateway_project_config_fragments(paths, &routes)?;
+    let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
     let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        storage_path: plan.gateway.storage_path.clone(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -515,6 +616,7 @@ async fn reconcile_gateway_config(
         https_port: plan.gateway.https_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
+        storage_path: plan.gateway.storage_path.clone(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -545,7 +647,15 @@ async fn reconcile_gateway_config(
     };
     let _cleanup_result = delete_optional_dir(&candidate_dir);
 
-    result
+    result.map(|promoted_config| GatewayConfigReconciliation {
+        promoted_config,
+        readiness_hostname,
+    })
+}
+
+struct GatewayConfigReconciliation {
+    promoted_config: PromotedConfigTree,
+    readiness_hostname: Option<String>,
 }
 
 async fn reconcile_worker_config(
@@ -636,7 +746,11 @@ async fn promote_runtime_config_tree(
         &config_path,
         candidate_content,
         active_content,
-        |candidate_path| async move { validate_config(command, &candidate_path).await },
+        |candidate_path| {
+            let private_environment = frankenphp_xdg_environment(paths);
+
+            async move { validate_config(command, &candidate_path, &private_environment).await }
+        },
         promote_fragments,
     )
     .await;
@@ -655,8 +769,17 @@ async fn start_or_adopt_promoted_runtime(
     spec: ProcessSpec,
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
+    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
-    let result = start_or_adopt_runtime(paths, supervisor, spec, readiness, subject.clone()).await;
+    let result = start_or_adopt_runtime(
+        paths,
+        supervisor,
+        spec,
+        readiness,
+        subject.clone(),
+        readiness_timeout,
+    )
+    .await;
 
     match result {
         Ok(()) => {
@@ -687,11 +810,12 @@ async fn start_or_adopt_runtime(
     spec: ProcessSpec,
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
+    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     let result = async {
         if supervisor.adopt(&spec)?.is_some() {
             if supervisor.reload(&spec)? {
-                wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await?;
+                wait_for_readiness(readiness, readiness_timeout).await?;
 
                 return Ok(());
             }
@@ -702,7 +826,11 @@ async fn start_or_adopt_runtime(
                     spec.name
                 ),
             });
-        } else if probe_readiness_once(&readiness).await.is_ok() {
+        } else if let Some(adopted) =
+            supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        {
+            adopted.stop(Duration::from_secs(1)).await?;
+        } else if foreign_listener_is_ready(&readiness).await {
             return Err(DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
                     "runtime `{}` is listening but no PV-owned process could be verified",
@@ -712,7 +840,8 @@ async fn start_or_adopt_runtime(
         }
 
         let mut process = supervisor.start(spec.clone()).await?;
-        if let Err(error) = wait_for_readiness(readiness, RUNTIME_READINESS_TIMEOUT).await {
+        if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+            record_runtime_readiness_diagnostics(paths, &spec, &mut process, &error);
             process.stop(Duration::from_secs(1)).await?;
 
             return Err(error);
@@ -746,6 +875,49 @@ async fn start_or_adopt_runtime(
     }
 }
 
+async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
+    matches!(
+        timeout(
+            FOREIGN_LISTENER_PROBE_TIMEOUT,
+            probe_readiness_once(readiness)
+        )
+        .await,
+        Ok(Ok(()))
+    )
+}
+
+fn record_runtime_readiness_diagnostics(
+    paths: &PvPaths,
+    spec: &ProcessSpec,
+    process: &mut ManagedProcess,
+    error: &DaemonError,
+) {
+    let process_exited = runtime_process_exit_state(process);
+    let loopback_listener_ports = loopback_listener_port_snapshot();
+
+    structured_log::runtime_readiness_diagnostics(
+        paths,
+        &spec.name,
+        &error.to_string(),
+        &process_exited,
+        &loopback_listener_ports,
+    );
+}
+
+fn runtime_process_exit_state(process: &mut ManagedProcess) -> String {
+    match process.has_exited() {
+        Ok(exited) => exited.to_string(),
+        Err(error) => format!("unknown: {error}"),
+    }
+}
+
+fn loopback_listener_port_snapshot() -> String {
+    match platform::loopback_tcp_listener_ports() {
+        Ok(ports) => format!("{ports:?}"),
+        Err(error) => format!("unavailable: {error}"),
+    }
+}
+
 fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
     plan.workers
         .iter()
@@ -765,6 +937,7 @@ fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
 struct ProjectConfigFragment {
     project_id: String,
     file_name: String,
+    primary_hostname: String,
     content: String,
 }
 
@@ -789,6 +962,7 @@ fn gateway_project_config_fragments(
         fragments.push(ProjectConfigFragment {
             project_id: route.id.clone(),
             file_name,
+            primary_hostname: route.primary_hostname.clone(),
             content,
         });
     }
@@ -824,6 +998,7 @@ fn worker_project_config_fragments(
         fragments.push(ProjectConfigFragment {
             project_id: project.id.clone(),
             file_name,
+            primary_hostname: project.primary_hostname.clone(),
             content,
         });
     }
@@ -1120,4 +1295,158 @@ fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<Stri
         "--adapter".to_owned(),
         "caddyfile".to_owned(),
     ]
+}
+
+fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "XDG_CONFIG_HOME".to_owned(),
+            paths.config().as_str().to_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".to_owned(),
+            paths.certificates().as_str().to_owned(),
+        ),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use camino::Utf8PathBuf;
+    use camino_tempfile::tempdir;
+    use state::PvPaths;
+
+    use crate::ReadinessCheck;
+    use crate::gateway_config::GatewayProjectRoute;
+
+    use super::{
+        GatewayReadinessPorts, GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments,
+        gateway_readiness_check_for_ports, gateway_readiness_hostname, project_config_file_name,
+    };
+
+    #[test]
+    fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            Some("project.test".to_string()),
+            GatewayReadinessPorts {
+                http: plan.gateway.http_port,
+                https: plan.gateway.https_port,
+            },
+        );
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::GatewayHttps {
+                http_host: "127.0.0.1".to_string(),
+                http_port: 45080,
+                https_host: "127.0.0.1".to_string(),
+                https_port: 45443,
+                server_name: "project.test".to_string(),
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_public_ports_when_redirects_are_active() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            Some("project.test".to_string()),
+            GatewayReadinessPorts {
+                http: 80,
+                https: 443,
+            },
+        );
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::GatewayHttps {
+                http_host: "127.0.0.1".to_string(),
+                http_port: 80,
+                https_host: "127.0.0.1".to_string(),
+                https_port: 443,
+                server_name: "project.test".to_string(),
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_uses_public_http_for_empty_gateway() -> Result<()> {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_check_for_ports(
+            &plan,
+            None,
+            GatewayReadinessPorts {
+                http: 80,
+                https: 443,
+            },
+        );
+
+        assert_eq!(
+            readiness,
+            ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 80,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gateway_readiness_hostname_uses_imported_project_fragments() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_id = "project-1";
+        let preserved_content = "preserved.test {\n    respond 200\n}\n";
+        let fragment_path = paths
+            .gateway_projects_config_dir()
+            .join(project_config_file_name(project_id));
+        state::fs::write_sensitive_file(&fragment_path, preserved_content)?;
+
+        let fragments = gateway_project_config_fragments(
+            &paths,
+            &[GatewayProjectRoute {
+                id: project_id.to_owned(),
+                render_config: false,
+                primary_hostname: "preserved.test".to_owned(),
+                hostnames: Vec::new(),
+                worker_port: 8123,
+            }],
+        )?;
+
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].content, preserved_content);
+        assert_eq!(
+            gateway_readiness_hostname(&fragments).as_deref(),
+            Some("preserved.test")
+        );
+
+        Ok(())
+    }
+
+    fn runtime_plan() -> RuntimePlan {
+        RuntimePlan {
+            gateway: GatewayRuntimePlan {
+                http_port: 45080,
+                https_port: 45443,
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+                ca_private_key_path: Utf8PathBuf::from("/tmp/pv-missing-ca-key.pem"),
+                storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),
+            },
+            workers: Vec::new(),
+        }
+    }
 }

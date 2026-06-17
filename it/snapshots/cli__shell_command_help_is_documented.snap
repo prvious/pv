@@ -1,0 +1,20 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Print shell integration code\n\nUsage: pv env [OPTIONS]\n\nOptions:\n      --no-color       Disable colored output\n      --shell <SHELL>  Shell syntax to generate [possible values: bash, fish, zsh]\n  -h, --help           Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Generate shell completions\n\nUsage: pv completions [OPTIONS] <SHELL>\n\nArguments:\n  <SHELL>  Shell to generate completions for [possible values: bash, fish, zsh]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

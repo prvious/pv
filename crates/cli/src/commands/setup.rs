@@ -5,12 +5,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::{CaFileState, PfFileState, ResolverConfig, ResolverFileState, TrustDomainState};
-use resources::{ArtifactManifestCache, ResourceName, TrackName, TrackSelector};
+use resources::{
+    ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
+    ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
+};
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 use super::{ca, daemon as daemon_command, dns, ports};
 use crate::args::{SetupArgs, UninstallArgs};
-use crate::environment::Environment;
+use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 use crate::shell::Shell;
@@ -43,6 +46,18 @@ enum SetupResourceTrackDefault {
     Concrete(&'static str),
 }
 
+#[derive(Clone, Debug)]
+struct SetupResourcePlan {
+    resource_name: ResourceName,
+    track: TrackName,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SetupResourcePlans {
+    plans: Vec<SetupResourcePlan>,
+    failures: Vec<String>,
+}
+
 impl SetupResourceDefault {
     const fn manifest_default(resource_name: &'static str) -> Self {
         Self {
@@ -73,6 +88,7 @@ pub(crate) fn setup(
         output.line(&format!("Ensured PV state layout: {}", paths.root()))?;
     }
     install_command_shims(environment, &paths)?;
+    let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, stdout)?;
 
     if args.non_interactive && setup_requires_privileged_auth(environment, &paths)? {
         let mut output = Output::new(stdout, OutputMode::plain());
@@ -98,11 +114,15 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step("CA trust setup", stdout, |stdout| {
-        ca::trust(environment, stdout)
+        ca::trust_with_mode(
+            environment,
+            stdout,
+            setup_privilege_mode(args.non_interactive),
+        )
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    record_default_resource_desired_state(&paths)?;
+    record_default_resource_desired_state(&paths, &default_resource_plan.plans)?;
     if !run_required_step("daemon registration", stdout, |stdout| {
         daemon_command::enable_without_reconciliation(environment, stdout)
     })? {
@@ -116,9 +136,140 @@ pub(crate) fn setup(
         "System reconciliation completed: {}",
         completed.summary
     ))?;
+    if !default_resource_plan.failures.is_empty() {
+        output.line("Default Managed Resource planning failed for some defaults:")?;
+        for failure in &default_resource_plan.failures {
+            output.line(&format!("  - {failure}"))?;
+        }
+        output.line("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
+
+        return Ok(ExitCode::FAILURE);
+    }
     output.line("PV setup complete")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_setup_artifact_manifest(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    stdout: &mut impl Write,
+) -> Result<SetupResourcePlans, ExecuteError> {
+    let cache = ArtifactManifestCache::new(paths.downloads());
+    let manifest_url = artifact_manifest_url(environment);
+
+    let refresh =
+        with_resource_http_client(environment, |client| cache.refresh(&manifest_url, client))?;
+
+    if let ArtifactManifestSource::Cached { reason } = refresh.source() {
+        let mut output = Output::new(stdout, OutputMode::plain());
+        output.line(&format!(
+            "warning: artifact manifest refresh failed ({reason}); using cached manifest at {}",
+            cache.path()
+        ))?;
+    }
+
+    resolve_default_resource_plan(refresh.manifest(), target_platform(environment))
+}
+
+fn resolve_default_resource_plan(
+    manifest: &ArtifactManifest,
+    target_platform: TargetPlatform,
+) -> Result<SetupResourcePlans, ExecuteError> {
+    let php_resource = ResourceName::new("php")?;
+    let php_default_track = manifest
+        .resolve_track(&php_resource, TrackSelector::Latest)
+        .cloned();
+    let mut plans = SetupResourcePlans::default();
+
+    for resource_default in DEFAULT_SETUP_RESOURCES {
+        let resource_name = match ResourceName::new(resource_default.resource_name) {
+            Ok(resource_name) => resource_name,
+            Err(error) => {
+                plans.failures.push(error.to_string());
+                continue;
+            }
+        };
+        let track_selector = match setup_resource_track_selector(
+            resource_default,
+            &resource_name,
+            &php_default_track,
+        ) {
+            Ok(track_selector) => track_selector,
+            Err(error) => {
+                plans.failures.push(error);
+                continue;
+            }
+        };
+        let track = match manifest.resolve_track(&resource_name, track_selector) {
+            Ok(track) => track.clone(),
+            Err(error) => {
+                plans.failures.push(error.to_string());
+                continue;
+            }
+        };
+
+        if let Err(error) = manifest.select_latest(&resource_name, &track, target_platform) {
+            plans.failures.push(error.to_string());
+            continue;
+        }
+
+        plans.plans.push(SetupResourcePlan {
+            resource_name,
+            track,
+        });
+    }
+
+    Ok(plans)
+}
+
+fn setup_resource_track_selector(
+    resource_default: &SetupResourceDefault,
+    resource_name: &ResourceName,
+    php_default_track: &resources::Result<TrackName>,
+) -> Result<TrackSelector, String> {
+    if resource_name.as_str() == "frankenphp" {
+        return match php_default_track {
+            Ok(track) => Ok(TrackSelector::Track(track.clone())),
+            Err(error) => Err(format!(
+                "could not resolve frankenphp default track from PHP default: {error}"
+            )),
+        };
+    }
+
+    match resource_default.track {
+        SetupResourceTrackDefault::ManifestDefault => Ok(TrackSelector::Latest),
+        SetupResourceTrackDefault::Concrete(track) => TrackName::new(track)
+            .map(TrackSelector::Track)
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn with_resource_http_client<T>(
+    environment: &impl Environment,
+    operation: impl FnOnce(&dyn ResourceHttpClient) -> resources::Result<T>,
+) -> resources::Result<T> {
+    if let Some(client) = environment.resource_http_client() {
+        return operation(client);
+    }
+
+    let client = UreqResourceHttpClient::default();
+
+    operation(&client)
+}
+
+fn target_platform(environment: &impl Environment) -> TargetPlatform {
+    environment
+        .target_platform()
+        .unwrap_or_else(current_target_platform)
+}
+
+fn current_target_platform() -> TargetPlatform {
+    if cfg!(target_arch = "aarch64") {
+        TargetPlatform::DarwinArm64
+    } else {
+        TargetPlatform::DarwinAmd64
+    }
 }
 
 fn install_command_shims(
@@ -383,42 +534,16 @@ fn system_trust_state(
     platform::inspect_system_ca_trust(metadata, &EnvironmentTrustInspector { environment })
 }
 
-fn record_default_resource_desired_state(paths: &PvPaths) -> Result<(), ExecuteError> {
-    let manifest_cache = ArtifactManifestCache::new(paths.downloads());
-    let manifest = match manifest_cache.load_cached() {
-        Ok(manifest) => manifest,
-        Err(resources::ResourcesError::Filesystem { .. }) => {
-            return Err(CliError::MissingSetupArtifactManifest {
-                path: manifest_cache.path().to_string(),
-            }
-            .into());
-        }
-        Err(error) => return Err(error.into()),
-    };
+fn record_default_resource_desired_state(
+    paths: &PvPaths,
+    default_resource_plan: &[SetupResourcePlan],
+) -> Result<(), ExecuteError> {
     let mut database = Database::open(paths)?;
-    let php_resource = ResourceName::new("php")?;
-    let php_default_track = manifest.resolve_track(&php_resource, TrackSelector::Latest)?;
 
-    for resource_default in DEFAULT_SETUP_RESOURCES {
-        let resource_name = ResourceName::new(resource_default.resource_name)?;
-        let track = if resource_name.as_str() == "frankenphp" {
-            manifest.resolve_track(
-                &resource_name,
-                TrackSelector::Track(php_default_track.clone()),
-            )?
-        } else {
-            let track_selector = match resource_default.track {
-                SetupResourceTrackDefault::ManifestDefault => TrackSelector::Latest,
-                SetupResourceTrackDefault::Concrete(track) => {
-                    TrackSelector::Track(TrackName::new(track)?)
-                }
-            };
-            manifest.resolve_track(&resource_name, track_selector)?
-        };
-
+    for planned in default_resource_plan {
         database.record_managed_resource_track_desired(
-            resource_name.as_str(),
-            track.as_str(),
+            planned.resource_name.as_str(),
+            planned.track.as_str(),
             ManagedResourceDesiredState::Installed,
         )?;
     }
@@ -642,7 +767,7 @@ fn untrust_ca_for_uninstall(
         }
 
         for fingerprint in fingerprints {
-            environment.untrust_system_ca(&fingerprint)?;
+            environment.untrust_system_ca(&fingerprint, platform::PrivilegeMode::Interactive)?;
             output.line(&format!(
                 "Removed stale PV local CA trust from the System keychain: {fingerprint}"
             ))?;
@@ -652,6 +777,14 @@ fn untrust_ca_for_uninstall(
     }
 
     ca::untrust(environment, stdout)
+}
+
+const fn setup_privilege_mode(non_interactive: bool) -> platform::PrivilegeMode {
+    if non_interactive {
+        platform::PrivilegeMode::NonInteractive
+    } else {
+        platform::PrivilegeMode::Interactive
+    }
 }
 
 fn remove_default_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {

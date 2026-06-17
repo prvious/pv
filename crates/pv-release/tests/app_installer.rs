@@ -53,6 +53,29 @@ fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn generated_app_installer_allows_arm64_only_preview_assets() -> Result<()> {
+    let fixture = AppInstallerFixture::new_arm64_only()?;
+    let installer = fixture.generate_installer()?;
+    let values = ContractValues::new();
+    let summary = format!(
+        "arm64_url_present={}\namd64_url_absent={}\namd64_checksum_absent={}\nunsupported_platform_guard={}",
+        installer.contains(&values.arm64_url),
+        !installer.contains(&values.amd64_url),
+        !installer.contains(&values.amd64_sha256),
+        installer.contains("PV installer asset is unavailable for ${platform}"),
+    );
+
+    assert_snapshot!(summary, @r#"
+    arm64_url_present=true
+    amd64_url_absent=true
+    amd64_checksum_absent=true
+    unsupported_platform_guard=true
+    "#);
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn installer_no_setup_installs_binary_and_symlink_only() -> Result<()> {
@@ -372,6 +395,13 @@ impl AppInstallerFixture {
             arm64_sha256,
             amd64_sha256,
         })
+    }
+
+    fn new_arm64_only() -> Result<Self> {
+        let fixture = Self::new()?;
+        delete_file(&fixture.records.join("pv-0.9.0-darwin-amd64.json"))?;
+
+        Ok(fixture)
     }
 
     fn generate_installer(&self) -> Result<String> {
@@ -943,6 +973,15 @@ fn assert_download_outputs_were_removed(curl_log: &Utf8Path) -> Result<()> {
 )]
 fn create_dir_all(path: &Utf8Path) -> Result<()> {
     fs::create_dir_all(path)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "installer contract tests mutate local fixture files"
+)]
+fn delete_file(path: &Utf8Path) -> Result<()> {
+    fs::remove_file(path)?;
     Ok(())
 }
 

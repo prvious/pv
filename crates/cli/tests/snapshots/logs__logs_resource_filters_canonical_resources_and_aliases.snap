@@ -1,0 +1,78 @@
+---
+source: crates/cli/tests/logs.rs
+expression: outputs
+---
+{
+    "mail": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "mailpit ready\n",
+        stderr: "",
+    },
+    "mailpit": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "mailpit ready\n",
+        stderr: "",
+    },
+    "mysql": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "mysql ready\n",
+        stderr: "",
+    },
+    "pg": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "postgres ready\n",
+        stderr: "",
+    },
+    "postgres": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "postgres ready\n",
+        stderr: "",
+    },
+    "redis": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "redis ready\n",
+        stderr: "",
+    },
+    "rustfs": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "rustfs ready\n",
+        stderr: "",
+    },
+    "s3": RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "rustfs ready\n",
+        stderr: "",
+    },
+}

@@ -1,0 +1,158 @@
+name: Privileged macOS RC
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_manifest_url:
+        description: "Managed Resource artifact manifest URL; defaults to R2_PUBLIC_BASE_URL/manifest.json"
+        required: false
+        default: ""
+        type: string
+      app_update_manifest_url:
+        description: "PV app update manifest URL; defaults to R2_PUBLIC_BASE_URL/pv-app-manifest.json"
+        required: false
+        default: ""
+        type: string
+      installer_url:
+        description: "PV installer URL; defaults to R2_PUBLIC_BASE_URL/install.sh"
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      artifact_manifest_url:
+        description: "Managed Resource artifact manifest URL; defaults to R2_PUBLIC_BASE_URL/manifest.json"
+        required: false
+        default: ""
+        type: string
+      app_update_manifest_url:
+        description: "PV app update manifest URL; defaults to R2_PUBLIC_BASE_URL/pv-app-manifest.json"
+        required: false
+        default: ""
+        type: string
+      installer_url:
+        description: "PV installer URL; defaults to R2_PUBLIC_BASE_URL/install.sh"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  privileged-rc:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Resolve manifest endpoints
+        id: manifest
+        env:
+          ARTIFACT_MANIFEST_INPUT: ${{ inputs.artifact_manifest_url }}
+          APP_UPDATE_MANIFEST_INPUT: ${{ inputs.app_update_manifest_url }}
+          INSTALLER_INPUT: ${{ inputs.installer_url }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -eu
+
+          artifact_manifest_url="$ARTIFACT_MANIFEST_INPUT"
+          app_update_manifest_url="$APP_UPDATE_MANIFEST_INPUT"
+          installer_url="$INSTALLER_INPUT"
+
+          if [ -z "$artifact_manifest_url" ] || [ -z "$app_update_manifest_url" ]; then
+            if [ -z "$R2_PUBLIC_BASE_URL" ]; then
+              printf '%s\n' "R2_PUBLIC_BASE_URL is required when manifest inputs are omitted" >&2
+              exit 1
+            fi
+          fi
+
+          if [ -z "$artifact_manifest_url" ]; then
+            artifact_manifest_url="${R2_PUBLIC_BASE_URL%/}/manifest.json"
+          fi
+          if [ -z "$app_update_manifest_url" ]; then
+            app_update_manifest_url="${R2_PUBLIC_BASE_URL%/}/pv-app-manifest.json"
+          fi
+          if [ -z "$installer_url" ]; then
+            case "$app_update_manifest_url" in
+              */pv-app-manifest.json)
+                installer_url="${app_update_manifest_url%/pv-app-manifest.json}/install.sh"
+                ;;
+              *)
+                if [ -n "$R2_PUBLIC_BASE_URL" ]; then
+                  installer_url="${R2_PUBLIC_BASE_URL%/}/install.sh"
+                else
+                  printf '%s\n' "installer_url is required when app_update_manifest_url does not end with /pv-app-manifest.json" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+          fi
+
+          case "$artifact_manifest_url" in
+            https://*) ;;
+            *)
+              printf '%s\n' "artifact_manifest_url must use https" >&2
+              exit 1
+              ;;
+          esac
+          case "$app_update_manifest_url" in
+            https://*) ;;
+            *)
+              printf '%s\n' "app_update_manifest_url must use https" >&2
+              exit 1
+              ;;
+          esac
+          case "$installer_url" in
+            https://*) ;;
+            *)
+              printf '%s\n' "installer_url must use https" >&2
+              exit 1
+              ;;
+          esac
+
+          case "$artifact_manifest_url" in
+            *$'\n'*|*$'\r'*)
+              printf '%s\n' "artifact_manifest_url must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+          case "$app_update_manifest_url" in
+            *$'\n'*|*$'\r'*)
+              printf '%s\n' "app_update_manifest_url must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+          case "$installer_url" in
+            *$'\n'*|*$'\r'*)
+              printf '%s\n' "installer_url must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'artifact_manifest_url=%s\n' "$artifact_manifest_url"
+            printf 'app_update_manifest_url=%s\n' "$app_update_manifest_url"
+            printf 'installer_url=%s\n' "$installer_url"
+          } >>"${GITHUB_OUTPUT:?}"
+
+      - name: Run privileged RC workflow
+        shell: bash
+        env:
+          PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence
+          RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}
+          RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}
+          RESOLVED_INSTALLER_URL: ${{ steps.manifest.outputs.installer_url }}
+        run: bash scripts/ci/privileged-macos-rc.sh
+
+      - name: Upload privileged RC evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: privileged-macos-rc-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-privileged-rc-evidence
+          if-no-files-found: error

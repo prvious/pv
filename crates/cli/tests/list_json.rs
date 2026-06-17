@@ -114,6 +114,51 @@ fn resource_list_json_outputs_installed_tracks_and_aliases() -> anyhow::Result<(
     Ok(())
 }
 
+#[test]
+fn resource_list_json_documents_composer_and_frankenphp_omissions() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &home);
+    seed_resource_tracks(&paths)?;
+    let commands = [
+        "php:list",
+        "redis:list",
+        "mysql:list",
+        "postgres:list",
+        "pg:list",
+        "mailpit:list",
+        "mail:list",
+        "rustfs:list",
+        "s3:list",
+    ];
+    let mut listed_resources = Vec::new();
+
+    for command in commands {
+        let output = run_pv(&[command, "--json"], &environment)?;
+        let json = parse_json_output(output)?;
+        collect_listed_resources(&json, &mut listed_resources);
+    }
+
+    listed_resources.sort();
+    listed_resources.dedup();
+    assert!(!listed_resources.contains(&"composer".to_string()));
+    assert!(!listed_resources.contains(&"frankenphp".to_string()));
+    assert_list_json_snapshot(
+        "resource_list_json_documents_composer_and_frankenphp_omissions",
+        tempdir.path(),
+        &BTreeMap::from([
+            (
+                "installed_but_without_public_list_command",
+                vec!["composer".to_string(), "frankenphp".to_string()],
+            ),
+            ("listed_resources", listed_resources),
+        ]),
+    );
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,
@@ -168,6 +213,8 @@ fn seed_resource_tracks(paths: &PvPaths) -> anyhow::Result<()> {
     let mut database = Database::open(paths)?;
     let installs = [
         ("php", "8.4", "8.4.8-pv1"),
+        ("frankenphp", "8.4", "8.4.8-pv1"),
+        ("composer", "2", "2.8.1-pv1"),
         ("redis", "7", "7.2.5-pv1"),
         ("mysql", "8.0", "8.0.36-pv1"),
         ("postgres", "16", "16.4-pv1"),
@@ -205,6 +252,20 @@ fn seed_resource_tracks(paths: &PvPaths) -> anyhow::Result<()> {
     )?;
 
     Ok(())
+}
+
+fn collect_listed_resources(json: &serde_json::Value, listed_resources: &mut Vec<String>) {
+    let Some(tracks) = json.get("tracks").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+
+    for track in tracks {
+        if let Some(resource_name) = track.get("resource").and_then(serde_json::Value::as_str) {
+            listed_resources.push(resource_name.to_string());
+        } else {
+            listed_resources.push("php".to_string());
+        }
+    }
 }
 
 #[expect(

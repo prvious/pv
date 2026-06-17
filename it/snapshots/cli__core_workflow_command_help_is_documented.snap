@@ -1,0 +1,48 @@
+---
+source: it/cli.rs
+expression: output
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Configure PV system integrations\n\nUsage: pv setup [OPTIONS]\n\nOptions:\n      --no-color         Disable colored output\n      --yes              Accept PV-owned setup confirmations\n      --non-interactive  Disable interactive prompts\n      --no-path          Skip shell profile integration\n  -h, --help             Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Uninstall PV safely\n\nUsage: pv uninstall [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n      --prune     Remove PV-owned state under ~/.pv\n      --force     Skip prune confirmation\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Link a Project\n\nUsage: pv link [OPTIONS] [path]\n\nArguments:\n  [path]  Project path to link\n\nOptions:\n      --hostname <hostname>  Primary .test hostname\n      --no-color             Disable colored output\n  -h, --help                 Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Unlink a Project\n\nUsage: pv unlink [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to unlink\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Open a linked Project\n\nUsage: pv open [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to open\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Print generated Project environment values\n\nUsage: pv project:env [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to render env for\n\nOptions:\n      --json      Print generated Project environment values as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+]

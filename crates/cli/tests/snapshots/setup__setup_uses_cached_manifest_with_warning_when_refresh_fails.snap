@@ -1,0 +1,23 @@
+---
+source: crates/cli/tests/setup.rs
+assertion_line: 482
+expression: "(output, fixture.environment.operations())"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nwarning: artifact manifest refresh failed (HTTP request failed for `https://artifacts.example.test/manifest.json`: offline); using cached manifest at <tempdir>/home/.pv/downloads/manifest.json\nShell profile integration skipped by --no-path.\nRun `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nInstalled system pf redirect config\nPrepared PV local CA\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  fingerprint: <fingerprint>\nSystem keychain trust: not trusted\n  fingerprint: <fingerprint>\nTrusted PV local CA in the System keychain.\nLaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist\nDaemon started\nDaemon healthy\nSystem reconciliation completed: stub job completed\nPV setup complete\n",
+        stderr: "",
+    },
+    [
+        "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
+        "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
+        "trust <fingerprint>",
+        "bootstrap <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist",
+        "kickstart com.prvious.pv.daemon",
+    ],
+)

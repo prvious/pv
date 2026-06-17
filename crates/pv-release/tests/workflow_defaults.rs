@@ -9,6 +9,8 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
 ];
 const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
 const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
+const PRIVILEGED_MACOS_RC_WORKFLOW_PATH: &str = ".github/workflows/privileged-macos-rc.yml";
+const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
 
 #[test]
 fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
@@ -186,14 +188,20 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
     let release_workflow = release.as_deref().unwrap_or("");
     let summary = format!(
-        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nmanifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\napp_platforms_default={}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nbuild_app_platform_gate={}\ngenerate_uses_selected_platforms={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
         release.is_some(),
         workflow_name(release_workflow).unwrap_or(""),
         workflow_job_ids(release_workflow),
+        input_default(release_workflow, "app_platforms").unwrap_or(""),
         platform_matrices(release_workflow),
         release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform))"),
+        release_workflow.contains("PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}")
+            && release_workflow.contains("IFS=',' read -r -a platforms <<< \"$PV_APP_PLATFORMS\""),
         release_workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL")
             && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json"),
+        release_workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL")
+            && release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}/manifest.json"),
         release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
         release_workflow.contains("pv-staging"),
         release_workflow.contains("artifacts-staging.pv.prvious.dev"),
@@ -203,8 +211,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         app_binary_object_key_reference_present(release_workflow),
         app_record_object_key_reference_present(release_workflow),
         uses_action_references(release_workflow, "actions/upload-artifact").len(),
-        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-arm64")
-            && release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-darwin-amd64"),
+        release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-*"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/install.sh"),
@@ -214,9 +221,13 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     release_workflow_exists=true
     release_name=PV App Release
     jobs=["prepare-release", "build-app", "generate-release"]
+    app_platforms_default=darwin-arm64
     platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
     uses_native_macos_runners=true
-    manifest_url_env=true
+    build_app_platform_gate=true
+    generate_uses_selected_platforms=true
+    app_update_manifest_url_env=true
+    artifact_manifest_url_env=true
     uses_r2_public_base_url_var=true
     hardcodes_staging_bucket=false
     hardcodes_staging_public_base_url=false
@@ -241,10 +252,16 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nmanaged_resource_key_references={:?}",
+        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
         publication.is_some(),
         stable_key_reference_present(publication_workflow, "pv-app-manifest.json"),
         stable_key_reference_present(publication_workflow, "install.sh"),
+        publication_workflow.contains("for binary_name in pv-darwin-arm64; do")
+            && publication_workflow.contains("missing required app binary for $binary_name"),
+        !publication_workflow.contains("for binary_name in pv-darwin-arm64 pv-darwin-amd64; do")
+            && publication_workflow.contains(
+                "find \"$handoff_dir\" -type f -path \"*/pv/records/*/pv-darwin-*.json\""
+            ),
         managed_resource_key_references(publication_workflow),
     );
 
@@ -252,6 +269,8 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     publication_workflow_exists=true
     stable_app_manifest_key_present=true
     stable_installer_key_present=true
+    requires_arm64_handoff=true
+    allows_amd64_to_be_absent=true
     managed_resource_key_references=[]
     "#);
 
@@ -349,7 +368,7 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}",
+        "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}\nhandles_missing_current_stable_without_empty_array_nounset={}",
         publication_workflow.contains("--base-url \"$R2_PUBLIC_BASE_URL\""),
         publication_workflow.contains("--current-app-manifest"),
         publication_workflow.contains("--current-app-installer"),
@@ -357,6 +376,12 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
         publication_workflow.contains("--installer"),
         publication_workflow.contains("current-pv-app-manifest.json"),
         publication_workflow.contains("current-install.sh"),
+        publication_workflow.contains("run_stage_app_publication()")
+            && publication_workflow.contains("if [ \"${#current_stable_args[@]}\" -eq 0 ]; then")
+            && publication_workflow.contains("run_stage_app_publication")
+            && !publication_workflow.contains(
+                "--base-url \"$R2_PUBLIC_BASE_URL\" \\\n            \"${current_stable_args[@]}\"",
+            ),
     );
 
     assert_snapshot!(summary, @r#"
@@ -367,6 +392,7 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
     passes_installer_path=false
     fetches_current_stable_manifest=true
     fetches_current_stable_installer=true
+    handles_missing_current_stable_without_empty_array_nounset=true
     "#);
 
     Ok(())
@@ -419,6 +445,339 @@ fn app_publication_publishes_stable_installer_before_manifest() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(REAL_ARTIFACT_E2E_WORKFLOW_PATH))?;
+    let summary = format!(
+        "workflow_name={}\nmanifest_url_required={}\napp_update_manifest_input={}\ninstaller_url_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nrun_ignored_count={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_passes_manifest_inputs={}\nprivileged_job_passes_installer_input={}\nunpinned_uses={:?}",
+        workflow_name(&workflow).unwrap_or(""),
+        workflow.contains("manifest_url:") && workflow.contains("required: true"),
+        workflow.contains("app_update_manifest_url:") && workflow.contains("required: false"),
+        workflow.contains("installer_url:") && workflow.contains("required: false"),
+        workflow.contains("privileged_rc:")
+            && workflow.contains("description: Run the privileged macOS RC workflow")
+            && workflow.contains("default: false"),
+        workflow.matches("PV_E2E_REAL_ARTIFACTS: \"1\"").count(),
+        workflow
+            .matches("PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}")
+            .count(),
+        workflow.contains(
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(real_artifact_gateway_e2e_serves_tiny_php_project)'"
+        ),
+        workflow.contains(
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
+        ),
+        workflow.matches("--run-ignored ignored-only").count(),
+        workflow.contains("uses: ./.github/workflows/privileged-macos-rc.yml"),
+        workflow.contains("if: ${{ inputs.privileged_rc }}"),
+        workflow.contains("artifact_manifest_url: ${{ inputs.manifest_url }}")
+            && workflow.contains("app_update_manifest_url: ${{ inputs.app_update_manifest_url }}"),
+        workflow.contains("installer_url: ${{ inputs.installer_url }}"),
+        unpinned_uses_references(&workflow),
+    );
+
+    assert_snapshot!(summary, @r#"
+    workflow_name=Real Artifact E2E
+    manifest_url_required=true
+    app_update_manifest_input=true
+    installer_url_input=true
+    privileged_rc_input=true
+    real_artifact_env_count=2
+    manifest_url_env_count=2
+    gateway_command=true
+    resource_matrix_command=true
+    run_ignored_count=2
+    privileged_job_uses_rc_workflow=true
+    privileged_job_is_optional=true
+    privileged_job_passes_manifest_inputs=true
+    privileged_job_passes_installer_input=true
+    unpinned_uses=[]
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_optional_file(&workspace_root.join(PRIVILEGED_MACOS_RC_WORKFLOW_PATH))?;
+    let workflow = workflow.as_deref().unwrap_or("");
+    let summary = privileged_macos_rc_workflow_summary(workflow);
+
+    assert_snapshot!(summary, @r#"
+    workflow_exists=true
+    workflow_name=Privileged macOS RC
+    manual_dispatch=true
+    reusable_call=true
+    no_push_or_pull_request=true
+    artifact_manifest_input_default=
+    app_manifest_input_default=
+    runs_on_macos_14=true
+    avoids_source_build=true
+    resolves_manifest_from_input_or_public_var=true
+    resolves_installer_from_input_or_manifest=true
+    rejects_manifest_output_newlines=true
+    rejects_installer_output_newlines=true
+    rc_step_uses_resolved_manifest_env=true
+    rc_step_uses_resolved_installer_env=true
+    summary_uses_manifest_env=true
+    summary_uses_installer_env=true
+    summary_avoids_manifest_expressions=true
+    validates_compiled_manifest_defaults=true
+    runs_checked_in_script=true
+    workflow_passes_evidence_dir_env=true
+    script_defaults_evidence_dir_from_runner_temp=true
+    evidence_step_disables_errexit=true
+    collect_file_uses_root_shell_redirect=true
+    collect_file_avoids_sudo_redirect=true
+    resolver_evidence=true
+    pf_evidence=true
+    ca_trust_evidence=true
+    launch_agent_evidence=true
+    records_blocked_steps=true
+    uploads_evidence=true
+    installs_from_candidate_installer=true
+    installer_download_restricts_redirect_protocols=true
+    setup_command=true
+    restart_command=true
+    restart_after_initial_serving=true
+    restart_wait_command=true
+    update_check_waits_for_restart_reconciliation=true
+    link_command=true
+    link_wait_command=true
+    serve_http_curl=true
+    serve_http_follows_https_redirect=true
+    serve_https_curl=true
+    serve_https_uses_pv_ca=true
+    post_restart_http_follows_https_redirect=true
+    serve_body_checked=true
+    update_check_json=true
+    doctor_command=true
+    uninstall_command=true
+    resolver_cleanup_required=true
+    pf_anchor_cleanup_required=true
+    pf_rules_cleanup_required=true
+    ca_trust_cleanup_required=true
+    launch_agent_cleanup_required=true
+    sudo_preflight_exits_when_blocked=true
+    "#);
+
+    Ok(())
+}
+
+fn privileged_macos_rc_workflow_summary(workflow: &str) -> String {
+    [
+        privileged_macos_rc_dispatch_summary(workflow),
+        privileged_macos_rc_manifest_summary(workflow),
+        privileged_macos_rc_evidence_summary(workflow),
+        privileged_macos_rc_system_summary(workflow),
+    ]
+    .join("\n")
+}
+
+fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
+    format!(
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
+        !workflow.is_empty(),
+        workflow_name(workflow).unwrap_or(""),
+        workflow.contains("workflow_dispatch:"),
+        workflow.contains("workflow_call:"),
+        !workflow.contains("pull_request:") && !workflow.contains("push:"),
+        input_default(workflow, "artifact_manifest_url").unwrap_or(""),
+        input_default(workflow, "app_update_manifest_url").unwrap_or(""),
+        workflow.contains("runs-on: macos-14"),
+    )
+}
+
+fn privileged_macos_rc_manifest_summary(workflow: &str) -> String {
+    format!(
+        "avoids_source_build={}\nresolves_manifest_from_input_or_public_var={}\nresolves_installer_from_input_or_manifest={}\nrejects_manifest_output_newlines={}\nrejects_installer_output_newlines={}\nrc_step_uses_resolved_manifest_env={}\nrc_step_uses_resolved_installer_env={}\nsummary_uses_manifest_env={}\nsummary_uses_installer_env={}\nsummary_avoids_manifest_expressions={}\nvalidates_compiled_manifest_defaults={}",
+        !workflow.contains("cargo build --locked --release --package pv --bin pv")
+            && !workflow.contains("PV_DEFAULT_ARTIFACT_MANIFEST_URL")
+            && !workflow.contains("PV_DEFAULT_APP_UPDATE_MANIFEST_URL"),
+        workflow.contains("${{ inputs.artifact_manifest_url }}")
+            && workflow.contains("R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}")
+            && workflow.contains("artifact_manifest_url=\"${R2_PUBLIC_BASE_URL%/}/manifest.json\""),
+        workflow.contains("${{ inputs.installer_url }}")
+            && workflow.contains("installer_url=\"${R2_PUBLIC_BASE_URL%/}/install.sh\"")
+            && workflow.contains("installer_url=\"${app_update_manifest_url%/pv-app-manifest.json}/install.sh\""),
+        workflow.matches("must not contain newlines").count() == 3,
+        workflow.contains("installer_url must not contain newlines"),
+        workflow.contains(
+            "RESOLVED_ARTIFACT_MANIFEST_URL: ${{ steps.manifest.outputs.artifact_manifest_url }}"
+        ) && workflow.contains(
+            "RESOLVED_APP_UPDATE_MANIFEST_URL: ${{ steps.manifest.outputs.app_update_manifest_url }}"
+        ),
+        workflow.contains("RESOLVED_INSTALLER_URL: ${{ steps.manifest.outputs.installer_url }}"),
+        workflow_contains_privileged_script(
+            "printf 'artifact_manifest_url=%s\\n' \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
+        ) && workflow_contains_privileged_script(
+            "printf 'app_update_manifest_url=%s\\n' \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
+        ),
+        workflow_contains_privileged_script(
+            "printf 'installer_url=%s\\n' \"$RESOLVED_INSTALLER_URL\"",
+        ),
+        !workflow.contains(
+            "printf 'artifact_manifest_url=%s\\n' \"${{ steps.manifest.outputs.artifact_manifest_url }}\""
+        ) && !workflow.contains(
+            "printf 'app_update_manifest_url=%s\\n' \"${{ steps.manifest.outputs.app_update_manifest_url }}\""
+        ),
+        workflow_contains_privileged_script(
+            "require_binary_contains_url artifact-manifest \"$RESOLVED_ARTIFACT_MANIFEST_URL\""
+        ) && workflow_contains_privileged_script(
+            "require_binary_contains_url app-update-manifest \"$RESOLVED_APP_UPDATE_MANIFEST_URL\""
+        ),
+    )
+}
+
+fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
+    format!(
+        "runs_checked_in_script={}\nworkflow_passes_evidence_dir_env={}\nscript_defaults_evidence_dir_from_runner_temp={}\nevidence_step_disables_errexit={}\ncollect_file_uses_root_shell_redirect={}\ncollect_file_avoids_sudo_redirect={}\nresolver_evidence={}\npf_evidence={}\nca_trust_evidence={}\nlaunch_agent_evidence={}\nrecords_blocked_steps={}\nuploads_evidence={}",
+        workflow.contains("scripts/ci/privileged-macos-rc.sh"),
+        workflow.contains("PV_RC_EVIDENCE_DIR: ${{ runner.temp }}/pv-privileged-rc-evidence"),
+        workflow_contains_privileged_script(
+            "PV_RC_EVIDENCE_DIR=\"${PV_RC_EVIDENCE_DIR:-${RUNNER_TEMP:?}/pv-privileged-rc-evidence}\"",
+        ),
+        workflow_contains_privileged_script("set +e"),
+        workflow_contains_privileged_script("sudo sh -c 'cat \"$1\" > \"$2\" 2> \"$3\"'"),
+        !workflow.contains("sudo cat \"$path\" >"),
+        workflow_contains_privileged_script("/etc/resolver/test"),
+        workflow_contains_privileged_script("pfctl -sr")
+            && workflow_contains_privileged_script("pfctl -s nat")
+            && workflow_contains_privileged_script("/etc/pf.anchors/com.prvious.pv"),
+        workflow_contains_privileged_script("security verify-cert")
+            && workflow_contains_privileged_script("ca.pem"),
+        workflow_contains_privileged_script("launchctl print")
+            && workflow_contains_privileged_script("com.prvious.pv.daemon"),
+        workflow_contains_privileged_script("record_blocked"),
+        workflow.contains("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
+    )
+}
+
+fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
+    format!(
+        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\npost_restart_http_follows_https_redirect={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
+        workflow_contains_privileged_script(
+            "curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
+        ) && workflow_contains_privileged_script(
+            "bash \"$PV_RC_INSTALLER\" --no-setup --no-path --non-interactive"
+        ),
+        workflow_contains_privileged_script("--proto '=https' --proto-redir '=https'"),
+        workflow_contains_privileged_script("pv setup --yes --no-path"),
+        workflow_contains_privileged_script("pv daemon:restart"),
+        privileged_script_contains_ordered(&[
+            "record_status serve-https required curl",
+            "record_status daemon-restart required pv daemon:restart",
+        ]),
+        workflow_contains_privileged_script("wait_for_pv_jobs_idle()")
+            && workflow_contains_privileged_script(
+                "record_status restart-reconciliation-idle required wait_for_pv_jobs_idle",
+            ),
+        privileged_script_contains_ordered(&[
+            "record_status daemon-restart required pv daemon:restart",
+            "record_status restart-reconciliation-idle required wait_for_pv_jobs_idle",
+            "record_status update-check required pv update --check --json",
+        ]),
+        workflow_contains_privileged_script("pv link \"$PV_RC_PROJECT\""),
+        privileged_script_contains_ordered(&[
+            "record_status link required pv link \"$PV_RC_PROJECT\"",
+            "record_status link-reconciliation-idle required wait_for_pv_jobs_idle",
+            "record_status status-json required pv status --json",
+        ]),
+        workflow_contains_privileged_script(
+            "record_status serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
+        ),
+        workflow_contains_privileged_script(
+            "record_status serve-http required curl --fail --show-error --silent --location"
+        ),
+        workflow_contains_privileged_script(
+            "record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" https://pv-rc-project.test/"
+        ),
+        workflow_contains_privileged_script("--cacert \"$HOME/.pv/certificates/ca.pem\""),
+        workflow_contains_privileged_script(
+            "record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
+        ),
+        workflow_contains_privileged_script(
+            "require_output_contains serve-http pv-privileged-rc-ok"
+        ) && workflow_contains_privileged_script(
+            "require_output_contains serve-https pv-privileged-rc-ok"
+        ) && workflow_contains_privileged_script(
+            "require_output_contains post-restart-serve-http pv-privileged-rc-ok"
+        ) && workflow_contains_privileged_script(
+            "require_output_contains post-restart-serve-https pv-privileged-rc-ok"
+        ),
+        workflow_contains_privileged_script("pv update --check --json"),
+        workflow_contains_privileged_script("pv doctor"),
+        workflow_contains_privileged_script("pv uninstall"),
+        workflow_contains_privileged_script(
+            "record_status resolver-removed required test ! -e /etc/resolver/test"
+        ),
+        workflow_contains_privileged_script(
+            "record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv"
+        ),
+        workflow_contains_privileged_script("pv_pf_rules_absent()")
+            && workflow_contains_privileged_script(
+                "record_status pf-rules-removed required pv_pf_rules_absent"
+            )
+            && workflow_contains_privileged_script(
+                "record_status pf-nat-rules-after-uninstall evidence sudo pfctl -s nat"
+            )
+            && workflow_contains_privileged_script("grep -Fq \"com.prvious.pv\""),
+        workflow_contains_privileged_script(
+            "PV_RC_BIN=\"${RUNNER_TEMP:?}/pv-privileged-rc-bin/pv\""
+        ) && workflow_contains_privileged_script(
+            "install -m 755 \"$HOME/.pv/bin/pv\" \"$PV_RC_BIN\"",
+        ) && workflow_contains_privileged_script(
+            "record_status ca-status-after-uninstall evidence \"$PV_RC_BIN\" ca:status"
+        ) && workflow_contains_privileged_script("pv_ca_trust_removed()")
+            && workflow_contains_privileged_script(
+                "\"$PV_RC_BIN\" ca:status | grep -F \"System keychain trust: not trusted\""
+            )
+            && workflow_contains_privileged_script(
+                "record_status ca-trust-removed required pv_ca_trust_removed"
+            ),
+        workflow_contains_privileged_script(
+            "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
+        ),
+        workflow_contains_privileged_script(
+            "record_status sudo-preflight required sudo -n true || {"
+        ) && workflow_contains_privileged_script(
+            "record_blocked sudo-required \"passwordless sudo is unavailable on this runner\""
+        ) && workflow_contains_privileged_script("exit 1"),
+    )
+}
+
+fn workflow_contains_privileged_script(needle: &str) -> bool {
+    privileged_script()
+        .map(|script| script.contains(needle))
+        .unwrap_or(false)
+}
+
+fn privileged_script_contains_ordered(needles: &[&str]) -> bool {
+    privileged_script()
+        .map(|script| ordered_substrings(&script, needles))
+        .unwrap_or(false)
+}
+
+fn privileged_script() -> Option<String> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    read_file(&workspace_root.join("scripts/ci/privileged-macos-rc.sh")).ok()
+}
+
+fn ordered_substrings(haystack: &str, needles: &[&str]) -> bool {
+    let mut offset = 0;
+
+    for needle in needles {
+        let Some(found) = haystack[offset..].find(needle) else {
+            return false;
+        };
+        offset += found + needle.len();
+    }
+
+    true
+}
+
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
     let input_header = format!("      {input}:");
     let mut in_input = false;
@@ -448,6 +807,7 @@ fn unpinned_uses_references(workflow: &str) -> Vec<&str> {
     workflow
         .lines()
         .filter_map(uses_reference)
+        .filter(|reference| !reference.starts_with("./"))
         .filter(|reference| !uses_reference_is_pinned(reference))
         .collect()
 }
@@ -625,8 +985,7 @@ fn managed_resource_key_references(workflow: &str) -> Vec<&str> {
 
 fn app_binary_object_key_reference_present(workflow: &str) -> bool {
     workflow.contains("pv/")
-        && workflow.contains("pv-darwin-arm64")
-        && workflow.contains("pv-darwin-amd64")
+        && (workflow.contains("pv-darwin-arm64") || workflow.contains("pv-${{ matrix.platform }}"))
 }
 
 fn versioned_generated_artifact_reference_present(workflow: &str, artifact: &str) -> bool {

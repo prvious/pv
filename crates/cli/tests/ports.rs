@@ -20,6 +20,8 @@ struct TestEnvironment {
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
     active_pf_config: RefCell<Option<PfRedirectConfig>>,
+    active_pf_privilege_modes: RefCell<Vec<platform::PrivilegeMode>>,
+    active_pf_read_fails_when_unloaded: bool,
     operations: RefCell<Vec<String>>,
 }
 
@@ -37,12 +39,19 @@ impl TestEnvironment {
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
             active_pf_config: RefCell::new(None),
+            active_pf_privilege_modes: RefCell::new(Vec::new()),
+            active_pf_read_fails_when_unloaded: false,
             operations: RefCell::new(Vec::new()),
         }
     }
 
     fn with_listener(mut self, port: u16) -> Self {
         self.listening_ports.insert(port);
+        self
+    }
+
+    fn with_active_pf_read_failing_when_unloaded(mut self) -> Self {
+        self.active_pf_read_fails_when_unloaded = true;
         self
     }
 }
@@ -114,6 +123,23 @@ impl Environment for TestEnvironment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
+    }
+
+    fn active_pf_redirect_config_with_privilege_mode(
+        &self,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
+        self.active_pf_privilege_modes
+            .borrow_mut()
+            .push(privilege_mode);
+        if self.active_pf_read_fails_when_unloaded && self.active_pf_config.borrow().is_none() {
+            return Err(platform::PlatformError::SystemIntegrationCommandStatus {
+                command: "/sbin/pfctl -s nat".to_string(),
+                status: "exit status: 1".to_string(),
+            });
+        }
+
         Ok(self.active_pf_config.borrow().clone())
     }
 
@@ -264,6 +290,55 @@ fn ports_install_reloads_current_files_when_active_redirects_are_missing() -> an
     assert_eq!(
         *environment.active_pf_config.borrow(),
         Some(PfRedirectConfig::new(48080, 48443))
+    );
+    assert_eq!(
+        environment.active_pf_privilege_modes.borrow().as_slice(),
+        [
+            platform::PrivilegeMode::Interactive,
+            platform::PrivilegeMode::Interactive
+        ]
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_skips_active_rule_inspection_before_first_install() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_active_pf_read_failing_when_unloaded();
+
+    let output = run_pv(&["ports:install"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert!(
+        environment
+            .operations
+            .borrow()
+            .iter()
+            .any(|operation| { operation.starts_with("install pf ") })
+    );
+    assert_eq!(
+        *environment.active_pf_config.borrow(),
+        Some(PfRedirectConfig::new(48080, 48443))
+    );
+    assert_eq!(
+        environment.active_pf_privilege_modes.borrow().as_slice(),
+        [platform::PrivilegeMode::Interactive]
     );
 
     with_normalized_tempdir(tempdir.path(), || {

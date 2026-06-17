@@ -142,15 +142,15 @@ jobs:
             exit 1
           fi
 
-          for binary_name in pv-darwin-arm64 pv-darwin-amd64; do
+          for binary_name in pv-darwin-arm64; do
             binary_source=$(find "$handoff_dir" -type f -path "*/pv/*/$binary_name" -print -quit)
             record_source=$(find "$handoff_dir" -type f -path "*/pv/records/*/$binary_name.json" -print -quit)
             if [ -z "$binary_source" ]; then
-              printf '%s\n' "missing app binary for $binary_name" >&2
+              printf '%s\n' "missing required app binary for $binary_name" >&2
               exit 1
             fi
             if [ -z "$record_source" ]; then
-              printf '%s\n' "missing app release record for $binary_name" >&2
+              printf '%s\n' "missing required app release record for $binary_name" >&2
               exit 1
             fi
           done
@@ -200,13 +200,21 @@ jobs:
             current_stable_args+=(--current-app-installer "$current_app_installer")
           fi
 
-          cargo run --locked -p pv-release -- stage-app-publication \
-            --source-binaries "$handoff_dir" \
-            --candidate-records "$candidate_record_dir" \
-            --stage "$stage" \
-            --source-run-id "$SOURCE_RUN_ID" \
-            --base-url "$R2_PUBLIC_BASE_URL" \
-            "${current_stable_args[@]}"
+          run_stage_app_publication() {
+            cargo run --locked -p pv-release -- stage-app-publication \
+              --source-binaries "$handoff_dir" \
+              --candidate-records "$candidate_record_dir" \
+              --stage "$stage" \
+              --source-run-id "$SOURCE_RUN_ID" \
+              --base-url "$R2_PUBLIC_BASE_URL" \
+              "$@"
+          }
+
+          if [ "${#current_stable_args[@]}" -eq 0 ]; then
+            run_stage_app_publication
+          else
+            run_stage_app_publication "${current_stable_args[@]}"
+          fi
 
           expected_app_manifest_key="pv/manifests/runs/$SOURCE_RUN_ID/pv-app-manifest.json"
           expected_installer_key="pv/manifests/runs/$SOURCE_RUN_ID/install.sh"

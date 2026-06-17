@@ -13,7 +13,7 @@ use resources::{
 };
 use serde::Deserialize;
 use state::{
-    Database, EnvContextValues, LinkProjectInput, PortOwner, PortRequest,
+    Database, EnvContextValues, JobStatus, LinkProjectInput, PortOwner, PortRequest,
     ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
     ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
     StateError,
@@ -22,6 +22,7 @@ use state::{
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
+    reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
@@ -40,6 +41,20 @@ const RUSTFS_ARCHIVE_FILE_NAME: &str = "rustfs-1.0.0-pv1-any.tar.gz";
 const POSTGRES_TRACK: &str = "16";
 const POSTGRES_ARTIFACT_VERSION: &str = "16.0-pv1";
 const POSTGRES_ARCHIVE_FILE_NAME: &str = "postgres-16.0-pv1-any.tar.gz";
+const SETUP_DEFAULT_PHP_TRACK: &str = "8.5";
+const SETUP_DEFAULT_PHP_ARTIFACT_VERSION: &str = "8.5.0-pv1";
+const SETUP_DEFAULT_COMPOSER_TRACK: &str = "2";
+const SETUP_DEFAULT_COMPOSER_ARTIFACT_VERSION: &str = "2.8.0-pv1";
+const SETUP_DEFAULT_MYSQL_TRACK: &str = "8.4";
+const SETUP_DEFAULT_MYSQL_ARTIFACT_VERSION: &str = "8.4.0-pv1";
+const SETUP_DEFAULT_POSTGRES_TRACK: &str = "18";
+const SETUP_DEFAULT_POSTGRES_ARTIFACT_VERSION: &str = "18.0-pv1";
+const SETUP_DEFAULT_REDIS_TRACK: &str = "8.8";
+const SETUP_DEFAULT_REDIS_ARTIFACT_VERSION: &str = "8.8.0-pv1";
+const SETUP_DEFAULT_MAILPIT_TRACK: &str = "1";
+const SETUP_DEFAULT_MAILPIT_ARTIFACT_VERSION: &str = "1.27.0-pv1";
+const SETUP_DEFAULT_RUSTFS_TRACK: &str = "1";
+const SETUP_DEFAULT_RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
@@ -59,6 +74,85 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
         preferred_port: 8025,
     },
 ];
+const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
+    ("bin/initdb", "#!/bin/sh\nexit 0\n"),
+    ("share/postgres.bki", "postgres catalog"),
+];
+const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
+    SetupDefaultFixture {
+        resource_name: "composer",
+        track: SETUP_DEFAULT_COMPOSER_TRACK,
+        artifact_version: SETUP_DEFAULT_COMPOSER_ARTIFACT_VERSION,
+        archive_file_name: "composer-2.8.0-pv1-any.tar.gz",
+        executable_relative_path: "composer.phar",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "frankenphp",
+        track: SETUP_DEFAULT_PHP_TRACK,
+        artifact_version: SETUP_DEFAULT_PHP_ARTIFACT_VERSION,
+        archive_file_name: "frankenphp-8.5.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/frankenphp",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "mailpit",
+        track: SETUP_DEFAULT_MAILPIT_TRACK,
+        artifact_version: SETUP_DEFAULT_MAILPIT_ARTIFACT_VERSION,
+        archive_file_name: "mailpit-1.27.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/mailpit",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "mysql",
+        track: SETUP_DEFAULT_MYSQL_TRACK,
+        artifact_version: SETUP_DEFAULT_MYSQL_ARTIFACT_VERSION,
+        archive_file_name: "mysql-8.4.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/mysqld",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "php",
+        track: SETUP_DEFAULT_PHP_TRACK,
+        artifact_version: SETUP_DEFAULT_PHP_ARTIFACT_VERSION,
+        archive_file_name: "php-8.5.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/php",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "postgres",
+        track: SETUP_DEFAULT_POSTGRES_TRACK,
+        artifact_version: SETUP_DEFAULT_POSTGRES_ARTIFACT_VERSION,
+        archive_file_name: "postgres-18.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/postgres",
+        support_files: SETUP_DEFAULT_POSTGRES_SUPPORT_FILES,
+    },
+    SetupDefaultFixture {
+        resource_name: "redis",
+        track: SETUP_DEFAULT_REDIS_TRACK,
+        artifact_version: SETUP_DEFAULT_REDIS_ARTIFACT_VERSION,
+        archive_file_name: "redis-8.8.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/redis-server",
+        support_files: &[],
+    },
+    SetupDefaultFixture {
+        resource_name: "rustfs",
+        track: SETUP_DEFAULT_RUSTFS_TRACK,
+        artifact_version: SETUP_DEFAULT_RUSTFS_ARTIFACT_VERSION,
+        archive_file_name: "rustfs-1.0.0-pv1-any.tar.gz",
+        executable_relative_path: "bin/rustfs",
+        support_files: &[],
+    },
+];
+#[derive(Clone, Copy, Debug)]
+struct SetupDefaultFixture {
+    resource_name: &'static str,
+    track: &'static str,
+    artifact_version: &'static str,
+    archive_file_name: &'static str,
+    executable_relative_path: &'static str,
+    support_files: &'static [(&'static str, &'static str)],
+}
 
 #[test]
 fn production_catalog_uses_compiled_artifact_manifest_endpoint() {
@@ -255,10 +349,7 @@ async fn postgres_project_demand_rejects_cached_fixture_missing_support_files() 
     let runtime_states = database.runtime_observed_states()?;
 
     assert_eq!(resource, "postgres");
-    assert_eq!(
-        reason,
-        "missing required file `share/postgresql/postgres.bki`"
-    );
+    assert_eq!(reason, "missing required file `share/postgres.bki`");
     assert_eq!(
         read_optional_dotenv(&project)?,
         None,
@@ -838,6 +929,352 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 }
 
 #[tokio::test]
+async fn system_reconciliation_installs_desired_setup_defaults_without_starting_runtimes()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), SETUP_DEFAULT_FIXTURES)?;
+    let mut database = Database::open(&paths)?;
+    let setup_default_tracks = setup_default_tracks();
+    record_desired_setup_tracks(&mut database, &setup_default_tracks)?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+    super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
+
+    let tracks = database.managed_resource_tracks()?;
+    for (resource_name, track) in setup_default_tracks {
+        let record = find_managed_resource_track(&tracks, resource_name, track)?;
+
+        assert_eq!(
+            record.desired_state,
+            state::ManagedResourceDesiredState::Installed
+        );
+        assert!(
+            record.installed_version.is_some(),
+            "expected {resource_name} {track} to record an installed artifact version"
+        );
+        let Some(current_artifact_path) = &record.current_artifact_path else {
+            bail!("expected {resource_name} {track} to record a current artifact path");
+        };
+        assert!(
+            path_exists(current_artifact_path)?,
+            "expected installed artifact path `{current_artifact_path}` to exist"
+        );
+    }
+
+    assert!(
+        database.assigned_ports()?.is_empty(),
+        "setup default installs must not assign runtime ports"
+    );
+    let runtime_states = database.runtime_observed_states()?;
+    for (resource_name, track) in [
+        ("mailpit", SETUP_DEFAULT_MAILPIT_TRACK),
+        ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
+        ("postgres", SETUP_DEFAULT_POSTGRES_TRACK),
+        ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ("rustfs", SETUP_DEFAULT_RUSTFS_TRACK),
+    ] {
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Running,
+            ),
+            "setup default install unexpectedly started {resource_name}"
+        );
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Failed,
+            ),
+            "setup default install unexpectedly failed runtime state for {resource_name}"
+        );
+        assert_eq!(
+            runtime_files_exist_for_resource(&paths, resource_name, track)?,
+            RuntimeFilePresence {
+                pid: false,
+                metadata: false,
+                config: false,
+            },
+            "setup default install unexpectedly wrote runtime files for {resource_name}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_rejects_incomplete_php_default_pair_without_partial_install()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let php_fixture = setup_default_fixture("php")?;
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[php_fixture])?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[
+            ("frankenphp", SETUP_DEFAULT_PHP_TRACK),
+            ("php", SETUP_DEFAULT_PHP_TRACK),
+        ],
+    )?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+    let result =
+        super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
+    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+        ResourcesError::ResourceNotInManifest { resource },
+    ))) = result
+    else {
+        bail!("expected missing frankenphp manifest entry to fail setup default install");
+    };
+
+    assert_eq!(resource, "frankenphp");
+    let tracks = database.managed_resource_tracks()?;
+    for resource_name in ["frankenphp", "php"] {
+        let record = find_managed_resource_track(&tracks, resource_name, SETUP_DEFAULT_PHP_TRACK)?;
+
+        assert_eq!(
+            record.desired_state,
+            state::ManagedResourceDesiredState::Installed
+        );
+        assert!(
+            record.installed_version.is_none(),
+            "failed PHP pair install must not record {resource_name} as installed"
+        );
+        assert!(
+            record.current_artifact_path.is_none(),
+            "failed PHP pair install must not record a current path for {resource_name}"
+        );
+    }
+    assert!(
+        database.assigned_ports()?.is_empty(),
+        "failed setup default install must not assign runtime ports"
+    );
+    assert!(
+        database.runtime_observed_states()?.is_empty(),
+        "failed setup default install must not start or observe runtime processes"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_rejects_unsupported_composer_default_track_without_partial_install()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let unsupported_track = "1";
+
+    record_desired_setup_tracks(&mut database, &[("composer", unsupported_track)])?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production();
+
+    let result =
+        super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
+    let Err(DaemonError::UnexpectedProtocolResponse { reason }) = result else {
+        bail!("expected unsupported composer setup default track to fail reconciliation");
+    };
+
+    assert_eq!(reason, "Composer setup default expected track `2`, got `1`");
+    let tracks = database.managed_resource_tracks()?;
+    let record = find_managed_resource_track(&tracks, "composer", unsupported_track)?;
+
+    assert_eq!(
+        record.desired_state,
+        state::ManagedResourceDesiredState::Installed
+    );
+    assert!(
+        record.installed_version.is_none(),
+        "failed composer install must not record an installed artifact version"
+    );
+    assert!(
+        record.current_artifact_path.is_none(),
+        "failed composer install must not record a current artifact path"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_job_fails_unsupported_manifest_track_without_partial_install()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mysql_fixture = setup_default_fixture("mysql")?;
+    let unsupported_track = "9.9";
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture])?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &[("mysql", unsupported_track)])?;
+    drop(database);
+
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+    let result = crate::jobs::run_background_reconciliation_job(
+        paths.clone(),
+        ReconciliationQueue::new(),
+        ReconciliationScope::System,
+        Some(&catalog),
+    )
+    .await;
+    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+        ResourcesError::TrackNotFound { resource, track },
+    ))) = result
+    else {
+        bail!("expected unsupported mysql manifest track to fail system reconciliation job");
+    };
+
+    assert_eq!(resource, "mysql");
+    assert_eq!(track, unsupported_track);
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.scope == "system")
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+
+    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(
+        job.error.as_deref(),
+        Some(
+            "Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`"
+        )
+    );
+    let tracks = database.managed_resource_tracks()?;
+    let record = find_managed_resource_track(&tracks, "mysql", unsupported_track)?;
+
+    assert_eq!(
+        record.desired_state,
+        state::ManagedResourceDesiredState::Installed
+    );
+    assert!(
+        record.installed_version.is_none(),
+        "failed mysql install must not record an installed artifact version"
+    );
+    assert!(
+        record.current_artifact_path.is_none(),
+        "failed mysql install must not record a current artifact path"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_continues_independent_setup_defaults_after_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mysql_fixture = setup_default_fixture("mysql")?;
+    let redis_fixture = setup_default_fixture("redis")?;
+    let unsupported_track = "1";
+    let missing_mysql_track = "9.9";
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture, redis_fixture])?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[
+            ("mysql", missing_mysql_track),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+            ("unsupported", unsupported_track),
+        ],
+    )?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+    let result =
+        super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected multiple setup default install failures to be aggregated");
+    };
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        "unsupported 1: Managed Resource runtime `unsupported` is not supported yet",
+        "mysql 9.9: Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`",
+    ]
+    "###);
+
+    let tracks = database.managed_resource_tracks()?;
+    let redis_record = find_managed_resource_track(&tracks, "redis", SETUP_DEFAULT_REDIS_TRACK)?;
+    assert!(
+        redis_record.installed_version.is_some(),
+        "successful independent setup default must still record an installed artifact version"
+    );
+    let Some(redis_artifact_path) = &redis_record.current_artifact_path else {
+        bail!("successful independent setup default must record a current artifact path");
+    };
+    assert!(
+        path_exists(redis_artifact_path)?,
+        "expected installed redis artifact path `{redis_artifact_path}` to exist"
+    );
+
+    for (resource_name, track) in [
+        ("mysql", missing_mysql_track),
+        ("unsupported", unsupported_track),
+    ] {
+        let record = find_managed_resource_track(&tracks, resource_name, track)?;
+
+        assert!(
+            record.installed_version.is_none(),
+            "failed setup default must not record {resource_name} as installed"
+        );
+        assert!(
+            record.current_artifact_path.is_none(),
+            "failed setup default must not record a current path for {resource_name}"
+        );
+    }
+
+    assert!(
+        database.assigned_ports()?.is_empty(),
+        "setup default installs must not assign runtime ports"
+    );
+    let runtime_states = database.runtime_observed_states()?;
+    for (resource_name, track) in [
+        ("mysql", missing_mysql_track),
+        ("redis", SETUP_DEFAULT_REDIS_TRACK),
+    ] {
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Running,
+            ),
+            "setup default install unexpectedly started {resource_name}"
+        );
+        assert!(
+            !runtime_has_status_for_resource(
+                &runtime_states,
+                resource_name,
+                track,
+                RuntimeObservedStatus::Failed,
+            ),
+            "setup default install unexpectedly failed runtime state for {resource_name}"
+        );
+        assert_eq!(
+            runtime_files_exist_for_resource(&paths, resource_name, track)?,
+            RuntimeFilePresence {
+                pid: false,
+                metadata: false,
+                config: false,
+            },
+            "setup default install unexpectedly wrote runtime files for {resource_name}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -1293,6 +1730,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
     assert_process_credentials_match_recorded_env(&first_snapshot)?;
     assert_runtime_metadata_omits_credentials(&first_snapshot)?;
+    assert_rustfs_runtime_uses_supported_arguments(&first_snapshot);
 
     write_project_config(
         &project,
@@ -1325,6 +1763,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let restarted_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
     assert_process_credentials_match_recorded_env(&restarted_snapshot)?;
     assert_runtime_metadata_omits_credentials(&restarted_snapshot)?;
+    assert_rustfs_runtime_uses_supported_arguments(&restarted_snapshot);
     assert_eq!(
         first_snapshot.recorded_access_key, restarted_snapshot.recorded_access_key,
         "RustFS access key should remain stable from recorded context"
@@ -2681,6 +3120,26 @@ fn assert_runtime_metadata_omits_credentials(
     Ok(())
 }
 
+fn assert_rustfs_runtime_uses_supported_arguments(snapshot: &RustfsRuntimeCredentialSnapshot) {
+    assert_eq!(
+        snapshot
+            .runtime_metadata
+            .arguments
+            .first()
+            .map(String::as_str),
+        Some("--address"),
+        "RustFS should receive flags directly without an unsupported subcommand"
+    );
+    assert!(
+        !snapshot
+            .runtime_metadata
+            .arguments
+            .iter()
+            .any(|argument| argument == "server"),
+        "RustFS should not receive the unsupported `server` subcommand"
+    );
+}
+
 fn delete_optional_file(path: &Utf8Path) -> Result<()> {
     match state::fs::delete_file(path) {
         Ok(()) => Ok(()),
@@ -2716,6 +3175,158 @@ fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn record_desired_setup_tracks(database: &mut Database, tracks: &[(&str, &str)]) -> Result<()> {
+    for (resource_name, track) in tracks {
+        database.record_managed_resource_track_desired(
+            resource_name,
+            track,
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn setup_default_tracks() -> Vec<(&'static str, &'static str)> {
+    SETUP_DEFAULT_FIXTURES
+        .iter()
+        .map(|fixture| (fixture.resource_name, fixture.track))
+        .collect()
+}
+
+fn find_managed_resource_track<'records>(
+    tracks: &'records [state::ManagedResourceTrackRecord],
+    resource_name: &str,
+    track: &str,
+) -> Result<&'records state::ManagedResourceTrackRecord> {
+    tracks
+        .iter()
+        .find(|record| record.resource_name == resource_name && record.track == track)
+        .ok_or_else(|| anyhow::anyhow!("missing Managed Resource track {resource_name} {track}"))
+}
+
+fn setup_default_fixture(resource_name: &str) -> Result<SetupDefaultFixture> {
+    SETUP_DEFAULT_FIXTURES
+        .iter()
+        .copied()
+        .find(|fixture| fixture.resource_name == resource_name)
+        .ok_or_else(|| anyhow::anyhow!("missing setup default fixture {resource_name}"))
+}
+
+fn seed_setup_default_cached_fixture(
+    paths: &PvPaths,
+    tempdir: &Utf8Path,
+    fixtures: &[SetupDefaultFixture],
+) -> Result<()> {
+    let mut cached_fixtures = Vec::new();
+
+    for fixture in fixtures {
+        let archive_path = tempdir.join(fixture.archive_file_name);
+
+        create_setup_default_archive(tempdir, &archive_path, fixture)?;
+        let sha256 = sha256_file(&archive_path)?;
+        let cache_path = paths
+            .downloads()
+            .join(format!("{sha256}-{}", fixture.archive_file_name));
+
+        copy_file(&archive_path, &cache_path)?;
+        cached_fixtures.push(CachedSetupDefaultFixture {
+            fixture: *fixture,
+            sha256,
+            size: file_size(&cache_path)?,
+        });
+    }
+
+    let manifest = setup_default_manifest(&cached_fixtures);
+
+    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct CachedSetupDefaultFixture {
+    fixture: SetupDefaultFixture,
+    sha256: String,
+    size: u64,
+}
+
+fn create_setup_default_archive(
+    tempdir: &Utf8Path,
+    archive_path: &Utf8Path,
+    fixture: &SetupDefaultFixture,
+) -> Result<()> {
+    let archive_parent = tempdir.join(format!("{}-setup-default-archive", fixture.resource_name));
+    let root_name = format!("{}-{}", fixture.resource_name, fixture.artifact_version);
+    let root = archive_parent.join(&root_name);
+    let executable = root.join(fixture.executable_relative_path);
+
+    state::fs::write_sensitive_file(&executable, setup_default_executable())?;
+    set_executable(&executable)?;
+    for (relative_path, content) in fixture.support_files {
+        state::fs::write_sensitive_file(&root.join(relative_path), content)?;
+    }
+
+    create_archive(&archive_parent, archive_path, &root_name)
+}
+
+fn setup_default_manifest(fixtures: &[CachedSetupDefaultFixture]) -> String {
+    let resources = fixtures
+        .iter()
+        .map(setup_default_manifest_resource)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+{resources}
+  ]
+}}
+"#
+    )
+}
+
+fn setup_default_manifest_resource(cached: &CachedSetupDefaultFixture) -> String {
+    let fixture = cached.fixture;
+
+    format!(
+        r#"    {{
+      "name": "{resource_name}",
+      "default_track": "{track}",
+      "tracks": [
+        {{
+          "name": "{track}",
+          "artifacts": [
+            {{
+              "artifact_version": "{artifact_version}",
+              "upstream_version": "{track}",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{archive_file_name}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}"#,
+        resource_name = fixture.resource_name,
+        track = fixture.track,
+        artifact_version = fixture.artifact_version,
+        archive_file_name = fixture.archive_file_name,
+        sha256 = cached.sha256,
+        size = cached.size,
+    )
+}
+
+fn setup_default_executable() -> &'static str {
+    "#!/bin/sh\nexit 0\n"
 }
 
 fn seed_fake_mailpit_artifact_with_script(
@@ -3165,10 +3776,7 @@ fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path
 }
 
 fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
-    state::fs::write_sensitive_file(
-        &release_path.join("share/postgresql/postgres.bki"),
-        "postgres catalog",
-    )?;
+    state::fs::write_sensitive_file(&release_path.join("share/postgres.bki"), "postgres catalog")?;
 
     Ok(())
 }
@@ -4390,7 +4998,7 @@ def object_path(bucket, key):
 class RustfsHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
-        if path == "/":
+        if path in {"/", "/health"}:
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"rustfs")

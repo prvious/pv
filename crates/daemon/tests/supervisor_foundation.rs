@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -9,11 +10,13 @@ use daemon::{
 };
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, test_kill_process};
+use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
 use state::PvPaths;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
+use tokio_rustls::TlsAcceptor;
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -119,6 +122,117 @@ async fn http_readiness_succeeds_for_successful_responses() -> Result<()> {
 }
 
 #[tokio::test]
+async fn gateway_https_readiness_accepts_non_success_status_lines() -> Result<()> {
+    let tempdir = tempdir()?;
+    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let certified_key = rcgen::generate_simple_self_signed(vec!["acme.test".to_owned()])?;
+    state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| anyhow!("TLS protocol configuration failed: {error}"))?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certified_key.cert.der().clone()],
+        PrivateKeyDer::Pkcs8(certified_key.signing_key.serialize_der().into()),
+    )?;
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let result: Result<(), std::io::Error> = async {
+            loop {
+                let (stream, _address) = https_listener.accept().await?;
+                let mut stream = match acceptor.accept(stream).await {
+                    Ok(stream) => stream,
+                    Err(_error) => continue,
+                };
+                let mut request = [0_u8; 1024];
+                let _bytes = stream.read(&mut request).await?;
+                stream
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+            }
+
+            #[expect(unreachable_code, reason = "test server runs until aborted")]
+            Ok(())
+        }
+        .await;
+
+        result
+    });
+
+    wait_for_readiness(
+        ReadinessCheck::GatewayHttps {
+            http_host: "127.0.0.1".to_owned(),
+            http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port,
+            server_name: "acme.test".to_owned(),
+            ca_certificate_path,
+        },
+        Duration::from_secs(1),
+    )
+    .await?;
+
+    server.abort();
+    drop(http_listener);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let certified_key = rcgen::generate_simple_self_signed(vec!["acme.test".to_owned()])?;
+    state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| anyhow!("TLS protocol configuration failed: {error}"))?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certified_key.cert.der().clone()],
+        PrivateKeyDer::Pkcs8(certified_key.signing_key.serialize_der().into()),
+    )?;
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let (stream, _address) = https_listener.accept().await?;
+        let _stream = acceptor.accept(stream).await?;
+        sleep(Duration::from_secs(1)).await;
+
+        Ok::<(), std::io::Error>(())
+    });
+
+    wait_for_readiness(
+        ReadinessCheck::GatewayHttps {
+            http_host: "127.0.0.1".to_owned(),
+            http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port,
+            server_name: "acme.test".to_owned(),
+            ca_certificate_path,
+        },
+        Duration::from_millis(100),
+    )
+    .await?;
+
+    server.abort();
+    drop(http_listener);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
@@ -144,6 +258,36 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
 
     assert!(result.is_err());
     server.abort();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn readiness_retries_after_one_probe_hangs() -> Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let (_hanging_stream, _address) = listener.accept().await?;
+        let (mut stream, _address) = listener.accept().await?;
+        let mut request = [0_u8; 1024];
+        let _bytes = stream.read(&mut request).await?;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+
+        Ok::<(), std::io::Error>(())
+    });
+
+    wait_for_readiness(
+        ReadinessCheck::Http {
+            host: "127.0.0.1".to_string(),
+            port,
+            path: "/health".to_string(),
+        },
+        Duration::from_secs(2),
+    )
+    .await?;
+    server.await??;
 
     Ok(())
 }

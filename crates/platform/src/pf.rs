@@ -5,6 +5,7 @@ use data_encoding::HEXLOWER;
 
 use crate::PlatformError;
 use crate::command::{run_system_command, run_system_command_output};
+use crate::trust::PrivilegeMode;
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -12,7 +13,8 @@ const PV_MARKER: &str = "# Managed by PV";
 const PF_ANCHOR_SOURCE_MARKER: &str =
     "# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv";
 const PF_CONF_SOURCE_MARKER: &str = "# Source: PV prepared pf.conf reference for /etc/pf.conf";
-const PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
+const PF_RDR_ANCHOR_DIRECTIVE: &str = "rdr-anchor \"com.prvious.pv\"";
+const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
 
@@ -127,24 +129,23 @@ impl PfRedirectConfig {
 
 impl PfConfReference {
     pub fn render(self) -> String {
-        format!(
-            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_ANCHOR_DIRECTIVE}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n"
-        )
+        let (rdr_directive, load_directive) = pf_conf_reference_directives();
+        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{rdr_directive}\n{load_directive}\n")
     }
 
     pub fn parse_block(content: &str) -> Option<Self> {
-        let mut has_anchor = false;
+        let mut has_rdr_anchor = false;
         let mut has_load = false;
         let mut active_line_count = 0;
 
         for line in content.lines().filter_map(active_pf_line) {
             active_line_count += 1;
 
-            if line == PF_ANCHOR_DIRECTIVE {
-                if has_anchor {
+            if line == PF_RDR_ANCHOR_DIRECTIVE {
+                if has_rdr_anchor {
                     return None;
                 }
-                has_anchor = true;
+                has_rdr_anchor = true;
                 continue;
             }
 
@@ -163,7 +164,7 @@ impl PfConfReference {
             return None;
         }
 
-        if active_line_count == 2 && has_anchor && has_load {
+        if active_line_count == 2 && has_rdr_anchor && has_load {
             Some(Self)
         } else {
             None
@@ -222,9 +223,59 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let rules = run_system_command_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-sr"])?;
+    active_pf_redirect_config_with_privilege_mode(PrivilegeMode::NonInteractive)
+}
 
-    Ok(PfRedirectConfig::parse_active_rules(&rules))
+pub fn active_pf_redirect_config_with_privilege_mode(
+    privilege_mode: PrivilegeMode,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    active_pf_redirect_config_with_runner(privilege_mode, &mut run_system_command_output)
+}
+
+fn active_pf_redirect_config_with_runner(
+    privilege_mode: PrivilegeMode,
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let main_nat_rules =
+        active_pf_rules_with_runner(&["-s", "nat"], privilege_mode, run_system_output)?;
+
+    if !main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
+        return Ok(None);
+    }
+
+    let anchor_nat_rules = active_pf_rules_with_runner(
+        &["-a", "com.prvious.pv", "-s", "nat"],
+        privilege_mode,
+        run_system_output,
+    )?;
+
+    Ok(PfRedirectConfig::parse_active_rules(&anchor_nat_rules))
+}
+
+fn active_pf_rules_with_runner(
+    pfctl_args: &[&'static str],
+    privilege_mode: PrivilegeMode,
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+) -> Result<String, PlatformError> {
+    match run_system_output("/sbin/pfctl", pfctl_args) {
+        Ok(rules) => Ok(rules),
+        Err(non_sudo_error) => {
+            let mut sudo_args = sudo_pfctl_args(privilege_mode);
+            sudo_args.extend(pfctl_args);
+
+            match run_system_output("/usr/bin/sudo", &sudo_args) {
+                Ok(rules) => Ok(rules),
+                Err(_) => Err(non_sudo_error),
+            }
+        }
+    }
+}
+
+fn sudo_pfctl_args(privilege_mode: PrivilegeMode) -> Vec<&'static str> {
+    match privilege_mode {
+        PrivilegeMode::Interactive => vec!["/sbin/pfctl"],
+        PrivilegeMode::NonInteractive => vec!["-n", "/sbin/pfctl"],
+    }
 }
 
 pub fn install_pf_redirects(
@@ -293,12 +344,12 @@ fn install_pf_redirects_with_runner(
 
     state::fs::write_sensitive_file(&candidate_path, &candidate)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-    run_system(
-        "/usr/bin/sudo",
-        &["/sbin/pfctl", "-nf", candidate_path.as_str()],
-    )?;
     install_pf_anchor_with_runner(prepared_anchor_path, system_anchor_path, run_system)?;
     let post_anchor_result = (|| {
+        run_system(
+            "/usr/bin/sudo",
+            &["/sbin/pfctl", "-nf", candidate_path.as_str()],
+        )?;
         run_system(
             "/usr/bin/sudo",
             &[
@@ -540,7 +591,8 @@ fn active_pf_line(line: &str) -> Option<&str> {
 }
 
 fn is_pv_pf_conf_reference_directive(line: &str) -> bool {
-    line.starts_with("anchor \"com.prvious.pv\"")
+    line.starts_with("rdr-anchor \"com.prvious.pv\"")
+        || line.starts_with("anchor \"com.prvious.pv\"")
         || line.starts_with("load anchor \"com.prvious.pv\"")
 }
 
@@ -556,16 +608,31 @@ fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
     redirect_port.parse::<u16>().ok()
 }
 
+fn main_nat_rules_load_pv_rdr_anchor(content: &str) -> bool {
+    content
+        .lines()
+        .filter_map(active_pf_line)
+        .any(is_loaded_pv_rdr_anchor_rule)
+}
+
+fn is_loaded_pv_rdr_anchor_rule(line: &str) -> bool {
+    let Some(tail) = line.strip_prefix("rdr-anchor \"com.prvious.pv\"") else {
+        return false;
+    };
+
+    tail.is_empty() || tail.starts_with(' ')
+}
+
 fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
-    let mut has_anchor = false;
+    let mut has_rdr_anchor = false;
     let mut has_load = false;
 
     for line in content.lines().filter_map(active_pf_line) {
-        if line == PF_ANCHOR_DIRECTIVE {
-            if has_anchor {
+        if line == PF_RDR_ANCHOR_DIRECTIVE {
+            if has_rdr_anchor {
                 return None;
             }
-            has_anchor = true;
+            has_rdr_anchor = true;
             continue;
         }
 
@@ -582,7 +649,7 @@ fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
         }
     }
 
-    if has_anchor && has_load {
+    if has_rdr_anchor && has_load {
         Some(PfConfReference)
     } else {
         None
@@ -636,8 +703,50 @@ fn append_pf_reference(content: &str, reference: &str) -> String {
     if !candidate.ends_with('\n') {
         candidate.push('\n');
     }
-    candidate.push_str(reference);
+    let (rdr_directive, load_directive) = pf_conf_reference_directives();
+    let rdr_reference = format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{rdr_directive}\n");
+    let load_reference = format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{load_directive}\n");
+
+    if let Some(index) = first_pf_filter_rule_index(&candidate) {
+        candidate.insert_str(index, &rdr_reference);
+    } else {
+        candidate.push_str(&rdr_reference);
+    }
+
+    if !candidate.ends_with('\n') {
+        candidate.push('\n');
+    }
+    candidate.push_str(&load_reference);
     candidate
+}
+
+fn pf_conf_reference_directives() -> (&'static str, &'static str) {
+    (PF_RDR_ANCHOR_DIRECTIVE, PF_LOAD_ANCHOR_DIRECTIVE)
+}
+
+fn first_pf_filter_rule_index(content: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if let Some(active_line) = active_pf_line(line)
+            && is_pf_filter_rule(active_line)
+        {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+
+    None
+}
+
+fn is_pf_filter_rule(line: &str) -> bool {
+    line == "block"
+        || line.starts_with("block ")
+        || line == "pass"
+        || line.starts_with("pass ")
+        || line == "dummynet-anchor"
+        || line.starts_with("dummynet-anchor ")
+        || line.starts_with("anchor ")
+        || line.starts_with("antispoof ")
 }
 
 fn remove_pf_reference_lines(content: &str) -> String {
@@ -647,7 +756,11 @@ fn remove_pf_reference_lines(content: &str) -> String {
         let trimmed = line.trim();
         if matches!(
             trimmed,
-            PV_MARKER | PF_CONF_SOURCE_MARKER | PF_ANCHOR_DIRECTIVE | PF_LOAD_ANCHOR_DIRECTIVE
+            PV_MARKER
+                | PF_CONF_SOURCE_MARKER
+                | PF_RDR_ANCHOR_DIRECTIVE
+                | LEGACY_PF_ANCHOR_DIRECTIVE
+                | PF_LOAD_ANCHOR_DIRECTIVE
         ) {
             continue;
         }
@@ -697,12 +810,158 @@ mod tests {
     use camino_tempfile::tempdir;
 
     use super::{
-        PfConfReference, PfRedirectConfig, install_pf_redirects_with_runner, read_platform_file,
-        remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
+        PfConfReference, PfRedirectConfig, active_pf_redirect_config_with_runner,
+        install_pf_redirects_with_runner, read_platform_file, remove_pf_redirects_with_runner,
+        temporary_pf_conf_candidate_path,
     };
 
     #[test]
-    fn install_pf_redirects_validates_candidate_before_installing_anchor() -> anyhow::Result<()> {
+    fn active_pf_redirect_config_reads_loaded_rdr_anchor_reference() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_reads_live_anchor_rules() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48081\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48444\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48081, 48444)));
+        assert_eq!(
+            commands,
+            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_uses_noninteractive_sudo_when_nat_rules_require_privilege()
+    -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::NonInteractive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.starts_with("/sbin/pfctl ") {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                if command == "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            [
+                "/sbin/pfctl -s nat",
+                "/usr/bin/sudo -n /sbin/pfctl -s nat",
+                "/sbin/pfctl -a com.prvious.pv -s nat",
+                "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_config_uses_interactive_sudo_when_requested() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let config = active_pf_redirect_config_with_runner(
+            crate::PrivilegeMode::Interactive,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.starts_with("/sbin/pfctl ") {
+                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                        command,
+                        status: "exit status: 1".to_string(),
+                    });
+                }
+
+                if command == "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat" {
+                    return Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    );
+                }
+
+                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
+            },
+        )?;
+
+        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
+        assert_eq!(
+            commands,
+            [
+                "/sbin/pfctl -s nat",
+                "/usr/bin/sudo /sbin/pfctl -s nat",
+                "/sbin/pfctl -a com.prvious.pv -s nat",
+                "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat"
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_validates_candidate_after_installing_anchor() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let prepared_anchor_path = tempdir.path().join("prepared-anchor");
         let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
@@ -746,7 +1005,109 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("anchor install command was not recorded"))?;
 
         assert!(candidate.contains("load anchor \"com.prvious.pv\""));
-        assert!(validate_candidate_index < install_anchor_index);
+        assert!(install_anchor_index < validate_candidate_index);
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_inserts_rdr_anchor_before_filter_rules() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+        state::fs::write_sensitive_file(
+            &system_pf_conf_path,
+            "scrub-anchor \"com.apple/*\" all fragment reassemble\nnat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\ndummynet-anchor \"com.apple/*\" all\nanchor \"com.apple/*\" all\nload anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"\n",
+        )?;
+
+        install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |_program, _args| Ok(()),
+        )?;
+
+        let candidate =
+            read_platform_file(&prepared_reference_path.with_file_name("pf.conf.candidate"))?;
+        let rdr_index = candidate
+            .find("rdr-anchor \"com.prvious.pv\"")
+            .ok_or_else(|| anyhow::anyhow!("candidate did not contain PV rdr-anchor"))?;
+        let filter_index = candidate
+            .find("\nanchor \"com.apple/*\" all")
+            .map(|index| index + 1)
+            .ok_or_else(|| anyhow::anyhow!("candidate did not preserve filter anchor"))?;
+        let dummynet_index = candidate
+            .find("\ndummynet-anchor \"com.apple/*\" all")
+            .map(|index| index + 1)
+            .ok_or_else(|| anyhow::anyhow!("candidate did not preserve dummynet anchor"))?;
+        let load_index = candidate
+            .find("load anchor \"com.prvious.pv\"")
+            .ok_or_else(|| anyhow::anyhow!("candidate did not contain PV load anchor"))?;
+
+        assert!(rdr_index < dummynet_index);
+        assert!(dummynet_index < filter_index);
+        assert!(filter_index < load_index);
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_removes_new_anchor_when_candidate_validation_fails()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.contains("/sbin/pfctl -nf") && command.contains("pf.conf.candidate") {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "validate pf.conf candidate failed".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "validate pf.conf candidate failed"
+        ));
+        assert!(commands.iter().any(|command| {
+            command.contains("/usr/bin/install")
+                && command.contains(prepared_anchor_path.as_str())
+                && command.contains(system_anchor_path.as_str())
+        }));
+        assert!(commands.iter().any(|command| {
+            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
+        }));
 
         Ok(())
     }

@@ -1,8 +1,9 @@
 ---
 source: crates/platform/tests/resolver_config.rs
+assertion_line: 106
 expression: "(anchor, reference)"
 ---
 (
     "# Managed by PV\n# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n",
-    "# Managed by PV\n# Source: PV prepared pf.conf reference for /etc/pf.conf\nanchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+    "# Managed by PV\n# Source: PV prepared pf.conf reference for /etc/pf.conf\nrdr-anchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
 )

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -198,6 +199,43 @@ fn logs_resource_latest_resolves_manifest_default_track() -> anyhow::Result<()> 
     assert!(output.stderr.is_empty());
     assert!(output.stdout.contains("postgres ready"));
     assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn logs_resource_filters_canonical_resources_and_aliases() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    let resources = [
+        ("mysql", "mysql", "8.0", "mysql ready"),
+        ("postgres", "postgres", "16", "postgres ready"),
+        ("pg", "postgres", "16", "postgres ready"),
+        ("redis", "redis", "7", "redis ready"),
+        ("mailpit", "mailpit", "1", "mailpit ready"),
+        ("mail", "mailpit", "1", "mailpit ready"),
+        ("rustfs", "rustfs", "1", "rustfs ready"),
+        ("s3", "rustfs", "1", "rustfs ready"),
+    ];
+    for (_selector, resource_name, track, message) in resources {
+        seed_installed_track(&paths, resource_name, track)?;
+        write_log(
+            &paths.resource_log(resource_name, track),
+            &format!("{message}\n"),
+        )?;
+    }
+    let mut outputs = BTreeMap::new();
+
+    for (selector, _resource_name, _track, _message) in resources {
+        let output = run_pv(&["logs", "--resource", selector], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        outputs.insert(selector, output);
+    }
+
+    assert_debug_snapshot!(outputs);
 
     Ok(())
 }

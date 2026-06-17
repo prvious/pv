@@ -1,10 +1,14 @@
 ---
 source: crates/daemon/tests/gateway_config.rs
-expression: render_gateway_config(&input)?
+assertion_line: 132
+expression: rendered
 ---
 # PV_FAKE_PORT 48080
 {
     admin off
+    storage file_system {
+        root "/Users/alice/.pv/certificates/caddy"
+    }
     http_port 48080
     https_port 48443
     pki {
@@ -18,7 +22,7 @@ expression: render_gateway_config(&input)?
     }
 }
 
-:48080 {
+http://127.0.0.1:48080 {
     bind 127.0.0.1 ::1
     respond "PV Gateway is running" 404
 }

@@ -70,6 +70,28 @@ pub(crate) fn job_failed(paths: &PvPaths, job_id: &str, kind: &str, scope: &str,
     );
 }
 
+pub(crate) fn runtime_readiness_diagnostics(
+    paths: &PvPaths,
+    runtime: &str,
+    readiness: &str,
+    process_exited: &str,
+    loopback_listener_ports: &str,
+) {
+    append_best_effort(
+        paths,
+        "error",
+        "runtime",
+        "runtime_readiness_diagnostics",
+        "runtime readiness failed diagnostics",
+        &[
+            ("runtime", runtime),
+            ("readiness", readiness),
+            ("process_exited", process_exited),
+            ("loopback_listener_ports", loopback_listener_ports),
+        ],
+    );
+}
+
 fn append_best_effort(
     paths: &PvPaths,
     level: &str,

@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/redis.rs
+expression: snapshot
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Updated 1 Redis track(s)\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    [
+        ResourceRecordSnapshot {
+            resource_name: "redis",
+            track: "7",
+            desired_state: "Installed",
+            installed_version: Some(
+                "7.2.5-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/redis/7/releases/7.2.5-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+    1,
+    0,
+)

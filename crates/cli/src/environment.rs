@@ -117,7 +117,14 @@ pub trait Environment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
-        platform::active_pf_redirect_config()
+        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
+    }
+
+    fn active_pf_redirect_config_with_privilege_mode(
+        &self,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
+        platform::active_pf_redirect_config_with_privilege_mode(privilege_mode)
     }
 
     fn remove_pf_redirects(
@@ -135,12 +142,20 @@ pub trait Environment {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
     }
 
-    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::trust_system_ca(certificate_path)
+    fn trust_system_ca(
+        &self,
+        certificate_path: &Utf8Path,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), platform::PlatformError> {
+        platform::trust_system_ca(certificate_path, privilege_mode)
     }
 
-    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
-        platform::untrust_system_ca(fingerprint)
+    fn untrust_system_ca(
+        &self,
+        fingerprint: &str,
+        privilege_mode: platform::PrivilegeMode,
+    ) -> Result<(), platform::PlatformError> {
+        platform::untrust_system_ca(fingerprint, privilege_mode)
     }
 
     fn artifact_manifest_url(&self) -> Option<String> {

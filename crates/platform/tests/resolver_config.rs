@@ -79,12 +79,14 @@ fn pf_config_renders_pv_owned_anchor_and_pf_conf_reference() {
     let anchor = config.render_anchor();
     let reference = PfConfReference.render();
     let extra_active_line_reference = format!("{reference}set block-policy drop\n");
-    let duplicate_anchor_reference = format!("{reference}anchor \"com.prvious.pv\"\n");
+    let duplicate_anchor_reference = format!("{reference}rdr-anchor \"com.prvious.pv\"\n");
     let duplicate_load_reference = format!(
         "{reference}load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n"
     );
 
     assert_eq!(PfRedirectConfig::parse_anchor(&anchor), Some(config));
+    assert!(reference.contains("rdr-anchor \"com.prvious.pv\""));
+    assert!(!reference.contains("\nanchor \"com.prvious.pv\"\n"));
     assert_eq!(
         PfConfReference::parse_block(&reference),
         Some(PfConfReference)
@@ -182,6 +184,7 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
     let stale_path = tempdir.path().join("stale-pf-conf");
     let conflict_path = tempdir.path().join("conflict-pf-conf");
     let active_anchor_conflict_path = tempdir.path().join("active-anchor-conflict-pf-conf");
+    let active_rdr_anchor_conflict_path = tempdir.path().join("active-rdr-anchor-conflict-pf-conf");
     let active_load_conflict_path = tempdir.path().join("active-load-conflict-pf-conf");
     let commented_reference_path = tempdir.path().join("commented-reference-pf-conf");
     let prose_reference_path = tempdir.path().join("prose-reference-pf-conf");
@@ -206,6 +209,10 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
     )?;
     fs::write_sensitive_file(&active_anchor_conflict_path, "anchor \"com.prvious.pv\"\n")?;
     fs::write_sensitive_file(
+        &active_rdr_anchor_conflict_path,
+        "rdr-anchor \"com.prvious.pv\"\n",
+    )?;
+    fs::write_sensitive_file(
         &active_load_conflict_path,
         "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
     )?;
@@ -226,6 +233,7 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
         inspect_pf_conf_reference(&stale_path, Some(&expected)),
         inspect_pf_conf_reference(&conflict_path, Some(&expected)),
         inspect_pf_conf_reference(&active_anchor_conflict_path, Some(&expected)),
+        inspect_pf_conf_reference(&active_rdr_anchor_conflict_path, Some(&expected)),
         inspect_pf_conf_reference(&active_load_conflict_path, Some(&expected)),
         inspect_pf_conf_reference(&commented_reference_path, Some(&expected)),
         inspect_pf_conf_reference(&prose_reference_path, Some(&expected)),

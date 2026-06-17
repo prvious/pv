@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/mysql.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "Track  Status  Ports  Projects  Version  Path\n8.0  running  tcp=3306  0  8.0.36-pv1  <tempdir>/home/.pv/resources/mysql/8.0/releases/8.0.36-pv1\n",
+    stderr: "",
+}

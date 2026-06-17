@@ -16,6 +16,15 @@ pub enum DaemonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    #[error(
+        "{source}; additionally failed to remove daemon socket during startup cleanup: {cleanup}"
+    )]
+    StartupCleanupFailed {
+        #[source]
+        source: Box<DaemonError>,
+        cleanup: Box<DaemonError>,
+    },
+
     #[error("daemon socket is already in use at {path}")]
     SocketInUse { path: String },
 
@@ -65,6 +74,9 @@ pub enum DaemonError {
 
     #[error("Managed Resource command failed: {0}")]
     ManagedResourceCommand(#[from] ManagedResourceCommandError),
+
+    #[error("Managed Resource default installs failed: {}", default_install_failures(.failures))]
+    ManagedResourceDefaultInstallFailures { failures: Vec<String> },
 
     #[error("Redis readiness failed: {0}")]
     Redis(#[from] redis::RedisError),
@@ -124,4 +136,8 @@ pub enum DaemonError {
 
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
+}
+
+fn default_install_failures(failures: &[String]) -> String {
+    failures.join("; ")
 }
