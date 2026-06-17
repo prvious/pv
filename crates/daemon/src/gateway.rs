@@ -188,7 +188,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     }
     let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
     let gateway_readiness =
-        gateway_readiness_check(&plan, gateway_config.readiness_hostname.clone())?;
+        gateway_readiness_check(&plan, gateway_config.readiness_hostname.clone());
     start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
@@ -207,7 +207,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
 fn gateway_readiness_check(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
-) -> Result<ReadinessCheck, DaemonError> {
+) -> ReadinessCheck {
     let ports = gateway_readiness_ports(plan);
 
     gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
@@ -246,8 +246,8 @@ fn gateway_readiness_check_for_ports(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
     ports: GatewayReadinessPorts,
-) -> Result<ReadinessCheck, DaemonError> {
-    let readiness = match readiness_hostname {
+) -> ReadinessCheck {
+    match readiness_hostname {
         Some(server_name) => ReadinessCheck::GatewayHttps {
             http_host: "127.0.0.1".to_owned(),
             http_port: ports.http,
@@ -260,9 +260,7 @@ fn gateway_readiness_check_for_ports(
             host: "127.0.0.1".to_owned(),
             port: ports.http,
         },
-    };
-
-    Ok(readiness)
+    }
 }
 
 fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<String> {
@@ -1326,7 +1324,7 @@ mod tests {
                 http: plan.gateway.http_port,
                 https: plan.gateway.https_port,
             },
-        )?;
+        );
 
         assert_eq!(
             readiness,
@@ -1354,7 +1352,7 @@ mod tests {
                 http: 80,
                 https: 443,
             },
-        )?;
+        );
 
         assert_eq!(
             readiness,
@@ -1382,7 +1380,7 @@ mod tests {
                 http: 80,
                 https: 443,
             },
-        )?;
+        );
 
         assert_eq!(
             readiness,

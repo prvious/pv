@@ -128,9 +128,8 @@ impl PfRedirectConfig {
 
 impl PfConfReference {
     pub fn render(self) -> String {
-        format!(
-            "{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_RDR_ANCHOR_DIRECTIVE}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n"
-        )
+        let (rdr_directive, load_directive) = pf_conf_reference_directives();
+        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{rdr_directive}\n{load_directive}\n")
     }
 
     pub fn parse_block(content: &str) -> Option<Self> {
@@ -687,10 +686,9 @@ fn append_pf_reference(content: &str, reference: &str) -> String {
     if !candidate.ends_with('\n') {
         candidate.push('\n');
     }
-    let rdr_reference =
-        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_RDR_ANCHOR_DIRECTIVE}\n");
-    let load_reference =
-        format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{PF_LOAD_ANCHOR_DIRECTIVE}\n");
+    let (rdr_directive, load_directive) = pf_conf_reference_directives();
+    let rdr_reference = format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{rdr_directive}\n");
+    let load_reference = format!("{PV_MARKER}\n{PF_CONF_SOURCE_MARKER}\n{load_directive}\n");
 
     if let Some(index) = first_pf_filter_rule_index(&candidate) {
         candidate.insert_str(index, &rdr_reference);
@@ -703,6 +701,10 @@ fn append_pf_reference(content: &str, reference: &str) -> String {
     }
     candidate.push_str(&load_reference);
     candidate
+}
+
+fn pf_conf_reference_directives() -> (&'static str, &'static str) {
+    (PF_RDR_ANCHOR_DIRECTIVE, PF_LOAD_ANCHOR_DIRECTIVE)
 }
 
 fn first_pf_filter_rule_index(content: &str) -> Option<usize> {

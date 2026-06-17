@@ -128,36 +128,21 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     let client = resources::UreqResourceHttpClient::new();
     let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
 
-    let mysql = commands.install(
-        &mysql_adapter()?,
-        TrackSelector::Track(TrackName::new("8.4")?),
-        &client,
-    )?;
+    let mysql = commands.install(&mysql_adapter()?, setup_track_selector("mysql")?, &client)?;
     let postgres = commands.install(
         &postgres_adapter()?,
-        TrackSelector::Track(TrackName::new("18")?),
+        setup_track_selector("postgres")?,
         &client,
     )?;
-    let redis = commands.install(
-        &redis_adapter()?,
-        TrackSelector::Track(TrackName::new("8.8")?),
-        &client,
-    )?;
+    let redis = commands.install(&redis_adapter()?, setup_track_selector("redis")?, &client)?;
     let mailpit = commands.install(
         &mailpit_adapter()?,
-        TrackSelector::Track(TrackName::new("1")?),
+        setup_track_selector("mailpit")?,
         &client,
     )?;
-    let rustfs = commands.install(
-        &rustfs_adapter()?,
-        TrackSelector::Track(TrackName::new("1")?),
-        &client,
-    )?;
+    let rustfs = commands.install(&rustfs_adapter()?, setup_track_selector("rustfs")?, &client)?;
     let composer = if target_platform() == TargetPlatform::DarwinArm64 {
-        Some(commands.install_composer_with_php_pair(
-            TrackSelector::Track(TrackName::new("8.5")?),
-            &client,
-        )?)
+        Some(commands.install_composer_with_php_pair(setup_track_selector("php")?, &client)?)
     } else {
         None
     };
@@ -499,13 +484,17 @@ fn assert_dotenv_contains(dotenv: &str, expected: &str) -> Result<()> {
 }
 
 fn setup_track(resource: &str) -> Result<&'static str> {
-    match resource {
-        "mailpit" | "rustfs" => Ok("1"),
-        "mysql" => Ok("8.4"),
-        "postgres" => Ok("18"),
-        "redis" => Ok("8.8"),
-        _ => bail!("unknown setup resource `{resource}`"),
-    }
+    SETUP_DEFAULTS
+        .iter()
+        .find(|default| default.resource == resource)
+        .map(|default| default.track)
+        .with_context(|| format!("unknown setup resource `{resource}`"))
+}
+
+fn setup_track_selector(resource: &str) -> Result<TrackSelector> {
+    Ok(TrackSelector::Track(TrackName::new(setup_track(
+        resource,
+    )?)?))
 }
 
 fn assert_ready_allocations(
