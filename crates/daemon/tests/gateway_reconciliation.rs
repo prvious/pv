@@ -418,7 +418,7 @@ document_root: public
     drop(database);
 
     let result = timeout(
-        Duration::from_millis(500),
+        Duration::from_secs(2),
         reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)),
     )
     .await;

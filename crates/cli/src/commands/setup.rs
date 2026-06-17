@@ -179,7 +179,7 @@ fn resolve_default_resource_plan(
     let php_resource = ResourceName::new("php")?;
     let php_default_track = manifest
         .resolve_track(&php_resource, TrackSelector::Latest)
-        .map(Clone::clone);
+        .cloned();
     let mut plans = SetupResourcePlans::default();
 
     for resource_default in DEFAULT_SETUP_RESOURCES {
