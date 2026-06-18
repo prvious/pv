@@ -4,5 +4,5 @@ expression: parse_manifest_error(&newer)?
 ---
 RequiresNewerPv {
     minimum_pv_version: "999.0.0",
-    current_pv_version: "0.1.2",
+    current_pv_version: "0.1.3",
 }
