@@ -1171,6 +1171,66 @@ document_root: public
 }
 
 #[test]
+fn runtime_plan_defaults_document_root_to_public_directory_without_config() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("configless-project");
+    seed_php_manifest(&paths, "8.4")?;
+    create_project_without_config(&project_root, true)?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "configless.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+
+    let plan = build_runtime_plan(&paths)?;
+
+    assert_runtime_plan_snapshot(
+        "runtime_plan_defaults_document_root_to_public_directory_without_config",
+        plan,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn runtime_plan_defaults_document_root_to_project_root_without_public_directory() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("configless-static-project");
+    seed_php_manifest(&paths, "8.4")?;
+    create_project_without_config(&project_root, false)?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "static.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+
+    let plan = build_runtime_plan(&paths)?;
+
+    assert_runtime_plan_snapshot(
+        "runtime_plan_defaults_document_root_to_project_root_without_public_directory",
+        plan,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn runtime_plan_uses_project_root_not_original_or_config_path() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1378,6 +1438,17 @@ exit 0
 fn create_project(project_root: &Utf8Path, config_source: &str) -> Result<()> {
     fs::write_sensitive_file(&project_root.join("public/index.php"), "<?php\n")?;
     fs::write_sensitive_file(&project_root.join("pv.yml"), config_source)?;
+
+    Ok(())
+}
+
+fn create_project_without_config(project_root: &Utf8Path, public_directory: bool) -> Result<()> {
+    let index_path = if public_directory {
+        project_root.join("public/index.php")
+    } else {
+        project_root.join("index.php")
+    };
+    fs::write_sensitive_file(&index_path, "<?php\n")?;
 
     Ok(())
 }

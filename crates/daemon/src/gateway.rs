@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::ProjectConfigFile;
+use config::{ProjectConfig, ProjectConfigFile};
 use resources::{ResourceAdapter, frankenphp_adapter};
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
@@ -474,13 +474,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             None
         };
         let php_track = resolve_project_php_track(paths, config_php, stored_php_track)?;
-        let document_root = match config
-            .as_ref()
-            .and_then(|config| config.document_root.as_ref())
-        {
-            Some(document_root) => project.path.join(document_root),
-            None => project.path.clone(),
-        };
+        let document_root = resolve_project_document_root(&project.path, config.as_ref())?;
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
@@ -525,6 +519,22 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         },
         workers,
     })
+}
+
+fn resolve_project_document_root(
+    project_root: &Utf8Path,
+    config: Option<&ProjectConfig>,
+) -> Result<Utf8PathBuf, DaemonError> {
+    if let Some(document_root) = config.and_then(|config| config.document_root.as_ref()) {
+        return Ok(project_root.join(document_root));
+    }
+
+    let public_root = project_root.join("public");
+    if fs::path_is_directory(&public_root)? {
+        Ok(public_root)
+    } else {
+        Ok(project_root.to_path_buf())
+    }
 }
 
 fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {

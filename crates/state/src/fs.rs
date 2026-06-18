@@ -435,6 +435,18 @@ pub fn path_is_file(path: &Utf8Path) -> Result<bool, StateError> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
+pub fn path_is_directory(path: &Utf8Path) -> Result<bool, StateError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(StateError::filesystem(path.to_path_buf(), source)),
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns direct filesystem access"
+)]
 pub fn read_link(path: &Utf8Path) -> Result<Utf8PathBuf, StateError> {
     let target = std::fs::read_link(path)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
