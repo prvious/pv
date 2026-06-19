@@ -770,6 +770,7 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "pdo_mysql",
         "pdo_pgsql",
         "pdo_sqlite",
+        "pdo_sqlsrv",
         "phar",
         "posix",
         "redis",
@@ -777,6 +778,7 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "simplexml",
         "sodium",
         "sqlite3",
+        "sqlsrv",
         "tokenizer",
         "xml",
         "xmlreader",
@@ -847,8 +849,8 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "redis", "sodium", "zip"]
-expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "redis", "sodium", "sqlsrv", "zip"]
+expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "sqlsrv", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]
 version = "1.12.3"

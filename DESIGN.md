@@ -361,7 +361,7 @@ PV v1 builds standalone PHP and FrankenPHP as single-binary/static-style artifac
 
 Standalone PHP artifacts include the `php` executable and runtime files needed by that build. They do not include `phpize` or `php-config` in v1 because user-built extensions are not supported.
 
-The v1 fixed PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `phar`, `posix`, `redis`, `session`, `simplexml`, `sodium`, `sqlite3`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
+The v1 fixed PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `pdo_sqlsrv`, `phar`, `posix`, `redis`, `session`, `simplexml`, `sodium`, `sqlite3`, `sqlsrv`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
 
 For a given PHP track, standalone PHP and FrankenPHP must expose the same compiled-in PHP extension set so CLI and browser execution do not drift.
 
