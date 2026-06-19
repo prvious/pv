@@ -114,6 +114,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
     assert_eq!(php.default_track().as_str(), "8.5");
+    assert_eq!(php.pv_build_revision(), "pv2");
     assert_eq!(php.tracks().len(), 3);
     assert_eq!(
         php.tracks()
@@ -843,7 +844,7 @@ resources = ["php", "frankenphp"]
 default_track = "8.4"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv1"
+pv_build_revision = "pv2"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
 
