@@ -1,0 +1,4 @@
+interface:
+  display_name: "Revoke Resource Artifact"
+  short_description: "Validate and publish artifact revocations"
+  default_prompt: "Use $revoke-resource-artifact to revoke a published PV Managed Resource artifact."

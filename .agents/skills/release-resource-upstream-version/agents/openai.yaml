@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Resource Upstream Version"
+  short_description: "Publish new upstream resource versions"
+  default_prompt: "Use $release-resource-upstream-version to update and publish a PV resource for a new upstream version."

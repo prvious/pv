@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Resource Checksums"
+  short_description: "Verify and refresh resource source SHAs"
+  default_prompt: "Use $update-resource-checksums to verify and update PV resource source checksums."

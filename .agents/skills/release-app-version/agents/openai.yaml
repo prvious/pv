@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release App Version"
+  short_description: "Build and publish PV app releases"
+  default_prompt: "Use $release-app-version to build and publish a new PV application version."
