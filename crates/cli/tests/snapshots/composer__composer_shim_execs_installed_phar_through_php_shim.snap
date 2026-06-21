@@ -35,11 +35,11 @@ expression: "(output, exec_calls)"
                 ),
                 (
                     "PHPRC",
-                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc",
+                    "<tempdir>/home/.pv/resources/php/8.4/etc",
                 ),
                 (
                     "PHP_INI_SCAN_DIR",
-                    "<tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1/etc/conf.d",
+                    "<tempdir>/home/.pv/resources/php/8.4/etc/conf.d",
                 ),
             ],
         },

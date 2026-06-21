@@ -14,7 +14,7 @@ use insta::assert_debug_snapshot;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    ProjectRecord, PvPaths,
+    ProjectRecord, PvPaths, fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -75,14 +75,16 @@ fn exec_env_snapshot(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
         .collect()
 }
 
-fn php_exec_env(release: &Utf8Path) -> Vec<(String, String)> {
-    vec![
-        ("PHPRC".to_string(), release.join("etc").to_string()),
+fn php_exec_env(home: &Utf8Path, track: &str) -> anyhow::Result<Vec<(String, String)>> {
+    let defaults = resources::php_track_defaults(&pv_paths(home), track)?;
+
+    Ok(vec![
+        ("PHPRC".to_string(), defaults.etc_dir().to_string()),
         (
             "PHP_INI_SCAN_DIR".to_string(),
-            release.join("etc/conf.d").to_string(),
+            defaults.conf_dir().to_string(),
         ),
-    ]
+    ])
 }
 
 impl Environment for TestEnvironment {
@@ -192,7 +194,7 @@ fn php_shim_execs_resolved_project_track() -> anyhow::Result<()> {
         vec![ExecCall {
             program: release.join("bin/php").as_std_path().to_path_buf(),
             args: vec!["-v".to_string()],
-            env: php_exec_env(&release),
+            env: php_exec_env(&home, "8.4")?,
         }]
     );
     assert_eq!(environment.text_request_count(), 0);
@@ -227,8 +229,13 @@ fn php_shim_sets_only_php_ini_env_overlay() -> anyhow::Result<()> {
         vec![ExecCall {
             program: release.join("bin/php").as_std_path().to_path_buf(),
             args: vec!["--ini".to_string()],
-            env: php_exec_env(&release),
+            env: php_exec_env(&home, "8.4")?,
         }]
+    );
+    let defaults = resources::php_track_defaults(&pv_paths(&home), "8.4")?;
+    assert_eq!(
+        fs::read_to_string(defaults.php_ini())?,
+        resources::PHP_TRACK_DEFAULT_INI
     );
 
     Ok(())
@@ -258,7 +265,7 @@ fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
         vec![ExecCall {
             program: release.join("bin/php").as_std_path().to_path_buf(),
             args: vec!["-r".to_string(), "echo 1;".to_string()],
-            env: php_exec_env(&release),
+            env: php_exec_env(&home, "8.3")?,
         }]
     );
     assert_eq!(environment.text_request_count(), 0);
@@ -291,6 +298,7 @@ fn php_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
         run_pv(&["shim:php", "-V"], &environment)?,
     ];
     let exec_calls = environment.exec_calls();
+    let env = php_exec_env(&home, "8.4")?;
 
     assert!(
         outputs
@@ -306,7 +314,7 @@ fn php_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
             .map(|arg| ExecCall {
                 program: release.join("bin/php").as_std_path().to_path_buf(),
                 args: vec![arg.to_string()],
-                env: php_exec_env(&release),
+                env: env.clone(),
             })
             .collect::<Vec<_>>()
     );
@@ -342,7 +350,7 @@ fn php_shim_uses_cached_manifest_default_without_network() -> anyhow::Result<()>
         vec![ExecCall {
             program: release.join("bin/php").as_std_path().to_path_buf(),
             args: vec!["--ini".to_string()],
-            env: php_exec_env(&release),
+            env: php_exec_env(&home, "8.4")?,
         }]
     );
     assert_eq!(environment.text_request_count(), 0);

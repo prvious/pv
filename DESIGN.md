@@ -373,6 +373,8 @@ PV builds its own FrankenPHP artifacts for the PHP tracks it supports because up
 
 PV v1 does not support custom PHP ini settings in Project config.
 
+For each installed PHP track, PV seeds track-level PHP defaults under `~/.pv/resources/php/<track>/etc/php.ini` and `~/.pv/resources/php/<track>/etc/conf.d/`. The defaults are mutable track data, not artifact release payload data, so artifact updates and old-release pruning do not remove user edits. PV runs standalone PHP, Composer-through-PHP, and Project-serving FrankenPHP workers with process-level `PHPRC` and `PHP_INI_SCAN_DIR` pointing at the track defaults. PV does not pass these ini discovery paths through Caddyfile `env` and does not expand the default profile into Caddyfile `php_ini` directives.
+
 - If there are 5 Projects and all of them use the same PHP version, PV provisions 1 Project-serving FrankenPHP process.
 - If 2 Projects use PHP 8.3, 2 use PHP 8.4, and 1 uses PHP 8.5, PV provisions 3 Project-serving FrankenPHP processes. The Gateway proxies each Project hostname to the worker for that Project's PHP version.
 

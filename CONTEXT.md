@@ -28,6 +28,10 @@ _Avoid_: Tool, service when referring to the whole category
 A PV-owned packaged installable for a **Managed Resource**.
 _Avoid_: Upstream binary, local build recipe
 
+**PHP track defaults**:
+PV-owned PHP configuration associated with a PHP version track.
+_Avoid_: php.ini support, custom Project ini
+
 **Artifact manifest**:
 The PV-owned catalog of available **Managed Resource artifacts**.
 _Avoid_: Project config, per-archive manifest
@@ -45,6 +49,7 @@ _Avoid_: Logical resource, project resource
 - A **Project** may have many **Resource allocations**.
 - A **Resource allocation** belongs to one **Project** and one **Managed Resource**.
 - A **Managed Resource** is installed from one or more **Managed Resource artifacts**.
+- **PHP track defaults** belong to a PHP version track and apply consistently to PHP execution for that track.
 - An **Artifact manifest** lists **Managed Resource artifacts**.
 - The **Gateway** routes **Project hostnames** to **Projects**.
 
@@ -62,6 +67,8 @@ _Avoid_: Logical resource, project resource
 > **Domain expert:** "No — the **Managed Resource artifact** is the PV-owned package users install."
 > **Dev:** "Does each **Managed Resource artifact** contain its own manifest?"
 > **Domain expert:** "No — the **Artifact manifest** is the PV-owned catalog outside the archive."
+> **Dev:** "If PHP needs default ini settings, are those **PHP track defaults**?"
+> **Domain expert:** "Yes — they belong to the PHP version track, not to an individual **Project config**."
 
 ## Flagged ambiguities
 
@@ -71,3 +78,4 @@ _Avoid_: Logical resource, project resource
 - "logical resource" and "project resource" were considered for per-Project objects inside shared resources — resolved: use **Resource allocation**.
 - "artifact" could mean an upstream binary, source archive, or local build recipe — resolved: use **Managed Resource artifact** for the PV-owned packaged installable.
 - "manifest" could mean Project config, a per-archive metadata file, or the artifact catalog — resolved: use **Artifact manifest** only for the PV-owned catalog of available Managed Resource artifacts.
+- "php.ini support" could mean Project-specific overrides, user-editable ini files, or PV-owned defaults — resolved: use **PHP track defaults** for PV-owned PHP configuration associated with a PHP version track.

@@ -106,17 +106,26 @@ case "${1:-}" in
   php-server)
     shift
     listen=
+    root=
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --listen)
           shift
           listen=${1:-}
           ;;
+        --root)
+          shift
+          root=${1:-}
+          ;;
       esac
       shift
     done
     [ "$listen" != "127.0.0.1:48123" ] || exit 70
-    printf 'php-server %s\n' "$listen" >>"$PV_FRANKENPHP_LOG"
+    phpinfo_state=missing-phpinfo
+    if [ -n "$root" ] && grep -F 'phpinfo(INFO_CONFIGURATION);' "$root/index.php" >/dev/null; then
+      phpinfo_state=phpinfo
+    fi
+    printf 'php-server %s %s\n' "$listen" "$phpinfo_state" >>"$PV_FRANKENPHP_LOG"
     exec sleep 60
     ;;
   *) exit 99 ;;
@@ -131,6 +140,7 @@ i=0
 while [ "$i" -lt 5 ]; do
   if grep -F 'php-server 127.0.0.1:' "$PV_FRANKENPHP_LOG" >/dev/null; then
     printf '%s\n' 'pv-frankenphp-ok'
+    printf '%s\n' 'Configuration File (php.ini) Path => /var/empty/com.prvious.pv/php'
     exit 0
   fi
   i=$((i + 1))
@@ -160,7 +170,11 @@ exit 28
             .starts_with("php-cli -r version\nphp-cli -r extensions\nphp-server 127.0.0.1:")
     );
     assert!(
-        !frankenphp_log.contains("php-server 127.0.0.1:48123\n"),
+        frankenphp_log.contains(" phpinfo\n"),
+        "smoke hook should serve phpinfo(INFO_CONFIGURATION): {frankenphp_log}"
+    );
+    assert!(
+        !frankenphp_log.contains("php-server 127.0.0.1:48123 "),
         "smoke hook should not use the old fixed loopback port: {frankenphp_log}"
     );
 
@@ -180,6 +194,7 @@ fn php_smoke_normalizes_realistic_module_output() -> Result<()> {
 set -eu
 case "$1" in
   -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
   -m)
     printf '%s\n' \
       '[PHP Modules]' \
@@ -229,6 +244,7 @@ fn php_smoke_allows_extra_extensions() -> Result<()> {
 set -eu
 case "$1" in
   -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
   -m) printf '%s\n' 'json' 'xdebug' ;;
   *) exit 99 ;;
 esac
@@ -248,6 +264,106 @@ esac
         "smoke hook failed: {}",
         command_output_debug(&output)
     );
+
+    Ok(())
+}
+
+#[test]
+fn php_smoke_rejects_usr_local_ini_path_from_php_ini_output() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+
+    create_dir_all(&artifact_bin)?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  -m) printf '%s\n' 'json' ;;
+  --ini) printf '%s\n' 'Configuration File (php.ini) Path: /usr/local/etc/php' ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let smoke_hook = php_smoke_hook();
+    let output = StdCommand::new(smoke_hook)
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should reject unsafe PHP ini fallback: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(46));
+
+    Ok(())
+}
+
+#[test]
+fn php_smoke_rejects_usr_local_ini_path_from_frankenphp_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_executable(
+        &artifact_bin.join("frankenphp"),
+        r#"#!/bin/sh
+set -eu
+case "${1:-}" in
+  php-cli)
+    [ "${2:-}" = "-r" ] || exit 99
+    code=${3:-}
+    if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
+      printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
+      printf '%s\n' 'json'
+    else
+      exit 99
+    fi
+    ;;
+  php-server)
+    exec sleep 60
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+    write_executable(
+        &command_bin.join("curl"),
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' 'pv-frankenphp-ok'
+printf '%s\n' 'Loaded Configuration File => /usr/local/etc/php/php.ini'
+"#,
+    )?;
+
+    let smoke_hook = php_smoke_hook();
+    let output = StdCommand::new(smoke_hook)
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20-frankenphp1.12.3")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should reject unsafe FrankenPHP ini fallback: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(46));
 
     Ok(())
 }
@@ -311,7 +427,7 @@ printf '%s\n' 'Composer version 2.10.10 2026-01-01 00:00:00'
 }
 
 #[test]
-fn php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot() -> Result<()> {
+fn php_build_recipe_smoke() -> Result<()> {
     let run = run_php_build_recipe_smoke()?;
     let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
     let frankenphp_source_dir = format!(
@@ -320,7 +436,7 @@ fn php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot()
     );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -330,6 +446,11 @@ argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--dl-with-
         command_output_debug(&run.output)
     );
     assert_eq!(run.spc_log, expected_log);
+    assert!(
+        !run.spc_log.contains("/usr/local/etc/php"),
+        "PHP recipe must not pass /usr/local/etc/php fallback paths: {}",
+        run.spc_log
+    );
     let expected_curl_log = format!(
         "argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/php.tar.gz][-o][{}/sources/php-8.4.20-source.tar.gz]\n\
 argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/frankenphp.tar.gz][-o][{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source.tar.gz]\n",
@@ -347,15 +468,18 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
         run.frankenphp_archive_exists,
         "FrankenPHP archive was not written"
     );
-    assert_debug_snapshot!(build_recipe_record_provenance(
-        run.php_record_json.as_deref()
-    )?);
-    assert_debug_snapshot!(build_recipe_record_provenance(
-        run.frankenphp_record_json.as_deref()
-    )?);
-    assert_debug_snapshot!(build_recipe_notice_source_lines(
-        run.frankenphp_notice.as_deref()
-    )?);
+    assert_debug_snapshot!(
+        "php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot",
+        build_recipe_record_provenance(run.php_record_json.as_deref())?
+    );
+    assert_debug_snapshot!(
+        "php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot-2",
+        build_recipe_record_provenance(run.frankenphp_record_json.as_deref())?
+    );
+    assert_debug_snapshot!(
+        "php_pair_build_smoke_builds_cli_and_frankenphp_from_one_staticphp_buildroot-3",
+        build_recipe_notice_source_lines(run.frankenphp_notice.as_deref())?
+    );
 
     Ok(())
 }

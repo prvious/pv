@@ -428,10 +428,21 @@ impl ManagedResourceCommands {
         }
     }
 
+    fn ensure_php_pair_defaults(
+        &self,
+        install: &PhpPairInstall,
+    ) -> ManagedResourceCommandResult<()> {
+        crate::php_defaults::ensure_php_track_defaults(&self.paths, install.php.track.as_str())?;
+
+        Ok(())
+    }
+
     fn record_php_pair_install(
         &self,
         install: &PhpPairInstall,
     ) -> ManagedResourceCommandResult<()> {
+        self.ensure_php_pair_defaults(install)?;
+
         let mut database = Database::open(&self.paths)?;
         database.record_managed_resource_tracks_desired_and_installed(&[
             ManagedResourceTrackInstallInput {
@@ -456,6 +467,8 @@ impl ManagedResourceCommands {
         php_pair: &PhpPairInstall,
         composer: &ManagedResourceInstall,
     ) -> ManagedResourceCommandResult<()> {
+        self.ensure_php_pair_defaults(php_pair)?;
+
         let mut database = Database::open(&self.paths)?;
         database.record_managed_resource_tracks_desired_and_installed(&[
             ManagedResourceTrackInstallInput {

@@ -4,7 +4,7 @@ use std::io;
 use std::io::Write;
 use std::process::ExitCode;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use resources::{
     ArtifactManifestCache, ManagedResourceCommands, ManagedResourceUninstallOptions,
     ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
@@ -261,10 +261,12 @@ pub(crate) fn shim_with_args_and_env(
     let database = Database::open(&paths)?;
     let track = resolve_php_track_for_shim(&paths, &database, environment)?;
     let installed = installed_php(&database, &track)?;
-    env.extend(php_env_overlay(&installed.release));
+    resources::ensure_php_track_defaults(&paths, &track)?;
+    env.extend(resources::php_track_exec_environment(&paths, &track)?);
+    let executable = installed.executable()?;
 
     environment
-        .exec_with_env(installed.executable.as_std_path(), &args, &env)
+        .exec_with_env(executable.as_std_path(), &args, &env)
         .map_err(ExecuteError::from)
 }
 
@@ -313,7 +315,14 @@ fn effective_global_php_default_track(
 
 struct InstalledPhp {
     release: Utf8PathBuf,
-    executable: Utf8PathBuf,
+}
+
+impl InstalledPhp {
+    fn executable(&self) -> Result<Utf8PathBuf, ExecuteError> {
+        let adapter = resources::php_adapter()?;
+
+        Ok(adapter.executable_path(&self.release))
+    }
 }
 
 fn installed_php(database: &Database, track: &str) -> Result<InstalledPhp, ExecuteError> {
@@ -340,29 +349,8 @@ fn installed_php(database: &Database, track: &str) -> Result<InstalledPhp, Execu
         })?;
     let adapter = resources::php_adapter()?;
     adapter.validate_installation(&release)?;
-    let executable = adapter.executable_path(&release);
 
-    Ok(InstalledPhp {
-        release,
-        executable,
-    })
-}
-
-fn php_env_overlay(release: &Utf8Path) -> Vec<(OsString, OsString)> {
-    vec![
-        (
-            OsString::from("PHPRC"),
-            release.join("etc").as_std_path().as_os_str().to_os_string(),
-        ),
-        (
-            OsString::from("PHP_INI_SCAN_DIR"),
-            release
-                .join("etc/conf.d")
-                .as_std_path()
-                .as_os_str()
-                .to_os_string(),
-        ),
-    ]
+    Ok(InstalledPhp { release })
 }
 
 fn write_install_lines(

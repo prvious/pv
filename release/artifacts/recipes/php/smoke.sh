@@ -90,14 +90,21 @@ if [ -x "$artifact_root/bin/frankenphp" ]; then
   need python3
   site_dir=$(mktemp -d)
   cat >"$site_dir/index.php" <<'PHP'
-<?php echo "pv-frankenphp-ok";
+<?php
+echo "pv-frankenphp-ok\n";
+phpinfo(INFO_CONFIGURATION);
 PHP
   port=$(available_port)
   "$frankenphp_binary" php-server --listen "127.0.0.1:$port" --root "$site_dir" &
   pid=$!
   trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$site_dir"' 0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl --fail --silent "http://127.0.0.1:$port/" | grep -F pv-frankenphp-ok >/dev/null; then
+    response=$(curl --fail --silent "http://127.0.0.1:$port/" || true)
+    if printf '%s' "$response" | grep -F pv-frankenphp-ok >/dev/null; then
+      if printf '%s' "$response" | grep -F '/usr/local/etc/php' >/dev/null; then
+        printf '%s\n' "FrankenPHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2
+        exit 46
+      fi
       exit 0
     fi
     sleep 1
@@ -110,6 +117,10 @@ if [ -x "$artifact_root/bin/php" ]; then
   php_binary="$artifact_root/bin/php"
   "$php_binary" -v | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$php_binary" -m
+  if "$php_binary" --ini 2>&1 | grep -F '/usr/local/etc/php' >/dev/null; then
+    printf '%s\n' "PHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2
+    exit 46
+  fi
   exit 0
 fi
 

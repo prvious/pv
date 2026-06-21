@@ -35,6 +35,7 @@ use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_fo
 )]
 type FrankenphpProcessCommand = tokio::process::Command;
 
+const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -172,12 +173,20 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
         let subject = RuntimeSubject::PhpWorker {
             php_track: worker.php_track.clone(),
         };
+        let process_spec = match worker_process_spec(paths, &worker.php_track, &worker_command) {
+            Ok(process_spec) => process_spec,
+            Err(error) => {
+                record_runtime_error(paths, subject.clone(), &error)?;
+
+                return Err(error);
+            }
+        };
         let promoted_config = reconcile_worker_config(paths, &worker_command, worker).await?;
         start_or_adopt_promoted_runtime(
             paths,
             &supervisor,
             promoted_config,
-            worker_process_spec(paths, &worker.php_track, &worker_command),
+            process_spec,
             ReadinessCheck::Tcp {
                 host: "127.0.0.1".to_owned(),
                 port: worker.port,
@@ -319,10 +328,13 @@ async fn run_validation_command(
     let mut command_process = FrankenphpProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
-        .envs(private_environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in PHP_INI_ENVIRONMENT_KEYS {
+        command_process.env_remove(key);
+    }
+    command_process.envs(private_environment);
     #[cfg(unix)]
     command_process.process_group(0);
 
@@ -404,19 +416,19 @@ pub fn worker_process_spec(
     paths: &PvPaths,
     php_track: &str,
     command: &FrankenphpCommand,
-) -> ProcessSpec {
-    ProcessSpec {
+) -> Result<ProcessSpec, DaemonError> {
+    Ok(ProcessSpec {
         name: format!("php-worker-{php_track}"),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.worker_root_config(php_track)),
-        private_environment: frankenphp_xdg_environment(paths),
+        private_environment: frankenphp_worker_environment(paths, php_track)?,
         config_path: paths.worker_root_config(php_track),
         log_path: paths.worker_log(php_track),
         pid_path: paths.worker_pid(php_track),
         metadata_path: paths.worker_runtime_metadata(php_track),
         resource_name: "php-worker".to_owned(),
         track: php_track.to_owned(),
-    }
+    })
 }
 
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
@@ -652,16 +664,17 @@ async fn reconcile_gateway_config(
     };
     let result = match write_project_config_fragments(&candidate_dir, &fragments) {
         Ok(()) => {
-            promote_runtime_config_tree(
-                paths,
-                RuntimeSubject::Gateway,
-                paths.gateway_root_config(),
-                &candidate_content,
-                &active_content,
-                || promote_config_dir(&active_dir, &candidate_dir),
+            let promotion = RuntimeConfigTreePromotion {
+                subject: RuntimeSubject::Gateway,
+                config_path: paths.gateway_root_config(),
+                candidate_content: &candidate_content,
+                active_content: &active_content,
+                private_environment: frankenphp_xdg_environment(paths),
+                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
                 command,
-            )
-            .await
+            };
+
+            promote_runtime_config_tree(paths, promotion).await
         }
         Err(error) => {
             record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
@@ -688,6 +701,14 @@ async fn reconcile_worker_config(
 ) -> Result<PromotedConfigTree, DaemonError> {
     let subject = RuntimeSubject::PhpWorker {
         php_track: worker.php_track.clone(),
+    };
+    let private_environment = match worker_config_private_environment(paths, &worker.php_track) {
+        Ok(private_environment) => private_environment,
+        Err(error) => {
+            record_runtime_error(paths, subject.clone(), &error)?;
+
+            return Err(error);
+        }
     };
     let active_dir = paths.worker_projects_config_dir(&worker.php_track);
     let candidate_dir = candidate_config_dir_for(&active_dir);
@@ -735,16 +756,17 @@ async fn reconcile_worker_config(
     };
     let result = match write_project_config_fragments(&candidate_dir, &fragments) {
         Ok(()) => {
-            promote_runtime_config_tree(
-                paths,
+            let promotion = RuntimeConfigTreePromotion {
                 subject,
-                paths.worker_root_config(&worker.php_track),
-                &candidate_content,
-                &active_content,
-                || promote_config_dir(&active_dir, &candidate_dir),
+                config_path: paths.worker_root_config(&worker.php_track),
+                candidate_content: &candidate_content,
+                active_content: &active_content,
+                private_environment,
+                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
                 command,
-            )
-            .await
+            };
+
+            promote_runtime_config_tree(paths, promotion).await
         }
         Err(error) => {
             record_runtime_error(paths, subject, &error)?;
@@ -756,23 +778,38 @@ async fn reconcile_worker_config(
     result
 }
 
-async fn promote_runtime_config_tree(
-    paths: &PvPaths,
+struct RuntimeConfigTreePromotion<'a, PromoteFragments> {
     subject: RuntimeSubject,
     config_path: Utf8PathBuf,
-    candidate_content: &str,
-    active_content: &str,
-    promote_fragments: impl FnOnce() -> Result<PromotedConfigDir, DaemonError>,
-    command: &FrankenphpCommand,
-) -> Result<PromotedConfigTree, DaemonError> {
+    candidate_content: &'a str,
+    active_content: &'a str,
+    private_environment: BTreeMap<String, String>,
+    promote_fragments: PromoteFragments,
+    command: &'a FrankenphpCommand,
+}
+
+async fn promote_runtime_config_tree<PromoteFragments>(
+    paths: &PvPaths,
+    promotion: RuntimeConfigTreePromotion<'_, PromoteFragments>,
+) -> Result<PromotedConfigTree, DaemonError>
+where
+    PromoteFragments: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
+{
+    let RuntimeConfigTreePromotion {
+        subject,
+        config_path,
+        candidate_content,
+        active_content,
+        private_environment,
+        promote_fragments,
+        command,
+    } = promotion;
     let result = promote_validated_config_tree_async(
         &config_path,
         candidate_content,
         active_content,
-        |candidate_path| {
-            let private_environment = frankenphp_xdg_environment(paths);
-
-            async move { validate_config(command, &candidate_path, &private_environment).await }
+        |candidate_path| async move {
+            validate_config(command, &candidate_path, &private_environment).await
         },
         promote_fragments,
     )
@@ -1331,6 +1368,25 @@ fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
             paths.certificates().as_str().to_owned(),
         ),
     ])
+}
+
+fn frankenphp_worker_environment(
+    paths: &PvPaths,
+    php_track: &str,
+) -> Result<BTreeMap<String, String>, StateError> {
+    let mut environment = frankenphp_xdg_environment(paths);
+    environment.extend(resources::php_track_environment(paths, php_track)?);
+
+    Ok(environment)
+}
+
+fn worker_config_private_environment(
+    paths: &PvPaths,
+    php_track: &str,
+) -> Result<BTreeMap<String, String>, DaemonError> {
+    resources::ensure_php_track_defaults(paths, php_track)?;
+
+    Ok(frankenphp_worker_environment(paths, php_track)?)
 }
 
 #[cfg(test)]

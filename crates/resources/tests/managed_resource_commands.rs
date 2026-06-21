@@ -12,12 +12,12 @@ use resources::{
     ArtifactManifestSource, ManagedResourceCommandError, ManagedResourceCommands,
     ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceTrack,
     ManagedResourceUninstallOptions, ManagedResourceUpdate, ManagedResourceUpdateCheck,
-    ManagedResourceUpdateCheckTrack, ResourceAdapter, ResourceHttpClient, ResourceName,
-    ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter, frankenphp_adapter,
-    mailpit_adapter, php_adapter, redis_adapter,
+    ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI, ResourceAdapter, ResourceHttpClient,
+    ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter,
+    frankenphp_adapter, mailpit_adapter, php_adapter, php_track_defaults, redis_adapter,
 };
 use sha2::{Digest, Sha256};
-use state::{Database, ManagedResourceTrackRecord, PvPaths};
+use state::{Database, ManagedResourceTrackRecord, PvPaths, fs};
 use tar::{Builder, Header};
 
 #[test]
@@ -296,6 +296,57 @@ fn managed_resource_commands_install_php_pair_resolves_latest_once_for_both_reso
 }
 
 #[test]
+fn managed_resource_commands_install_php_pair_seeds_track_defaults() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+
+    let installed = commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let defaults = php_track_defaults(&paths, installed.php().track().as_str())?;
+
+    assert_eq!(
+        fs::read_to_string(defaults.php_ini())?,
+        PHP_TRACK_DEFAULT_INI
+    );
+    assert!(fs::path_is_directory(defaults.conf_dir())?);
+    assert_debug_snapshot!((
+        install_summary(installed.php(), tempdir.path())?,
+        install_summary(installed.frankenphp(), tempdir.path())?,
+        defaults.php_ini().strip_prefix(tempdir.path())?.to_string(),
+        defaults
+            .conf_dir()
+            .strip_prefix(tempdir.path())?
+            .to_string(),
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_install_php_pair_preflights_frankenphp_track_before_mutation()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -518,6 +569,65 @@ fn managed_resource_commands_install_composer_failure_removes_prepared_php_pair(
 }
 
 #[test]
+fn managed_resource_commands_install_composer_with_php_pair_seeds_track_defaults() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1", "v2")?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+        manifest_resource(
+            "composer",
+            "2",
+            vec![manifest_track("2", vec![&composer_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes())
+        .with_bytes(composer_artifact.bytes());
+
+    let installed = commands.install_composer_with_php_pair(TrackSelector::Latest, &client)?;
+    let defaults = php_track_defaults(&paths, installed.php_pair().php().track().as_str())?;
+
+    assert_eq!(
+        fs::read_to_string(defaults.php_ini())?,
+        PHP_TRACK_DEFAULT_INI
+    );
+    assert!(fs::path_is_directory(defaults.conf_dir())?);
+    assert_debug_snapshot!((
+        install_summary(installed.php_pair().php(), tempdir.path())?,
+        install_summary(installed.php_pair().frankenphp(), tempdir.path())?,
+        install_summary(installed.composer(), tempdir.path())?,
+        defaults.php_ini().strip_prefix(tempdir.path())?.to_string(),
+        defaults
+            .conf_dir()
+            .strip_prefix(tempdir.path())?
+            .to_string(),
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one_manifest_refresh()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -626,6 +736,64 @@ fn managed_resource_commands_update_php_pairs_uses_installed_track_union_and_one
         track_records_summary(&listed_after_update, tempdir.path())?,
         manifest_refreshes_during_update,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_php_pairs_preserves_existing_php_ini() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let old_php = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "old php")?;
+    let old_frankenphp =
+        runtime_fixture_artifact("frankenphp", "8.4.8-pv1", "bin/frankenphp", "old fpm")?;
+    let new_php = runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "new php")?;
+    let new_frankenphp =
+        runtime_fixture_artifact("frankenphp", "8.4.9-pv1", "bin/frankenphp", "new fpm")?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource("php", "8.4", vec![manifest_track("8.4", vec![&old_php])]),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&old_frankenphp])],
+        ),
+    ]);
+    let updated_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&old_php, &new_php])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track(
+                "8.4",
+                vec![&old_frankenphp, &new_frankenphp],
+            )],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(old_php.bytes())
+        .with_bytes(old_frankenphp.bytes())
+        .with_text(&updated_manifest)
+        .with_bytes(new_php.bytes())
+        .with_bytes(new_frankenphp.bytes());
+
+    commands.install_php_pair(TrackSelector::Latest, &client)?;
+    let defaults = php_track_defaults(&paths, "8.4")?;
+    fs::write_sensitive_file(defaults.php_ini(), "memory_limit = 768M\n")?;
+
+    let updated = commands.update_php_pairs(&client)?;
+
+    assert_eq!(
+        fs::read_to_string(defaults.php_ini())?,
+        "memory_limit = 768M\n"
+    );
+    assert_debug_snapshot!(install_summaries(updated.installs(), tempdir.path())?);
 
     Ok(())
 }

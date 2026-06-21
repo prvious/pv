@@ -72,10 +72,11 @@ fn exec_env_snapshot(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
         .collect()
 }
 
-fn composer_exec_env(home: &Utf8Path, php_release: &Utf8Path) -> Vec<(String, String)> {
+fn composer_exec_env(home: &Utf8Path, php_track: &str) -> anyhow::Result<Vec<(String, String)>> {
     let paths = pv_paths(home);
+    let defaults = resources::php_track_defaults(&paths, php_track)?;
 
-    vec![
+    Ok(vec![
         ("COMPOSER_HOME".to_string(), paths.composer().to_string()),
         (
             "COMPOSER_CACHE_DIR".to_string(),
@@ -85,12 +86,12 @@ fn composer_exec_env(home: &Utf8Path, php_release: &Utf8Path) -> Vec<(String, St
             "PATH".to_string(),
             format!("{}:{}", paths.bin(), paths.composer().join("vendor/bin")),
         ),
-        ("PHPRC".to_string(), php_release.join("etc").to_string()),
+        ("PHPRC".to_string(), defaults.etc_dir().to_string()),
         (
             "PHP_INI_SCAN_DIR".to_string(),
-            php_release.join("etc/conf.d").to_string(),
+            defaults.conf_dir().to_string(),
         ),
-    ]
+    ])
 }
 
 impl Environment for TestEnvironment {
@@ -468,7 +469,7 @@ fn composer_shim_execs_installed_phar_through_php_shim() -> anyhow::Result<()> {
                 "install".to_string(),
                 "--dry-run".to_string(),
             ],
-            env: composer_exec_env(&home, &php_release),
+            env: composer_exec_env(&home, "8.4")?,
         }]
     );
     assert_eq!(environment.text_request_count(), 0);
@@ -496,6 +497,7 @@ fn composer_shim_sets_pv_owned_env_overlay() -> anyhow::Result<()> {
     }
     let pv_bin = pv_paths(&home).bin().to_string();
     let composer_bin = pv_paths(&home).composer().join("vendor/bin").to_string();
+    let defaults = resources::php_track_defaults(&pv_paths(&home), "8.4")?;
     let existing_path = format!("/usr/bin:{pv_bin}:/bin:{composer_bin}");
     let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new())
         .with_var("PATH", existing_path);
@@ -525,10 +527,10 @@ fn composer_shim_sets_pv_owned_env_overlay() -> anyhow::Result<()> {
                     "PATH".to_string(),
                     format!("{pv_bin}:{composer_bin}:/usr/bin:/bin"),
                 ),
-                ("PHPRC".to_string(), php_release.join("etc").to_string()),
+                ("PHPRC".to_string(), defaults.etc_dir().to_string()),
                 (
                     "PHP_INI_SCAN_DIR".to_string(),
-                    php_release.join("etc/conf.d").to_string(),
+                    defaults.conf_dir().to_string(),
                 ),
             ],
         }]
@@ -559,6 +561,7 @@ fn composer_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
         run_pv(&["shim:composer", "-V"], &environment)?,
     ];
     let exec_calls = environment.exec_calls();
+    let env = composer_exec_env(&home, "8.4")?;
 
     assert!(
         outputs
@@ -577,7 +580,7 @@ fn composer_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
                     composer_release.join("composer.phar").to_string(),
                     arg.to_string(),
                 ],
-                env: composer_exec_env(&home, &php_release),
+                env: env.clone(),
             })
             .collect::<Vec<_>>()
     );
@@ -618,7 +621,7 @@ fn composer_shim_uses_cached_manifest_default_without_network() -> anyhow::Resul
                 composer_release.join("composer.phar").to_string(),
                 "about".to_string(),
             ],
-            env: composer_exec_env(&home, &php_release),
+            env: composer_exec_env(&home, "8.4")?,
         }]
     );
     assert_eq!(environment.text_request_count(), 0);

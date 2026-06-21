@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Resource Artifacts"
+  short_description: "Build and publish PV resource artifacts"
+  default_prompt: "Use $release-resource-artifacts to build or publish PV managed resource artifacts."

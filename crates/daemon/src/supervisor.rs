@@ -24,6 +24,7 @@ const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
+const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 
 #[expect(
     clippy::disallowed_types,
@@ -610,6 +611,9 @@ async fn wait_for_process_group_exit(
 fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(&spec.command);
     command.args(&spec.arguments);
+    for key in PHP_INI_ENVIRONMENT_KEYS {
+        command.env_remove(key);
+    }
     command.envs(&spec.private_environment);
     #[cfg(unix)]
     command.process_group(0);

@@ -16,11 +16,19 @@ use state::{
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
 };
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::net::TcpListener;
+use std::process::Output;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "regression tests spawn a nested test process to control inherited env without unsafe mutation"
+)]
+type TestProcessCommand = std::process::Command;
 
 #[tokio::test]
 async fn gateway_reconciliation_starts_gateway_and_one_worker_per_php_track() -> Result<()> {
@@ -1337,7 +1345,7 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let command = FrankenphpCommand::new(tempdir.path().join("frankenphp"));
     let gateway = gateway_process_spec(&paths, &command);
-    let worker = worker_process_spec(&paths, "8.4", &command);
+    let worker = worker_process_spec(&paths, "8.4", &command)?;
 
     assert_eq!(
         gateway
@@ -1366,6 +1374,19 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
             .get("XDG_DATA_HOME")
             .map(String::as_str),
         Some(paths.certificates().as_str())
+    );
+    assert_eq!(gateway.private_environment.get("PHPRC"), None);
+    assert_eq!(gateway.private_environment.get("PHP_INI_SCAN_DIR"), None);
+    assert_eq!(
+        worker.private_environment.get("PHPRC").map(String::as_str),
+        Some(paths.resources().join("php/8.4/etc").as_str())
+    );
+    assert_eq!(
+        worker
+            .private_environment
+            .get("PHP_INI_SCAN_DIR")
+            .map(String::as_str),
+        Some(paths.resources().join("php/8.4/etc/conf.d").as_str())
     );
 
     assert_process_spec_snapshot(
@@ -1390,6 +1411,8 @@ async fn frankenphp_config_validation_receives_xdg_environment() -> Result<()> {
     let xdg_data_home = tempdir.path().join("pv-data");
     let observed_config_home = tempdir.path().join("observed-config-home");
     let observed_data_home = tempdir.path().join("observed-data-home");
+    let observed_phprc = tempdir.path().join("observed-phprc");
+    let observed_scan_dir = tempdir.path().join("observed-scan-dir");
     fs::write_sensitive_file(
         &validator,
         &format!(
@@ -1397,10 +1420,14 @@ async fn frankenphp_config_validation_receives_xdg_environment() -> Result<()> {
 set -eu
 printf '%s' "${{XDG_CONFIG_HOME}}" > {}
 printf '%s' "${{XDG_DATA_HOME}}" > {}
+printf '%s' "${{PHPRC}}" > {}
+printf '%s' "${{PHP_INI_SCAN_DIR}}" > {}
 exit 0
 "#,
             shell_single_quoted(observed_config_home.as_str()),
             shell_single_quoted(observed_data_home.as_str()),
+            shell_single_quoted(observed_phprc.as_str()),
+            shell_single_quoted(observed_scan_dir.as_str()),
         ),
     )?;
     set_executable(&validator)?;
@@ -1413,6 +1440,14 @@ exit 0
         (
             "XDG_DATA_HOME".to_owned(),
             xdg_data_home.as_str().to_owned(),
+        ),
+        (
+            "PHPRC".to_owned(),
+            tempdir.path().join("php/etc").as_str().to_owned(),
+        ),
+        (
+            "PHP_INI_SCAN_DIR".to_owned(),
+            tempdir.path().join("php/etc/conf.d").as_str().to_owned(),
         ),
     ]);
 
@@ -1430,6 +1465,116 @@ exit 0
     assert_eq!(
         state::testing::read_to_string(&observed_data_home)?,
         xdg_data_home.as_str()
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_phprc)?,
+        tempdir.path().join("php/etc").to_string()
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_scan_dir)?,
+        tempdir.path().join("php/etc/conf.d").to_string()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_config_validation_strips_parent_php_ini_env_when_private_env_omits_it()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let output = run_ignored_test_with_parent_php_ini_env(
+        "gateway_config_validation_strips_parent_php_ini_env_inner",
+        tempdir.path(),
+    )?;
+
+    assert_nested_test_succeeded(output)
+}
+
+#[tokio::test]
+#[ignore]
+async fn gateway_config_validation_strips_parent_php_ini_env_inner() -> Result<()> {
+    let root = Utf8Path::new(".");
+    let validator = root.join("env-validator");
+    let config_path = root.join("Caddyfile");
+    let observed_phprc = root.join("observed-phprc");
+    let observed_scan_dir = root.join("observed-scan-dir");
+    fs::write_sensitive_file(
+        &validator,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s' "${{PHPRC-}}" > {}
+printf '%s' "${{PHP_INI_SCAN_DIR-}}" > {}
+exit 0
+"#,
+            shell_single_quoted(observed_phprc.as_str()),
+            shell_single_quoted(observed_scan_dir.as_str()),
+        ),
+    )?;
+    set_executable(&validator)?;
+    fs::write_sensitive_file(&config_path, "{}\n")?;
+    let command = FrankenphpCommand::new(&validator);
+    let paths = PvPaths::for_home(root.join("home"));
+    let private_environment = gateway_process_spec(&paths, &command).private_environment;
+
+    validate_config(&command, &config_path, &private_environment).await?;
+
+    assert_eq!(state::testing::read_to_string(&observed_phprc)?, "");
+    assert_eq!(state::testing::read_to_string(&observed_scan_dir)?, "");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_config_validation_keeps_private_php_ini_env_after_parent_removal() -> Result<()> {
+    let tempdir = tempdir()?;
+    let output = run_ignored_test_with_parent_php_ini_env(
+        "worker_config_validation_keeps_private_php_ini_env_after_parent_removal_inner",
+        tempdir.path(),
+    )?;
+
+    assert_nested_test_succeeded(output)
+}
+
+#[tokio::test]
+#[ignore]
+async fn worker_config_validation_keeps_private_php_ini_env_after_parent_removal_inner()
+-> Result<()> {
+    let root = Utf8Path::new(".");
+    let validator = root.join("env-validator");
+    let config_path = root.join("Caddyfile");
+    let observed_phprc = root.join("observed-phprc");
+    let observed_scan_dir = root.join("observed-scan-dir");
+    fs::write_sensitive_file(
+        &validator,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s' "${{PHPRC-}}" > {}
+printf '%s' "${{PHP_INI_SCAN_DIR-}}" > {}
+exit 0
+"#,
+            shell_single_quoted(observed_phprc.as_str()),
+            shell_single_quoted(observed_scan_dir.as_str()),
+        ),
+    )?;
+    set_executable(&validator)?;
+    fs::write_sensitive_file(&config_path, "{}\n")?;
+    let command = FrankenphpCommand::new(&validator);
+    let paths = PvPaths::for_home(root.join("home"));
+    let expected_phprc = paths.resources().join("php/8.4/etc").to_string();
+    let expected_scan_dir = paths.resources().join("php/8.4/etc/conf.d").to_string();
+    let private_environment = worker_process_spec(&paths, "8.4", &command)?.private_environment;
+
+    validate_config(&command, &config_path, &private_environment).await?;
+
+    assert_eq!(
+        state::testing::read_to_string(&observed_phprc)?,
+        expected_phprc
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_scan_dir)?,
+        expected_scan_dir
     );
 
     Ok(())
@@ -1635,6 +1780,39 @@ exit 2
 
 fn shell_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn run_ignored_test_with_parent_php_ini_env(
+    test_name: &str,
+    working_dir: &Utf8Path,
+) -> Result<Output> {
+    let mut command = TestProcessCommand::new(current_test_binary()?);
+    command
+        .args(["--exact", test_name, "--ignored", "--nocapture"])
+        .current_dir(working_dir)
+        .env("PHPRC", "parent-phprc")
+        .env("PHP_INI_SCAN_DIR", "parent-scan-dir");
+
+    Ok(command.output()?)
+}
+
+fn current_test_binary() -> Result<OsString> {
+    std::env::args_os()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("test binary path was missing"))
+}
+
+fn assert_nested_test_succeeded(output: Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "nested test failed: status={}; stdout={}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn seed_stable_runtime_plan_ports(database: &mut Database, php_tracks: &[&str]) -> Result<()> {

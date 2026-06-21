@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::process::Output;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +19,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "regression tests spawn a nested test process to control inherited env without unsafe mutation"
+)]
+type TestProcessCommand = std::process::Command;
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -494,6 +502,57 @@ async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> 
 }
 
 #[tokio::test]
+async fn supervisor_start_strips_parent_php_ini_env_when_private_env_omits_it() -> Result<()> {
+    let tempdir = tempdir()?;
+    let output = run_ignored_test_with_parent_php_ini_env(
+        "supervisor_start_strips_parent_php_ini_env_inner",
+        tempdir.path(),
+    )?;
+
+    assert_nested_test_succeeded(output)
+}
+
+#[tokio::test]
+#[ignore]
+async fn supervisor_start_strips_parent_php_ini_env_inner() -> Result<()> {
+    let root = Utf8Path::new(".");
+    let paths = PvPaths::for_home(root.join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let runtime = root.join("env-runtime");
+    let ready = root.join("runtime-ready");
+    let observed_phprc = root.join("observed-phprc");
+    let observed_scan_dir = root.join("observed-scan-dir");
+    state::fs::write_sensitive_file(
+        &runtime,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s' "${{PHPRC-}}" > {}
+printf '%s' "${{PHP_INI_SCAN_DIR-}}" > {}
+touch {}
+while true; do sleep 1; done
+"#,
+            shell_single_quoted(observed_phprc.as_str()),
+            shell_single_quoted(observed_scan_dir.as_str()),
+            shell_single_quoted(ready.as_str()),
+        ),
+    )?;
+    set_executable(&runtime)?;
+    let spec = process_spec(&paths, "env-runtime", runtime.clone(), Vec::new());
+    let process = ProcessSupervisor::new(paths).start(spec).await?;
+
+    wait_for_path(&ready).await?;
+    let phprc = state::testing::read_to_string(&observed_phprc)?;
+    let scan_dir = state::testing::read_to_string(&observed_scan_dir)?;
+    process.stop(Duration::from_secs(1)).await?;
+
+    assert_eq!(phprc, "");
+    assert_eq!(scan_dir, "");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -842,6 +901,39 @@ fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Res
     Settings::clone_current().bind(assertion)
 }
 
+fn run_ignored_test_with_parent_php_ini_env(
+    test_name: &str,
+    working_dir: &Utf8Path,
+) -> Result<Output> {
+    let mut command = TestProcessCommand::new(current_test_binary()?);
+    command
+        .args(["--exact", test_name, "--ignored", "--nocapture"])
+        .current_dir(working_dir)
+        .env("PHPRC", "parent-phprc")
+        .env("PHP_INI_SCAN_DIR", "parent-scan-dir");
+
+    Ok(command.output()?)
+}
+
+fn current_test_binary() -> Result<OsString> {
+    std::env::args_os()
+        .next()
+        .ok_or_else(|| anyhow!("test binary path was missing"))
+}
+
+fn assert_nested_test_succeeded(output: Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "nested test failed: status={}; stdout={}; stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn process_spec(
     paths: &PvPaths,
     name: &str,
@@ -860,4 +952,8 @@ fn process_spec(
         resource_name: name.to_string(),
         track: "test".to_string(),
     }
+}
+
+fn shell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

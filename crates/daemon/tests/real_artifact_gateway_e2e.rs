@@ -166,7 +166,7 @@ async fn stop_gateway_runtimes(
     if let Some(gateway) = supervisor.adopt(&gateway_process_spec(paths, command))? {
         gateway.stop(Duration::from_secs(1)).await?;
     }
-    if let Some(worker) = supervisor.adopt(&worker_process_spec(paths, php_track, command))? {
+    if let Some(worker) = supervisor.adopt(&worker_process_spec(paths, php_track, command)?)? {
         worker.stop(Duration::from_secs(1)).await?;
     }
 

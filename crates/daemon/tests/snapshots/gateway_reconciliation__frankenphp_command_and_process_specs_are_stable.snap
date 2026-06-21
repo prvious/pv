@@ -1,6 +1,5 @@
 ---
 source: crates/daemon/tests/gateway_reconciliation.rs
-assertion_line: 1591
 expression: snapshot
 ---
 (
@@ -50,6 +49,8 @@ expression: snapshot
             "caddyfile",
         ],
         private_environment: {
+            "PHPRC": "<redacted>",
+            "PHP_INI_SCAN_DIR": "<redacted>",
             "XDG_CONFIG_HOME": "<redacted>",
             "XDG_DATA_HOME": "<redacted>",
         },
