@@ -1,0 +1,35 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: "(install_summary(installed.php_pair().php(), tempdir.path())?,\ninstall_summary(installed.php_pair().frankenphp(), tempdir.path())?,\ninstall_summary(installed.composer(), tempdir.path())?,\ndefaults.php_ini().strip_prefix(tempdir.path())?.to_string(),\ndefaults.conf_dir().strip_prefix(tempdir.path())?.to_string(),)"
+---
+(
+    InstallSnapshot {
+        resource_name: "php",
+        track: "8.4",
+        artifact_version: "8.4.8-pv1",
+        current_artifact_path: "home/.pv/resources/php/8.4/releases/8.4.8-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    InstallSnapshot {
+        resource_name: "frankenphp",
+        track: "8.4",
+        artifact_version: "8.4.8-pv1",
+        current_artifact_path: "home/.pv/resources/frankenphp/8.4/releases/8.4.8-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    InstallSnapshot {
+        resource_name: "composer",
+        track: "2",
+        artifact_version: "2.8.1-pv1",
+        current_artifact_path: "home/.pv/resources/composer/2/releases/2.8.1-pv1",
+        manifest_source: "Latest",
+        revoked_latest: None,
+        downloaded_from_cache: false,
+    },
+    "home/.pv/resources/php/8.4/etc/php.ini",
+    "home/.pv/resources/php/8.4/etc/conf.d",
+)
