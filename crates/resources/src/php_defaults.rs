@@ -6,6 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use state::{PvPaths, StateError, fs};
 
 pub const PHP_TRACK_DEFAULT_INI: &str = include_str!("php-defaults.ini");
+const SUPPORTED_PHP_TRACKS: [&str; 3] = ["8.3", "8.4", "8.5"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpTrackDefaults {
@@ -44,14 +45,12 @@ pub fn ensure_php_track_defaults(
     paths: &PvPaths,
     track: &str,
 ) -> Result<PhpTrackDefaults, StateError> {
+    ensure_supported_track(track)?;
     let defaults = php_track_defaults(paths, track);
 
     ensure_directory_path(defaults.etc_dir(), "etc")?;
     ensure_directory_path(defaults.conf_dir(), "conf.d")?;
-
-    if !defaults.php_ini().exists() {
-        fs::write_sensitive_file(defaults.php_ini(), PHP_TRACK_DEFAULT_INI)?;
-    }
+    ensure_php_ini_path(defaults.php_ini())?;
 
     Ok(defaults)
 }
@@ -84,4 +83,30 @@ fn ensure_directory_path(path: &Utf8Path, name: &'static str) -> Result<(), Stat
     }
 
     fs::ensure_user_dir(path)
+}
+
+fn ensure_php_ini_path(path: &Utf8Path) -> Result<(), StateError> {
+    if path.exists() && !path.is_file() {
+        return Err(StateError::Filesystem {
+            path: path.to_path_buf(),
+            source: io::Error::other("PHP track defaults php.ini path is not a file"),
+        });
+    }
+
+    if path.exists() {
+        let _content = fs::read_to_string(path)?;
+        return Ok(());
+    }
+
+    fs::write_sensitive_file(path, PHP_TRACK_DEFAULT_INI)
+}
+
+fn ensure_supported_track(track: &str) -> Result<(), StateError> {
+    if SUPPORTED_PHP_TRACKS.contains(&track) {
+        return Ok(());
+    }
+
+    Err(StateError::InvalidProjectTrack {
+        track: track.to_owned(),
+    })
 }

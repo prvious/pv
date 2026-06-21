@@ -9,7 +9,7 @@ pub mod http;
 pub mod identity;
 pub mod install;
 pub mod manifest;
-mod php_defaults;
+pub mod php_defaults;
 pub mod platform;
 pub mod registry;
 pub mod runtime;

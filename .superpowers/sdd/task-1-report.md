@@ -82,3 +82,80 @@ Self-review findings
 Any concerns
 
 - None for Task 1 scope.
+
+Fix follow-up from review
+
+What changed
+
+- Completed the bundled defaults asset tail after `[soap]` with the required active SOAP cache settings plus `[sysvshm]`, `[ldap]`, `[dba]`, `[opcache]`, `[curl]`, `[openssl]`, and `[ffi]` in the required order.
+- Tightened `ensure_php_track_defaults` to:
+  - reject unsupported tracks outside `8.3`, `8.4`, and `8.5`
+  - validate an existing `php.ini` is a regular file
+  - validate an existing `php.ini` is readable by attempting to read it
+- Changed `crates/resources/src/lib.rs` to `pub mod php_defaults;` to match the brief.
+- Expanded the focused integration tests to cover:
+  - exact required asset tail content/order
+  - unsupported-track rejection
+  - blocking `php.ini` directory rejection
+
+Review-fix TDD evidence
+
+RED command:
+
+```shell
+cargo nextest run -p resources -E 'test(php_track_defaults_)'
+```
+
+RED output:
+
+```text
+────────────
+ Nextest run ID 89d9113d-b0f1-4f1c-8bab-ae38f26eeb38 with nextest profile: default
+    Starting 5 tests across 8 binaries (111 tests skipped)
+        PASS [   0.013s] (1/5) resources::php_defaults php_track_defaults_env_helpers_point_at_track_etc
+        FAIL [   0.014s] (2/5) resources::php_defaults php_track_defaults_reject_blocking_php_ini_paths
+Error: expected blocking php.ini path to fail
+        FAIL [   0.015s] (3/5) resources::php_defaults php_track_defaults_reject_unsupported_tracks
+Error: expected unsupported PHP track to fail
+        FAIL [   0.015s] (4/5) resources::php_defaults php_track_defaults_seed_stripped_sample_once
+assertion failed: PHP_TRACK_DEFAULT_INI.ends_with(...)
+        PASS [   0.016s] (5/5) resources::php_defaults php_track_defaults_reject_blocking_paths
+────────────
+     Summary [   0.016s] 5 tests run: 2 passed, 3 failed, 111 skipped
+```
+
+GREEN command:
+
+```shell
+cargo nextest run -p resources -E 'test(php_track_defaults_)'
+```
+
+GREEN output:
+
+```text
+Finished `test` profile [unoptimized + debuginfo] target(s) in 0.85s
+────────────
+ Nextest run ID 5c7f6d68-cd55-4a9e-8578-d160b28c8bb1 with nextest profile: default
+    Starting 5 tests across 8 binaries (111 tests skipped)
+        PASS [   0.008s] (1/5) resources::php_defaults php_track_defaults_reject_unsupported_tracks
+        PASS [   0.008s] (2/5) resources::php_defaults php_track_defaults_env_helpers_point_at_track_etc
+        PASS [   0.009s] (3/5) resources::php_defaults php_track_defaults_reject_blocking_paths
+        PASS [   0.009s] (4/5) resources::php_defaults php_track_defaults_reject_blocking_php_ini_paths
+        PASS [   0.009s] (5/5) resources::php_defaults php_track_defaults_seed_stripped_sample_once
+────────────
+     Summary [   0.010s] 5 tests run: 5 passed, 111 skipped
+```
+
+Files changed for review fixes
+
+- `crates/resources/src/php-defaults.ini`
+- `crates/resources/src/php_defaults.rs`
+- `crates/resources/src/lib.rs`
+- `crates/resources/tests/php_defaults.rs`
+- `.superpowers/sdd/task-1-report.md`
+
+Self-review for fixes
+
+- The new track gate is enforced at the seeding entrypoint, which is where arbitrary-track mutation could occur.
+- Existing `php.ini` validation now fails fast for non-files and unreadable files, while preserving the existing file content when valid.
+- The root `/Users/clovismuneza/Apps/pv/php.ini` remained unchanged and untracked.
