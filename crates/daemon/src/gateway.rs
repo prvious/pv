@@ -660,17 +660,17 @@ async fn reconcile_gateway_config(
     };
     let result = match write_project_config_fragments(&candidate_dir, &fragments) {
         Ok(()) => {
-            promote_runtime_config_tree(
-                paths,
-                RuntimeSubject::Gateway,
-                paths.gateway_root_config(),
-                &candidate_content,
-                &active_content,
-                frankenphp_xdg_environment(paths),
-                || promote_config_dir(&active_dir, &candidate_dir),
+            let promotion = RuntimeConfigTreePromotion {
+                subject: RuntimeSubject::Gateway,
+                config_path: paths.gateway_root_config(),
+                candidate_content: &candidate_content,
+                active_content: &active_content,
+                private_environment: frankenphp_xdg_environment(paths),
+                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
                 command,
-            )
-            .await
+            };
+
+            promote_runtime_config_tree(paths, promotion).await
         }
         Err(error) => {
             record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
@@ -752,17 +752,17 @@ async fn reconcile_worker_config(
     };
     let result = match write_project_config_fragments(&candidate_dir, &fragments) {
         Ok(()) => {
-            promote_runtime_config_tree(
-                paths,
+            let promotion = RuntimeConfigTreePromotion {
                 subject,
-                paths.worker_root_config(&worker.php_track),
-                &candidate_content,
-                &active_content,
+                config_path: paths.worker_root_config(&worker.php_track),
+                candidate_content: &candidate_content,
+                active_content: &active_content,
                 private_environment,
-                || promote_config_dir(&active_dir, &candidate_dir),
+                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
                 command,
-            )
-            .await
+            };
+
+            promote_runtime_config_tree(paths, promotion).await
         }
         Err(error) => {
             record_runtime_error(paths, subject, &error)?;
@@ -774,16 +774,32 @@ async fn reconcile_worker_config(
     result
 }
 
-async fn promote_runtime_config_tree(
-    paths: &PvPaths,
+struct RuntimeConfigTreePromotion<'a, PromoteFragments> {
     subject: RuntimeSubject,
     config_path: Utf8PathBuf,
-    candidate_content: &str,
-    active_content: &str,
+    candidate_content: &'a str,
+    active_content: &'a str,
     private_environment: BTreeMap<String, String>,
-    promote_fragments: impl FnOnce() -> Result<PromotedConfigDir, DaemonError>,
-    command: &FrankenphpCommand,
-) -> Result<PromotedConfigTree, DaemonError> {
+    promote_fragments: PromoteFragments,
+    command: &'a FrankenphpCommand,
+}
+
+async fn promote_runtime_config_tree<PromoteFragments>(
+    paths: &PvPaths,
+    promotion: RuntimeConfigTreePromotion<'_, PromoteFragments>,
+) -> Result<PromotedConfigTree, DaemonError>
+where
+    PromoteFragments: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
+{
+    let RuntimeConfigTreePromotion {
+        subject,
+        config_path,
+        candidate_content,
+        active_content,
+        private_environment,
+        promote_fragments,
+        command,
+    } = promotion;
     let result = promote_validated_config_tree_async(
         &config_path,
         candidate_content,
