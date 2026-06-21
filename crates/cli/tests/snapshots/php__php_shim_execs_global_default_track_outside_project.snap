@@ -22,11 +22,11 @@ expression: "(output, exec_calls)"
             env: [
                 (
                     "PHPRC",
-                    "<tempdir>/home/.pv/resources/php/8.3/releases/8.3.12-pv1/etc",
+                    "<tempdir>/home/.pv/resources/php/8.3/etc",
                 ),
                 (
                     "PHP_INI_SCAN_DIR",
-                    "<tempdir>/home/.pv/resources/php/8.3/releases/8.3.12-pv1/etc/conf.d",
+                    "<tempdir>/home/.pv/resources/php/8.3/etc/conf.d",
                 ),
             ],
         },
