@@ -43,7 +43,10 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
         }],
     };
 
-    assert_snapshot!(render_php_worker_config(&input)?);
+    let rendered = render_php_worker_config(&input)?;
+
+    assert!(!rendered.contains("php_ini"));
+    assert_snapshot!(rendered);
 
     Ok(())
 }

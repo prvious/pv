@@ -1337,7 +1337,7 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let command = FrankenphpCommand::new(tempdir.path().join("frankenphp"));
     let gateway = gateway_process_spec(&paths, &command);
-    let worker = worker_process_spec(&paths, "8.4", &command);
+    let worker = worker_process_spec(&paths, "8.4", &command)?;
 
     assert_eq!(
         gateway
@@ -1366,6 +1366,19 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
             .get("XDG_DATA_HOME")
             .map(String::as_str),
         Some(paths.certificates().as_str())
+    );
+    assert_eq!(gateway.private_environment.get("PHPRC"), None);
+    assert_eq!(gateway.private_environment.get("PHP_INI_SCAN_DIR"), None);
+    assert_eq!(
+        worker.private_environment.get("PHPRC").map(String::as_str),
+        Some(paths.resources().join("php/8.4/etc").as_str())
+    );
+    assert_eq!(
+        worker
+            .private_environment
+            .get("PHP_INI_SCAN_DIR")
+            .map(String::as_str),
+        Some(paths.resources().join("php/8.4/etc/conf.d").as_str())
     );
 
     assert_process_spec_snapshot(
@@ -1390,6 +1403,8 @@ async fn frankenphp_config_validation_receives_xdg_environment() -> Result<()> {
     let xdg_data_home = tempdir.path().join("pv-data");
     let observed_config_home = tempdir.path().join("observed-config-home");
     let observed_data_home = tempdir.path().join("observed-data-home");
+    let observed_phprc = tempdir.path().join("observed-phprc");
+    let observed_scan_dir = tempdir.path().join("observed-scan-dir");
     fs::write_sensitive_file(
         &validator,
         &format!(
@@ -1397,10 +1412,14 @@ async fn frankenphp_config_validation_receives_xdg_environment() -> Result<()> {
 set -eu
 printf '%s' "${{XDG_CONFIG_HOME}}" > {}
 printf '%s' "${{XDG_DATA_HOME}}" > {}
+printf '%s' "${{PHPRC}}" > {}
+printf '%s' "${{PHP_INI_SCAN_DIR}}" > {}
 exit 0
 "#,
             shell_single_quoted(observed_config_home.as_str()),
             shell_single_quoted(observed_data_home.as_str()),
+            shell_single_quoted(observed_phprc.as_str()),
+            shell_single_quoted(observed_scan_dir.as_str()),
         ),
     )?;
     set_executable(&validator)?;
@@ -1413,6 +1432,14 @@ exit 0
         (
             "XDG_DATA_HOME".to_owned(),
             xdg_data_home.as_str().to_owned(),
+        ),
+        (
+            "PHPRC".to_owned(),
+            tempdir.path().join("php/etc").as_str().to_owned(),
+        ),
+        (
+            "PHP_INI_SCAN_DIR".to_owned(),
+            tempdir.path().join("php/etc/conf.d").as_str().to_owned(),
         ),
     ]);
 
@@ -1430,6 +1457,14 @@ exit 0
     assert_eq!(
         state::testing::read_to_string(&observed_data_home)?,
         xdg_data_home.as_str()
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_phprc)?,
+        tempdir.path().join("php/etc").to_string()
+    );
+    assert_eq!(
+        state::testing::read_to_string(&observed_scan_dir)?,
+        tempdir.path().join("php/etc/conf.d").to_string()
     );
 
     Ok(())
