@@ -279,6 +279,8 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     --build-cli \
     --build-frankenphp \
     --enable-zts \
+    --with-config-file-path=/var/empty/com.prvious.pv/php \
+    --with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d \
     --dl-with-php="$PHP_PHP_VERSION" \
     --dl-retry=3 \
     --dl-custom-local "php-src:$php_source_dir" \
