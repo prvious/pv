@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::result::Result as StdResult;
 
 use anyhow::Result;
 use camino_tempfile::tempdir;
@@ -6,7 +7,7 @@ use resources::{
     PHP_TRACK_DEFAULT_INI, ensure_php_track_defaults, php_track_defaults, php_track_environment,
     php_track_exec_environment,
 };
-use state::{PvPaths, fs};
+use state::{PvPaths, StateError, fs};
 
 #[test]
 fn php_track_defaults_seed_stripped_sample_once() -> Result<()> {
@@ -65,7 +66,7 @@ fn php_track_defaults_reject_unsupported_tracks() -> Result<()> {
 
     assert!(matches!(
         error,
-        state::StateError::InvalidProjectTrack { track } if track == "8.2"
+        StateError::InvalidProjectTrack { track } if track == "8.2"
     ));
 
     Ok(())
@@ -75,7 +76,7 @@ fn php_track_defaults_reject_unsupported_tracks() -> Result<()> {
 fn php_track_defaults_reject_blocking_paths() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let defaults = php_track_defaults(&paths, "8.5");
+    let defaults = php_track_defaults(&paths, "8.5")?;
     fs::ensure_user_dir(defaults.etc_dir())?;
     fs::write_sensitive_file(defaults.conf_dir(), "not a directory\n")?;
 
@@ -97,7 +98,7 @@ fn php_track_defaults_reject_blocking_paths() -> Result<()> {
 fn php_track_defaults_reject_blocking_php_ini_paths() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let defaults = php_track_defaults(&paths, "8.5");
+    let defaults = php_track_defaults(&paths, "8.5")?;
     fs::ensure_user_dir(defaults.etc_dir())?;
     fs::ensure_user_dir(defaults.php_ini())?;
 
@@ -116,12 +117,48 @@ fn php_track_defaults_reject_blocking_php_ini_paths() -> Result<()> {
 }
 
 #[test]
+fn php_track_defaults_reject_symlinked_php_ini_paths() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let defaults = php_track_defaults(&paths, "8.5")?;
+    let target = tempdir.path().join("linked-php.ini");
+    fs::ensure_user_dir(defaults.etc_dir())?;
+    fs::write_sensitive_file(&target, "memory_limit = 768M\n")?;
+    fs::symlink_file(&target, defaults.php_ini())?;
+
+    let error = match ensure_php_track_defaults(&paths, "8.5") {
+        Ok(_) => anyhow::bail!("expected symlinked php.ini path to fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("PHP track defaults php.ini path is not a file")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_track_defaults_helpers_reject_unsupported_tracks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+    assert_invalid_track(php_track_defaults(&paths, "8.2"), "8.2")?;
+    assert_invalid_track(php_track_environment(&paths, "8.2"), "8.2")?;
+    assert_invalid_track(php_track_exec_environment(&paths, "8.2"), "8.2")?;
+
+    Ok(())
+}
+
+#[test]
 fn php_track_defaults_env_helpers_point_at_track_etc() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
 
     assert_eq!(
-        php_track_environment(&paths, "8.3"),
+        php_track_environment(&paths, "8.3")?,
         BTreeMap::from([
             (
                 "PHPRC".to_owned(),
@@ -134,7 +171,7 @@ fn php_track_defaults_env_helpers_point_at_track_etc() -> Result<()> {
         ])
     );
 
-    let exec_env = php_track_exec_environment(&paths, "8.3")
+    let exec_env = php_track_exec_environment(&paths, "8.3")?
         .into_iter()
         .map(|(key, value)| {
             (
@@ -159,4 +196,14 @@ fn php_track_defaults_env_helpers_point_at_track_etc() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn assert_invalid_track<T>(result: StdResult<T, StateError>, track: &str) -> Result<()> {
+    match result {
+        Err(StateError::InvalidProjectTrack {
+            track: invalid_track,
+        }) if invalid_track == track => Ok(()),
+        Err(error) => anyhow::bail!("expected invalid track error, got {error}"),
+        Ok(_) => anyhow::bail!("expected unsupported PHP track to fail"),
+    }
 }

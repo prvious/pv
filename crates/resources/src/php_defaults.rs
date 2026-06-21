@@ -29,7 +29,13 @@ impl PhpTrackDefaults {
     }
 }
 
-pub fn php_track_defaults(paths: &PvPaths, track: &str) -> PhpTrackDefaults {
+pub fn php_track_defaults(paths: &PvPaths, track: &str) -> Result<PhpTrackDefaults, StateError> {
+    ensure_supported_track(track)?;
+
+    Ok(php_track_defaults_for_supported_track(paths, track))
+}
+
+fn php_track_defaults_for_supported_track(paths: &PvPaths, track: &str) -> PhpTrackDefaults {
     let etc_dir = paths.resources().join(format!("php/{track}/etc"));
     let php_ini = etc_dir.join("php.ini");
     let conf_dir = etc_dir.join("conf.d");
@@ -45,8 +51,7 @@ pub fn ensure_php_track_defaults(
     paths: &PvPaths,
     track: &str,
 ) -> Result<PhpTrackDefaults, StateError> {
-    ensure_supported_track(track)?;
-    let defaults = php_track_defaults(paths, track);
+    let defaults = php_track_defaults(paths, track)?;
 
     ensure_directory_path(defaults.etc_dir(), "etc")?;
     ensure_directory_path(defaults.conf_dir(), "conf.d")?;
@@ -55,27 +60,33 @@ pub fn ensure_php_track_defaults(
     Ok(defaults)
 }
 
-pub fn php_track_environment(paths: &PvPaths, track: &str) -> BTreeMap<String, String> {
-    let defaults = php_track_defaults(paths, track);
+pub fn php_track_environment(
+    paths: &PvPaths,
+    track: &str,
+) -> Result<BTreeMap<String, String>, StateError> {
+    let defaults = php_track_defaults(paths, track)?;
 
-    BTreeMap::from([
+    Ok(BTreeMap::from([
         ("PHPRC".to_owned(), defaults.etc_dir().to_string()),
         (
             "PHP_INI_SCAN_DIR".to_owned(),
             defaults.conf_dir().to_string(),
         ),
-    ])
+    ]))
 }
 
-pub fn php_track_exec_environment(paths: &PvPaths, track: &str) -> Vec<(OsString, OsString)> {
-    php_track_environment(paths, track)
+pub fn php_track_exec_environment(
+    paths: &PvPaths,
+    track: &str,
+) -> Result<Vec<(OsString, OsString)>, StateError> {
+    Ok(php_track_environment(paths, track)?
         .into_iter()
         .map(|(key, value)| (OsString::from(key), OsString::from(value)))
-        .collect()
+        .collect())
 }
 
 fn ensure_directory_path(path: &Utf8Path, name: &'static str) -> Result<(), StateError> {
-    if path.exists() && !path.is_dir() {
+    if fs::path_entry_exists(path)? && !fs::path_is_directory(path)? {
         return Err(StateError::Filesystem {
             path: path.to_path_buf(),
             source: io::Error::other(format!("PHP track defaults {name} path is not a directory")),
@@ -86,19 +97,20 @@ fn ensure_directory_path(path: &Utf8Path, name: &'static str) -> Result<(), Stat
 }
 
 fn ensure_php_ini_path(path: &Utf8Path) -> Result<(), StateError> {
-    if path.exists() && !path.is_file() {
+    if !fs::path_entry_exists(path)? {
+        return fs::write_sensitive_file(path, PHP_TRACK_DEFAULT_INI);
+    }
+
+    if !fs::path_is_file(path)? {
         return Err(StateError::Filesystem {
             path: path.to_path_buf(),
             source: io::Error::other("PHP track defaults php.ini path is not a file"),
         });
     }
 
-    if path.exists() {
-        let _content = fs::read_to_string(path)?;
-        return Ok(());
-    }
+    let _content = fs::read_to_string(path)?;
 
-    fs::write_sensitive_file(path, PHP_TRACK_DEFAULT_INI)
+    Ok(())
 }
 
 fn ensure_supported_track(track: &str) -> Result<(), StateError> {
