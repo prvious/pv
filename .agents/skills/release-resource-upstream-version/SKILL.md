@@ -137,9 +137,24 @@ git push origin main
 
 Use `feat(release)` because a new installable artifact version becomes available.
 
+## Confirm Build Dispatch
+
+Immediately before dispatching `artifact-recipes.yml`, restate the finalized build inputs:
+
+- workflow file
+- git ref
+- resource
+- track
+- platform
+- whether publication will be considered after the build
+
+Confirm with the user that this exact build dispatch should proceed. A prior input confirmation does not satisfy this gate.
+
+Do not continue to `Build Artifacts` unless the user explicitly confirms this workflow dispatch.
+
 ## Build Artifacts
 
-After confirming the exact inputs with the user, dispatch:
+After the build dispatch has been confirmed, dispatch:
 
 ```sh
 gh workflow run artifact-recipes.yml \
@@ -174,11 +189,25 @@ gh api repos/<owner>/<repo>/actions/runs/<recipes-run-id>/artifacts \
   --jq '.artifacts[] | {name, size_in_bytes, expired}'
 ```
 
+## Confirm Publication Dispatch
+
+After the build completes and uploaded artifacts are verified, restate the finalized publication inputs:
+
+- workflow file
+- git ref
+- source run ID
+- versioned manifest prefix
+- required native platforms
+
+Confirm with the user that this exact publication dispatch should proceed, explicitly noting that published artifacts become available to all clients.
+
+Do not continue to `Publish Artifacts` unless the user explicitly confirms this workflow dispatch. A prior build confirmation does not satisfy this gate.
+
 ## Publish Artifacts
 
 Publication must use the same commit as the successful recipe run.
 
-After confirming publication inputs with the user, dispatch:
+After the publication dispatch has been confirmed, dispatch:
 
 ```sh
 gh workflow run artifact-publication.yml \

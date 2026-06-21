@@ -162,12 +162,12 @@ manifests/runs/<manual-run-or-ticket>/manifest.json
 manifest.json
 ```
 
-The safe order is:
+The safe order is gated. Do not batch these mutations under one approval; a prior confirmation does not authorize later R2 mutations.
 
-1. Upload the revocation JSON as an immutable object, failing if it already exists.
+1. Confirm with the user before uploading the revocation JSON as an immutable object, failing if it already exists. Stop unless the user explicitly approves this upload.
 2. Generate and validate a complete manifest from published records plus all revocations.
-3. Upload a versioned manifest.
-4. Update stable `manifest.json` last.
+3. Confirm with the user before uploading the versioned manifest. Stop unless the user explicitly approves this upload.
+4. Confirm with the user before updating stable `manifest.json`, explicitly noting that clients will observe the new revocation state after this mutation. Stop unless the user explicitly approves this update.
 5. Verify clients see the revoked state.
 
 Do not hand-edit the stable manifest JSON directly.
