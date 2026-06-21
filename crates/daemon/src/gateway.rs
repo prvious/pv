@@ -35,6 +35,7 @@ use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_fo
 )]
 type FrankenphpProcessCommand = tokio::process::Command;
 
+const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -327,10 +328,13 @@ async fn run_validation_command(
     let mut command_process = FrankenphpProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
-        .envs(private_environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in PHP_INI_ENVIRONMENT_KEYS {
+        command_process.env_remove(key);
+    }
+    command_process.envs(private_environment);
     #[cfg(unix)]
     command_process.process_group(0);
 
