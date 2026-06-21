@@ -9,6 +9,7 @@ pub mod http;
 pub mod identity;
 pub mod install;
 pub mod manifest;
+mod php_defaults;
 pub mod platform;
 pub mod registry;
 pub mod runtime;
@@ -38,6 +39,10 @@ pub use identity::{
 };
 pub use install::{ArtifactInstall, ArtifactInstaller, ResourceAdapter};
 pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, RevocationState};
+pub use php_defaults::{
+    PHP_TRACK_DEFAULT_INI, PhpTrackDefaults, ensure_php_track_defaults, php_track_defaults,
+    php_track_environment, php_track_exec_environment,
+};
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};
 pub use runtime::{

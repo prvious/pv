@@ -1,0 +1,87 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io;
+
+use camino::{Utf8Path, Utf8PathBuf};
+use state::{PvPaths, StateError, fs};
+
+pub const PHP_TRACK_DEFAULT_INI: &str = include_str!("php-defaults.ini");
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpTrackDefaults {
+    etc_dir: Utf8PathBuf,
+    php_ini: Utf8PathBuf,
+    conf_dir: Utf8PathBuf,
+}
+
+impl PhpTrackDefaults {
+    pub fn etc_dir(&self) -> &Utf8Path {
+        &self.etc_dir
+    }
+
+    pub fn php_ini(&self) -> &Utf8Path {
+        &self.php_ini
+    }
+
+    pub fn conf_dir(&self) -> &Utf8Path {
+        &self.conf_dir
+    }
+}
+
+pub fn php_track_defaults(paths: &PvPaths, track: &str) -> PhpTrackDefaults {
+    let etc_dir = paths.resources().join(format!("php/{track}/etc"));
+    let php_ini = etc_dir.join("php.ini");
+    let conf_dir = etc_dir.join("conf.d");
+
+    PhpTrackDefaults {
+        etc_dir,
+        php_ini,
+        conf_dir,
+    }
+}
+
+pub fn ensure_php_track_defaults(
+    paths: &PvPaths,
+    track: &str,
+) -> Result<PhpTrackDefaults, StateError> {
+    let defaults = php_track_defaults(paths, track);
+
+    ensure_directory_path(defaults.etc_dir(), "etc")?;
+    ensure_directory_path(defaults.conf_dir(), "conf.d")?;
+
+    if !defaults.php_ini().exists() {
+        fs::write_sensitive_file(defaults.php_ini(), PHP_TRACK_DEFAULT_INI)?;
+    }
+
+    Ok(defaults)
+}
+
+pub fn php_track_environment(paths: &PvPaths, track: &str) -> BTreeMap<String, String> {
+    let defaults = php_track_defaults(paths, track);
+
+    BTreeMap::from([
+        ("PHPRC".to_owned(), defaults.etc_dir().to_string()),
+        (
+            "PHP_INI_SCAN_DIR".to_owned(),
+            defaults.conf_dir().to_string(),
+        ),
+    ])
+}
+
+pub fn php_track_exec_environment(paths: &PvPaths, track: &str) -> Vec<(OsString, OsString)> {
+    php_track_environment(paths, track)
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect()
+}
+
+fn ensure_directory_path(path: &Utf8Path, name: &'static str) -> Result<(), StateError> {
+    if path.exists() && !path.is_dir() {
+        return Err(StateError::Filesystem {
+            path: path.to_path_buf(),
+            source: io::Error::other(format!("PHP track defaults {name} path is not a directory")),
+        });
+    }
+
+    fs::ensure_user_dir(path)
+}
