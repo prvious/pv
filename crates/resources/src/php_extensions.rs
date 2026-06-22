@@ -58,11 +58,7 @@ pub fn resolve_php_extension_request(
     artifact_root: &Utf8Path,
     requested: &[String],
 ) -> Result<PhpExtensionResolution> {
-    let mut catalog = BTreeMap::new();
-    for module in read_php_extension_metadata(artifact_root)? {
-        catalog.insert(module.name.clone(), module);
-    }
-
+    let catalog = php_extension_catalog(artifact_root)?;
     let requested = requested.to_vec();
     let mut requested_unique = BTreeSet::new();
     let mut loaded = BTreeSet::new();
@@ -84,6 +80,36 @@ pub fn resolve_php_extension_request(
         loaded: loaded.into_iter().collect(),
         ignored,
     })
+}
+
+pub fn resolve_persisted_php_extension_modules(
+    artifact_root: &Utf8Path,
+    loaded_extensions: &[String],
+) -> Result<Vec<PhpExtensionModule>> {
+    if loaded_extensions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let catalog = php_extension_catalog(artifact_root)?;
+    let mut loaded = BTreeSet::new();
+    let mut loaded_unique = BTreeSet::new();
+
+    for name in loaded_extensions {
+        if !loaded_unique.insert(name.clone()) {
+            continue;
+        }
+        let Some(module) = catalog.get(name) else {
+            return Err(ResourcesError::InvalidArtifactLayout {
+                resource: "php".to_string(),
+                reason: format!(
+                    "persisted PHP extension `{name}` is missing from installed artifact metadata"
+                ),
+            });
+        };
+        loaded.insert(module.clone());
+    }
+
+    Ok(loaded.into_iter().collect())
 }
 
 pub fn ensure_php_runtime_overlay(
@@ -150,6 +176,15 @@ pub fn php_runtime_exec_environment(
             .map(|(key, value)| (OsString::from(key), OsString::from(value)))
             .collect(),
     )
+}
+
+fn php_extension_catalog(artifact_root: &Utf8Path) -> Result<BTreeMap<String, PhpExtensionModule>> {
+    let mut catalog = BTreeMap::new();
+    for module in read_php_extension_metadata(artifact_root)? {
+        catalog.insert(module.name.clone(), module);
+    }
+
+    Ok(catalog)
 }
 
 impl PhpExtensionModule {

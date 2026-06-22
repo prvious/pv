@@ -182,6 +182,96 @@ exit 28
 }
 
 #[test]
+fn php_smoke_requires_frankenphp_optional_metadata_names_to_load() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+    let frankenphp_log = tempdir.path().join("frankenphp.log");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(&extension_dir.join("redis.so"), "redis module\n")?;
+    write_file(
+        &metadata_dir.join("php-extensions.json"),
+        r#"[
+  {
+    "name": "redis",
+    "load_kind": "extension",
+    "path": "lib/php/extensions/redis.so"
+  }
+]
+"#,
+    )?;
+    write_file(&frankenphp_log, "")?;
+    write_executable(
+        &artifact_bin.join("frankenphp"),
+        r#"#!/bin/sh
+set -eu
+case "${1:-}" in
+  php-cli)
+    [ "${2:-}" = "-r" ] || exit 99
+    code=${3:-}
+    if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
+      printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
+      printf '%s\n' 'json'
+    else
+      exit 99
+    fi
+    ;;
+  php-server)
+    printf '%s\n' 'php-server' >>"$PV_FRANKENPHP_LOG"
+    exec sleep 60
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+    write_executable(
+        &command_bin.join("curl"),
+        r#"#!/bin/sh
+set -eu
+if grep -F 'php-server' "$PV_FRANKENPHP_LOG" >/dev/null; then
+  printf '%s\n' 'pv-frankenphp-ok'
+  printf '%s\n' 'Configuration File (php.ini) Path => /var/empty/com.prvious.pv/php'
+  exit 0
+fi
+exit 28
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_FRANKENPHP_LOG", &frankenphp_log)
+        .env("PV_UPSTREAM_VERSION", "8.4.20-frankenphp1.12.3")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require FrankenPHP metadata extension names: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(43));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing PHP extension: redis"),
+        "smoke hook should report the missing metadata extension: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_normalizes_realistic_module_output() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");

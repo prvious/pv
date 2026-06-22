@@ -47,7 +47,8 @@ pub use php_defaults::{
 pub use php_extensions::{
     PHP_EXTENSION_METADATA_PATH, PhpExtensionLoadKind, PhpExtensionModule, PhpExtensionResolution,
     ensure_php_runtime_overlay, php_runtime_environment, php_runtime_exec_environment,
-    read_php_extension_metadata, resolve_php_extension_request,
+    read_php_extension_metadata, resolve_persisted_php_extension_modules,
+    resolve_php_extension_request,
 };
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};

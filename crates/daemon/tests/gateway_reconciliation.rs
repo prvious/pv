@@ -832,6 +832,56 @@ document_root: public
     Ok(())
 }
 
+#[test]
+fn gateway_runtime_plan_skips_invalid_config_fallback_when_persisted_loaded_extension_metadata_is_missing()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+
+    create_project(&project_root, "php: [\n")?;
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root,
+        primary_hostname: "acme.test".to_owned(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.replace_project_php_runtime(
+        &project.project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_owned(),
+            requested_extensions: vec!["redis".to_owned()],
+            loaded_extensions: vec!["redis".to_owned()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    seed_installed_php_with_extensions(&paths, "8.4", &[])?;
+
+    let plan = build_runtime_plan(&paths)?;
+    let database = Database::open(&paths)?;
+    let observed = database
+        .project_env_observed_state(&project.project.id)?
+        .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
+
+    assert!(plan.workers.is_empty());
+    assert!(matches!(
+        observed.status,
+        state::ProjectEnvObservedStatus::Failed
+    ));
+    assert!(
+        observed
+            .message
+            .as_deref()
+            .is_some_and(|message| { message.contains("persisted PHP extension `redis`") })
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn gateway_reconciliation_preserves_fragments_for_parseable_invalid_project_config()
 -> Result<()> {

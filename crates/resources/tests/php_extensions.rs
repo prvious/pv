@@ -1,8 +1,8 @@
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use resources::{
-    PhpExtensionLoadKind, ensure_php_runtime_overlay, php_runtime_environment,
-    resolve_php_extension_request,
+    PhpExtensionLoadKind, ResourcesError, ensure_php_runtime_overlay, php_runtime_environment,
+    resolve_persisted_php_extension_modules, resolve_php_extension_request,
 };
 use state::{PvPaths, fs};
 
@@ -39,6 +39,31 @@ fn resolves_available_and_ignored_php_extensions_from_artifact_metadata() -> Res
         PhpExtensionLoadKind::ZendExtension
     );
     assert_eq!(resolution.ignored, ["missing"]);
+
+    Ok(())
+}
+
+#[test]
+fn persisted_php_extension_resolution_rejects_missing_metadata_names() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact = tempdir.path().join("php");
+    fs::write_sensitive_file(
+        &artifact.join("share/pv/php-extensions.json"),
+        r#"
+[
+  {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}
+]
+"#,
+    )?;
+
+    let result =
+        resolve_persisted_php_extension_modules(&artifact, &["redis".into(), "xdebug".into()]);
+
+    assert!(matches!(
+        result,
+        Err(ResourcesError::InvalidArtifactLayout { resource, reason })
+            if resource == "php" && reason.contains("persisted PHP extension `xdebug`")
+    ));
 
     Ok(())
 }

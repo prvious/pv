@@ -588,8 +588,25 @@ fn append_persisted_runtime_project(
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     project: state::ProjectRecord,
 ) -> Result<(), DaemonError> {
-    let Some(runtime) = persisted_project_php_runtime(database, &project)? else {
-        return Ok(());
+    let runtime = match persisted_project_php_runtime(database, &project) {
+        Ok(Some(runtime)) => runtime,
+        Ok(None) => return Ok(()),
+        Err(
+            error @ DaemonError::Resources(resources::ResourcesError::InvalidArtifactLayout {
+                ..
+            }),
+        ) => {
+            let message = error.to_string();
+            database.record_project_env_observed_snapshot(
+                &project.id,
+                ProjectEnvObservedStatus::Failed,
+                Some(&message),
+                &[],
+            )?;
+
+            return Ok(());
+        }
+        Err(error) => return Err(error),
     };
     let runtime_project = RuntimeProject {
         id: project.id,
@@ -668,11 +685,25 @@ fn loaded_php_extension_modules(
     loaded_extensions: &[String],
 ) -> Result<Vec<resources::PhpExtensionModule>, DaemonError> {
     let Some(release) = installed_php_release(database, track)? else {
+        if !loaded_extensions.is_empty() {
+            return Err(DaemonError::Resources(
+                resources::ResourcesError::InvalidArtifactLayout {
+                    resource: "php".to_string(),
+                    reason: format!(
+                        "persisted PHP extension `{}` cannot be reconstructed because PHP track `{track}` is not installed",
+                        loaded_extensions.join(", ")
+                    ),
+                },
+            ));
+        }
+
         return Ok(Vec::new());
     };
-    let resolution = resources::resolve_php_extension_request(&release, loaded_extensions)?;
 
-    Ok(resolution.loaded)
+    Ok(resources::resolve_persisted_php_extension_modules(
+        &release,
+        loaded_extensions,
+    )?)
 }
 
 fn installed_php_release(

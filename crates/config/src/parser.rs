@@ -339,7 +339,6 @@ fn php_track_field(field: &str, value: &Value) -> Result<String, ConfigError> {
 
 fn php_extensions(value: &Value) -> Result<Vec<String>, ConfigError> {
     let sequence = match value {
-        Value::Null => return Ok(Vec::new()),
         Value::Sequence(sequence) => sequence,
         value => {
             return Err(ConfigError::InvalidFieldType {

@@ -130,6 +130,14 @@ fn project_config_rejects_invalid_php_extensions_shape() -> Result<()> {
         Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
     ));
     assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions: null\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions:\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+    assert!(matches!(
         ProjectConfig::parse("php:\n  extensions:\n    - true\n"),
         Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
     ));

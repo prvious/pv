@@ -83,7 +83,7 @@ PY
   if (
     PHP_INI_SCAN_DIR=$scan_dir
     export PHP_INI_SCAN_DIR
-    check_extensions "$optional_extensions" "$php_binary" -m
+    check_extensions "$optional_extensions" "$@"
   ); then
     rm -rf "$scan_dir"
   else
@@ -125,6 +125,7 @@ if [ -x "$artifact_root/bin/frankenphp" ]; then
   frankenphp_binary="$artifact_root/bin/frankenphp"
   "$frankenphp_binary" php-cli -r 'printf("PHP %s\n", PHP_VERSION);' | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$expected_extensions" "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
+  check_optional_extensions "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
 
   need python3
   site_dir=$(mktemp -d)
@@ -156,7 +157,7 @@ if [ -x "$artifact_root/bin/php" ]; then
   php_binary="$artifact_root/bin/php"
   "$php_binary" -v | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$expected_extensions" "$php_binary" -m
-  check_optional_extensions
+  check_optional_extensions "$php_binary" -m
   if "$php_binary" --ini 2>&1 | grep -F '/usr/local/etc/php' >/dev/null; then
     printf '%s\n' "PHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2
     exit 46

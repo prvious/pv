@@ -262,15 +262,16 @@ pub(crate) fn shim_with_args_and_env(
     let runtime = resolve_php_runtime_for_shim(&paths, &database, environment)?;
     let installed = installed_php(&database, &runtime.track)?;
     resources::ensure_php_track_defaults(&paths, &runtime.track)?;
-    let requested = runtime.loaded_extensions.clone();
-    let resolution =
-        resources::resolve_php_extension_request(installed.release_path(), &requested)?;
+    let loaded_modules = resources::resolve_persisted_php_extension_modules(
+        installed.release_path(),
+        &runtime.loaded_extensions,
+    )?;
     env.extend(resources::php_runtime_exec_environment(
         &paths,
         &runtime.track,
         &runtime.runtime_key,
         installed.release_path(),
-        &resolution.loaded,
+        &loaded_modules,
     )?);
     let executable = installed.executable()?;
 
