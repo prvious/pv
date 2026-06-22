@@ -756,14 +756,11 @@ impl Database {
         let (track, requested, loaded, ignored) = match runtime {
             Some(runtime) => {
                 validate_project_php_track(&runtime.track)?;
-                validate_php_extension_list(&runtime.requested_extensions)?;
-                validate_php_extension_list(&runtime.loaded_extensions)?;
-                validate_php_extension_list(&runtime.ignored_extensions)?;
                 (
                     Some(runtime.track.as_str()),
-                    extension_json(&runtime.requested_extensions)?,
-                    extension_json(&runtime.loaded_extensions)?,
-                    extension_json(&runtime.ignored_extensions)?,
+                    user_extension_json(&runtime.requested_extensions)?,
+                    runtime_extension_json(&runtime.loaded_extensions)?,
+                    user_extension_json(&runtime.ignored_extensions)?,
                 )
             }
             None => (None, "[]".to_string(), "[]".to_string(), "[]".to_string()),
@@ -2919,6 +2916,25 @@ fn validate_php_extension_list(extensions: &[String]) -> Result<(), StateError> 
     Ok(())
 }
 
+fn validate_requested_php_extension_list(extensions: &[String]) -> Result<(), StateError> {
+    for extension in extensions {
+        validate_requested_php_extension(extension)?;
+    }
+
+    Ok(())
+}
+
+fn validate_requested_php_extension(extension: &str) -> Result<(), StateError> {
+    if !extension.trim().is_empty() {
+        return Ok(());
+    }
+
+    Err(StateError::InvalidRuntimeSubject {
+        kind: "php_extension",
+        value: extension.to_string(),
+    })
+}
+
 fn validate_php_extension_identity(extension: &str) -> Result<(), StateError> {
     let is_valid = !extension.is_empty()
         && extension
@@ -3310,9 +3326,9 @@ fn project_php_runtime_for_project(
 
     Ok(ProjectPhpRuntimeRecord {
         track,
-        requested_extensions: parse_extension_json(project_id, "requested", &requested)?,
-        loaded_extensions: parse_extension_json(project_id, "loaded", &loaded)?,
-        ignored_extensions: parse_extension_json(project_id, "ignored", &ignored)?,
+        requested_extensions: parse_user_extension_json(project_id, "requested", &requested)?,
+        loaded_extensions: parse_runtime_extension_json(project_id, "loaded", &loaded)?,
+        ignored_extensions: parse_user_extension_json(project_id, "ignored", &ignored)?,
     })
 }
 
@@ -3691,12 +3707,43 @@ fn validate_project_env_observed_warning_component(
     Ok(())
 }
 
-fn extension_json(extensions: &[String]) -> Result<String, StateError> {
+fn user_extension_json(extensions: &[String]) -> Result<String, StateError> {
+    validate_requested_php_extension_list(extensions)?;
+    serialize_extension_json(extensions)
+}
+
+fn runtime_extension_json(extensions: &[String]) -> Result<String, StateError> {
     validate_php_extension_list(extensions)?;
+    serialize_extension_json(extensions)
+}
+
+fn serialize_extension_json(extensions: &[String]) -> Result<String, StateError> {
     serde_json::to_string(extensions).map_err(|source| StateError::InvalidEnvJson {
         context: "Project PHP runtime extensions".to_string(),
         reason: source.to_string(),
     })
+}
+
+fn parse_user_extension_json(
+    project_id: &str,
+    extension_kind: &str,
+    extension_json: &str,
+) -> Result<Vec<String>, StateError> {
+    let extensions = parse_extension_json(project_id, extension_kind, extension_json)?;
+    validate_requested_php_extension_list(&extensions)?;
+
+    Ok(extensions)
+}
+
+fn parse_runtime_extension_json(
+    project_id: &str,
+    extension_kind: &str,
+    extension_json: &str,
+) -> Result<Vec<String>, StateError> {
+    let extensions = parse_extension_json(project_id, extension_kind, extension_json)?;
+    validate_php_extension_list(&extensions)?;
+
+    Ok(extensions)
 }
 
 fn parse_extension_json(
@@ -3704,15 +3751,12 @@ fn parse_extension_json(
     extension_kind: &str,
     extension_json: &str,
 ) -> Result<Vec<String>, StateError> {
-    let extensions = serde_json::from_str::<Vec<String>>(extension_json).map_err(|source| {
+    serde_json::from_str::<Vec<String>>(extension_json).map_err(|source| {
         StateError::InvalidEnvJson {
             context: format!("Project {project_id:?} PHP {extension_kind} extensions"),
             reason: source.to_string(),
         }
-    })?;
-    validate_php_extension_list(&extensions)?;
-
-    Ok(extensions)
+    })
 }
 
 fn serialize_env_context(context: &str, env: &EnvContextValues) -> Result<String, StateError> {

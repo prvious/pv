@@ -2174,6 +2174,84 @@ fn project_php_runtime_extensions_round_trip_through_state() -> Result<()> {
 }
 
 #[test]
+fn project_php_runtime_persists_non_identity_requested_and_ignored_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: Vec::new(),
+    })?;
+
+    database.replace_project_php_runtime(
+        &project.project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: vec!["not-supported-yet".to_string()],
+            loaded_extensions: Vec::new(),
+            ignored_extensions: vec!["not-supported-yet".to_string()],
+        }),
+    )?;
+
+    let project = database
+        .project_by_id(&project.project.id)?
+        .ok_or_else(|| anyhow!("missing project"))?;
+
+    assert_eq!(
+        project.php_runtime.requested_extensions,
+        ["not-supported-yet"]
+    );
+    assert!(project.php_runtime.loaded_extensions.is_empty());
+    assert_eq!(
+        project.php_runtime.ignored_extensions,
+        ["not-supported-yet"]
+    );
+    assert_eq!(
+        state::php_runtime_key("8.4", &project.php_runtime.loaded_extensions)?,
+        "8.4"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_php_runtime_rejects_non_identity_loaded_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: Vec::new(),
+    })?;
+
+    let error = database.replace_project_php_runtime(
+        &project.project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: vec!["not-supported-yet".to_string()],
+            ignored_extensions: Vec::new(),
+        }),
+    );
+
+    assert!(matches!(
+        error,
+        Err(StateError::InvalidRuntimeSubject { kind: "php_extension", value })
+            if value == "not-supported-yet"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn replace_project_php_runtime_uses_public_timestamp_format() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

@@ -184,6 +184,57 @@ async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<(
 }
 
 #[tokio::test]
+async fn project_env_reconciliation_persists_non_identity_ignored_php_extension() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php:\n  version: \"8.4\"\n  extensions: [\"not-supported-yet\"]\n",
+    )?;
+    let release = tempdir.path().join("php-release");
+    state::fs::write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
+    state::fs::write_sensitive_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
+    }
+
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+    let observed = database
+        .project_env_observed_state(&project.id)?
+        .ok_or_else(|| anyhow!("expected observed project env state"))?;
+
+    assert_eq!(project.php_runtime.track.as_deref(), Some("8.4"));
+    assert_eq!(
+        project.php_runtime.requested_extensions,
+        ["not-supported-yet"]
+    );
+    assert!(project.php_runtime.loaded_extensions.is_empty());
+    assert_eq!(
+        project.php_runtime.ignored_extensions,
+        ["not-supported-yet"]
+    );
+    assert_eq!(observed.status, ProjectEnvObservedStatus::Warning);
+    assert_eq!(observed.warnings[0].kind, "ignored_php_extension");
+    assert_eq!(
+        observed.warnings[0].message,
+        "ignored unsupported PHP extension `not-supported-yet`"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn project_env_reconciliation_reuses_concrete_track_for_latest_php() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
