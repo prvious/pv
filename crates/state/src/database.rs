@@ -342,6 +342,9 @@ pub fn php_runtime_key(track: &str, loaded_extensions: &[String]) -> Result<Stri
         return Ok(track.to_string());
     }
 
+    let mut loaded_extensions = loaded_extensions.to_vec();
+    loaded_extensions.sort();
+
     Ok(format!("{track}+{}", loaded_extensions.join("+")))
 }
 
@@ -765,6 +768,7 @@ impl Database {
             }
             None => (None, "[]".to_string(), "[]".to_string(), "[]".to_string()),
         };
+        let updated_at = timestamp()?;
 
         self.connection.execute(
             "UPDATE projects
@@ -772,9 +776,9 @@ impl Database {
                 desired_php_requested_extensions_json = ?3,
                 desired_php_loaded_extensions_json = ?4,
                 desired_php_ignored_extensions_json = ?5,
-                updated_at = datetime('now')
+                updated_at = ?6
             WHERE id = ?1",
-            params![project_id, track, requested, loaded, ignored],
+            params![project_id, track, requested, loaded, ignored, updated_at],
         )?;
 
         self.project_by_id(project_id)?
@@ -3080,6 +3084,12 @@ fn update_project_in_transaction(
     project_id: &str,
     input: &LinkProjectInput,
 ) -> Result<(), StateError> {
+    let previous_desired_php_track = transaction.query_row(
+        "SELECT desired_php_track FROM projects WHERE id = ?1",
+        params![project_id],
+        |row| row.get::<_, Option<String>>(0),
+    )?;
+    let should_clear_runtime_extensions = previous_desired_php_track != input.desired_php_track;
     let updated_at = timestamp()?;
     transaction.execute(
         "UPDATE projects
@@ -3098,6 +3108,17 @@ fn update_project_in_transaction(
             project_id,
         ],
     )?;
+
+    if should_clear_runtime_extensions && project_php_runtime_columns_exist(transaction)? {
+        transaction.execute(
+            "UPDATE projects
+            SET desired_php_requested_extensions_json = '[]',
+                desired_php_loaded_extensions_json = '[]',
+                desired_php_ignored_extensions_json = '[]'
+            WHERE id = ?1",
+            params![project_id],
+        )?;
+    }
 
     Ok(())
 }
