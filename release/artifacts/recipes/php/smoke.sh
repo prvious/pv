@@ -13,7 +13,10 @@ need() {
 }
 
 check_extensions() {
-  expected_extensions_sorted=$(printf '%s' "$expected_extensions" | tr ',' '\n' | awk '
+  required_extensions=$1
+  shift
+
+  expected_extensions_sorted=$(printf '%s' "$required_extensions" | tr ',' '\n' | awk '
     {
       sub(/^[[:space:]]+/, "")
       sub(/[[:space:]]+$/, "")
@@ -59,7 +62,7 @@ check_optional_extensions() {
   [ -f "$metadata" ] || return 0
   need python3
   scan_dir=$(mktemp -d)
-  python3 - "$metadata" "$artifact_root" "$scan_dir" <<'PY'
+  optional_extensions=$(python3 - "$metadata" "$artifact_root" "$scan_dir" <<'PY'
 import json
 import pathlib
 import sys
@@ -67,14 +70,27 @@ import sys
 metadata = pathlib.Path(sys.argv[1])
 artifact_root = pathlib.Path(sys.argv[2])
 scan_dir = pathlib.Path(sys.argv[3])
+extension_names = []
 for index, module in enumerate(json.loads(metadata.read_text())):
+    extension_names.append(module["name"])
     directive = module["load_kind"]
     path = artifact_root / module["path"]
     prefix = 10 + index * 10
     (scan_dir / f"{prefix}-{module['name']}.ini").write_text(f"{directive}={path}\n")
+print(",".join(extension_names))
 PY
-  PHP_INI_SCAN_DIR="$scan_dir" check_extensions "$php_binary" -m
-  rm -rf "$scan_dir"
+)
+  if (
+    PHP_INI_SCAN_DIR=$scan_dir
+    export PHP_INI_SCAN_DIR
+    check_extensions "$optional_extensions" "$php_binary" -m
+  ); then
+    rm -rf "$scan_dir"
+  else
+    status=$?
+    rm -rf "$scan_dir"
+    return "$status"
+  fi
 }
 
 available_port() {
@@ -108,7 +124,7 @@ expected_version=${upstream_version%%-frankenphp*}
 if [ -x "$artifact_root/bin/frankenphp" ]; then
   frankenphp_binary="$artifact_root/bin/frankenphp"
   "$frankenphp_binary" php-cli -r 'printf("PHP %s\n", PHP_VERSION);' | grep -F "PHP $expected_version" >/dev/null
-  check_extensions "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
+  check_extensions "$expected_extensions" "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
 
   need python3
   site_dir=$(mktemp -d)
@@ -139,7 +155,7 @@ fi
 if [ -x "$artifact_root/bin/php" ]; then
   php_binary="$artifact_root/bin/php"
   "$php_binary" -v | grep -F "PHP $expected_version" >/dev/null
-  check_extensions "$php_binary" -m
+  check_extensions "$expected_extensions" "$php_binary" -m
   check_optional_extensions
   if "$php_binary" --ini 2>&1 | grep -F '/usr/local/etc/php' >/dev/null; then
     printf '%s\n' "PHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2

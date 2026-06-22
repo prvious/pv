@@ -312,7 +312,10 @@ stage_optional_php_extensions() {
     [ -n "$extension" ] || continue
     module=$(find "$spc_work_dir/buildroot" -type f -name "$extension.so" | head -n 1)
     [ -n "$module" ] || die "optional PHP extension $extension did not produce a shared module"
-    cp "$module" "$root_dir/lib/php/extensions/$extension.so"
+    staged_module="$root_dir/lib/php/extensions/$extension.so"
+    cp "$module" "$staged_module"
+    delete_known_stale_macho_rpaths "$staged_module"
+    validate_macho_binary "$staged_module"
     load_kind=extension
     [ "$extension" = "xdebug" ] && load_kind=zend_extension
     [ "$first" -eq 1 ] || printf ',' >>"$metadata"
