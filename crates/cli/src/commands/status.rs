@@ -432,11 +432,7 @@ fn project_status(
     let env_status = project_env_status_label(observed.status);
     let failure = observed.status == ProjectEnvObservedStatus::Failed;
     let message = if observed.status == ProjectEnvObservedStatus::Warning {
-        observed
-            .warnings
-            .first()
-            .map(|warning| warning.message.clone())
-            .or(observed.message)
+        project_env_warning_message(&observed)
     } else {
         observed.message
     };
@@ -448,6 +444,16 @@ fn project_status(
         observed_at: Some(observed.observed_at),
         failure,
     }
+}
+
+fn project_env_warning_message(observed: &state::ProjectEnvObservedStateRecord) -> Option<String> {
+    observed
+        .warnings
+        .iter()
+        .find(|warning| warning.kind == "ignored_php_extension")
+        .or_else(|| observed.warnings.first())
+        .map(|warning| warning.message.clone())
+        .or_else(|| observed.message.clone())
 }
 
 fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
