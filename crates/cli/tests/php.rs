@@ -208,6 +208,47 @@ fn php_shim_execs_resolved_project_track() -> anyhow::Result<()> {
 }
 
 #[test]
+fn php_shim_uses_project_extension_runtime_overlay() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  version: 8.4\n  extensions: [redis]\n",
+    )?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    fs::write_sensitive_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&state::ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: vec!["redis".to_string()],
+                loaded_extensions: vec!["redis".to_string()],
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-m"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(exec_calls[0].env.iter().any(|(key, value)| {
+        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
+    }));
+
+    Ok(())
+}
+
+#[test]
 fn php_shim_sets_only_php_ini_env_overlay() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -389,7 +430,14 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_eq!(config_file.config.php.as_deref(), Some("8.4"));
+    assert_eq!(
+        config_file
+            .config
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
+        Some("8.4")
+    );
     assert_eq!(project_after.desired_php_track.as_deref(), Some("8.4"));
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -433,7 +481,14 @@ fn php_use_latest_preserves_alias_in_config_and_records_resolved_track() -> anyh
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_eq!(config_file.config.php.as_deref(), Some("latest"));
+    assert_eq!(
+        config_file
+            .config
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
+        Some("latest")
+    );
     assert_eq!(project_after.desired_php_track.as_deref(), Some("8.4"));
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((

@@ -10,9 +10,13 @@ use std::process::ExitCode;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
+use config::ProjectConfigFile;
 use insta::assert_debug_snapshot;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
-use state::{Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PvPaths};
+use state::{
+    Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    ProjectRecord, PvPaths, fs,
+};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
@@ -478,6 +482,48 @@ fn composer_shim_execs_installed_phar_through_php_shim() -> anyhow::Result<()> {
         assert_debug_snapshot!((output, exec_calls));
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_shim_inherits_project_php_extension_runtime_overlay() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php:\n  version: 8.4\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let php_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
+    let composer_release = record_installed_composer(&home, "2", &composer_artifact)?;
+    let composer_phar = composer_release.join("composer.phar");
+    fs::write_sensitive_file(
+        &php_release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&state::ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: vec!["redis".to_string()],
+                loaded_extensions: vec!["redis".to_string()],
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:composer", "about"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(exec_calls[0].args[0], composer_phar.to_string());
+    assert!(exec_calls[0].env.iter().any(|(key, value)| {
+        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
+    }));
 
     Ok(())
 }
@@ -1101,6 +1147,33 @@ fn with_tempdir_filters(
     settings.add_filter(root.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(assertions)
+}
+
+fn register_project(
+    home: &Utf8Path,
+    project: &Utf8Path,
+    primary_hostname: &str,
+) -> anyhow::Result<ProjectRecord> {
+    let config_file = ProjectConfigFile::read_from_root(project)?;
+    let project_path = project_root_from_config_path(&config_file.path)?;
+    let mut database = Database::open(&pv_paths(home))?;
+    let result = database.link_project(LinkProjectInput {
+        path: project_path,
+        original_path: project.to_path_buf(),
+        primary_hostname: primary_hostname.to_string(),
+        config_path: config_file.path,
+        desired_php_track: None,
+        additional_hostnames: config_file.config.hostnames,
+    })?;
+
+    Ok(result.project)
+}
+
+fn project_root_from_config_path(config_path: &Utf8Path) -> anyhow::Result<Utf8PathBuf> {
+    config_path
+        .parent()
+        .map(Utf8Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("Project config path has no parent: {config_path}"))
 }
 
 fn pv_paths(home: &Utf8Path) -> PvPaths {

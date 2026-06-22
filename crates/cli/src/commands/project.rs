@@ -28,7 +28,14 @@ pub(crate) fn link(
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
-    let desired_php_track = resolved_project_php_track(&paths, config_file.config.php.as_deref())?;
+    let desired_php_track = resolved_project_php_track(
+        &paths,
+        config_file
+            .config
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
+    )?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
     let primary_hostname = match (args.hostname, existing.as_ref()) {
