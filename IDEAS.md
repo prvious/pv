@@ -1,184 +1,34 @@
-# Ideas
+# PV Product Ideas
 
-## Maybes / Parking Lot
+Top-level sections are ideas that are strong enough to navigate as product
+directions. Parked maybes live in the appendix so they do not compete with the
+main idea list.
 
-These are ideas that seem useful, but are not yet strong enough to treat as a
-product direction. Promote them only if user feedback, support pain, or PV's own
-development experience proves the need.
+## Table of Contents
 
-### Component-Specific Doctor Commands
-
-PV already has `pv doctor` in the v1 design as a deeper read-only diagnostic for
-setup, DNS, ports, CA, daemon, Gateway, manifest cache, and common conflicts.
-
-The maybe is a more focused diagnostic family for specific components:
-
-```sh
-pv dns:doctor
-pv daemon:doctor
-pv php:doctor
-pv gateway:doctor
-pv resource:doctor mysql
-```
-
-Competitor research shows users often struggle when a broad "something is
-broken" status does not identify the exact layer that failed. DDEV's focused
-diagnostic commands are the strongest example here.
-
-This should stay parked for now. Add it only if the broad `pv doctor` output
-gets too noisy, users repeatedly ask for narrower checks, or PV development
-itself needs component-level debugging commands.
-
-If added later, these commands should stay read-only and actionable. They should
-suggest repair commands instead of mutating privileged system state or restarting
-processes automatically.
-
-### Project Command Sandboxing
-
-PV could eventually offer a guarded command runner for risky Project commands,
-but this is a far-future maybe rather than a near-term product direction.
-
-The motivating problem is real: AI agents, package manager scripts, and
-compromised dependencies can be destructive when they run with normal user
-access. A command such as `pnpm install`, `composer install`, or an AI agent
-session can read dotfiles, cloud credentials, SSH keys, and unrelated Projects
-unless something constrains it.
-
-The PV-shaped version would be generic, not AI-specific:
-
-```sh
-pv sandbox run -- pnpm install
-pv sandbox run -- composer install
-pv sandbox run -- codex
-pv sandbox shell
-```
-
-Potentially, hooks could opt into the same execution mode later:
-
-```yaml
-sandbox: true
-
-hooks:
-  setup:
-    - pnpm install
-```
-
-The honest first version would only promise damage reduction, not perfect
-supply-chain security. It might restrict filesystem access to the Project, PV
-shims, required runtime artifacts, and explicitly allowed cache directories.
-Broad claims like "safe npm install" would be wrong unless PV also controls
-network access, credentials, and exfiltration paths.
-
-For macOS, a lightweight native implementation might use Apple's Seatbelt
-sandboxing through `sandbox-exec`, but that tool is deprecated and the profile
-surface is not a great product foundation. A stronger version would require a
-VM or microVM/container boundary, which is much closer to a separate product
-than a small PV feature.
-
-Keep this parked unless user demand is strong or PV's hook runner creates enough
-risk that a first-party guardrail becomes necessary.
-
-### Worktree Environment Commands
-
-PV does not need first-class Git worktree commands right now.
-
-The existing product answer should be:
-
-```sh
-pv link
-```
-
-Each Git worktree is just another directory. Since PV identifies Projects by
-canonical absolute path and requires unique Project hostnames, linking a
-worktree naturally creates a separate Project with its own hostname and Resource
-allocations.
-
-This keeps PV out of Git-specific workflows and avoids adding command surface
-such as:
-
-```sh
-pv worktree:link
-pv project:clone
-```
-
-Those would mostly duplicate `pv link`.
-
-The one useful bit of polish to keep in mind is collision UX. If a hostname was
-auto-derived from the directory name and already exists, PV could eventually
-suggest or assign the next available name. If the user explicitly passed
-`--hostname`, collisions should keep failing hard.
-
-Do not promote this into a feature unless users repeatedly struggle to link
-multiple checkouts of the same app.
-
-### `.localhost` Project Hostnames
-
-PV should stay `.test`-first.
-
-The current design intentionally rejects non-`.test` Project hostnames and
-wildcards. That keeps DNS, Gateway routing, certificates, docs, and user mental
-models much simpler.
-
-Revisit `.localhost` only if real OAuth/provider workflows complain about
-`.test` callback URLs. Google or similar providers may be more willing to accept
-`localhost`-style redirect URIs than arbitrary local TLDs. If that becomes a
-support issue, PV could consider allowing explicit `.localhost` Project
-hostnames as a narrow compatibility escape hatch.
-
-This should not become broad custom domain support:
-
-- no arbitrary local TLDs
-- no wildcard Project routing
-- no routing real user-owned domains
-- no per-team domain policy system
-- no extra resolver suffixes unless there is a concrete provider problem
-
-If added later, `.localhost` should follow the same explicit hostname collision,
-certificate, Gateway, and `hostnames:` rules as `.test`.
-
-### Targeted Runtime Restart
-
-PV already has the broad product shape of `pv restart`: restart PV-managed
-runtime processes and reconcile desired state.
-
-The maybe is allowing `pv restart` to target one PV-owned runtime instead of
-restarting the whole local stack.
-
-Possible shape:
-
-```sh
-pv restart
-pv restart mysql
-pv restart mysql 8.0
-pv restart postgres 18
-pv restart pg 18
-pv restart redis
-pv restart mailpit
-pv restart rustfs
-pv restart php 8.4
-pv restart gateway
-```
-
-This should stay under `pv restart` rather than adding separate commands such
-as `pv mysql:restart` or `pv postgres:restart`. The resource name remains
-explicit, but the verb stays in one obvious place.
-
-Useful when a single local runtime is degraded or weird and the user wants the
-equivalent of "restart Redis" without bouncing every Project and Resource.
-
-Boundaries:
-
-- restart only PV-owned runtime processes after ownership verification
-- stream daemon job progress and fail if readiness fails
-- no Project hooks
-- no Project config mutation
-- no privileged system repair
-- no generic `db` target
-- if the daemon is down, suggest `pv daemon:restart` or `pv setup`
-
-Avoid `pv restart <project>` until the semantics are clear. A Project can share
-a PHP worker with other Projects, so "restart this Project" may not map cleanly
-to one runtime process.
+- [Guided Project Init](#guided-project-init)
+- [Project Hooks / Command Runner](#project-hooks--command-runner)
+- [Curated Global Tools](#curated-global-tools)
+- [Resource Shell Commands](#resource-shell-commands)
+- [Resource Data Commands](#resource-data-commands)
+- [Post-v1 Managed Resource Candidates](#post-v1-managed-resource-candidates)
+- [TUI / `pv.test` Dashboard](#tui--pvtest-dashboard)
+- [Richer CLI Presentation](#richer-cli-presentation)
+- [ZDOTDIR-Aware Shell Integration](#zdotdir-aware-shell-integration)
+- [Agent-Friendly CLI Contracts](#agent-friendly-cli-contracts)
+- [Project TLS Placeholders](#project-tls-placeholders)
+- [PHP Extension Profiles](#php-extension-profiles)
+- [Auto-Reconcile Action Commands](#auto-reconcile-action-commands)
+- [Project Details Command](#project-details-command)
+- [Gateway Unknown Hostname Page](#gateway-unknown-hostname-page)
+- [LAN Project Access](#lan-project-access)
+- [Resource-Only Projects](#resource-only-projects)
+- [Appendix: Parking Lot / Maybes](#appendix-parking-lot--maybes)
+  - [Component-Specific Doctor Commands](#component-specific-doctor-commands)
+  - [Project Command Sandboxing](#project-command-sandboxing)
+  - [Worktree Environment Commands](#worktree-environment-commands)
+  - [`.localhost` Project Hostnames](#localhost-project-hostnames)
+  - [Targeted Runtime Restart](#targeted-runtime-restart)
 
 ## Guided Project Init
 
@@ -1830,3 +1680,183 @@ reason to introduce it is resource-only Projects where a hostname would be fake.
   say that the Project is not served by PV?
 - Should env rendering still default to `.env`, or should resource-only Projects
   support an `env_file` key such as `.env.local`?
+
+## Appendix: Parking Lot / Maybes
+
+These are ideas that seem useful, but are not yet strong enough to treat as a
+product direction. Promote them only if user feedback, support pain, or PV's own
+development experience proves the need.
+
+### Component-Specific Doctor Commands
+
+PV already has `pv doctor` in the v1 design as a deeper read-only diagnostic for
+setup, DNS, ports, CA, daemon, Gateway, manifest cache, and common conflicts.
+
+The maybe is a more focused diagnostic family for specific components:
+
+```sh
+pv dns:doctor
+pv daemon:doctor
+pv php:doctor
+pv gateway:doctor
+pv resource:doctor mysql
+```
+
+Competitor research shows users often struggle when a broad "something is
+broken" status does not identify the exact layer that failed. DDEV's focused
+diagnostic commands are the strongest example here.
+
+This should stay parked for now. Add it only if the broad `pv doctor` output
+gets too noisy, users repeatedly ask for narrower checks, or PV development
+itself needs component-level debugging commands.
+
+If added later, these commands should stay read-only and actionable. They should
+suggest repair commands instead of mutating privileged system state or restarting
+processes automatically.
+
+### Project Command Sandboxing
+
+PV could eventually offer a guarded command runner for risky Project commands,
+but this is a far-future maybe rather than a near-term product direction.
+
+The motivating problem is real: AI agents, package manager scripts, and
+compromised dependencies can be destructive when they run with normal user
+access. A command such as `pnpm install`, `composer install`, or an AI agent
+session can read dotfiles, cloud credentials, SSH keys, and unrelated Projects
+unless something constrains it.
+
+The PV-shaped version would be generic, not AI-specific:
+
+```sh
+pv sandbox run -- pnpm install
+pv sandbox run -- composer install
+pv sandbox run -- codex
+pv sandbox shell
+```
+
+Potentially, hooks could opt into the same execution mode later:
+
+```yaml
+sandbox: true
+
+hooks:
+  setup:
+    - pnpm install
+```
+
+The honest first version would only promise damage reduction, not perfect
+supply-chain security. It might restrict filesystem access to the Project, PV
+shims, required runtime artifacts, and explicitly allowed cache directories.
+Broad claims like "safe npm install" would be wrong unless PV also controls
+network access, credentials, and exfiltration paths.
+
+For macOS, a lightweight native implementation might use Apple's Seatbelt
+sandboxing through `sandbox-exec`, but that tool is deprecated and the profile
+surface is not a great product foundation. A stronger version would require a
+VM or microVM/container boundary, which is much closer to a separate product
+than a small PV feature.
+
+Keep this parked unless user demand is strong or PV's hook runner creates enough
+risk that a first-party guardrail becomes necessary.
+
+### Worktree Environment Commands
+
+PV does not need first-class Git worktree commands right now.
+
+The existing product answer should be:
+
+```sh
+pv link
+```
+
+Each Git worktree is just another directory. Since PV identifies Projects by
+canonical absolute path and requires unique Project hostnames, linking a
+worktree naturally creates a separate Project with its own hostname and Resource
+allocations.
+
+This keeps PV out of Git-specific workflows and avoids adding command surface
+such as:
+
+```sh
+pv worktree:link
+pv project:clone
+```
+
+Those would mostly duplicate `pv link`.
+
+The one useful bit of polish to keep in mind is collision UX. If a hostname was
+auto-derived from the directory name and already exists, PV could eventually
+suggest or assign the next available name. If the user explicitly passed
+`--hostname`, collisions should keep failing hard.
+
+Do not promote this into a feature unless users repeatedly struggle to link
+multiple checkouts of the same app.
+
+### `.localhost` Project Hostnames
+
+PV should stay `.test`-first.
+
+The current design intentionally rejects non-`.test` Project hostnames and
+wildcards. That keeps DNS, Gateway routing, certificates, docs, and user mental
+models much simpler.
+
+Revisit `.localhost` only if real OAuth/provider workflows complain about
+`.test` callback URLs. Google or similar providers may be more willing to accept
+`localhost`-style redirect URIs than arbitrary local TLDs. If that becomes a
+support issue, PV could consider allowing explicit `.localhost` Project
+hostnames as a narrow compatibility escape hatch.
+
+This should not become broad custom domain support:
+
+- no arbitrary local TLDs
+- no wildcard Project routing
+- no routing real user-owned domains
+- no per-team domain policy system
+- no extra resolver suffixes unless there is a concrete provider problem
+
+If added later, `.localhost` should follow the same explicit hostname collision,
+certificate, Gateway, and `hostnames:` rules as `.test`.
+
+### Targeted Runtime Restart
+
+PV already has the broad product shape of `pv restart`: restart PV-managed
+runtime processes and reconcile desired state.
+
+The maybe is allowing `pv restart` to target one PV-owned runtime instead of
+restarting the whole local stack.
+
+Possible shape:
+
+```sh
+pv restart
+pv restart mysql
+pv restart mysql 8.0
+pv restart postgres 18
+pv restart pg 18
+pv restart redis
+pv restart mailpit
+pv restart rustfs
+pv restart php 8.4
+pv restart gateway
+```
+
+This should stay under `pv restart` rather than adding separate commands such
+as `pv mysql:restart` or `pv postgres:restart`. The resource name remains
+explicit, but the verb stays in one obvious place.
+
+Useful when a single local runtime is degraded or weird and the user wants the
+equivalent of "restart Redis" without bouncing every Project and Resource.
+
+Boundaries:
+
+- restart only PV-owned runtime processes after ownership verification
+- stream daemon job progress and fail if readiness fails
+- no Project hooks
+- no Project config mutation
+- no privileged system repair
+- no generic `db` target
+- if the daemon is down, suggest `pv daemon:restart` or `pv setup`
+
+Avoid `pv restart <project>` until the semantics are clear. A Project can share
+a PHP worker with other Projects, so "restart this Project" may not map cleanly
+to one runtime process.
