@@ -36,7 +36,7 @@ cargo run -p pv-release -- validate-archive \
 
 Recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-specific sections are only used when the resource family needs extra build metadata.
 
-`recipes/php/tracks.toml` is the data source for paired PHP and FrankenPHP artifact builds. Each selected PHP track/platform is built once with StaticPHP v3, producing both the standalone `php` binary and the matched `frankenphp` binary from the same buildroot. The recipe pins PHP tracks `8.3`, `8.4`, and `8.5`; source URLs; checksums; the expected extension set; the macOS deployment target; and the FrankenPHP source version used by the pair.
+`recipes/php/tracks.toml` is the data source for paired PHP and FrankenPHP artifact builds. Each selected PHP track/platform is built once with StaticPHP v3, producing both the standalone `php` binary and the matched `frankenphp` binary from the same buildroot. The recipe pins PHP tracks `8.3`, `8.4`, and `8.5`; source URLs; checksums; the default loaded extension set; the optional bundled extension catalog; the expected runtime extension set; the macOS deployment target; and the FrankenPHP source version used by the pair. Generated release records and manifests include optional PHP extension metadata so PV can load bundled modules through runtime ini overlays.
 
 `recipes/composer/composer.toml` is the data source for Composer track `2`. Composer is packaged as a `platform: "any"` artifact.
 
