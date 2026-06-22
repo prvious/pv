@@ -8,7 +8,7 @@ use resources::{
 use yaml_serde::{Mapping, Number, Value};
 
 use crate::hostname::normalize_additional_hostname;
-use crate::{AllocationConfig, ConfigError, ProjectConfig, ResourceConfig};
+use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
 const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url"];
 
@@ -52,7 +52,7 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
         let key = string_key(key)?;
         match key.as_str() {
             "php" => {
-                config.php = Some(php_track(&value)?);
+                config.php = Some(php_config(&value)?);
             }
             "document_root" => {
                 let document_root = non_empty_string("document_root", &value)?;
@@ -295,14 +295,65 @@ fn non_empty_string_or_number(field: &str, value: &Value) -> Result<String, Conf
     Ok(scalar)
 }
 
+fn php_config(value: &Value) -> Result<PhpConfig, ConfigError> {
+    match value {
+        Value::Mapping(mapping) => php_config_mapping(mapping),
+        value => php_track(value).map(PhpConfig::version),
+    }
+}
+
+fn php_config_mapping(mapping: &Mapping) -> Result<PhpConfig, ConfigError> {
+    let mut config = PhpConfig::default();
+
+    for (key, value) in mapping {
+        let key = string_key_ref(key)?;
+        match key.as_str() {
+            "version" => {
+                config.version = Some(php_track_field("php.version", value)?);
+            }
+            "extensions" => {
+                config.extensions = php_extensions(value)?;
+            }
+            _ => {
+                return Err(ConfigError::UnknownPhpKey { key });
+            }
+        }
+    }
+
+    Ok(config)
+}
+
 fn php_track(value: &Value) -> Result<String, ConfigError> {
-    let track = non_empty_string_or_number("php", value)?;
+    php_track_field("php", value)
+}
+
+fn php_track_field(field: &str, value: &Value) -> Result<String, ConfigError> {
+    let track = non_empty_string_or_number(field, value)?;
     TrackSelector::parse(track.clone()).map_err(|source| ConfigError::InvalidPhpTrack {
         track: track.clone(),
         reason: source.to_string(),
     })?;
 
     Ok(track)
+}
+
+fn php_extensions(value: &Value) -> Result<Vec<String>, ConfigError> {
+    let sequence = match value {
+        Value::Null => return Ok(Vec::new()),
+        Value::Sequence(sequence) => sequence,
+        value => {
+            return Err(ConfigError::InvalidFieldType {
+                field: "php.extensions".to_string(),
+                expected: "a sequence",
+                found: value_type(value),
+            });
+        }
+    };
+
+    sequence
+        .iter()
+        .map(|value| non_empty_string("php.extensions", value))
+        .collect()
 }
 
 fn resource_track(resource: &str, value: &Value) -> Result<String, ConfigError> {

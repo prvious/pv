@@ -9,7 +9,12 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     true,
     ProjectConfig {
         php: Some(
-            "8.4",
+            PhpConfig {
+                version: Some(
+                    "8.4",
+                ),
+                extensions: [],
+            },
         ),
         document_root: Some(
             "public",
@@ -47,7 +52,12 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     },
     ProjectConfig {
         php: Some(
-            "8.4",
+            PhpConfig {
+                version: Some(
+                    "8.4",
+                ),
+                extensions: [],
+            },
         ),
         document_root: Some(
             "public",

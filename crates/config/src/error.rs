@@ -39,6 +39,9 @@ pub enum ConfigError {
     #[error("unknown Project config key `{key}`")]
     UnknownTopLevelKey { key: String },
 
+    #[error("unknown Project config key `php.{key}`")]
+    UnknownPhpKey { key: String },
+
     #[error("unknown Project config key `{key}` under resource `{resource}`")]
     UnknownResourceKey { resource: String, key: String },
 
