@@ -38,6 +38,14 @@ expression: "(before, after)"
                 desired_php_track: Some(
                     "8.4",
                 ),
+                php_runtime: ProjectPhpRuntimeRecord {
+                    track: Some(
+                        "8.4",
+                    ),
+                    requested_extensions: [],
+                    loaded_extensions: [],
+                    ignored_extensions: [],
+                },
                 additional_hostnames: [
                     "api.acme.test",
                 ],
@@ -75,6 +83,14 @@ expression: "(before, after)"
                 desired_php_track: Some(
                     "8.4",
                 ),
+                php_runtime: ProjectPhpRuntimeRecord {
+                    track: Some(
+                        "8.4",
+                    ),
+                    requested_extensions: [],
+                    loaded_extensions: [],
+                    ignored_extensions: [],
+                },
                 additional_hostnames: [
                     "api.acme.test",
                 ],
@@ -92,6 +108,14 @@ expression: "(before, after)"
                 desired_php_track: Some(
                     "8.4",
                 ),
+                php_runtime: ProjectPhpRuntimeRecord {
+                    track: Some(
+                        "8.4",
+                    ),
+                    requested_extensions: [],
+                    loaded_extensions: [],
+                    ignored_extensions: [],
+                },
                 additional_hostnames: [
                     "api.acme.test",
                 ],

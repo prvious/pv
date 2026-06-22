@@ -1741,11 +1741,11 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
     assert_eq!(updated_gateway.status, RuntimeObservedStatus::Degraded);
     assert!(matches!(
         invalid,
-        Err(StateError::InvalidRuntimeSubject { kind: "php_track", value }) if value.is_empty()
+        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value.is_empty()
     ));
     assert!(matches!(
         reserved,
-        Err(StateError::InvalidRuntimeSubject { kind: "php_track", value }) if value == "latest"
+        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "latest"
     ));
 
     with_normalized_timestamps(|| {
@@ -2125,6 +2125,45 @@ fn linked_projects_refresh_desired_php_track_independently() -> Result<()> {
     assert_eq!(
         updated.additional_hostnames,
         vec!["api.acme.test".to_string()]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_php_runtime_extensions_round_trip_through_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(state::LinkProjectInput {
+        path: tempdir.path().join("acme"),
+        original_path: tempdir.path().join("acme"),
+        primary_hostname: "acme.test".to_string(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_string()),
+        additional_hostnames: Vec::new(),
+    })?;
+
+    database.replace_project_php_runtime(
+        &project.project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: vec!["xdebug".to_string(), "redis".to_string()],
+            loaded_extensions: vec!["redis".to_string(), "xdebug".to_string()],
+            ignored_extensions: vec!["missing".to_string()],
+        }),
+    )?;
+
+    let project = database
+        .project_by_id(&project.project.id)?
+        .ok_or_else(|| anyhow!("missing project"))?;
+
+    assert_eq!(project.php_runtime.track.as_deref(), Some("8.4"));
+    assert_eq!(project.php_runtime.loaded_extensions, ["redis", "xdebug"]);
+    assert_eq!(project.php_runtime.ignored_extensions, ["missing"]);
+    assert_eq!(
+        state::php_runtime_key("8.4", &project.php_runtime.loaded_extensions)?,
+        "8.4+redis+xdebug"
     );
 
     Ok(())
@@ -2646,12 +2685,11 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     assert_eq!(assigned_php83.port, 45001);
     assert!(matches!(
         reserved_track,
-        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
+        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "latest"
     ));
     assert!(matches!(
         invalid_track,
-        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
-            if value == "../8.4"
+        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "../8.4"
     ));
 
     with_normalized_timestamps(|| {
@@ -2663,6 +2701,32 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
         ));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let plain = database.assign_port(
+        PortRequest::php_worker("8.4", 45000, 45000, 45009),
+        |_port| true,
+    )?;
+    let redis = database.assign_port(
+        PortRequest::php_worker("8.4+redis", 45000, 45000, 45009),
+        |_port| true,
+    )?;
+
+    assert_ne!(plain.port, redis.port);
+    assert_eq!(
+        redis.owner,
+        PortOwner::PhpWorker {
+            php_track: "8.4+redis".to_string()
+        }
+    );
 
     Ok(())
 }

@@ -146,14 +146,14 @@ impl PvPaths {
         self.config().join("gateway/projects")
     }
 
-    pub fn worker_root_config(&self, php_track: &str) -> Utf8PathBuf {
+    pub fn worker_root_config(&self, php_runtime: &str) -> Utf8PathBuf {
         self.config()
-            .join(format!("workers/php-{php_track}/Caddyfile"))
+            .join(format!("workers/php-{php_runtime}/Caddyfile"))
     }
 
-    pub fn worker_projects_config_dir(&self, php_track: &str) -> Utf8PathBuf {
+    pub fn worker_projects_config_dir(&self, php_runtime: &str) -> Utf8PathBuf {
         self.config()
-            .join(format!("workers/php-{php_track}/projects"))
+            .join(format!("workers/php-{php_runtime}/projects"))
     }
 
     pub fn resource_runtime_config(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
@@ -185,8 +185,8 @@ impl PvPaths {
         self.logs().join("gateway/error.log")
     }
 
-    pub fn worker_log(&self, php_track: &str) -> Utf8PathBuf {
-        self.logs().join(format!("workers/php-{php_track}.log"))
+    pub fn worker_log(&self, php_runtime: &str) -> Utf8PathBuf {
+        self.logs().join(format!("workers/php-{php_runtime}.log"))
     }
 
     pub fn resource_log(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
@@ -202,12 +202,12 @@ impl PvPaths {
         self.run().join("gateway.json")
     }
 
-    pub fn worker_pid(&self, php_track: &str) -> Utf8PathBuf {
-        self.run().join(format!("workers/php-{php_track}.pid"))
+    pub fn worker_pid(&self, php_runtime: &str) -> Utf8PathBuf {
+        self.run().join(format!("workers/php-{php_runtime}.pid"))
     }
 
-    pub fn worker_runtime_metadata(&self, php_track: &str) -> Utf8PathBuf {
-        self.run().join(format!("workers/php-{php_track}.json"))
+    pub fn worker_runtime_metadata(&self, php_runtime: &str) -> Utf8PathBuf {
+        self.run().join(format!("workers/php-{php_runtime}.json"))
     }
 
     pub fn resource_pid(&self, resource_name: &str, track: &str) -> Utf8PathBuf {

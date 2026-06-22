@@ -17,9 +17,10 @@ pub use database::{
     ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
     ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord,
-    ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
-    ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStateRecord,
-    RuntimeObservedStatus, RuntimeSubject,
+    ProjectPhpRuntimeInput, ProjectPhpRuntimeRecord, ProjectRecord, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationRecord,
+    ResourceAllocationStatus, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject,
+    php_runtime_key,
 };
 pub use error::StateError;
 pub use paths::{PathSummaryEntry, PvPaths};
