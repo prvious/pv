@@ -8,7 +8,9 @@ use crate::app::WriteAppReleaseRecordRequest;
 use crate::app_publication::AppPublicationRequest;
 use crate::publication::PublicationRequest;
 use crate::recipe::BackingRecipeKind;
-use crate::record_writer::{SourceInputRequest, WriteReleaseRecordRequest};
+use crate::record_writer::{
+    PhpExtensionRecordRequest, SourceInputRequest, WriteReleaseRecordRequest,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "pv-release")]
@@ -157,6 +159,8 @@ enum Command {
         license_files: Vec<String>,
         #[arg(long = "notice-file")]
         notice_files: Vec<String>,
+        #[arg(long = "php-extension", num_args = 3, value_names = ["NAME", "LOAD_KIND", "PATH"])]
+        php_extensions: Vec<String>,
         #[arg(long = "source-input", num_args = 3, value_names = ["NAME", "URL", "SHA256"])]
         source_inputs: Vec<String>,
     },
@@ -331,9 +335,11 @@ pub fn run() -> anyhow::Result<()> {
             published_at,
             license_files,
             notice_files,
+            php_extensions,
             source_inputs,
         } => {
             let context = format!("failed to write release record `{record}`");
+            let php_extensions = parse_php_extensions(&php_extensions)?;
             let source_inputs = parse_source_inputs(&source_inputs)?;
             let license_files = default_legal_files(license_files, "LICENSE");
             let notice_files = default_legal_files(notice_files, "NOTICE");
@@ -355,6 +361,7 @@ pub fn run() -> anyhow::Result<()> {
                 published_at,
                 license_files,
                 notice_files,
+                php_extensions,
                 source_inputs,
             })
             .context(context)
@@ -448,6 +455,24 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
     }
 
     Ok(source_inputs)
+}
+
+fn parse_php_extensions(values: &[String]) -> anyhow::Result<Vec<PhpExtensionRecordRequest>> {
+    let mut chunks = values.chunks_exact(3);
+    let php_extensions = chunks
+        .by_ref()
+        .map(|chunk| PhpExtensionRecordRequest {
+            name: chunk[0].clone(),
+            load_kind: chunk[1].clone(),
+            path: chunk[2].clone(),
+        })
+        .collect::<Vec<_>>();
+
+    if !chunks.remainder().is_empty() {
+        anyhow::bail!("each --php-extension requires NAME LOAD_KIND PATH");
+    }
+
+    Ok(php_extensions)
 }
 
 fn default_legal_files(values: Vec<String>, default: &str) -> Vec<String> {
@@ -1017,6 +1042,14 @@ mod tests {
             "NOTICE",
             "--notice-file",
             "THIRD-PARTY-NOTICES",
+            "--php-extension",
+            "redis",
+            "extension",
+            "lib/php/extensions/redis.so",
+            "--php-extension",
+            "xdebug",
+            "zend_extension",
+            "lib/php/extensions/xdebug.so",
             "--source-input",
             "frankenphp",
             "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
@@ -1046,6 +1079,7 @@ mod tests {
                 published_at,
                 license_files,
                 notice_files,
+                php_extensions,
                 source_inputs,
             } => {
                 assert_eq!(record, Utf8PathBuf::from("record.json"));
@@ -1074,6 +1108,17 @@ mod tests {
                 assert_eq!(published_at, "2026-06-08T12:00:00Z");
                 assert_eq!(license_files, vec!["LICENSE"]);
                 assert_eq!(notice_files, vec!["NOTICE", "THIRD-PARTY-NOTICES"]);
+                assert_eq!(
+                    php_extensions,
+                    vec![
+                        "redis",
+                        "extension",
+                        "lib/php/extensions/redis.so",
+                        "xdebug",
+                        "zend_extension",
+                        "lib/php/extensions/xdebug.so",
+                    ]
+                );
                 assert_eq!(
                     source_inputs,
                     vec![

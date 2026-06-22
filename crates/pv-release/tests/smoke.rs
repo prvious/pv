@@ -269,6 +269,88 @@ esac
 }
 
 #[test]
+fn php_smoke_loads_optional_extensions_from_metadata() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+    let smoke_log = tempdir.path().join("php-smoke.log");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(&extension_dir.join("redis.so"), "redis module\n")?;
+    write_file(&extension_dir.join("xdebug.so"), "xdebug module\n")?;
+    write_file(
+        &metadata_dir.join("php-extensions.json"),
+        r#"[
+  {
+    "name": "redis",
+    "load_kind": "extension",
+    "path": "lib/php/extensions/redis.so"
+  },
+  {
+    "name": "xdebug",
+    "load_kind": "zend_extension",
+    "path": "lib/php/extensions/xdebug.so"
+  }
+]
+"#,
+    )?;
+    write_file(&smoke_log, "")?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v)
+    printf '%s\n' 'PHP 8.4.20 (cli)'
+    ;;
+  --ini)
+    printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php'
+    ;;
+  -m)
+    if [ -n "${PHP_INI_SCAN_DIR:-}" ] \
+      && grep -R -F "extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/redis.so" "$PHP_INI_SCAN_DIR" >/dev/null \
+      && grep -R -F "zend_extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/xdebug.so" "$PHP_INI_SCAN_DIR" >/dev/null; then
+      printf '%s\n' optional >>"$PV_TEST_PHP_SMOKE_LOG"
+      printf '%s\n' 'json' 'redis' 'xdebug'
+    else
+      printf '%s\n' default >>"$PV_TEST_PHP_SMOKE_LOG"
+      printf '%s\n' 'json'
+    fi
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let smoke_hook = php_smoke_hook();
+    let output = StdCommand::new(smoke_hook)
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_PHP_SMOKE_LOG", &smoke_log)
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "smoke hook failed: {}",
+        command_output_debug(&output)
+    );
+    let smoke_log = read_file(&smoke_log)?;
+    assert!(
+        smoke_log.contains("optional\n"),
+        "smoke hook should check optional extension metadata: {smoke_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_rejects_usr_local_ini_path_from_php_ini_output() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -436,7 +518,7 @@ fn php_build_recipe_smoke() -> Result<()> {
     );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json,redis,xdebug][--build-shared=redis,xdebug][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -2583,7 +2665,9 @@ PV_SOURCE_URL=$source_url
 PV_SOURCE_SHA256=$source_sha256
 $php_source_env
 PV_EXPECTED_EXTENSIONS=json
-PV_BUILD_EXTENSIONS=json
+PV_DEFAULT_EXTENSIONS=json
+PV_OPTIONAL_EXTENSIONS=redis,xdebug
+PV_BUILD_EXTENSIONS=json,redis,xdebug
 PV_DEPLOYMENT_TARGET=13.0
 PV_PV_BUILD_REVISION=pv1
 PV_MINIMUM_PV_VERSION=0.1.0
@@ -2599,6 +2683,8 @@ EOF
       build_run_id=
       source_inputs_json=
       source_input_count=0
+      php_extensions_json=
+      php_extension_count=0
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --record)
@@ -2629,6 +2715,22 @@ EOF
             shift
             build_run_id=${1:-}
             ;;
+          --php-extension)
+            shift
+            extension_name=${1:-}
+            shift
+            extension_load_kind=${1:-}
+            shift
+            extension_path=${1:-}
+            extension_json="    {\"name\": \"$extension_name\", \"load_kind\": \"$extension_load_kind\", \"path\": \"$extension_path\"}"
+            if [ "$php_extension_count" -eq 0 ]; then
+              php_extensions_json=$extension_json
+            else
+              php_extensions_json="$php_extensions_json,
+$extension_json"
+            fi
+            php_extension_count=$((php_extension_count + 1))
+            ;;
           --source-input)
             shift
             input_name=${1:-}
@@ -2650,7 +2752,11 @@ $input_json"
       done
       mkdir -p "$(dirname "$record")"
       {
-        printf '{\n  "object_key": "%s",\n  "provenance": {\n' "$object_key"
+        printf '{\n  "object_key": "%s",\n' "$object_key"
+        if [ "$php_extension_count" -gt 0 ]; then
+          printf '  "php_extensions": [\n%s\n  ],\n' "$php_extensions_json"
+        fi
+        printf '  "provenance": {\n'
         printf '    "source_url": "%s",\n' "$source_url"
         printf '    "source_sha256": "%s",\n' "$source_sha256"
         if [ "$source_input_count" -gt 0 ]; then
@@ -3889,6 +3995,20 @@ esac
   printf '%s\n' 'missing StaticPHP build target flag' >&2
   exit 78
 }
+for arg in "$@"; do
+  case "$arg" in
+    --build-shared=*)
+      mkdir -p buildroot/lib/php/extensions
+      old_ifs=$IFS
+      IFS=,
+      for extension in ${arg#--build-shared=}; do
+        [ -n "$extension" ] || continue
+        printf '%s\n' "$extension module" >"buildroot/lib/php/extensions/$extension.so"
+      done
+      IFS=$old_ifs
+      ;;
+  esac
+done
 "#,
     )
 }

@@ -113,6 +113,24 @@ fn release_records_parse_additional_source_inputs() -> Result<()> {
 }
 
 #[test]
+fn release_records_parse_php_extension_metadata() -> Result<()> {
+    let record_with_php_extensions = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    },\n    {\n      \"name\": \"xdebug\",\n      \"load_kind\": \"zend_extension\",\n      \"path\": \"lib/php/extensions/xdebug.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    );
+
+    let record = ReleaseRecord::from_json(
+        Utf8Path::new("frankenphp-with-extensions.json"),
+        &record_with_php_extensions,
+    )?;
+
+    assert_debug_snapshot!(record);
+
+    Ok(())
+}
+
+#[test]
 fn release_records_reject_invalid_source_inputs() -> Result<()> {
     let invalid_name = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS
         .replace("\"name\": \"php\"", "\"name\": \"PHP source\"");

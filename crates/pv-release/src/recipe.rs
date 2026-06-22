@@ -26,15 +26,12 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
     "pdo_mysql",
     "pdo_pgsql",
     "pdo_sqlite",
-    "pdo_sqlsrv",
     "phar",
     "posix",
-    "redis",
     "session",
     "simplexml",
     "sodium",
     "sqlite3",
-    "sqlsrv",
     "tokenizer",
     "xml",
     "xmlreader",
@@ -106,7 +103,8 @@ pub struct RecipeHeader {
 #[derive(Clone, Debug)]
 pub struct PhpSettings {
     deployment_target: String,
-    build_extensions: Vec<String>,
+    default_extensions: Vec<String>,
+    optional_extensions: Vec<String>,
     expected_extensions: Vec<String>,
 }
 
@@ -191,7 +189,8 @@ enum LegalFilePolicy {
 #[serde(deny_unknown_fields)]
 struct RawPhpSettings {
     deployment_target: String,
-    build_extensions: Vec<String>,
+    default_extensions: Vec<String>,
+    optional_extensions: Vec<String>,
     expected_extensions: Vec<String>,
 }
 
@@ -509,8 +508,12 @@ impl PhpRecipe {
         &self.php.deployment_target
     }
 
-    pub fn build_extensions(&self) -> &[String] {
-        &self.php.build_extensions
+    pub fn default_extensions(&self) -> &[String] {
+        &self.php.default_extensions
+    }
+
+    pub fn optional_extensions(&self) -> &[String] {
+        &self.php.optional_extensions
     }
 
     pub fn expected_extensions(&self) -> &[String] {
@@ -606,11 +609,13 @@ impl PhpSettings {
     fn from_raw(path: &Utf8Path, raw: RawPhpSettings) -> crate::Result<Self> {
         validate_deployment_target(path, &raw.deployment_target)?;
         validate_expected_extensions(path, &raw.expected_extensions)?;
-        validate_build_extensions(path, &raw.build_extensions, &raw.expected_extensions)?;
+        validate_build_extensions(path, &raw.default_extensions, &raw.expected_extensions)?;
+        validate_extension_list(path, "php.optional_extensions", &raw.optional_extensions)?;
 
         Ok(Self {
             deployment_target: raw.deployment_target,
-            build_extensions: raw.build_extensions,
+            default_extensions: raw.default_extensions,
+            optional_extensions: raw.optional_extensions,
             expected_extensions: raw.expected_extensions,
         })
     }
@@ -897,7 +902,13 @@ pub fn php_recipe_env(
 
     let pv_build_revision = recipe.pv_build_revision();
     let artifact_version = format!("{upstream_version}-{pv_build_revision}");
-    let build_extensions = recipe.build_extensions().join(",");
+    let default_extensions = recipe.default_extensions().join(",");
+    let optional_extensions = recipe.optional_extensions().join(",");
+    let build_extensions = if optional_extensions.is_empty() {
+        default_extensions.clone()
+    } else {
+        format!("{default_extensions},{optional_extensions}")
+    };
     let expected_extensions = recipe.expected_extensions().join(",");
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
     let deployment_target = recipe.deployment_target();
@@ -936,6 +947,16 @@ pub fn php_recipe_env(
             "PV_DEPLOYMENT_TARGET",
             "deployment_target",
             deployment_target,
+        ),
+        (
+            "PV_DEFAULT_EXTENSIONS",
+            "default_extensions",
+            default_extensions.as_str(),
+        ),
+        (
+            "PV_OPTIONAL_EXTENSIONS",
+            "optional_extensions",
+            optional_extensions.as_str(),
         ),
         (
             "PV_BUILD_EXTENSIONS",
@@ -1465,7 +1486,7 @@ fn validate_build_extensions(
     expected_extensions: &[String],
 ) -> crate::Result<()> {
     if build_extensions.is_empty() {
-        return Err(invalid(path, "build_extensions must not be empty"));
+        return Err(invalid(path, "php.default_extensions must not be empty"));
     }
 
     let expected: BTreeSet<&str> = expected_extensions.iter().map(String::as_str).collect();
@@ -1474,8 +1495,36 @@ fn validate_build_extensions(
             return Err(invalid(
                 path,
                 format!(
-                    "build_extensions contains extension `{extension}` outside expected_extensions"
+                    "php.default_extensions contains extension `{extension}` outside expected_extensions"
                 ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_extension_list(
+    path: &Utf8Path,
+    field: &str,
+    extensions: &[String],
+) -> crate::Result<()> {
+    let mut seen = BTreeSet::new();
+    for extension in extensions {
+        let valid = !extension.is_empty()
+            && extension
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if !valid {
+            return Err(invalid(
+                path,
+                format!("{field} contains invalid extension `{extension}`"),
+            ));
+        }
+        if !seen.insert(extension.as_str()) {
+            return Err(invalid(
+                path,
+                format!("{field} contains duplicate extension `{extension}`"),
             ));
         }
     }

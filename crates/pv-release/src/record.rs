@@ -35,7 +35,16 @@ pub struct ReleaseRecord {
     minimum_pv_version: PvVersion,
     license_files: Vec<String>,
     notice_files: Vec<String>,
+    php_extensions: Vec<PhpExtensionRecord>,
     provenance: Provenance,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PhpExtensionRecord {
+    name: String,
+    load_kind: String,
+    path: String,
 }
 
 #[derive(Clone)]
@@ -75,6 +84,8 @@ struct RawReleaseRecord {
     license_files: Vec<String>,
     #[serde(default)]
     notice_files: Vec<String>,
+    #[serde(default)]
+    php_extensions: Vec<PhpExtensionRecord>,
     provenance: Provenance,
 }
 
@@ -211,6 +222,7 @@ impl ReleaseRecord {
                 .map_err(|error| invalid_release_identity(path, "minimum_pv_version", error))?,
             license_files: raw.license_files,
             notice_files: raw.notice_files,
+            php_extensions: raw.php_extensions,
             provenance: raw.provenance,
         })
     }
@@ -275,6 +287,10 @@ impl ReleaseRecord {
         &self.notice_files
     }
 
+    pub fn php_extensions(&self) -> &[PhpExtensionRecord] {
+        &self.php_extensions
+    }
+
     pub fn verify_archive(
         &self,
         validation: &crate::archive::ArchiveValidation,
@@ -296,6 +312,20 @@ impl ReleaseRecord {
         }
 
         Ok(())
+    }
+}
+
+impl PhpExtensionRecord {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn load_kind(&self) -> &str {
+        &self.load_kind
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
     }
 }
 

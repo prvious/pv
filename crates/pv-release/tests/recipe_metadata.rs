@@ -180,6 +180,22 @@ fn committed_recipe_metadata_parses() -> Result<()> {
 }
 
 #[test]
+fn php_recipe_splits_default_and_optional_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let php = write_php_recipe(&tempdir)?;
+    let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
+
+    assert!(env.contains("PV_DEFAULT_EXTENSIONS='bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sodium,zip'"));
+    assert!(env.contains(
+        "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml'"
+    ));
+    assert!(env.contains("PV_EXPECTED_EXTENSIONS='bcmath,ctype,curl"));
+    assert!(!env.contains("PV_BUILD_EXTENSIONS=''"));
+
+    Ok(())
+}
+
+#[test]
 fn committed_redis_recipe_collects_current_notice_inputs() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let build_script = read_file(&workspace_root.join("release/artifacts/recipes/redis/build.sh"))?;
@@ -750,8 +766,9 @@ fn assert_default_track(
 
 fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
     let actual = php
-        .build_extensions()
+        .default_extensions()
         .iter()
+        .chain(php.optional_extensions())
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     let required = [
@@ -838,6 +855,12 @@ fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+fn write_php_recipe(tempdir: &camino_tempfile::Utf8TempDir) -> Result<camino::Utf8PathBuf> {
+    let php = tempdir.path().join("tracks.toml");
+    write_file(&php, VALID_PHP_TOML)?;
+    Ok(php)
+}
+
 const VALID_PHP_TOML: &str = r#"
 [recipe]
 resources = ["php", "frankenphp"]
@@ -850,8 +873,9 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "redis", "sodium", "sqlsrv", "zip"]
-expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "sqlsrv", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+default_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sodium", "zip"]
+optional_extensions = ["redis", "sqlsrv", "pdo_sqlsrv", "xdebug", "apcu", "pcov", "imagick", "mongodb", "yaml"]
+expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]
 version = "1.12.3"

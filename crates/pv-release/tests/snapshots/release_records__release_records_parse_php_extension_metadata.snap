@@ -1,0 +1,73 @@
+---
+source: crates/pv-release/tests/release_records.rs
+expression: record
+---
+ReleaseRecord {
+    path: "frankenphp-with-extensions.json",
+    identity: ArtifactIdentity {
+        resource: ResourceName(
+            "frankenphp",
+        ),
+        track: TrackName(
+            "8.4",
+        ),
+        upstream_version: "8.4.20-frankenphp1.12.3",
+        pv_build_revision: "pv1",
+        platform: DarwinArm64,
+    },
+    artifact_version: ArtifactVersion(
+        "8.4.20-frankenphp1.12.3-pv1",
+    ),
+    object_key: "resources/frankenphp/8.4/8.4.20-frankenphp1.12.3-pv1/darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz",
+    sha256: Sha256Digest(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ),
+    size: 42,
+    published_at_raw: "2026-06-06T12:00:00Z",
+    published_at: PublishedAt(
+        2026-06-06 12:00:00.0 +00:00:00,
+    ),
+    minimum_pv_version: PvVersion {
+        major: 0,
+        minor: 1,
+        patch: 0,
+        raw: "0.1.0",
+    },
+    license_files: [
+        "LICENSE",
+    ],
+    notice_files: [
+        "NOTICE",
+    ],
+    php_extensions: [
+        PhpExtensionRecord {
+            name: "redis",
+            load_kind: "extension",
+            path: "lib/php/extensions/redis.so",
+        },
+        PhpExtensionRecord {
+            name: "xdebug",
+            load_kind: "zend_extension",
+            path: "lib/php/extensions/xdebug.so",
+        },
+    ],
+    provenance: Provenance {
+        source_url: "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+        source_sha256: "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+        source_inputs: [
+            SourceInput {
+                name: "frankenphp",
+                source_url: "https://github.com/php/frankenphp/archive/refs/tags/v1.12.3.tar.gz",
+                source_sha256: "2996fb95bbdf8410847fdcd59df04cd2e297568f6472ebe488af5fb5f3c79363",
+            },
+            SourceInput {
+                name: "php",
+                source_url: "https://www.php.net/distributions/php-8.4.20.tar.gz",
+                source_sha256: "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+            },
+        ],
+        recipe: "release/artifacts/recipes/php/build.sh",
+        pv_commit: "0123456789abcdef0123456789abcdef01234567",
+        build_run_id: "local-test",
+    },
+}

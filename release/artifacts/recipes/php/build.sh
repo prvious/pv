@@ -237,6 +237,8 @@ print_php_env php "$php_env_file"
   PHP_SOURCE_URL=$PV_SOURCE_URL
   PHP_SOURCE_SHA256=$PV_SOURCE_SHA256
   PHP_PHP_VERSION=$PV_PHP_VERSION
+  PHP_DEFAULT_EXTENSIONS=$PV_DEFAULT_EXTENSIONS
+  PHP_OPTIONAL_EXTENSIONS=$PV_OPTIONAL_EXTENSIONS
   PHP_BUILD_EXTENSIONS=$PV_BUILD_EXTENSIONS
   PHP_EXPECTED_EXTENSIONS=$PV_EXPECTED_EXTENSIONS
   PHP_DEPLOYMENT_TARGET=$PV_DEPLOYMENT_TARGET
@@ -261,6 +263,8 @@ print_php_env frankenphp "$frankenphp_env_file"
 # shellcheck disable=SC2153
 {
   [ "$PV_PHP_VERSION" = "$PHP_PHP_VERSION" ] || die "PHP pair metadata mismatch: php env has $PHP_PHP_VERSION but frankenphp env has $PV_PHP_VERSION"
+  [ "$PV_DEFAULT_EXTENSIONS" = "$PHP_DEFAULT_EXTENSIONS" ] || die "PHP pair metadata mismatch: default extension sets differ"
+  [ "$PV_OPTIONAL_EXTENSIONS" = "$PHP_OPTIONAL_EXTENSIONS" ] || die "PHP pair metadata mismatch: optional extension sets differ"
   [ "$PV_BUILD_EXTENSIONS" = "$PHP_BUILD_EXTENSIONS" ] || die "PHP pair metadata mismatch: extension build sets differ"
   [ "$PV_EXPECTED_EXTENSIONS" = "$PHP_EXPECTED_EXTENSIONS" ] || die "PHP pair metadata mismatch: expected extension sets differ"
   [ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
@@ -275,7 +279,13 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
 (
   cd "$spc_work_dir"
   # StaticPHP dependency downloads default to no retries; GNU mirrors can return transient 5xxs.
+  optional_shared_args=
+  if [ -n "$PHP_OPTIONAL_EXTENSIONS" ]; then
+    optional_shared_args="--build-shared=$PHP_OPTIONAL_EXTENSIONS"
+  fi
+  # shellcheck disable=SC2086
   spc build:php "$PHP_BUILD_EXTENSIONS" \
+    $optional_shared_args \
     --build-cli \
     --build-frankenphp \
     --enable-zts \
@@ -289,6 +299,29 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
 
 [ -f "$spc_work_dir/buildroot/bin/php" ] || die "StaticPHP pair build did not produce buildroot/bin/php"
 [ -f "$spc_work_dir/buildroot/bin/frankenphp" ] || die "StaticPHP pair build did not produce buildroot/bin/frankenphp"
+
+stage_optional_php_extensions() {
+  root_dir=$1
+  mkdir -p "$root_dir/lib/php/extensions" "$root_dir/share/pv"
+  metadata="$root_dir/share/pv/php-extensions.json"
+  printf '[' >"$metadata"
+  first=1
+  old_ifs=$IFS
+  IFS=,
+  for extension in $PHP_OPTIONAL_EXTENSIONS; do
+    [ -n "$extension" ] || continue
+    module=$(find "$spc_work_dir/buildroot" -type f -name "$extension.so" | head -n 1)
+    [ -n "$module" ] || die "optional PHP extension $extension did not produce a shared module"
+    cp "$module" "$root_dir/lib/php/extensions/$extension.so"
+    load_kind=extension
+    [ "$extension" = "xdebug" ] && load_kind=zend_extension
+    [ "$first" -eq 1 ] || printf ',' >>"$metadata"
+    first=0
+    printf '{"name":"%s","load_kind":"%s","path":"lib/php/extensions/%s.so"}' "$extension" "$load_kind" "$extension" >>"$metadata"
+  done
+  IFS=$old_ifs
+  printf ']\n' >>"$metadata"
+}
 
 stage_artifact() {
   resource=$1
@@ -304,6 +337,7 @@ stage_artifact() {
   mkdir -p "$root_dir/bin"
   cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
   [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
+  stage_optional_php_extensions "$root_dir"
   delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
   validate_macho_binary "$root_dir/bin/$binary_name"
 
@@ -342,6 +376,17 @@ write_staged_artifact() {
 
   mkdir -p "$(dirname "$archive")"
   COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work_dir" "$artifact_basename"
+
+  old_ifs=$IFS
+  IFS=,
+  for extension in $PHP_OPTIONAL_EXTENSIONS; do
+    [ -n "$extension" ] || continue
+    load_kind=extension
+    [ "$extension" = "xdebug" ] && load_kind=zend_extension
+    set -- "$@" --php-extension "$extension" "$load_kind" "lib/php/extensions/$extension.so"
+  done
+  IFS=$old_ifs
+
   write_record "$record" "$resource" "$TRACK" "$upstream_version" "$pv_build_revision" "$PLATFORM" "$object_key" "$archive" "$source_url" "$source_sha256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$minimum_pv_version" "$@"
 
   PV_EXPECTED_EXTENSIONS="$expected_extensions" \

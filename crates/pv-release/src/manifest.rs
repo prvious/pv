@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::defaults::ManifestDefaults;
 use crate::record::{
-    Provenance, ReleaseRecord, RevocationRecord, SourceInput, load_release_records,
-    load_revocation_records,
+    PhpExtensionRecord, Provenance, ReleaseRecord, RevocationRecord, SourceInput,
+    load_release_records, load_revocation_records,
 };
 
 pub fn generate_manifest_file(
@@ -169,6 +169,8 @@ struct ManifestArtifactJson {
     sha256: String,
     size: u64,
     published_at: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    php_extensions: Vec<ManifestPhpExtensionJson>,
     provenance: ManifestProvenanceJson,
     #[serde(skip_serializing_if = "is_false")]
     revoked: bool,
@@ -189,6 +191,13 @@ struct ManifestProvenanceJson {
     recipe: String,
     pv_commit: String,
     build_run_id: String,
+}
+
+#[derive(Serialize)]
+struct ManifestPhpExtensionJson {
+    name: String,
+    load_kind: String,
+    path: String,
 }
 
 #[derive(Serialize)]
@@ -237,6 +246,11 @@ impl ManifestArtifactJson {
             sha256: record.sha256().as_str().to_string(),
             size: record.size(),
             published_at: record.published_at_raw().to_string(),
+            php_extensions: record
+                .php_extensions()
+                .iter()
+                .map(ManifestPhpExtensionJson::from_record)
+                .collect(),
             provenance: ManifestProvenanceJson::from_provenance(record.provenance()),
             revoked: revocation.is_some(),
             revocation_reason: revocation.map(|revocation| revocation.reason().to_string()),
@@ -261,6 +275,16 @@ impl ManifestProvenanceJson {
             recipe: provenance.recipe().to_string(),
             pv_commit: provenance.pv_commit().to_string(),
             build_run_id: provenance.build_run_id().to_string(),
+        }
+    }
+}
+
+impl ManifestPhpExtensionJson {
+    fn from_record(record: &PhpExtensionRecord) -> Self {
+        Self {
+            name: record.name().to_string(),
+            load_kind: record.load_kind().to_string(),
+            path: record.path().to_string(),
         }
     }
 }

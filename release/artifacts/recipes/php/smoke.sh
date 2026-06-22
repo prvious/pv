@@ -54,6 +54,29 @@ check_extensions() {
   IFS=$old_ifs
 }
 
+check_optional_extensions() {
+  metadata="$artifact_root/share/pv/php-extensions.json"
+  [ -f "$metadata" ] || return 0
+  need python3
+  scan_dir=$(mktemp -d)
+  python3 - "$metadata" "$artifact_root" "$scan_dir" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata = pathlib.Path(sys.argv[1])
+artifact_root = pathlib.Path(sys.argv[2])
+scan_dir = pathlib.Path(sys.argv[3])
+for index, module in enumerate(json.loads(metadata.read_text())):
+    directive = module["load_kind"]
+    path = artifact_root / module["path"]
+    prefix = 10 + index * 10
+    (scan_dir / f"{prefix}-{module['name']}.ini").write_text(f"{directive}={path}\n")
+PY
+  PHP_INI_SCAN_DIR="$scan_dir" check_extensions "$php_binary" -m
+  rm -rf "$scan_dir"
+}
+
 available_port() {
   python3 - <<'PY'
 import socket
@@ -117,6 +140,7 @@ if [ -x "$artifact_root/bin/php" ]; then
   php_binary="$artifact_root/bin/php"
   "$php_binary" -v | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$php_binary" -m
+  check_optional_extensions
   if "$php_binary" --ini 2>&1 | grep -F '/usr/local/etc/php' >/dev/null; then
     printf '%s\n' "PHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2
     exit 46
