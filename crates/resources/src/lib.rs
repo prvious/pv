@@ -10,6 +10,7 @@ pub mod identity;
 pub mod install;
 pub mod manifest;
 pub mod php_defaults;
+pub mod php_extensions;
 pub mod platform;
 pub mod registry;
 pub mod runtime;
@@ -42,6 +43,11 @@ pub use manifest::{ArtifactManifest, ManifestArtifact, ManifestSelection, Revoca
 pub use php_defaults::{
     PHP_TRACK_DEFAULT_INI, PhpTrackDefaults, ensure_php_track_defaults, php_track_defaults,
     php_track_environment, php_track_exec_environment,
+};
+pub use php_extensions::{
+    PHP_EXTENSION_METADATA_PATH, PhpExtensionLoadKind, PhpExtensionModule, PhpExtensionResolution,
+    ensure_php_runtime_overlay, php_runtime_environment, php_runtime_exec_environment,
+    read_php_extension_metadata, resolve_php_extension_request,
 };
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};

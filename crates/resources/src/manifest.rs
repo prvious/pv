@@ -2,8 +2,10 @@ use crate::error::{ResourcesError, Result};
 use crate::identity::{
     ArtifactVersion, PublishedAt, PvVersion, ResourceName, Sha256Digest, TrackName, TrackSelector,
 };
+use crate::php_extensions::{PhpExtensionLoadKind, PhpExtensionModule};
 use crate::platform::{ArtifactPlatform, TargetPlatform};
 use crate::registry;
+use camino::Utf8PathBuf;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
@@ -40,6 +42,7 @@ pub struct ManifestArtifact {
     sha256: Sha256Digest,
     size: u64,
     published_at: PublishedAt,
+    php_extensions: Vec<PhpExtensionModule>,
     revocation_state: RevocationState,
 }
 
@@ -89,9 +92,19 @@ struct RawArtifact {
     size: u64,
     published_at: String,
     #[serde(default)]
+    php_extensions: Vec<RawManifestPhpExtension>,
+    #[serde(default)]
     revoked: bool,
     #[serde(default)]
     revocation_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManifestPhpExtension {
+    name: String,
+    load_kind: String,
+    path: String,
 }
 
 impl ArtifactManifest {
@@ -454,6 +467,11 @@ impl ManifestArtifact {
             sha256: Sha256Digest::new(raw.sha256)?,
             size: raw.size,
             published_at: PublishedAt::parse(raw.published_at)?,
+            php_extensions: raw
+                .php_extensions
+                .into_iter()
+                .map(php_extension_from_raw)
+                .collect::<Result<Vec<_>>>()?,
             revocation_state: RevocationState::from_raw(raw.revoked, raw.revocation_reason)?,
         })
     }
@@ -498,6 +516,10 @@ impl ManifestArtifact {
         &self.published_at
     }
 
+    pub fn php_extensions(&self) -> &[PhpExtensionModule] {
+        &self.php_extensions
+    }
+
     pub fn revocation_state(&self) -> &RevocationState {
         &self.revocation_state
     }
@@ -531,6 +553,55 @@ fn validate_artifact_url(url: String) -> Result<String> {
     }
 
     Ok(url)
+}
+
+fn php_extension_from_raw(raw: RawManifestPhpExtension) -> Result<PhpExtensionModule> {
+    validate_manifest_php_extension_name(&raw.name)?;
+    let relative_path = validate_manifest_php_extension_path(raw.path)?;
+    let load_kind = match raw.load_kind.as_str() {
+        "extension" => PhpExtensionLoadKind::Extension,
+        "zend_extension" => PhpExtensionLoadKind::ZendExtension,
+        _ => {
+            return Err(ResourcesError::InvalidManifest {
+                reason: format!("invalid PHP extension load kind `{}`", raw.load_kind),
+            });
+        }
+    };
+
+    Ok(PhpExtensionModule {
+        name: raw.name,
+        load_kind,
+        relative_path,
+    })
+}
+
+fn validate_manifest_php_extension_name(name: &str) -> Result<()> {
+    let valid = !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if valid {
+        return Ok(());
+    }
+
+    Err(ResourcesError::InvalidManifest {
+        reason: format!("invalid PHP extension name `{name}`"),
+    })
+}
+
+fn validate_manifest_php_extension_path(path: String) -> Result<Utf8PathBuf> {
+    let path = Utf8PathBuf::from(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| component.as_str() == "..")
+    {
+        return Err(ResourcesError::InvalidManifest {
+            reason: format!("invalid PHP extension path `{path}`"),
+        });
+    }
+
+    Ok(path)
 }
 
 impl RevocationState {

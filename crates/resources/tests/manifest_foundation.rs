@@ -2,6 +2,7 @@ use anyhow::Result;
 use insta::assert_debug_snapshot;
 use resources::ArtifactManifest;
 use resources::ManifestSelection;
+use resources::PhpExtensionLoadKind;
 use resources::ResourcesError;
 use resources::registry;
 use resources::{ArtifactPlatform, TargetPlatform};
@@ -102,8 +103,25 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
 
 #[test]
 fn manifest_parses_registry_backed_resources_tracks_and_artifacts() -> Result<()> {
-    let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
+    let manifest = ArtifactManifest::parse(&manifest_with_php_extension_metadata())?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
+    assert_eq!(
+        selected
+            .artifact()
+            .php_extensions()
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect::<Vec<_>>(),
+        ["redis", "xdebug"]
+    );
+    assert_eq!(
+        selected.artifact().php_extensions()[1].load_kind,
+        PhpExtensionLoadKind::ZendExtension
+    );
     assert_debug_snapshot!(manifest);
 
     Ok(())
@@ -526,6 +544,18 @@ fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Resul
     assert_eq!(amd64.artifact().platform(), ArtifactPlatform::DarwinAmd64);
 
     Ok(())
+}
+
+fn manifest_with_php_extension_metadata() -> String {
+    VALID_MANIFEST.replacen(
+        r#""published_at": "2026-05-26T14:30:00Z""#,
+        r#""published_at": "2026-05-26T14:30:00Z",
+              "php_extensions": [
+                {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"},
+                {"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}
+              ]"#,
+        1,
+    )
 }
 
 const VALID_MANIFEST: &str = r#"
