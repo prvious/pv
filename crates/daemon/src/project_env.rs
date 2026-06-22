@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use camino::Utf8PathBuf;
 use config::{
     AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
     ResourceEnvContext,
@@ -10,9 +11,10 @@ use resources::{
     generated_allocation_name,
 };
 use state::{
-    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
-    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
-    ResourceAllocationRecord, ResourceAllocationStatus, StateError,
+    Database, ManagedResourceDesiredState, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectPhpRuntimeInput,
+    ProjectRecord, PvPaths, ResourceAllocationInput, ResourceAllocationRecord,
+    ResourceAllocationStatus, StateError,
 };
 
 use crate::DaemonError;
@@ -32,6 +34,16 @@ pub(crate) struct ProjectResourcePlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectResourceAllocationPlan {
     pub(crate) allocations: Vec<ResourceAllocationInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedPhpRuntime {
+    pub(crate) track: String,
+    pub(crate) runtime_key: String,
+    pub(crate) requested_extensions: Vec<String>,
+    pub(crate) loaded_extensions: Vec<String>,
+    pub(crate) ignored_extensions: Vec<String>,
+    pub(crate) loaded_modules: Vec<resources::PhpExtensionModule>,
 }
 
 impl ProjectEnvReconciliationSummary {
@@ -115,8 +127,12 @@ async fn reconcile_loaded_project(
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
-    let resolved_php_track =
-        resolved_project_php_track_for_state(paths, project, config_file.config.php.as_deref())?;
+    let resolved_php_runtime = maybe_resolve_project_php_runtime(
+        paths,
+        database,
+        project,
+        config_file.config.php.as_ref(),
+    )?;
     let has_env_mappings = config_file.config.has_env_mappings();
 
     apply_project_resource_plan(database, &project.id, &plan)?;
@@ -129,28 +145,61 @@ async fn reconcile_loaded_project(
         crate::managed_resources::reconcile_project_resources(paths, database, project, &plan)
             .await?;
     }
-    if project.desired_php_track.as_deref() != resolved_php_track.as_deref() {
-        database.replace_project_desired_php_track(&project.id, resolved_php_track.as_deref())?;
+    if let Some(runtime) = &resolved_php_runtime {
+        database.replace_project_php_runtime(
+            &project.id,
+            Some(&ProjectPhpRuntimeInput {
+                track: runtime.track.clone(),
+                requested_extensions: runtime.requested_extensions.clone(),
+                loaded_extensions: runtime.loaded_extensions.clone(),
+                ignored_extensions: runtime.ignored_extensions.clone(),
+            }),
+        )?;
+    } else if project.desired_php_track.is_some() {
+        database.replace_project_php_runtime(&project.id, None)?;
     }
     database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
+    let runtime_warnings = resolved_php_runtime
+        .as_ref()
+        .map(ignored_php_extension_warnings)
+        .unwrap_or_default();
     if !has_env_mappings {
+        let status = if runtime_warnings.is_empty() {
+            ProjectEnvObservedStatus::Rendered
+        } else {
+            ProjectEnvObservedStatus::Warning
+        };
+        let message = if runtime_warnings.is_empty() {
+            "no Project env mappings configured"
+        } else {
+            "Project runtime has warnings"
+        };
         database.record_project_env_observed_snapshot(
             &project.id,
-            ProjectEnvObservedStatus::Rendered,
-            Some("no Project env mappings configured"),
-            &[],
+            status,
+            Some(message),
+            &runtime_warnings,
         )?;
 
-        return Ok(ProjectEnvReconciliationSummary {
-            message: "Project env unchanged; no mappings configured",
-        });
+        let summary = if runtime_warnings.is_empty() {
+            ProjectEnvReconciliationSummary {
+                message: "Project env unchanged; no mappings configured",
+            }
+        } else {
+            ProjectEnvReconciliationSummary {
+                message: "Project env unchanged with warnings",
+            }
+        };
+
+        return Ok(summary);
     }
 
     let context = project_env_context_for_plan(database, project, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
     let transform = config::write_project_env_file(&project.path.join(".env"), &rendered)?;
-    let warnings = observed_warnings(&transform.warnings);
+    let mut warnings = observed_warnings(&transform.warnings);
+    warnings.extend(runtime_warnings);
     let status = if warnings.is_empty() {
         ProjectEnvObservedStatus::Rendered
     } else {
@@ -177,21 +226,85 @@ async fn reconcile_loaded_project(
     Ok(summary)
 }
 
-fn resolved_project_php_track_for_state(
+fn maybe_resolve_project_php_runtime(
     paths: &PvPaths,
+    database: &Database,
     project: &ProjectRecord,
-    config_selector: Option<&str>,
-) -> Result<Option<String>, DaemonError> {
-    match config_selector {
-        Some(selector) => {
-            resolve_project_php_track(paths, Some(selector), project.desired_php_track.as_deref())
-                .map(Some)
-        }
-        None if paths.downloads().join("manifest.json").exists() => {
-            resolve_project_php_track(paths, None, None).map(Some)
-        }
-        None => Ok(project.desired_php_track.clone()),
+    php: Option<&config::PhpConfig>,
+) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    if php.is_none()
+        && project.desired_php_track.is_none()
+        && !paths.downloads().join("manifest.json").exists()
+    {
+        return Ok(None);
     }
+
+    resolve_project_php_runtime(paths, database, project, php).map(Some)
+}
+
+pub(crate) fn resolve_project_php_runtime(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    php: Option<&config::PhpConfig>,
+) -> Result<ResolvedPhpRuntime, DaemonError> {
+    let selector = php.and_then(config::PhpConfig::version_selector);
+    let stored_selector = if selector.is_some() || !paths.downloads().join("manifest.json").exists()
+    {
+        project.desired_php_track.as_deref()
+    } else {
+        None
+    };
+    let track = resolve_project_php_track(paths, selector, stored_selector)?;
+    let requested_extensions = php
+        .map(|php| php.requested_extensions().to_vec())
+        .unwrap_or_default();
+    let release = installed_php_release(database, &track)?;
+    let resolution = match release {
+        Some(release) => resources::resolve_php_extension_request(&release, &requested_extensions)?,
+        None => resources::PhpExtensionResolution {
+            requested: requested_extensions.clone(),
+            loaded: Vec::new(),
+            ignored: requested_extensions.clone(),
+        },
+    };
+    let loaded_extensions = resolution
+        .loaded
+        .iter()
+        .map(|module| module.name.clone())
+        .collect::<Vec<_>>();
+    let runtime_key = state::php_runtime_key(&track, &loaded_extensions)?;
+
+    Ok(ResolvedPhpRuntime {
+        track,
+        runtime_key,
+        requested_extensions: resolution.requested,
+        loaded_extensions,
+        ignored_extensions: resolution.ignored,
+        loaded_modules: resolution.loaded,
+    })
+}
+
+fn installed_php_release(
+    database: &Database,
+    track: &str,
+) -> Result<Option<Utf8PathBuf>, DaemonError> {
+    let release = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .find_map(|record| {
+            if record.resource_name == "php"
+                && record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+            {
+                return record.current_artifact_path;
+            }
+
+            None
+        });
+
+    Ok(release)
 }
 
 fn validate_project_config_and_plan(
@@ -488,6 +601,19 @@ fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWa
                     "generated Project env key `{key}` already exists outside the PV-managed block"
                 ),
             },
+        })
+        .collect()
+}
+
+fn ignored_php_extension_warnings(
+    runtime: &ResolvedPhpRuntime,
+) -> Vec<ProjectEnvObservedWarningInput> {
+    runtime
+        .ignored_extensions
+        .iter()
+        .map(|extension| ProjectEnvObservedWarningInput {
+            kind: "ignored_php_extension".to_string(),
+            message: format!("ignored unsupported PHP extension `{extension}`"),
         })
         .collect()
 }
