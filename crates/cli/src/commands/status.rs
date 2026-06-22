@@ -431,11 +431,20 @@ fn project_status(
     };
     let env_status = project_env_status_label(observed.status);
     let failure = observed.status == ProjectEnvObservedStatus::Failed;
+    let message = if observed.status == ProjectEnvObservedStatus::Warning {
+        observed
+            .warnings
+            .first()
+            .map(|warning| warning.message.clone())
+            .or(observed.message)
+    } else {
+        observed.message
+    };
 
     ProjectStatus {
         hostname: project.primary_hostname,
         env_status,
-        message: observed.message,
+        message,
         observed_at: Some(observed.observed_at),
         failure,
     }

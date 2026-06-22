@@ -625,13 +625,20 @@ fn project_list_env_status(
     has_env_mappings: bool,
     observed: Option<ProjectEnvObservedStateRecord>,
 ) -> (ProjectEnvStatus, Option<String>) {
-    if !has_env_mappings {
-        return (ProjectEnvStatus::None, None);
-    }
-
     let Some(observed) = observed else {
+        if !has_env_mappings {
+            return (ProjectEnvStatus::None, None);
+        }
+
         return (ProjectEnvStatus::Pending, None);
     };
+
+    if !has_env_mappings
+        && (observed.status != ProjectEnvObservedStatus::Warning
+            || !has_ignored_php_extension_warning(&observed))
+    {
+        return (ProjectEnvStatus::None, None);
+    }
 
     match observed.status {
         ProjectEnvObservedStatus::Failed => (
@@ -648,6 +655,19 @@ fn project_list_env_status(
 }
 
 fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord) -> String {
+    let ignored = observed
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == "ignored_php_extension")
+        .map(|warning| warning.message.as_str())
+        .collect::<Vec<_>>();
+    if ignored.len() == 1 {
+        return format!("warning: {}", ignored[0]);
+    }
+    if ignored.len() > 1 {
+        return format!("warning: {} ignored PHP extensions", ignored.len());
+    }
+
     match observed.warnings.as_slice() {
         [warning] => format!("warning: {}", warning.message),
         [] => observed
@@ -657,4 +677,11 @@ fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord
             .unwrap_or_else(|| "warning".to_string()),
         warnings => format!("warning: {} warnings", warnings.len()),
     }
+}
+
+fn has_ignored_php_extension_warning(observed: &ProjectEnvObservedStateRecord) -> bool {
+    observed
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == "ignored_php_extension")
 }
