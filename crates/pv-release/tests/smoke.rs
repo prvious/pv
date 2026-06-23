@@ -3766,7 +3766,17 @@ fn write_fake_lipo(path: &Utf8Path) -> Result<()> {
 set -eu
 
 [ "${1:-}" = "-archs" ] || exit 78
-printf '%s\n' "$PV_TEST_LIPO_ARCHS"
+binary=${2:-}
+archs=$PV_TEST_LIPO_ARCHS
+case "$binary" in
+  */lib/php/extensions/*.so)
+    archs=${PV_TEST_EXTENSION_LIPO_ARCHS:-arm64}
+    ;;
+  */bin/frankenphp)
+    archs=${PV_TEST_FRANKENPHP_LIPO_ARCHS:-arm64}
+    ;;
+esac
+printf '%s\n' "$archs"
 "#,
     )
 }
@@ -3779,15 +3789,26 @@ set -eu
 
 binary=${2:-}
 macho_libraries=${PV_TEST_MACHO_LIBRARIES:-}
+macho_minos=${PV_TEST_MACHO_MINOS:-}
 macho_rpaths=${PV_TEST_MACHO_RPATHS:-}
 case "$binary" in
   */lib/php/extensions/*.so)
-    macho_libraries=${PV_TEST_EXTENSION_MACHO_LIBRARIES:-$macho_libraries}
-    macho_rpaths=${PV_TEST_EXTENSION_MACHO_RPATHS:-$macho_rpaths}
+    macho_minos=${PV_TEST_EXTENSION_MACHO_MINOS:-13.0}
+    if [ "${PV_TEST_EXTENSION_MACHO_LIBRARIES+x}" = x ]; then
+      macho_libraries=$PV_TEST_EXTENSION_MACHO_LIBRARIES
+    fi
+    if [ "${PV_TEST_EXTENSION_MACHO_RPATHS+x}" = x ]; then
+      macho_rpaths=$PV_TEST_EXTENSION_MACHO_RPATHS
+    fi
     ;;
   */bin/frankenphp)
-    macho_libraries=${PV_TEST_FRANKENPHP_MACHO_LIBRARIES:-$macho_libraries}
-    macho_rpaths=${PV_TEST_FRANKENPHP_MACHO_RPATHS:-$macho_rpaths}
+    macho_minos=${PV_TEST_FRANKENPHP_MACHO_MINOS:-13.0}
+    if [ "${PV_TEST_FRANKENPHP_MACHO_LIBRARIES+x}" = x ]; then
+      macho_libraries=$PV_TEST_FRANKENPHP_MACHO_LIBRARIES
+    fi
+    if [ "${PV_TEST_FRANKENPHP_MACHO_RPATHS+x}" = x ]; then
+      macho_rpaths=$PV_TEST_FRANKENPHP_MACHO_RPATHS
+    fi
     ;;
 esac
 
@@ -3804,7 +3825,7 @@ Load command 1
       cmd LC_BUILD_VERSION
   cmdsize 32
  platform MACOS
-    minos $PV_TEST_MACHO_MINOS
+    minos $macho_minos
       sdk 15.0
 EOF
     if [ -n "$macho_rpaths" ]; then
