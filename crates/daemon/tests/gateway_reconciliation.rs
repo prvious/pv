@@ -558,7 +558,7 @@ document_root: public
     let database = Database::open(&paths)?;
     assert!(!database.assigned_ports()?.iter().any(|port| matches!(
         &port.owner,
-        PortOwner::PhpWorker { php_track } if php_track == "8.4"
+        PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.4"
     )));
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
@@ -1974,6 +1974,12 @@ fn seed_installed_php_with_extensions(
 
     fs::write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
     fs::write_sensitive_file(&release.join("share/pv/php-extensions.json"), &metadata)?;
+    for extension in extensions {
+        fs::write_sensitive_file(
+            &release.join(format!("lib/php/extensions/{extension}.so")),
+            "",
+        )?;
+    }
     database.record_managed_resource_track_installed("php", track, "8.4.8-pv1", &release)?;
 
     Ok(release)
@@ -1990,6 +1996,12 @@ fn seed_installed_frankenphp_with_extensions(
 
     fs::write_sensitive_file(&release.join("bin/frankenphp"), "#!/bin/sh\n")?;
     fs::write_sensitive_file(&release.join("share/pv/php-extensions.json"), &metadata)?;
+    for extension in extensions {
+        fs::write_sensitive_file(
+            &release.join(format!("lib/php/extensions/{extension}.so")),
+            "",
+        )?;
+    }
     database.record_managed_resource_track_installed("frankenphp", track, "8.4.8-pv1", release)?;
 
     Ok(())

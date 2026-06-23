@@ -622,6 +622,9 @@ fn runtime_subject_label(subject: &state::RuntimeSubject) -> String {
     match subject {
         state::RuntimeSubject::Gateway => "gateway".to_string(),
         state::RuntimeSubject::PhpWorker { php_track } => format!("worker:{php_track}"),
+        state::RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+            format!("worker:{php_runtime_key}")
+        }
         state::RuntimeSubject::Resource { name, track } => format!("{name}:{track}"),
     }
 }

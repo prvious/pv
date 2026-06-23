@@ -183,6 +183,7 @@ impl ReleaseRecord {
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
         validate_relative_path(path, "object_key", &raw.object_key)?;
         validate_object_key_layout(path, &raw)?;
+        validate_php_extensions(path, &raw.php_extensions)?;
         raw.provenance.validate(path)?;
 
         let identity = ArtifactIdentity {
@@ -593,6 +594,55 @@ fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::R
             format!("{field} contains invalid relative path `{value}`"),
         ))
     }
+}
+
+fn validate_php_extensions(
+    path: &Utf8Path,
+    extensions: &[PhpExtensionRecord],
+) -> crate::Result<()> {
+    let mut names = BTreeSet::new();
+    for extension in extensions {
+        validate_php_extension_name(path, &extension.name)?;
+        validate_php_extension_load_kind(path, &extension.load_kind)?;
+        validate_relative_path(path, "php_extensions.path", &extension.path)?;
+        if !names.insert(extension.name.as_str()) {
+            return Err(invalid_release(
+                path,
+                format!(
+                    "php_extensions contains duplicate extension `{}`",
+                    extension.name
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_php_extension_name(path: &Utf8Path, name: &str) -> crate::Result<()> {
+    let valid = !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if valid {
+        return Ok(());
+    }
+
+    Err(invalid_release(
+        path,
+        format!("php_extensions contains invalid extension `{name}`"),
+    ))
+}
+
+fn validate_php_extension_load_kind(path: &Utf8Path, load_kind: &str) -> crate::Result<()> {
+    if matches!(load_kind, "extension" | "zend_extension") {
+        return Ok(());
+    }
+
+    Err(invalid_release(
+        path,
+        format!("php_extensions contains invalid load kind `{load_kind}`"),
+    ))
 }
 
 fn validate_object_key_layout(path: &Utf8Path, raw: &RawReleaseRecord) -> crate::Result<()> {

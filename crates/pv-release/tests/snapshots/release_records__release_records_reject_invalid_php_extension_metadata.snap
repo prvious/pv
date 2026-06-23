@@ -1,0 +1,49 @@
+---
+source: crates/pv-release/tests/release_records.rs
+assertion_line: 183
+expression: cases
+---
+[
+    (
+        "empty_name",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions contains invalid extension ``",
+        },
+    ),
+    (
+        "invalid_load_kind",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions contains invalid load kind `module`",
+        },
+    ),
+    (
+        "empty_path",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions.path contains invalid relative path ``",
+        },
+    ),
+    (
+        "current_dir_path",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions.path contains invalid relative path `.`",
+        },
+    ),
+    (
+        "parent_path",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions.path contains invalid relative path `../redis.so`",
+        },
+    ),
+    (
+        "duplicate_name",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions contains duplicate extension `redis`",
+        },
+    ),
+]

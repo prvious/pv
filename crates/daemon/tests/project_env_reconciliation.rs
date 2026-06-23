@@ -155,6 +155,7 @@ async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<(
         &release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
+    state::fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
@@ -199,6 +200,7 @@ async fn project_env_reconciliation_persists_non_identity_ignored_php_extension(
         &release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
+    state::fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
@@ -938,6 +940,43 @@ AFTER=1
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_env_reconciliation_uses_global_php_default_for_extension_only_config() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php:\n  extensions: [redis]\n",
+    )?;
+    seed_manifest(&paths, "8.5")?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_global_php_default_track("8.3")?;
+    }
+
+    run_project_reconciliation(&paths, &project).await?;
+
+    let database = Database::open(&paths)?;
+    let project = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+
+    assert_eq!(project.desired_php_track.as_deref(), Some("8.3"));
+    assert_eq!(
+        project.php_runtime.requested_extensions,
+        vec!["redis".to_string()]
+    );
+    assert_eq!(
+        project.php_runtime.ignored_extensions,
+        vec!["redis".to_string()]
+    );
 
     Ok(())
 }

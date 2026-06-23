@@ -1,5 +1,6 @@
 ---
 source: crates/cli/tests/status.rs
+assertion_line: 603
 expression: snapshot
 ---
 (
@@ -9,7 +10,7 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  app.test env=warning ignored unsupported PHP extension `missing`\nRecent errors:\n  none\n",
+        stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: missing\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  app.test env=warning ignored unsupported PHP extension `missing`; ignored unsupported PHP extension `typo`\nRecent errors:\n  none\n",
         stderr: "",
     },
     RunOutput {
@@ -18,7 +19,7 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "{\"overall\":\"ok\",\"daemon\":{\"state\":\"disabled\",\"launch_agent\":\"missing\",\"socket\":\"missing\",\"failure\":false},\"integrations\":{\"dns\":\"missing\",\"ports\":\"missing\",\"ca\":\"missing\"},\"managed_resources\":[],\"runtimes\":[],\"projects\":[{\"hostname\":\"app.test\",\"env_status\":\"warning\",\"message\":\"ignored unsupported PHP extension `missing`\",\"observed_at\":\"<timestamp>\"}],\"recent_errors\":[],\"log_directory\":\"<tempdir>/home/.pv/logs\"}\n",
+        stdout: "{\"overall\":\"ok\",\"daemon\":{\"state\":\"disabled\",\"launch_agent\":\"missing\",\"socket\":\"missing\",\"failure\":false},\"integrations\":{\"dns\":\"missing\",\"ports\":\"missing\",\"ca\":\"missing\"},\"managed_resources\":[],\"runtimes\":[],\"projects\":[{\"hostname\":\"app.test\",\"env_status\":\"warning\",\"message\":\"ignored unsupported PHP extension `missing`; ignored unsupported PHP extension `typo`\",\"observed_at\":\"<timestamp>\"}],\"recent_errors\":[],\"log_directory\":\"<tempdir>/home/.pv/logs\"}\n",
         stderr: "",
     },
 )

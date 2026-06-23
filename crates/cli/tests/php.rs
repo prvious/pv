@@ -223,6 +223,7 @@ fn php_shim_uses_project_extension_runtime_overlay() -> anyhow::Result<()> {
         &release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
+    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&pv_paths(&home))?;
         database.replace_project_php_runtime(
@@ -235,6 +236,38 @@ fn php_shim_uses_project_extension_runtime_overlay() -> anyhow::Result<()> {
             }),
         )?;
     }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-m"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(exec_calls[0].env.iter().any(|(key, value)| {
+        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_resolves_project_config_extensions_when_persisted_runtime_is_empty()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  version: 8.4\n  extensions: [redis]\n",
+    )?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    select_project_php_track(&home, &project_record, "8.4")?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    fs::write_sensitive_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
 
     let output = run_pv(&["shim:php", "-m"], &environment)?;

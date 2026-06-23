@@ -355,6 +355,10 @@ fn status_prefers_ignored_php_extension_over_other_project_env_warnings() -> any
                 kind: "ignored_php_extension".to_string(),
                 message: "ignored unsupported PHP extension `missing`".to_string(),
             },
+            ProjectEnvObservedWarningInput {
+                kind: "ignored_php_extension".to_string(),
+                message: "ignored unsupported PHP extension `typo`".to_string(),
+            },
         ],
     )?;
 

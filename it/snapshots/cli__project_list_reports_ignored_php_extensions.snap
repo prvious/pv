@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 628
 expression: "(link, list)"
 ---
 (
@@ -14,7 +15,7 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: ignored unsupported PHP extension `missing`\n",
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: ignored unsupported PHP extension `missing`; ignored unsupported PHP extension `typo`\n",
         stderr: "",
     },
 )

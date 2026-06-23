@@ -235,6 +235,7 @@ fn maybe_resolve_project_php_runtime(
     if php.is_none()
         && project.desired_php_track.is_none()
         && !paths.downloads().join("manifest.json").exists()
+        && database.global_php_default_track()?.is_none()
     {
         return Ok(None);
     }
@@ -249,13 +250,16 @@ pub(crate) fn resolve_project_php_runtime(
     php: Option<&config::PhpConfig>,
 ) -> Result<ResolvedPhpRuntime, DaemonError> {
     let selector = php.and_then(config::PhpConfig::version_selector);
-    let stored_selector = if selector.is_some() || !paths.downloads().join("manifest.json").exists()
+    let global_selector = database.global_php_default_track()?;
+    let stored_selector = if selector.is_some()
+        || (!paths.downloads().join("manifest.json").exists() && global_selector.is_none())
     {
         project.desired_php_track.as_deref()
     } else {
         None
     };
-    let track = resolve_project_php_track(paths, selector, stored_selector)?;
+    let track =
+        resolve_project_php_track(paths, selector, stored_selector, global_selector.as_deref())?;
     let requested_extensions = php
         .map(|php| php.requested_extensions().to_vec())
         .unwrap_or_default();
@@ -431,6 +435,7 @@ pub(crate) fn resolve_project_php_track(
     paths: &PvPaths,
     config_selector: Option<&str>,
     stored_selector: Option<&str>,
+    global_selector: Option<&str>,
 ) -> Result<String, DaemonError> {
     let selector = config_selector.map(TrackSelector::parse).transpose()?;
     let track = match selector {
@@ -441,7 +446,10 @@ pub(crate) fn resolve_project_php_track(
         Some(TrackSelector::Track(track)) => track.as_str().to_owned(),
         None => match stored_selector {
             Some(track) => track.to_string(),
-            None => default_project_php_track(paths)?,
+            None => match global_selector {
+                Some(track) => track.to_string(),
+                None => default_project_php_track(paths)?,
+            },
         },
     };
     let track = ConcreteTrackName::new(track)?;

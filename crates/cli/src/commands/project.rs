@@ -661,11 +661,8 @@ fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord
         .filter(|warning| warning.kind == "ignored_php_extension")
         .map(|warning| warning.message.as_str())
         .collect::<Vec<_>>();
-    if ignored.len() == 1 {
-        return format!("warning: {}", ignored[0]);
-    }
-    if ignored.len() > 1 {
-        return format!("warning: {} ignored PHP extensions", ignored.len());
+    if !ignored.is_empty() {
+        return format!("warning: {}", ignored.join("; "));
     }
 
     match observed.warnings.as_slice() {

@@ -153,9 +153,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     let mut worker_commands = Vec::new();
 
     for worker in &plan.workers {
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: worker.runtime_key.clone(),
-        };
+        let subject = worker_runtime_subject(worker);
         let worker_runtime = match installed_frankenphp_runtime_for_track(paths, &worker.php_track)
         {
             Ok(Some(runtime)) => runtime,
@@ -180,9 +178,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     }
 
     for (worker, worker_runtime) in worker_commands {
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: worker.runtime_key.clone(),
-        };
+        let subject = worker_runtime_subject(worker);
         let process_spec = match worker_process_spec(
             paths,
             worker,
@@ -809,9 +805,7 @@ async fn reconcile_worker_config(
     artifact_root: &Utf8Path,
     worker: &PhpWorkerRuntimePlan,
 ) -> Result<PromotedConfigTree, DaemonError> {
-    let subject = RuntimeSubject::PhpWorker {
-        php_track: worker.runtime_key.clone(),
-    };
+    let subject = worker_runtime_subject(worker);
     let private_environment = match worker_config_private_environment(paths, worker, artifact_root)
     {
         Ok(private_environment) => private_environment,
@@ -1211,9 +1205,7 @@ async fn stop_stale_worker_runtimes(
         if desired_runtime_keys.contains(runtime_key.as_str()) {
             continue;
         }
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: runtime_key.clone(),
-        };
+        let subject = php_runtime_subject(&runtime_key);
 
         if let Some(adopted) = supervisor.adopt_recorded(
             &paths.worker_pid(&runtime_key),
@@ -1241,10 +1233,34 @@ fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<()
 
     let mut database = Database::open(paths)?;
     database.release_port(PortOwner::PhpWorker {
-        php_track: runtime_key.to_owned(),
+        php_runtime_key: runtime_key.to_owned(),
     })?;
 
     Ok(())
+}
+
+fn worker_runtime_subject(worker: &PhpWorkerRuntimePlan) -> RuntimeSubject {
+    if worker.runtime_key == worker.php_track {
+        RuntimeSubject::PhpWorker {
+            php_track: worker.php_track.clone(),
+        }
+    } else {
+        RuntimeSubject::PhpRuntimeWorker {
+            php_runtime_key: worker.runtime_key.clone(),
+        }
+    }
+}
+
+fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
+    if runtime_key.contains('+') {
+        RuntimeSubject::PhpRuntimeWorker {
+            php_runtime_key: runtime_key.to_owned(),
+        }
+    } else {
+        RuntimeSubject::PhpWorker {
+            php_track: runtime_key.to_owned(),
+        }
+    }
 }
 
 fn project_config_file_name(project_id: &str) -> String {

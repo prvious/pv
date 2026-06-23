@@ -471,6 +471,12 @@ fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
         VALID_PHP_TOML.replace("php_version = \"8.4.20\"", "php_version = \"8.4\"");
     let unexpected_expected_extension =
         VALID_PHP_TOML.replace("\"zlib\"]", "\"zlib\", \"xdebug\"]");
+    let duplicate_default_extension =
+        VALID_PHP_TOML.replace("\"bcmath\", \"curl\"", "\"bcmath\", \"bcmath\", \"curl\"");
+    let invalid_default_extension =
+        VALID_PHP_TOML.replace("\"bcmath\", \"curl\"", "\"bad-extension\", \"curl\"");
+    let overlapping_optional_extension =
+        VALID_PHP_TOML.replace("\"redis\", \"sqlsrv\"", "\"bcmath\", \"sqlsrv\"");
     let empty_license_files =
         VALID_PHP_TOML.replace("license_files = [\"LICENSE\"]", "license_files = []");
     let unsafe_license_file = VALID_PHP_TOML.replace(
@@ -494,6 +500,18 @@ fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
         PhpRecipe::from_toml(
             Utf8Path::new("unexpected-expected-extension.toml"),
             &unexpected_expected_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("duplicate-default-extension.toml"),
+            &duplicate_default_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("invalid-default-extension.toml"),
+            &invalid_default_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("overlapping-optional-extension.toml"),
+            &overlapping_optional_extension,
         ),
         PhpRecipe::from_toml(
             Utf8Path::new("empty-license-files.toml"),

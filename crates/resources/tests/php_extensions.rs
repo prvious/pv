@@ -19,6 +19,8 @@ fn resolves_available_and_ignored_php_extensions_from_artifact_metadata() -> Res
 ]
 "#,
     )?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/xdebug.so"), "")?;
 
     let resolution = resolve_php_extension_request(
         &artifact,
@@ -55,6 +57,7 @@ fn persisted_php_extension_resolution_rejects_missing_metadata_names() -> Result
 ]
 "#,
     )?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
 
     let result =
         resolve_persisted_php_extension_modules(&artifact, &["redis".into(), "xdebug".into()]);
@@ -82,6 +85,8 @@ fn writes_runtime_overlay_for_loaded_php_extensions() -> Result<()> {
 ]
 "#,
     )?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/xdebug.so"), "")?;
     let resolution = resolve_php_extension_request(&artifact, &["redis".into(), "xdebug".into()])?;
 
     let overlay =
@@ -102,6 +107,45 @@ fn writes_runtime_overlay_for_loaded_php_extensions() -> Result<()> {
     assert!(xdebug_ini.contains("xdebug.so"));
     assert!(env["PHP_INI_SCAN_DIR"].contains("conf.d"));
     assert!(env["PHP_INI_SCAN_DIR"].contains("php-runtimes/8.4+redis+xdebug/conf.d"));
+
+    Ok(())
+}
+
+#[test]
+fn php_extension_metadata_rejects_invalid_paths_duplicates_and_missing_modules() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact = tempdir.path().join("php");
+    let cases = [
+        (
+            "empty-path",
+            r#"[{"name":"redis","load_kind":"extension","path":""}]"#,
+        ),
+        (
+            "current-dir",
+            r#"[{"name":"redis","load_kind":"extension","path":"."}]"#,
+        ),
+        (
+            "duplicate-name",
+            r#"[
+  {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"},
+  {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis-copy.so"}
+]"#,
+        ),
+        (
+            "missing-module",
+            r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+        ),
+    ];
+
+    for (name, metadata) in cases {
+        fs::write_sensitive_file(&artifact.join("share/pv/php-extensions.json"), metadata)?;
+        let result = resolve_php_extension_request(&artifact, &["redis".into()]);
+
+        assert!(
+            matches!(result, Err(ResourcesError::InvalidArtifactLayout { ref resource, .. }) if resource == "php"),
+            "{name} should be rejected, got {result:?}",
+        );
+    }
 
     Ok(())
 }

@@ -607,10 +607,16 @@ fn project_list_reports_ignored_php_extensions() -> Result<()> {
         &linked_project.id,
         ProjectEnvObservedStatus::Warning,
         Some("Project runtime has warnings"),
-        &[ProjectEnvObservedWarningInput {
-            kind: "ignored_php_extension".to_string(),
-            message: "ignored unsupported PHP extension `missing`".to_string(),
-        }],
+        &[
+            ProjectEnvObservedWarningInput {
+                kind: "ignored_php_extension".to_string(),
+                message: "ignored unsupported PHP extension `missing`".to_string(),
+            },
+            ProjectEnvObservedWarningInput {
+                kind: "ignored_php_extension".to_string(),
+                message: "ignored unsupported PHP extension `typo`".to_string(),
+            },
+        ],
     )?;
 
     let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;

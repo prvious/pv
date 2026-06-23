@@ -167,8 +167,14 @@ fn installed_worker_sources(paths: &PvPaths) -> Result<Vec<LogSource>, ExecuteEr
     let mut tracks = BTreeSet::new();
 
     for state in database.runtime_observed_states()? {
-        if let state::RuntimeSubject::PhpWorker { php_track } = state.subject {
-            tracks.insert(php_track);
+        match state.subject {
+            state::RuntimeSubject::PhpWorker { php_track } => {
+                tracks.insert(php_track);
+            }
+            state::RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+                tracks.insert(php_runtime_key);
+            }
+            state::RuntimeSubject::Gateway | state::RuntimeSubject::Resource { .. } => {}
         }
     }
 

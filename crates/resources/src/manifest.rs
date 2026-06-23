@@ -456,6 +456,13 @@ impl ManifestTrack {
 
 impl ManifestArtifact {
     fn from_raw(raw: RawArtifact, resource_name: &ResourceName, track: &TrackName) -> Result<Self> {
+        let php_extensions = raw
+            .php_extensions
+            .into_iter()
+            .map(php_extension_from_raw)
+            .collect::<Result<Vec<_>>>()?;
+        validate_manifest_php_extension_duplicates(&php_extensions)?;
+
         Ok(Self {
             resource_name: resource_name.clone(),
             track: track.clone(),
@@ -467,11 +474,7 @@ impl ManifestArtifact {
             sha256: Sha256Digest::new(raw.sha256)?,
             size: raw.size,
             published_at: PublishedAt::parse(raw.published_at)?,
-            php_extensions: raw
-                .php_extensions
-                .into_iter()
-                .map(php_extension_from_raw)
-                .collect::<Result<Vec<_>>>()?,
+            php_extensions,
             revocation_state: RevocationState::from_raw(raw.revoked, raw.revocation_reason)?,
         })
     }
@@ -589,12 +592,28 @@ fn validate_manifest_php_extension_name(name: &str) -> Result<()> {
     })
 }
 
+fn validate_manifest_php_extension_duplicates(extensions: &[PhpExtensionModule]) -> Result<()> {
+    let mut names = BTreeSet::new();
+    for extension in extensions {
+        if !names.insert(extension.name.as_str()) {
+            return Err(ResourcesError::InvalidManifest {
+                reason: format!("duplicate PHP extension `{}`", extension.name),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_manifest_php_extension_path(path: String) -> Result<Utf8PathBuf> {
     let path = Utf8PathBuf::from(path);
-    if path.is_absolute()
+    if path.as_str().is_empty()
+        || path.as_str().contains('\\')
+        || path.as_str().split('/').any(str::is_empty)
+        || path.is_absolute()
         || path
             .components()
-            .any(|component| component.as_str() == "..")
+            .any(|component| matches!(component.as_str(), "." | ".."))
     {
         return Err(ResourcesError::InvalidManifest {
             reason: format!("invalid PHP extension path `{path}`"),

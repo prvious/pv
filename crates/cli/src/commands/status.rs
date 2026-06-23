@@ -387,7 +387,9 @@ fn runtime_statuses(runtime_states: &[RuntimeObservedStateRecord]) -> Vec<Runtim
     runtime_states
         .iter()
         .filter_map(|state| match &state.subject {
-            RuntimeSubject::Gateway | RuntimeSubject::PhpWorker { .. } => Some(RuntimeStatus {
+            RuntimeSubject::Gateway
+            | RuntimeSubject::PhpWorker { .. }
+            | RuntimeSubject::PhpRuntimeWorker { .. } => Some(RuntimeStatus {
                 subject: runtime_subject_label(&state.subject),
                 status: runtime_status_label(state.status),
                 message: state.message.clone(),
@@ -447,11 +449,19 @@ fn project_status(
 }
 
 fn project_env_warning_message(observed: &state::ProjectEnvObservedStateRecord) -> Option<String> {
-    observed
+    let ignored = observed
         .warnings
         .iter()
-        .find(|warning| warning.kind == "ignored_php_extension")
-        .or_else(|| observed.warnings.first())
+        .filter(|warning| warning.kind == "ignored_php_extension")
+        .map(|warning| warning.message.as_str())
+        .collect::<Vec<_>>();
+    if !ignored.is_empty() {
+        return Some(ignored.join("; "));
+    }
+
+    observed
+        .warnings
+        .first()
         .map(|warning| warning.message.clone())
         .or_else(|| observed.message.clone())
 }
@@ -550,6 +560,9 @@ fn runtime_subject_label(subject: &RuntimeSubject) -> String {
     match subject {
         RuntimeSubject::Gateway => "gateway".to_string(),
         RuntimeSubject::PhpWorker { php_track } => format!("worker:{php_track}"),
+        RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+            format!("worker:{php_runtime_key}")
+        }
         RuntimeSubject::Resource { name, track } => format!("{name}:{track}"),
     }
 }

@@ -502,6 +502,7 @@ fn composer_shim_inherits_project_php_extension_runtime_overlay() -> anyhow::Res
         &php_release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
+    fs::write_sensitive_file(&php_release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&pv_paths(&home))?;
         database.replace_project_php_runtime(

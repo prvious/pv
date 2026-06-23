@@ -24,6 +24,7 @@ const RESERVED_HOSTNAME: &str = "pv.test";
 const RESERVED_TRACK_NAME: &str = "latest";
 const PROJECT_ENV_OBSERVED_SUBJECT_KIND: &str = "project_env";
 const RUNTIME_OBSERVED_SUBJECT_KIND: &str = "runtime";
+const PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND: &str = "php_runtime_worker";
 
 pub type EnvContextValues = BTreeMap<String, String>;
 
@@ -98,7 +99,7 @@ pub enum PortOwner {
     Dns,
     Gateway(GatewayPort),
     PhpWorker {
-        php_track: String,
+        php_runtime_key: String,
     },
     Resource {
         name: String,
@@ -313,6 +314,7 @@ pub struct ProjectEnvObservedStateRecord {
 pub enum RuntimeSubject {
     Gateway,
     PhpWorker { php_track: String },
+    PhpRuntimeWorker { php_runtime_key: String },
     Resource { name: String, track: String },
 }
 
@@ -338,12 +340,13 @@ pub fn php_runtime_key(track: &str, loaded_extensions: &[String]) -> Result<Stri
     for extension in loaded_extensions {
         validate_php_extension_identity(extension)?;
     }
-    if loaded_extensions.is_empty() {
-        return Ok(track.to_string());
-    }
 
     let mut loaded_extensions = loaded_extensions.to_vec();
     loaded_extensions.sort();
+    loaded_extensions.dedup();
+    if loaded_extensions.is_empty() {
+        return Ok(track.to_string());
+    }
 
     Ok(format!("{track}+{}", loaded_extensions.join("+")))
 }
@@ -417,6 +420,7 @@ struct ProjectEnvObservedWarningRow {
 }
 
 struct RuntimeObservedStateRow {
+    subject_kind: String,
     subject_id: String,
     status: String,
     message: Option<String>,
@@ -1556,6 +1560,7 @@ impl Database {
         status: RuntimeObservedStatus,
         message: Option<&str>,
     ) -> Result<RuntimeObservedStateRecord, StateError> {
+        let subject_kind = subject.subject_kind();
         let subject_id = subject.subject_id()?;
         let observed_at = timestamp()?;
         self.connection.execute(
@@ -1572,7 +1577,7 @@ impl Database {
                 message = excluded.message,
                 observed_at = excluded.observed_at",
             params![
-                RUNTIME_OBSERVED_SUBJECT_KIND,
+                subject_kind,
                 subject_id.as_str(),
                 status.as_str(),
                 message,
@@ -1590,13 +1595,16 @@ impl Database {
 
     pub fn runtime_observed_states(&self) -> Result<Vec<RuntimeObservedStateRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT subject_id, status, message, observed_at
+            "SELECT subject_kind, subject_id, status, message, observed_at
             FROM observed_states
-            WHERE subject_kind = ?1
-            ORDER BY subject_id",
+            WHERE subject_kind IN (?1, ?2)
+            ORDER BY subject_kind, subject_id",
         )?;
         let rows = statement.query_map(
-            params![RUNTIME_OBSERVED_SUBJECT_KIND],
+            params![
+                RUNTIME_OBSERVED_SUBJECT_KIND,
+                PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND,
+            ],
             runtime_observed_state_from_row,
         )?;
         let mut states = Vec::new();
@@ -1901,14 +1909,14 @@ impl PortRequest {
     }
 
     pub fn php_worker(
-        php_track: impl Into<String>,
+        php_runtime_key: impl Into<String>,
         preferred_port: u16,
         fallback_start: u16,
         fallback_end: u16,
     ) -> Self {
         Self::new(
             PortOwner::PhpWorker {
-                php_track: php_track.into(),
+                php_runtime_key: php_runtime_key.into(),
             },
             preferred_port,
             fallback_start,
@@ -1999,13 +2007,13 @@ impl PortOwner {
                 owner_track: String::new(),
                 owner_port: String::new(),
             }),
-            Self::PhpWorker { php_track } => {
-                validate_php_runtime_key(php_track)?;
+            Self::PhpWorker { php_runtime_key } => {
+                validate_php_runtime_key(php_runtime_key)?;
 
                 Ok(PortIdentity {
                     owner_kind: "php_worker",
                     owner_id: "php".to_string(),
-                    owner_track: php_track.clone(),
+                    owner_track: php_runtime_key.clone(),
                     owner_port: String::new(),
                 })
             }
@@ -2049,7 +2057,7 @@ impl PortOwner {
                 if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
             {
                 let owner = Self::PhpWorker {
-                    php_track: owner_track,
+                    php_runtime_key: owner_track,
                 };
                 owner.identity()?;
 
@@ -2083,7 +2091,9 @@ impl PortOwner {
         match self {
             Self::Dns => "dns".to_string(),
             Self::Gateway(gateway_port) => format!("gateway {}", gateway_port.as_str()),
-            Self::PhpWorker { php_track } => format!("php worker {php_track:?}"),
+            Self::PhpWorker { php_runtime_key } => {
+                format!("php worker {php_runtime_key:?}")
+            }
             Self::Resource { name, track, port } => {
                 format!("resource {name:?} track {track:?} port {port:?}")
             }
@@ -2270,13 +2280,27 @@ impl ProjectEnvObservedWarningRow {
 }
 
 impl RuntimeSubject {
+    fn subject_kind(&self) -> &'static str {
+        match self {
+            Self::PhpRuntimeWorker { .. } => PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND,
+            Self::Gateway | Self::PhpWorker { .. } | Self::Resource { .. } => {
+                RUNTIME_OBSERVED_SUBJECT_KIND
+            }
+        }
+    }
+
     fn subject_id(&self) -> Result<String, StateError> {
         match self {
             Self::Gateway => Ok("gateway".to_string()),
             Self::PhpWorker { php_track } => {
-                validate_php_runtime_key(php_track)?;
+                validate_runtime_php_track(php_track)?;
 
                 Ok(format!("php_worker:{php_track}"))
+            }
+            Self::PhpRuntimeWorker { php_runtime_key } => {
+                validate_php_runtime_key(php_runtime_key)?;
+
+                Ok(php_runtime_key.clone())
             }
             Self::Resource { name, track } => {
                 validate_managed_resource_identity("name", name)?;
@@ -2287,13 +2311,30 @@ impl RuntimeSubject {
         }
     }
 
-    fn from_subject_id(subject_id: String) -> Result<Self, StateError> {
+    fn from_database(subject_kind: String, subject_id: String) -> Result<Self, StateError> {
+        match subject_kind.as_str() {
+            RUNTIME_OBSERVED_SUBJECT_KIND => Self::from_runtime_subject_id(subject_id),
+            PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND => {
+                validate_php_runtime_key(&subject_id)?;
+
+                Ok(Self::PhpRuntimeWorker {
+                    php_runtime_key: subject_id,
+                })
+            }
+            _ => Err(StateError::InvalidRuntimeSubject {
+                kind: "subject_kind",
+                value: subject_kind,
+            }),
+        }
+    }
+
+    fn from_runtime_subject_id(subject_id: String) -> Result<Self, StateError> {
         if subject_id == "gateway" {
             return Ok(Self::Gateway);
         }
 
         if let Some(php_track) = subject_id.strip_prefix("php_worker:") {
-            validate_php_runtime_key(php_track)?;
+            validate_runtime_php_track(php_track)?;
 
             return Ok(Self::PhpWorker {
                 php_track: php_track.to_string(),
@@ -2345,7 +2386,7 @@ impl RuntimeObservedStatus {
 impl RuntimeObservedStateRow {
     fn into_record(self) -> Result<RuntimeObservedStateRecord, StateError> {
         Ok(RuntimeObservedStateRecord {
-            subject: RuntimeSubject::from_subject_id(self.subject_id)?,
+            subject: RuntimeSubject::from_database(self.subject_kind, self.subject_id)?,
             status: RuntimeObservedStatus::from_database(self.status)?,
             message: self.message,
             observed_at: self.observed_at,
@@ -2884,6 +2925,10 @@ fn validate_project_php_track(track: &str) -> Result<(), StateError> {
     validate_concrete_track(track).map_err(|_error| StateError::InvalidProjectTrack {
         track: track.to_string(),
     })
+}
+
+fn validate_runtime_php_track(php_track: &str) -> Result<(), StateError> {
+    validate_concrete_track(php_track).map_err(|_error| invalid_php_runtime(php_track))
 }
 
 fn validate_php_runtime_key(php_runtime: &str) -> Result<(), StateError> {
@@ -3600,10 +3645,11 @@ fn runtime_observed_state_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<RuntimeObservedStateRow> {
     Ok(RuntimeObservedStateRow {
-        subject_id: row.get(0)?,
-        status: row.get(1)?,
-        message: row.get(2)?,
-        observed_at: row.get(3)?,
+        subject_kind: row.get(0)?,
+        subject_id: row.get(1)?,
+        status: row.get(2)?,
+        message: row.get(3)?,
+        observed_at: row.get(4)?,
     })
 }
 

@@ -1711,6 +1711,13 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
         Some("readiness timed out"),
     )?;
     database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpRuntimeWorker {
+            php_runtime_key: "8.4+redis".to_string(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("extension worker is ready"),
+    )?;
+    database.record_runtime_observed_snapshot(
         RuntimeSubject::Resource {
             name: "mailpit".to_string(),
             track: "1.0".to_string(),
@@ -1747,6 +1754,20 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
         reserved,
         Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "latest"
     ));
+    let connection = Connection::open(paths.db())?;
+    let extension_worker_kind_count = connection.query_row(
+        "SELECT COUNT(*) FROM observed_states WHERE subject_kind = 'php_runtime_worker' AND subject_id = '8.4+redis'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let rollback_unsafe_worker_count = connection.query_row(
+        "SELECT COUNT(*) FROM observed_states WHERE subject_kind = 'runtime' AND subject_id = 'php_worker:8.4+redis'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    assert_eq!(extension_worker_kind_count, 1);
+    assert_eq!(rollback_unsafe_worker_count, 0);
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!(database.runtime_observed_states()?);
@@ -2324,7 +2345,11 @@ fn linked_project_scalar_php_update_clears_runtime_extensions() -> Result<()> {
 
 #[test]
 fn php_runtime_key_sorts_loaded_extensions() -> Result<()> {
-    let loaded_extensions = vec!["xdebug".to_string(), "redis".to_string()];
+    let loaded_extensions = vec![
+        "xdebug".to_string(),
+        "redis".to_string(),
+        "redis".to_string(),
+    ];
 
     assert_eq!(
         state::php_runtime_key("8.4", &loaded_extensions)?,
@@ -2836,7 +2861,7 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     assert_eq!(
         assigned_php84.owner,
         PortOwner::PhpWorker {
-            php_track: "8.4".to_string()
+            php_runtime_key: "8.4".to_string()
         }
     );
     assert_eq!(assigned_php84.port, 45000);
@@ -2844,7 +2869,7 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     assert_eq!(
         assigned_php83.owner,
         PortOwner::PhpWorker {
-            php_track: "8.3".to_string()
+            php_runtime_key: "8.3".to_string()
         }
     );
     assert_eq!(assigned_php83.port, 45001);
@@ -2889,7 +2914,7 @@ fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
     assert_eq!(
         redis.owner,
         PortOwner::PhpWorker {
-            php_track: "8.4+redis".to_string()
+            php_runtime_key: "8.4+redis".to_string()
         }
     );
 

@@ -44,14 +44,35 @@ pub fn read_php_extension_metadata(artifact_root: &Utf8Path) -> Result<Vec<PhpEx
     }
 
     let source = fs::read_to_string(&path).map_err(resources_error_from_state)?;
-    let raw = serde_json::from_str::<Vec<RawPhpExtensionModule>>(&source).map_err(|error| {
-        ResourcesError::InvalidArtifactLayout {
-            resource: "php".to_string(),
-            reason: format!("invalid PHP extension metadata: {error}"),
-        }
-    })?;
+    let raw_modules =
+        serde_json::from_str::<Vec<RawPhpExtensionModule>>(&source).map_err(|error| {
+            ResourcesError::InvalidArtifactLayout {
+                resource: "php".to_string(),
+                reason: format!("invalid PHP extension metadata: {error}"),
+            }
+        })?;
 
-    raw.into_iter().map(PhpExtensionModule::from_raw).collect()
+    let mut modules = Vec::new();
+    let mut names = BTreeSet::new();
+    for raw in raw_modules {
+        let module = PhpExtensionModule::from_raw(raw)?;
+        if !names.insert(module.name.clone()) {
+            return Err(ResourcesError::InvalidArtifactLayout {
+                resource: "php".to_string(),
+                reason: format!("duplicate PHP extension `{}`", module.name),
+            });
+        }
+        let module_path = artifact_root.join(&module.relative_path);
+        if !fs::path_is_file(&module_path).map_err(resources_error_from_state)? {
+            return Err(ResourcesError::InvalidArtifactLayout {
+                resource: "php".to_string(),
+                reason: format!("PHP extension module `{module_path}` is missing"),
+            });
+        }
+        modules.push(module);
+    }
+
+    Ok(modules)
 }
 
 pub fn resolve_php_extension_request(
@@ -227,10 +248,13 @@ fn validate_extension_name(name: &str) -> Result<()> {
 
 fn validate_relative_path(path: String) -> Result<Utf8PathBuf> {
     let path = Utf8PathBuf::from(path);
-    if path.is_absolute()
+    if path.as_str().is_empty()
+        || path.as_str().contains('\\')
+        || path.as_str().split('/').any(str::is_empty)
+        || path.is_absolute()
         || path
             .components()
-            .any(|component| component.as_str() == "..")
+            .any(|component| matches!(component.as_str(), "." | ".."))
     {
         return Err(ResourcesError::InvalidArtifactLayout {
             resource: "php".to_string(),

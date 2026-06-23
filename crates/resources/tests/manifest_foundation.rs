@@ -30,6 +30,16 @@ struct InvalidUrlSnapshot {
     error: ResourcesError,
 }
 
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct InvalidManifestSnapshot {
+    name: &'static str,
+    error: ResourcesError,
+}
+
 #[test]
 fn registry_lists_all_pv_managed_artifact_resources() -> Result<()> {
     let descriptors = registry::all()
@@ -512,6 +522,39 @@ fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
     .collect::<Result<Vec<_>>>()?;
 
     assert_debug_snapshot!(invalid_urls);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_invalid_php_extension_metadata() -> Result<()> {
+    let invalid_extensions = [
+        (
+            "empty_path",
+            manifest_with_php_extension_metadata()
+                .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\"\""),
+        ),
+        (
+            "current_dir",
+            manifest_with_php_extension_metadata()
+                .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\".\""),
+        ),
+        (
+            "duplicate_name",
+            manifest_with_php_extension_metadata()
+                .replace("\"name\":\"xdebug\"", "\"name\":\"redis\""),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, json)| {
+        Ok(InvalidManifestSnapshot {
+            name,
+            error: parse_manifest_error(&json)?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(invalid_extensions);
 
     Ok(())
 }

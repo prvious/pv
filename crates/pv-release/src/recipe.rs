@@ -609,8 +609,16 @@ impl PhpSettings {
     fn from_raw(path: &Utf8Path, raw: RawPhpSettings) -> crate::Result<Self> {
         validate_deployment_target(path, &raw.deployment_target)?;
         validate_expected_extensions(path, &raw.expected_extensions)?;
+        validate_extension_list(path, "php.default_extensions", &raw.default_extensions)?;
         validate_build_extensions(path, &raw.default_extensions, &raw.expected_extensions)?;
         validate_extension_list(path, "php.optional_extensions", &raw.optional_extensions)?;
+        validate_extension_lists_do_not_overlap(
+            path,
+            "php.default_extensions",
+            &raw.default_extensions,
+            "php.optional_extensions",
+            &raw.optional_extensions,
+        )?;
 
         Ok(Self {
             deployment_target: raw.deployment_target,
@@ -1525,6 +1533,26 @@ fn validate_extension_list(
             return Err(invalid(
                 path,
                 format!("{field} contains duplicate extension `{extension}`"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_extension_lists_do_not_overlap(
+    path: &Utf8Path,
+    left_field: &str,
+    left: &[String],
+    right_field: &str,
+    right: &[String],
+) -> crate::Result<()> {
+    let left = left.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    for extension in right {
+        if left.contains(extension.as_str()) {
+            return Err(invalid(
+                path,
+                format!("{left_field} and {right_field} both contain extension `{extension}`"),
             ));
         }
     }
