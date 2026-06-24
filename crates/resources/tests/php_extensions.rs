@@ -152,6 +152,51 @@ fn writes_runtime_overlay_for_loaded_php_extensions() -> Result<()> {
 }
 
 #[test]
+fn runtime_overlay_prunes_stale_extension_ini_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let artifact = tempdir.path().join("php");
+    fs::write_sensitive_file(
+        &artifact.join("share/pv/php-extensions.json"),
+        r#"
+[
+  {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"},
+  {"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}
+]
+"#,
+    )?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/xdebug.so"), "")?;
+    let initial = resolve_php_extension_request(&artifact, &["redis".into(), "xdebug".into()])?;
+    let runtime_key = "8.4+redis+xdebug";
+    let overlay = ensure_php_runtime_overlay(&paths, runtime_key, &artifact, &initial.loaded)?;
+
+    assert!(overlay.join("10-redis.ini").is_file());
+    assert!(overlay.join("20-xdebug.ini").is_file());
+
+    fs::write_sensitive_file(
+        &artifact.join("share/pv/php-extensions.json"),
+        r#"
+[
+  {"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"},
+  {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}
+]
+"#,
+    )?;
+    let reordered = resolve_php_extension_request(&artifact, &["redis".into(), "xdebug".into()])?;
+    let overlay = ensure_php_runtime_overlay(&paths, runtime_key, &artifact, &reordered.loaded)?;
+    let mut file_names = fs::read_dir_paths(&overlay)?
+        .into_iter()
+        .filter_map(|path| path.file_name().map(str::to_owned))
+        .collect::<Vec<_>>();
+    file_names.sort();
+
+    assert_eq!(file_names, ["10-xdebug.ini", "20-redis.ini"]);
+
+    Ok(())
+}
+
+#[test]
 fn php_extension_metadata_rejects_invalid_paths_duplicates_and_missing_modules() -> Result<()> {
     let tempdir = tempdir()?;
     let cases = [

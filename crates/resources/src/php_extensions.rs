@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
@@ -147,6 +148,11 @@ pub fn ensure_php_runtime_overlay(
         .join("php-runtimes")
         .join(runtime_key)
         .join("conf.d");
+    match fs::delete_dir_all(&conf_dir) {
+        Ok(()) => {}
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(resources_error_from_state(error)),
+    }
     fs::ensure_user_dir(&conf_dir).map_err(resources_error_from_state)?;
 
     for (index, module) in modules.iter().enumerate() {
