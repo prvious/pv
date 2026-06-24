@@ -282,6 +282,83 @@ fn php_shim_resolves_project_config_extensions_when_persisted_runtime_is_empty()
 }
 
 #[test]
+fn php_shim_uses_base_runtime_when_project_config_removes_extensions() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "php:\n  version: 8.4\n")?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    fs::write_sensitive_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&state::ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: vec!["redis".to_string()],
+                loaded_extensions: vec!["redis".to_string()],
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-m"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(exec_calls[0].env, php_exec_env(&home, "8.4")?);
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_reuses_persisted_empty_extension_runtime() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  version: 8.4\n  extensions: [redis]\n",
+    )?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    fs::write_sensitive_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&state::ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: vec!["redis".to_string()],
+                loaded_extensions: Vec::new(),
+                ignored_extensions: vec!["redis".to_string()],
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-m"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(exec_calls[0].env, php_exec_env(&home, "8.4")?);
+
+    Ok(())
+}
+
+#[test]
 fn php_shim_fails_when_persisted_loaded_extension_metadata_is_missing() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

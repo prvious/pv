@@ -301,10 +301,14 @@ fn resolve_php_runtime_for_shim(
                 .as_ref()
                 .map(|php| php.requested_extensions().to_vec())
                 .unwrap_or_default();
-            if requested_extensions.is_empty()
-                || (project.php_runtime.requested_extensions == requested_extensions
-                    && !project.php_runtime.loaded_extensions.is_empty())
-            {
+            if requested_extensions.is_empty() {
+                return Ok(PhpShimRuntime {
+                    runtime_key: track.clone(),
+                    track,
+                    loaded_extensions: Vec::new(),
+                });
+            }
+            if project.php_runtime.requested_extensions == requested_extensions {
                 let runtime_key =
                     state::php_runtime_key(&track, &project.php_runtime.loaded_extensions)?;
 
