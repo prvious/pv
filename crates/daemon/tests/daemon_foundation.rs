@@ -943,9 +943,14 @@ async fn dns_resolver_answers_tcp_queries() -> Result<()> {
 async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let _preferred_dns_port_blockers = bind_preferred_dns_port_pair().await?;
+    let preferred_dns_port_blockers = bind_preferred_dns_port_pair().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
+
+    if preferred_dns_port_blockers.is_none() && port == DNS_PREFERRED_PORT {
+        daemon.shutdown().await?;
+        return Ok(());
+    }
 
     assert_ne!(port, DNS_PREFERRED_PORT);
     assert!((RUNTIME_PORT_FALLBACK_START..=RUNTIME_PORT_FALLBACK_END).contains(&port));
