@@ -2065,7 +2065,7 @@ impl PortOwner {
             }
             "php_worker" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
-                reason: "php worker ports must use owner id `php`, include a php track, and use an empty owner port",
+                reason: "php worker ports must use owner id `php`, include a php runtime key, and use an empty owner port",
             }),
             "resource"
                 if !owner_id.is_empty() && !owner_track.is_empty() && !owner_port.is_empty() =>
