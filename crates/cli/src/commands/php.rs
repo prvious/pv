@@ -295,20 +295,32 @@ fn resolve_php_runtime_for_shim(
     if let Some(project) = database.nearest_project_for_path(&current_dir)? {
         let config_file = config::ProjectConfigFile::read_from_root(&project.path)?;
         if let Some(track) = project.php_runtime.track.clone() {
-            let requested_extensions = config_file
-                .config
-                .php
-                .as_ref()
+            let php = config_file.config.php.as_ref();
+            let requested_extensions = php
                 .map(|php| php.requested_extensions().to_vec())
                 .unwrap_or_default();
+            let config_track = if let Some(php) = php
+                && let Some(selector) = php.version_selector()
+                && selector != "latest"
+                && selector != track
+            {
+                Some(resolve_project_config_php_track_for_shim(
+                    paths, database, php,
+                )?)
+            } else {
+                None
+            };
+            let current_track = config_track.as_deref().unwrap_or(&track);
             if requested_extensions.is_empty() {
                 return Ok(PhpShimRuntime {
-                    runtime_key: track.clone(),
-                    track,
+                    runtime_key: current_track.to_string(),
+                    track: current_track.to_string(),
                     loaded_extensions: Vec::new(),
                 });
             }
-            if project.php_runtime.requested_extensions == requested_extensions {
+            if config_track.is_none()
+                && project.php_runtime.requested_extensions == requested_extensions
+            {
                 let runtime_key =
                     state::php_runtime_key(&track, &project.php_runtime.loaded_extensions)?;
 
@@ -318,7 +330,12 @@ fn resolve_php_runtime_for_shim(
                     loaded_extensions: project.php_runtime.loaded_extensions,
                 });
             }
-            if let Some(php) = config_file.config.php.as_ref() {
+            if let Some(php) = php {
+                let track = match config_track {
+                    Some(track) => track,
+                    None => resolve_project_config_php_track_for_shim(paths, database, php)?,
+                };
+
                 return resolve_project_config_php_runtime_for_shim(database, &track, php);
             }
         } else if let Some(php) = config_file.config.php.as_ref() {
