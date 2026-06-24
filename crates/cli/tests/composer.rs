@@ -492,7 +492,10 @@ fn composer_shim_inherits_project_php_extension_runtime_overlay() -> anyhow::Res
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "php:\n  version: 8.4\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  version: 8.4\n  extensions: [redis]\n",
+    )?;
     let project_record = register_project(&home, &project, "acme.test")?;
     let php_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
     let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
