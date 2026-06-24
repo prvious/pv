@@ -30,6 +30,7 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
     "posix",
     "session",
     "simplexml",
+    "sockets",
     "sodium",
     "sqlite3",
     "tokenizer",
