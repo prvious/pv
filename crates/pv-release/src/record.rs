@@ -1,7 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use resources::{
-    ArtifactPlatform, ArtifactVersion, PublishedAt, PvVersion, ResourceName, ResourcesError,
-    Sha256Digest, TrackName,
+    ArtifactPlatform, ArtifactVersion, PHP_EXTENSION_METADATA_PATH, PublishedAt, PvVersion,
+    ResourceName, ResourcesError, Sha256Digest, TrackName,
 };
 use serde::Deserialize;
 use std::collections::btree_map::Entry;
@@ -324,6 +324,46 @@ impl ReleaseRecord {
                 });
             }
         }
+        self.verify_archive_php_extension_metadata(validation)?;
+
+        Ok(())
+    }
+
+    fn verify_archive_php_extension_metadata(
+        &self,
+        validation: &crate::archive::ArchiveValidation,
+    ) -> crate::Result<()> {
+        if self.php_extensions.is_empty() {
+            return Ok(());
+        }
+
+        let metadata_path = format!("{}/{}", validation.root(), PHP_EXTENSION_METADATA_PATH);
+        if !validation.has_regular_file(&metadata_path) {
+            return Err(crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "missing PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}` for advertised PHP extensions"
+                ),
+            });
+        }
+
+        let metadata = validation.read_regular_file_to_string(&metadata_path)?;
+        let archive_extensions = serde_json::from_str::<Vec<PhpExtensionRecord>>(&metadata)
+            .map_err(|error| crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "invalid PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}`: {error}"
+                ),
+            })?;
+        if php_extension_catalog(&archive_extensions) != php_extension_catalog(&self.php_extensions)
+        {
+            return Err(crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}` does not match release record php_extensions"
+                ),
+            });
+        }
 
         Ok(())
     }
@@ -630,6 +670,21 @@ fn validate_php_extensions(
     }
 
     Ok(())
+}
+
+fn php_extension_catalog(extensions: &[PhpExtensionRecord]) -> Vec<(String, String, String)> {
+    let mut catalog = extensions
+        .iter()
+        .map(|extension| {
+            (
+                extension.name.clone(),
+                extension.load_kind.clone(),
+                extension.path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    catalog.sort();
+    catalog
 }
 
 fn validate_php_extension_name(path: &Utf8Path, name: &str) -> crate::Result<()> {

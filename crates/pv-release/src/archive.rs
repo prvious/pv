@@ -47,6 +47,42 @@ impl ArchiveValidation {
     pub fn has_regular_file(&self, path: &str) -> bool {
         self.regular_file_entries.contains(path)
     }
+
+    pub fn read_regular_file_to_string(&self, path: &str) -> crate::Result<String> {
+        if !self.has_regular_file(path) {
+            return Err(invalid_archive(
+                &self.archive_path,
+                format!("missing regular file `{path}`"),
+            ));
+        }
+
+        let file = open_file(&self.archive_path)?;
+        let decoder = GzDecoder::new(file);
+        let mut archive = Archive::new(decoder);
+
+        for entry in archive
+            .entries()
+            .map_err(|error| invalid_archive(&self.archive_path, error))?
+        {
+            let mut entry = entry.map_err(|error| invalid_archive(&self.archive_path, error))?;
+            let entry_path = archive_entry_path(&self.archive_path, &entry)?;
+            archive_path_components(&self.archive_path, &entry_path)?;
+            if entry_path.trim_end_matches('/') != path {
+                continue;
+            }
+
+            let mut contents = String::new();
+            entry
+                .read_to_string(&mut contents)
+                .map_err(|error| invalid_archive(&self.archive_path, error))?;
+            return Ok(contents);
+        }
+
+        Err(invalid_archive(
+            &self.archive_path,
+            format!("missing regular file `{path}`"),
+        ))
+    }
 }
 
 impl ExtractedArchive {

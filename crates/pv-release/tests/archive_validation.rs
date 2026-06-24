@@ -209,6 +209,88 @@ fn archive_validation_rejects_advertised_php_extension_modules_that_are_not_file
 }
 
 #[test]
+fn archive_validation_rejects_php_extension_records_without_matching_artifact_metadata()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let missing_metadata = tempdir.path().join("missing-extension-metadata.tar.gz");
+    write_archive(
+        &missing_metadata,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+            (
+                "php-8.4.20-pv1/lib/php/extensions/redis.so",
+                b"redis" as &[u8],
+            ),
+        ],
+    )?;
+    let (missing_sha256, missing_size) = archive_digest_and_size(&missing_metadata)?;
+    let missing_record = tempdir.path().join("missing-extension-metadata.json");
+    write_record(
+        &missing_record,
+        &release_record_json_with_php_extensions(&missing_sha256, missing_size),
+    )?;
+    let mismatched_metadata = tempdir.path().join("mismatched-extension-metadata.tar.gz");
+    write_archive(
+        &mismatched_metadata,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+            (
+                "php-8.4.20-pv1/lib/php/extensions/redis.so",
+                b"redis" as &[u8],
+            ),
+            (
+                "php-8.4.20-pv1/share/pv/php-extensions.json",
+                br#"[{"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}]"#
+                    as &[u8],
+            ),
+        ],
+    )?;
+    let (mismatched_sha256, mismatched_size) = archive_digest_and_size(&mismatched_metadata)?;
+    let mismatched_record = tempdir.path().join("mismatched-extension-metadata.json");
+    write_record(
+        &mismatched_record,
+        &release_record_json_with_php_extensions(&mismatched_sha256, mismatched_size),
+    )?;
+
+    assert_debug_snapshot!(
+        (
+            unit_validation_outcome(
+                validate_archive_for_record_file(&missing_metadata, &missing_record),
+                tempdir.path(),
+            ),
+            unit_validation_outcome(
+                validate_archive_for_record_file(&mismatched_metadata, &mismatched_record),
+                tempdir.path(),
+            ),
+        ),
+        @r###"
+    (
+        Err(
+            (
+                "InvalidArchive",
+                "missing-extension-metadata.tar.gz",
+                "missing PHP extension metadata `share/pv/php-extensions.json` for advertised PHP extensions",
+            ),
+        ),
+        Err(
+            (
+                "InvalidArchive",
+                "mismatched-extension-metadata.tar.gz",
+                "PHP extension metadata `share/pv/php-extensions.json` does not match release record php_extensions",
+            ),
+        ),
+    )
+    "###
+    );
+
+    Ok(())
+}
+
+#[test]
 fn archive_validation_runs_smoke_hook_against_extracted_archive_root() -> Result<()> {
     let tempdir = tempdir()?;
     let archive = tempdir.path().join("redis.tar.gz");
