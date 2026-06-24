@@ -1650,7 +1650,7 @@ mod tests {
         root_name: &str,
     ) -> anyhow::Result<()> {
         run_fixture_command(
-            "/usr/bin/tar",
+            "tar",
             &[
                 "-czf",
                 archive_path.as_str(),
@@ -1664,9 +1664,10 @@ mod tests {
     }
 
     fn sha256_file(path: &Utf8Path) -> anyhow::Result<String> {
-        let output = run_fixture_command("/usr/bin/shasum", &["-a", "256", path.as_str()])?;
+        let output = run_fixture_command("shasum", &["-a", "256", path.as_str()])
+            .or_else(|_error| run_fixture_command("sha256sum", &[path.as_str()]))?;
         let text = String::from_utf8(output)?;
-        let Some((sha256, _path)) = text.split_once(' ') else {
+        let Some(sha256) = text.split_whitespace().next() else {
             anyhow::bail!("shasum output did not include a sha256 digest");
         };
 
