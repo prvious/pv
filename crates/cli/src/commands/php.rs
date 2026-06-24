@@ -293,7 +293,16 @@ fn resolve_php_runtime_for_shim(
 ) -> Result<PhpShimRuntime, ExecuteError> {
     let current_dir = current_dir(environment)?;
     if let Some(project) = database.nearest_project_for_path(&current_dir)? {
-        let config_file = config::ProjectConfigFile::read_from_root(&project.path)?;
+        let config_file = match config::ProjectConfigFile::read_from_root(&project.path) {
+            Ok(config_file) => config_file,
+            Err(error) => {
+                if let Some(runtime) = persisted_project_php_runtime_for_shim(&project)? {
+                    return Ok(runtime);
+                }
+
+                return Err(error.into());
+            }
+        };
         if let Some(track) = project.php_runtime.track.clone() {
             let php = config_file.config.php.as_ref();
             let requested_extensions = php
@@ -373,6 +382,22 @@ fn resolve_php_runtime_for_shim(
         track,
         loaded_extensions: Vec::new(),
     })
+}
+
+fn persisted_project_php_runtime_for_shim(
+    project: &ProjectRecord,
+) -> Result<Option<PhpShimRuntime>, ExecuteError> {
+    let Some(track) = project.php_runtime.track.clone() else {
+        return Ok(None);
+    };
+    let loaded_extensions = project.php_runtime.loaded_extensions.clone();
+    let runtime_key = state::php_runtime_key(&track, &loaded_extensions)?;
+
+    Ok(Some(PhpShimRuntime {
+        track,
+        runtime_key,
+        loaded_extensions,
+    }))
 }
 
 fn resolve_project_config_php_track_for_shim(
