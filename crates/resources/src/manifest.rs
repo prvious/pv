@@ -462,6 +462,12 @@ impl ManifestArtifact {
             .map(php_extension_from_raw)
             .collect::<Result<Vec<_>>>()?;
         validate_manifest_php_extension_duplicates(&php_extensions)?;
+        if !php_extensions.is_empty() && !resource_supports_php_extensions(resource_name) {
+            return Err(ResourcesError::InvalidManifest {
+                reason: "php_extensions are only supported on php or frankenphp artifacts"
+                    .to_string(),
+            });
+        }
 
         Ok(Self {
             resource_name: resource_name.clone(),
@@ -530,6 +536,10 @@ impl ManifestArtifact {
     fn matches(&self, target: TargetPlatform) -> bool {
         self.platform.matches(target)
     }
+}
+
+fn resource_supports_php_extensions(resource: &ResourceName) -> bool {
+    matches!(resource.as_str(), "php" | "frankenphp")
 }
 
 fn validate_artifact_url(url: String) -> Result<String> {

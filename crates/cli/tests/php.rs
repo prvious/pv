@@ -458,6 +458,73 @@ fn php_shim_resolves_config_track_when_recomputing_extensions() -> anyhow::Resul
 }
 
 #[test]
+fn php_shim_recomputes_latest_extensions_against_persisted_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  version: latest\n  extensions: [redis]\n",
+    )?;
+    let project_record = register_project(&home, &project, "acme.test")?;
+    let old_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    fs::write_sensitive_file(
+        &old_release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    fs::write_sensitive_file(&old_release.join("lib/php/extensions/redis.so"), "")?;
+    let new_release = record_installed_php(&home, "8.5", "8.5.0-pv1")?;
+    fs::write_sensitive_file(
+        &new_release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    fs::write_sensitive_file(&new_release.join("lib/php/extensions/redis.so"), "")?;
+    let old_artifact =
+        runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", TargetPlatform::DarwinArm64);
+    let new_artifact =
+        runtime_fixture_artifact("php", "8.5.0-pv1", "bin/php", TargetPlatform::DarwinArm64);
+    cache_manifest(
+        &home,
+        &manifest_with_resources(&[manifest_resource(
+            "php",
+            "8.5",
+            vec![
+                manifest_track("8.4", vec![&old_artifact]),
+                manifest_track("8.5", vec![&new_artifact]),
+            ],
+        )]),
+    )?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&state::ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: Vec::new(),
+                loaded_extensions: Vec::new(),
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-m"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        exec_calls[0].program,
+        old_release.join("bin/php").as_std_path().to_path_buf(),
+    );
+    assert!(exec_calls[0].env.iter().any(|(key, value)| {
+        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
+    }));
+
+    Ok(())
+}
+
+#[test]
 fn php_shim_resolves_global_default_track_for_extension_only_config() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

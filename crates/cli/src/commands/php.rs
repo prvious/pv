@@ -329,11 +329,11 @@ fn resolve_php_runtime_for_shim(
             } else {
                 None
             };
-            let current_track = config_track.as_deref().unwrap_or(&track);
+            let current_track = config_track.as_deref().unwrap_or(&track).to_string();
             if requested_extensions.is_empty() {
                 return Ok(PhpShimRuntime {
-                    runtime_key: current_track.to_string(),
-                    track: current_track.to_string(),
+                    runtime_key: current_track.clone(),
+                    track: current_track,
                     loaded_extensions: Vec::new(),
                 });
             }
@@ -350,12 +350,7 @@ fn resolve_php_runtime_for_shim(
                 });
             }
             if let Some(php) = php {
-                let track = match config_track {
-                    Some(track) => track,
-                    None => resolve_project_config_php_track_for_shim(paths, database, php)?,
-                };
-
-                return resolve_project_config_php_runtime_for_shim(database, &track, php);
+                return resolve_project_config_php_runtime_for_shim(database, &current_track, php);
             }
         } else if let Some(php) = config_file.config.php.as_ref() {
             let track = resolve_project_config_php_track_for_shim(paths, database, php)?;

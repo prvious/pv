@@ -79,26 +79,27 @@ pub fn resolve_php_extension_request(
     artifact_root: &Utf8Path,
     requested: &[String],
 ) -> Result<PhpExtensionResolution> {
-    let catalog = php_extension_catalog(artifact_root)?;
+    let catalog = read_php_extension_metadata(artifact_root)?;
     let requested = requested.to_vec();
     let mut requested_unique = BTreeSet::new();
-    let mut loaded = BTreeSet::new();
     let mut ignored = Vec::new();
 
     for name in &requested {
         if !requested_unique.insert(name.clone()) {
             continue;
         }
-        if let Some(module) = catalog.get(name) {
-            loaded.insert(module.clone());
-        } else {
+        if !catalog.iter().any(|module| module.name == *name) {
             ignored.push(name.clone());
         }
     }
+    let loaded = catalog
+        .into_iter()
+        .filter(|module| requested_unique.contains(&module.name))
+        .collect();
 
     Ok(PhpExtensionResolution {
         requested,
-        loaded: loaded.into_iter().collect(),
+        loaded,
         ignored,
     })
 }
@@ -111,26 +112,28 @@ pub fn resolve_persisted_php_extension_modules(
         return Ok(Vec::new());
     }
 
-    let catalog = php_extension_catalog(artifact_root)?;
-    let mut loaded = BTreeSet::new();
+    let catalog = read_php_extension_metadata(artifact_root)?;
     let mut loaded_unique = BTreeSet::new();
 
     for name in loaded_extensions {
         if !loaded_unique.insert(name.clone()) {
             continue;
         }
-        let Some(module) = catalog.get(name) else {
+        if !catalog.iter().any(|module| module.name == *name) {
             return Err(ResourcesError::InvalidArtifactLayout {
                 resource: "php".to_string(),
                 reason: format!(
                     "persisted PHP extension `{name}` is missing from installed artifact metadata"
                 ),
             });
-        };
-        loaded.insert(module.clone());
+        }
     }
+    let loaded = catalog
+        .into_iter()
+        .filter(|module| loaded_unique.contains(&module.name))
+        .collect();
 
-    Ok(loaded.into_iter().collect())
+    Ok(loaded)
 }
 
 pub fn ensure_php_runtime_overlay(
@@ -200,15 +203,6 @@ pub fn php_runtime_exec_environment(
             .map(|(key, value)| (OsString::from(key), OsString::from(value)))
             .collect(),
     )
-}
-
-fn php_extension_catalog(artifact_root: &Utf8Path) -> Result<BTreeMap<String, PhpExtensionModule>> {
-    let mut catalog = BTreeMap::new();
-    for module in read_php_extension_metadata(artifact_root)? {
-        catalog.insert(module.name.clone(), module);
-    }
-
-    Ok(catalog)
 }
 
 impl PhpExtensionModule {

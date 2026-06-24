@@ -23,6 +23,7 @@ use crate::managed_resources::ManagedResourceRuntimeCatalog;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
+    requested_php_extensions: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +50,10 @@ pub(crate) struct ResolvedPhpRuntime {
 impl ProjectEnvReconciliationSummary {
     pub(crate) fn as_str(&self) -> &'static str {
         self.message
+    }
+
+    pub(crate) fn requested_php_extensions(&self) -> bool {
+        self.requested_php_extensions
     }
 }
 
@@ -167,6 +172,11 @@ async fn reconcile_loaded_project(
         .as_ref()
         .map(ignored_php_extension_warnings)
         .unwrap_or_default();
+    let requested_php_extensions = config_file
+        .config
+        .php
+        .as_ref()
+        .is_some_and(|php| !php.requested_extensions().is_empty());
     if !has_env_mappings {
         let status = if runtime_warnings.is_empty() {
             ProjectEnvObservedStatus::Rendered
@@ -188,10 +198,12 @@ async fn reconcile_loaded_project(
         let summary = if runtime_warnings.is_empty() {
             ProjectEnvReconciliationSummary {
                 message: "Project env unchanged; no mappings configured",
+                requested_php_extensions,
             }
         } else {
             ProjectEnvReconciliationSummary {
                 message: "Project env unchanged with warnings",
+                requested_php_extensions,
             }
         };
 
@@ -219,10 +231,12 @@ async fn reconcile_loaded_project(
     let summary = if warnings.is_empty() {
         ProjectEnvReconciliationSummary {
             message: "Project env rendered",
+            requested_php_extensions,
         }
     } else {
         ProjectEnvReconciliationSummary {
             message: "Project env rendered with warnings",
+            requested_php_extensions,
         }
     };
 

@@ -183,12 +183,13 @@ impl ReleaseRecord {
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
         validate_relative_path(path, "object_key", &raw.object_key)?;
         validate_object_key_layout(path, &raw)?;
-        validate_php_extensions(path, &raw.php_extensions)?;
+        let resource = ResourceName::new(raw.resource.clone())
+            .map_err(|error| invalid_release_identity(path, "resource", error))?;
+        validate_php_extensions(path, &resource, &raw.php_extensions)?;
         raw.provenance.validate(path)?;
 
         let identity = ArtifactIdentity {
-            resource: ResourceName::new(raw.resource)
-                .map_err(|error| invalid_release_identity(path, "resource", error))?,
+            resource,
             track: TrackName::new(raw.track)
                 .map_err(|error| invalid_release_identity(path, "track", error))?,
             upstream_version: require_non_empty_release(
@@ -651,8 +652,16 @@ fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::R
 
 fn validate_php_extensions(
     path: &Utf8Path,
+    resource: &ResourceName,
     extensions: &[PhpExtensionRecord],
 ) -> crate::Result<()> {
+    if !extensions.is_empty() && !resource_supports_php_extensions(resource) {
+        return Err(invalid_release(
+            path,
+            "php_extensions are only supported on php or frankenphp artifacts",
+        ));
+    }
+
     let mut names = BTreeSet::new();
     for extension in extensions {
         validate_php_extension_name(path, &extension.name)?;
@@ -670,6 +679,10 @@ fn validate_php_extensions(
     }
 
     Ok(())
+}
+
+fn resource_supports_php_extensions(resource: &ResourceName) -> bool {
+    matches!(resource.as_str(), "php" | "frankenphp")
 }
 
 fn php_extension_catalog(extensions: &[PhpExtensionRecord]) -> Vec<(String, String, String)> {

@@ -589,9 +589,36 @@ fn release_record_json(sha256: &str, size: u64) -> String {
 }
 
 fn release_record_json_with_php_extensions(sha256: &str, size: u64) -> String {
-    release_record_json(sha256, size).replacen(
+    php_release_record_json(sha256, size).replacen(
         "  \"provenance\": {",
         "  \"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    }\n  ],\n  \"provenance\": {",
         1,
+    )
+}
+
+fn php_release_record_json(sha256: &str, size: u64) -> String {
+    format!(
+        r#"{{
+  "resource": "php",
+  "track": "8.4",
+  "upstream_version": "8.4.20",
+  "pv_build_revision": "pv1",
+  "artifact_version": "8.4.20-pv1",
+  "platform": "darwin-arm64",
+  "object_key": "resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+  "sha256": "{sha256}",
+  "size": {size},
+  "published_at": "2026-06-06T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": ["LICENSE"],
+  "notice_files": ["NOTICE"],
+  "provenance": {{
+    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "recipe": "release/artifacts/recipes/php/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }}
+}}"#,
     )
 }

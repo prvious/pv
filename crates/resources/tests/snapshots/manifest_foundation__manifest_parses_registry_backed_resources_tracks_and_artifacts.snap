@@ -1,6 +1,5 @@
 ---
 source: crates/resources/tests/manifest_foundation.rs
-assertion_line: 125
 expression: manifest
 ---
 ArtifactManifest {
@@ -46,18 +45,7 @@ ArtifactManifest {
                             published_at: PublishedAt(
                                 2026-05-26 14:30:00.0 +00:00:00,
                             ),
-                            php_extensions: [
-                                PhpExtensionModule {
-                                    name: "redis",
-                                    load_kind: Extension,
-                                    relative_path: "lib/php/extensions/redis.so",
-                                },
-                                PhpExtensionModule {
-                                    name: "xdebug",
-                                    load_kind: ZendExtension,
-                                    relative_path: "lib/php/extensions/xdebug.so",
-                                },
-                            ],
+                            php_extensions: [],
                             revocation_state: Active,
                         },
                     ],

@@ -11,7 +11,7 @@ use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runti
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
-use state::{Database, JobStatus, ProjectRecord, PvPaths, StateError};
+use state::{Database, JobStatus, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
@@ -610,7 +610,7 @@ async fn complete_project_reconciliation(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
     let project_env_summary =
-        reconcile_project_env_for_runtime_catalog(paths, id.as_str(), runtime_catalog).await?;
+        reconcile_project_env_and_missing_resources(paths, id.as_str(), runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
@@ -622,6 +622,33 @@ async fn complete_project_reconciliation(
     database.complete_job(job_id, &summary)?;
 
     Ok(summary)
+}
+
+async fn reconcile_project_env_and_missing_resources(
+    paths: &PvPaths,
+    project_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
+    let summary =
+        reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await?;
+    if !summary.requested_php_extensions() || !missing_gateway_runtime_resource(paths)? {
+        return Ok(summary);
+    }
+
+    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await
+}
+
+fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    Ok(database
+        .managed_resource_tracks()?
+        .into_iter()
+        .any(|record| {
+            gateway_runtime_resource(&record.resource_name)
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.current_artifact_path.is_none()
+        }))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -965,9 +992,11 @@ async fn run_started_job(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io;
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
+    use std::process;
     use std::task::{Context, Poll};
 
     use camino::Utf8Path;
@@ -982,9 +1011,10 @@ mod tests {
     use super::{
         complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
         enqueue_reconciliation_job, foreground_reconciliation_result,
-        reconcile_system_projects_and_resources, record_background_reconciliation_error,
-        run_background_reconciliation_job, start_reconciliation_job,
-        stream_started_reconciliation_job, write_coalesced_update_response,
+        reconcile_project_env_and_missing_resources, reconcile_system_projects_and_resources,
+        record_background_reconciliation_error, run_background_reconciliation_job,
+        start_reconciliation_job, stream_started_reconciliation_job,
+        write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -1029,6 +1059,50 @@ mod tests {
             .projects()?
             .into_iter()
             .next()
+            .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
+
+        assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
+        assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
+        assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
+        assert!(project.php_runtime.ignored_extensions.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_reconciliation_refreshes_php_extensions_after_missing_php_install()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "php:\n  version: \"8.5\"\n  extensions: [redis]\n",
+        )?;
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let mut database = Database::open(&paths)?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let catalog =
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
+                OFFLINE_TEST_MANIFEST_URL,
+            );
+
+        reconcile_project_env_and_missing_resources(&paths, &linked.project.id, Some(&catalog))
+            .await?;
+
+        let database = Database::open(&paths)?;
+        let project = database
+            .project_by_id(&linked.project.id)?
             .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
 
         assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
@@ -1679,7 +1753,7 @@ mod tests {
         reason = "daemon jobs tests shell out to build archive fixtures without extra dev-dependencies"
     )]
     fn run_fixture_command(program: &str, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-        let output = std::process::Command::new(program)
+        let output = process::Command::new(program)
             .env("COPYFILE_DISABLE", "1")
             .args(args)
             .output()?;
@@ -1699,9 +1773,9 @@ mod tests {
     )]
     fn copy_file(from: &Utf8Path, to: &Utf8Path) -> anyhow::Result<()> {
         if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
         }
-        std::fs::copy(from, to)?;
+        fs::copy(from, to)?;
 
         Ok(())
     }
@@ -1711,7 +1785,7 @@ mod tests {
         reason = "daemon jobs tests read fixture archive metadata for manifest size"
     )]
     fn file_size(path: &Utf8Path) -> anyhow::Result<u64> {
-        Ok(std::fs::metadata(path)?.len())
+        Ok(fs::metadata(path)?.len())
     }
 
     #[expect(
@@ -1719,9 +1793,9 @@ mod tests {
         reason = "daemon jobs tests set fixture executable bits directly"
     )]
     fn set_executable(path: &Utf8Path) -> anyhow::Result<()> {
-        let mut permissions = std::fs::metadata(path)?.permissions();
+        let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions)?;
+        fs::set_permissions(path, permissions)?;
 
         Ok(())
     }

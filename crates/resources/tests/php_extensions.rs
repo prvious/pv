@@ -46,6 +46,46 @@ fn resolves_available_and_ignored_php_extensions_from_artifact_metadata() -> Res
 }
 
 #[test]
+fn resolves_loaded_php_extensions_in_artifact_metadata_order() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let artifact = tempdir.path().join("php");
+    fs::write_sensitive_file(
+        &artifact.join("share/pv/php-extensions.json"),
+        r#"
+[
+  {"name":"sqlsrv","load_kind":"extension","path":"lib/php/extensions/sqlsrv.so"},
+  {"name":"pdo_sqlsrv","load_kind":"extension","path":"lib/php/extensions/pdo_sqlsrv.so"}
+]
+"#,
+    )?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/sqlsrv.so"), "")?;
+    fs::write_sensitive_file(&artifact.join("lib/php/extensions/pdo_sqlsrv.so"), "")?;
+
+    let resolution =
+        resolve_php_extension_request(&artifact, &["pdo_sqlsrv".into(), "sqlsrv".into()])?;
+    let overlay = ensure_php_runtime_overlay(
+        &paths,
+        "8.4+pdo_sqlsrv+sqlsrv",
+        &artifact,
+        &resolution.loaded,
+    )?;
+
+    assert_eq!(
+        resolution
+            .loaded
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect::<Vec<_>>(),
+        ["sqlsrv", "pdo_sqlsrv"]
+    );
+    assert!(overlay.join("10-sqlsrv.ini").is_file());
+    assert!(overlay.join("20-pdo_sqlsrv.ini").is_file());
+
+    Ok(())
+}
+
+#[test]
 fn persisted_php_extension_resolution_rejects_missing_metadata_names() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact = tempdir.path().join("php");

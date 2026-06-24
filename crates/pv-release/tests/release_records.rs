@@ -207,6 +207,26 @@ fn release_records_reject_invalid_source_inputs() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn release_records_reject_php_extensions_for_non_php_resources() -> Result<()> {
+    let invalid = VALID_RELEASE_RECORD.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    );
+    let error = release_record_error(ReleaseRecord::from_json(
+        Utf8Path::new("redis.json"),
+        &invalid,
+    ))?;
+
+    assert!(
+        matches!(error, ReleaseError::InvalidReleaseRecord { ref reason, .. } if reason.contains("php_extensions are only supported on php or frankenphp artifacts")),
+        "non-PHP php_extensions should be rejected, got {error:?}",
+    );
+
+    Ok(())
+}
+
 fn release_record_with_php_extensions() -> String {
     FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replacen(
         "\"provenance\": {",
