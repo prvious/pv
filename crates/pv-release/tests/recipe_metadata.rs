@@ -463,29 +463,35 @@ fn recipe_metadata_rejects_invalid_shapes() -> Result<()> {
 
 #[test]
 fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
-    let invalid_deployment_target = VALID_PHP_TOML.replace(
+    let invalid_deployment_target = VALID_PHP_TOML.replacen(
         "deployment_target = \"13.0\"",
         "deployment_target = \"14.0\"",
+        1,
     );
     let php_version_without_patch =
-        VALID_PHP_TOML.replace("php_version = \"8.4.20\"", "php_version = \"8.4\"");
+        VALID_PHP_TOML.replacen("php_version = \"8.4.20\"", "php_version = \"8.4\"", 1);
     let unexpected_expected_extension =
-        VALID_PHP_TOML.replace("\"zlib\"]", "\"zlib\", \"xdebug\"]");
-    let duplicate_default_extension =
-        VALID_PHP_TOML.replace("\"bcmath\", \"curl\"", "\"bcmath\", \"bcmath\", \"curl\"");
+        VALID_PHP_TOML.replacen("\"zlib\"]", "\"zlib\", \"xdebug\"]", 1);
+    let duplicate_default_extension = VALID_PHP_TOML.replacen(
+        "\"bcmath\", \"curl\"",
+        "\"bcmath\", \"bcmath\", \"curl\"",
+        1,
+    );
     let invalid_default_extension =
-        VALID_PHP_TOML.replace("\"bcmath\", \"curl\"", "\"bad-extension\", \"curl\"");
+        VALID_PHP_TOML.replacen("\"bcmath\", \"curl\"", "\"bad-extension\", \"curl\"", 1);
     let overlapping_optional_extension =
-        VALID_PHP_TOML.replace("\"redis\", \"sqlsrv\"", "\"bcmath\", \"sqlsrv\"");
+        VALID_PHP_TOML.replacen("\"redis\", \"sqlsrv\"", "\"bcmath\", \"sqlsrv\"", 1);
     let empty_license_files =
-        VALID_PHP_TOML.replace("license_files = [\"LICENSE\"]", "license_files = []");
-    let unsafe_license_file = VALID_PHP_TOML.replace(
+        VALID_PHP_TOML.replacen("license_files = [\"LICENSE\"]", "license_files = []", 1);
+    let unsafe_license_file = VALID_PHP_TOML.replacen(
         "license_files = [\"LICENSE\"]",
         "license_files = [\"../LICENSE\"]",
+        1,
     );
-    let unsafe_notice_file = VALID_PHP_TOML.replace(
+    let unsafe_notice_file = VALID_PHP_TOML.replacen(
         "notice_files = [\"NOTICE\"]",
         "notice_files = [\"../NOTICE\"]",
+        1,
     );
 
     assert_debug_snapshot!((

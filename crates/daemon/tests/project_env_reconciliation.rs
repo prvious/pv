@@ -8,6 +8,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use serde_json::{Value, json};
+use state::fs::write_sensitive_file;
 use state::{
     Database, EnvContextValues, JobRecord, LinkProjectInput, PortOwner, PortRequest,
     ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
@@ -51,15 +52,15 @@ async fn project_env_reconciliation_uses_project_root_not_config_path_for_dotenv
     let original_path = tempdir.path().join("typed-project-path");
     let stored_config_path = tempdir.path().join("stale-config-location/pv.yml");
 
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &project_root.join("pv.yml"),
         "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: canonical\n",
     )?;
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &original_path.join(".env"),
         "ORIGINAL_PATH_VALUE=must-not-change\n",
     )?;
-    state::fs::write_sensitive_file(&stored_config_path, "env:\n  APP_NAME: stale-config-path\n")?;
+    write_sensitive_file(&stored_config_path, "env:\n  APP_NAME: stale-config-path\n")?;
 
     let mut database = Database::open(&paths)?;
     let project = database.link_project(LinkProjectInput {
@@ -150,12 +151,12 @@ async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<(
         "php:\n  version: \"8.4\"\n  extensions: [redis, missing]\n",
     )?;
     let release = tempdir.path().join("php-release");
-    state::fs::write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
-    state::fs::write_sensitive_file(
+    write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
+    write_sensitive_file(
         &release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
-    state::fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
@@ -195,12 +196,12 @@ async fn project_env_reconciliation_persists_non_identity_ignored_php_extension(
         "php:\n  version: \"8.4\"\n  extensions: [\"not-supported-yet\"]\n",
     )?;
     let release = tempdir.path().join("php-release");
-    state::fs::write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
-    state::fs::write_sensitive_file(
+    write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
+    write_sensitive_file(
         &release.join("share/pv/php-extensions.json"),
         r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
     )?;
-    state::fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
@@ -379,7 +380,7 @@ async fn missing_context_leaves_dotenv_unchanged_and_records_failure() -> Result
         "acme.test",
         "postgres:\n  version: \"8.0\"\n  env:\n    DB_HOST: \"${host}\"\n",
     )?;
-    state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -407,7 +408,7 @@ async fn root_env_with_resource_waits_for_resource_context_before_dotenv() -> Re
         "acme.test",
         "env:\n  APP_URL: \"${project_url}\"\npostgres:\n  version: \"8.0\"\n",
     )?;
-    state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -472,7 +473,7 @@ async fn malformed_pv_block_leaves_dotenv_unchanged_and_records_failure() -> Res
         "acme.test",
         "env:\n  APP_URL: \"${project_url}\"\n",
     )?;
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &project.path.join(".env"),
         "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
     )?;
@@ -509,7 +510,7 @@ postgres:
     DB_HOST: "${host}"
 "#,
     )?;
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &project.path.join(".env"),
         "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
     )?;
@@ -546,7 +547,7 @@ async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<(
         "acme.test",
         "env:\n  APP_URL: \"${project_url}\"\n",
     )?;
-    state::fs::write_sensitive_file(&project.path.join(".env"), "APP_URL=https://user.test\n")?;
+    write_sensitive_file(&project.path.join(".env"), "APP_URL=https://user.test\n")?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -820,7 +821,7 @@ async fn no_mappings_do_not_touch_existing_dotenv_and_record_noop_success() -> R
         "acme.test",
         "php: \"8.4\"\n",
     )?;
-    state::fs::write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -912,7 +913,7 @@ async fn multiple_managed_dotenv_blocks_fold_to_one_and_preserve_permissions() -
         "env:\n  APP_URL: \"${project_url}\"\n",
     )?;
     let dotenv_path = project.path.join(".env");
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &dotenv_path,
         r#"BEFORE=1
 # >>> PV MANAGED
@@ -1266,7 +1267,7 @@ fn link_project(
 ) -> Result<ProjectRecord> {
     let config_path = project_path.join("pv.yml");
 
-    state::fs::write_sensitive_file(&config_path, config_source)?;
+    write_sensitive_file(&config_path, config_source)?;
 
     let mut database = Database::open(paths)?;
     let result = database.link_project(LinkProjectInput {
@@ -1282,7 +1283,7 @@ fn link_project(
 }
 
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
-    state::fs::write_sensitive_file(&project.config_path, config_source)?;
+    write_sensitive_file(&project.config_path, config_source)?;
 
     Ok(())
 }
@@ -1373,7 +1374,7 @@ fn seed_postgres_resource_context_for_track_in_database(
 }
 
 fn seed_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
-    state::fs::write_sensitive_file(
+    write_sensitive_file(
         &paths.downloads().join("manifest.json"),
         &test_manifest(default_track),
     )?;

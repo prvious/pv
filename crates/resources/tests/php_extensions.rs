@@ -114,7 +114,6 @@ fn writes_runtime_overlay_for_loaded_php_extensions() -> Result<()> {
 #[test]
 fn php_extension_metadata_rejects_invalid_paths_duplicates_and_missing_modules() -> Result<()> {
     let tempdir = tempdir()?;
-    let artifact = tempdir.path().join("php");
     let cases = [
         (
             "empty-path",
@@ -138,7 +137,13 @@ fn php_extension_metadata_rejects_invalid_paths_duplicates_and_missing_modules()
     ];
 
     for (name, metadata) in cases {
+        let artifact = tempdir.path().join(format!("php-{name}"));
         fs::write_sensitive_file(&artifact.join("share/pv/php-extensions.json"), metadata)?;
+        if name == "duplicate-name" {
+            fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
+            fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis-copy.so"), "")?;
+        }
+
         let result = resolve_php_extension_request(&artifact, &["redis".into()]);
 
         assert!(
