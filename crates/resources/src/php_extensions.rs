@@ -175,10 +175,13 @@ pub fn php_runtime_environment(
         php_track_environment(paths, track).map_err(resources_error_from_state)?;
     if !modules.is_empty() {
         let overlay = ensure_php_runtime_overlay(paths, runtime_key, artifact_root, modules)?;
-        if let Some(scan_dir) = environment.get_mut("PHP_INI_SCAN_DIR") {
+        let scan_dir = environment
+            .entry("PHP_INI_SCAN_DIR".to_string())
+            .or_default();
+        if !scan_dir.is_empty() {
             scan_dir.push(':');
-            scan_dir.push_str(overlay.as_str());
         }
+        scan_dir.push_str(overlay.as_str());
     }
 
     Ok(environment)
