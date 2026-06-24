@@ -135,6 +135,9 @@ async fn reconcile_loaded_project(
     )?;
     let has_env_mappings = config_file.config.has_env_mappings();
 
+    if let Some(runtime) = &resolved_php_runtime {
+        record_project_php_runtime_resource_requirements(database, runtime)?;
+    }
     apply_project_resource_plan(database, &project.id, &plan)?;
     if let Some(catalog) = catalog {
         crate::managed_resources::reconcile_project_resources_with_catalog(
@@ -309,6 +312,24 @@ fn installed_php_release(
         });
 
     Ok(release)
+}
+
+fn record_project_php_runtime_resource_requirements(
+    database: &mut Database,
+    runtime: &ResolvedPhpRuntime,
+) -> Result<(), DaemonError> {
+    database.record_managed_resource_track_desired(
+        "php",
+        &runtime.track,
+        ManagedResourceDesiredState::Installed,
+    )?;
+    database.record_managed_resource_track_desired(
+        "frankenphp",
+        &runtime.track,
+        ManagedResourceDesiredState::Installed,
+    )?;
+
+    Ok(())
 }
 
 fn validate_project_config_and_plan(
