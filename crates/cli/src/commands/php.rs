@@ -299,14 +299,24 @@ fn resolve_php_runtime_for_shim(
             let requested_extensions = php
                 .map(|php| php.requested_extensions().to_vec())
                 .unwrap_or_default();
-            let config_track = if let Some(php) = php
-                && let Some(selector) = php.version_selector()
-                && selector != "latest"
-                && selector != track
-            {
-                Some(resolve_project_config_php_track_for_shim(
-                    paths, database, php,
-                )?)
+            let config_track = if let Some(php) = php {
+                match php.version_selector() {
+                    Some(selector) if selector != "latest" && selector != track => Some(
+                        resolve_project_config_php_track_for_shim(paths, database, php)?,
+                    ),
+                    None if database.global_php_default_track()?.is_some()
+                        || paths.downloads().join("manifest.json").exists() =>
+                    {
+                        let resolved_track =
+                            resolve_project_config_php_track_for_shim(paths, database, php)?;
+                        if resolved_track == track {
+                            None
+                        } else {
+                            Some(resolved_track)
+                        }
+                    }
+                    _ => None,
+                }
             } else {
                 None
             };
