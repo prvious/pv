@@ -312,6 +312,19 @@ impl ReleaseRecord {
             });
         }
 
+        for extension in &self.php_extensions {
+            let expected = format!("{}/{}", validation.root(), extension.path);
+            if !validation.has_regular_file(&expected) {
+                return Err(crate::ReleaseError::InvalidArchive {
+                    path: validation.archive_path().to_string(),
+                    reason: format!(
+                        "missing advertised PHP extension module `{}`",
+                        extension.path
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 }

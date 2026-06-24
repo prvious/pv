@@ -1,0 +1,20 @@
+---
+source: crates/pv-release/tests/archive_validation.rs
+expression: "(unit_validation_outcome(validate_archive_for_record_file(&missing_module,\n&missing_record), tempdir.path(),),\nunit_validation_outcome(validate_archive_for_record_file(&directory_module,\n&directory_record), tempdir.path(),),)"
+---
+(
+    Err(
+        (
+            "InvalidArchive",
+            "missing-module.tar.gz",
+            "missing advertised PHP extension module `lib/php/extensions/redis.so`",
+        ),
+    ),
+    Err(
+        (
+            "InvalidArchive",
+            "directory-module.tar.gz",
+            "missing advertised PHP extension module `lib/php/extensions/redis.so`",
+        ),
+    ),
+)

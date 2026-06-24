@@ -15,6 +15,7 @@ pub struct ArchiveValidation {
     size: u64,
     root: String,
     entries: Vec<String>,
+    regular_file_entries: BTreeSet<String>,
 }
 
 struct ExtractedArchive {
@@ -41,6 +42,10 @@ impl ArchiveValidation {
 
     pub fn entries(&self) -> &[String] {
         &self.entries
+    }
+
+    pub fn has_regular_file(&self, path: &str) -> bool {
+        self.regular_file_entries.contains(path)
     }
 }
 
@@ -125,6 +130,7 @@ pub fn validate_archive(
         size,
         root,
         entries,
+        regular_file_entries,
     })
 }
 
