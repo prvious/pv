@@ -136,15 +136,17 @@ cargo nextest run -p resources --test manifest_foundation
 cargo nextest run -p cli --test update
 ```
 
-Final local verification for code or checked-in revocation changes:
+Final local verification for code or checked-in revocation changes, before commit, push, workflow dispatch, publication, or any claim that the revocation change is ready:
 
 ```sh
-cargo fmt --all -- --check
+cargo fmt --all --check
 cargo insta pending-snapshots --workspace
 git diff --check
-cargo nextest run -p pv-release -p resources -p cli
+cargo nextest run --workspace --all-features --locked --no-fail-fast
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
+
+Focused revocation checks do not replace the full workspace suite. If the full suite produces expected snapshot drift, inspect the generated snapshots, accept them only through `cargo insta`, then rerun the full workspace suite until it passes.
 
 ## Publication Options
 

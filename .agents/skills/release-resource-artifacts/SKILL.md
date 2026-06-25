@@ -79,12 +79,23 @@ Useful verification for recipe metadata changes:
 ```sh
 cargo nextest run -p pv-release --test recipe_metadata
 cargo nextest run -p pv-release --test recipe_fixtures
-cargo fmt --all -- --check
 cargo insta pending-snapshots --workspace
 git diff --check
 cargo nextest run -p pv-release
 cargo clippy -p pv-release --all-targets --all-features --locked -- -D warnings
 ```
+
+Full verification is mandatory before commit, push, workflow dispatch, publication, or any claim that the release prep is ready:
+
+```sh
+cargo fmt --all --check
+cargo insta pending-snapshots --workspace
+git diff --check
+cargo nextest run --workspace --all-features --locked --no-fail-fast
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+```
+
+Focused `pv-release` checks do not replace the full workspace suite. If the full suite produces expected snapshot drift, inspect the generated snapshots, accept them only through `cargo insta`, then rerun the full workspace suite until it passes.
 
 Commit with a Conventional Commit message, for example:
 
