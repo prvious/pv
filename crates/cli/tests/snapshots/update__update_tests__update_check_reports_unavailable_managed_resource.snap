@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV application: update available 0.1.3 -> 0.2.0 (darwin-arm64)\nManaged Resources:\n  redis 8.8: unavailable 8.8.0-pv1 (no installable artifact)\n",
+    stdout: "PV application: update available 0.1.4 -> 0.2.0 (darwin-arm64)\nManaged Resources:\n  redis 8.8: unavailable 8.8.0-pv1 (no installable artifact)\n",
     stderr: "",
 }

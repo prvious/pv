@@ -3,7 +3,7 @@ resources = ["php", "frankenphp"]
 default_track = "8.5"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv3"
+pv_build_revision = "pv4"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
 
