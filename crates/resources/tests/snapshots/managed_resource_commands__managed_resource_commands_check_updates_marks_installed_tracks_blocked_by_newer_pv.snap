@@ -13,7 +13,7 @@ expression: "managed_resource_update_check_summary(&checked, tempdir.path())?"
         current_revocation: None,
         latest_revocation: None,
         blocked_by: Some(
-            "requires PV 999.0.0, current PV 0.1.3",
+            "requires PV 999.0.0, current PV 0.1.4",
         ),
         reason: None,
     },
