@@ -4,11 +4,11 @@ use std::io;
 use std::io::Write;
 use std::process::ExitCode;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use resources::{
-    ArtifactManifestCache, ManagedResourceCommands, ManagedResourceUninstallOptions,
-    ResourceAdapter, ResourceHttpClient, ResourceName, TargetPlatform, TrackName, TrackSelector,
-    UreqResourceHttpClient,
+    ArtifactManifestCache, ConcreteTrackName, ManagedResourceCommands,
+    ManagedResourceUninstallOptions, ResourceAdapter, ResourceHttpClient, ResourceName,
+    TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
 use serde::Serialize;
 use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
@@ -259,10 +259,20 @@ pub(crate) fn shim_with_args_and_env(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
-    let track = resolve_php_track_for_shim(&paths, &database, environment)?;
-    let installed = installed_php(&database, &track)?;
-    resources::ensure_php_track_defaults(&paths, &track)?;
-    env.extend(resources::php_track_exec_environment(&paths, &track)?);
+    let runtime = resolve_php_runtime_for_shim(&paths, &database, environment)?;
+    let installed = installed_php(&database, &runtime.track)?;
+    resources::ensure_php_track_defaults(&paths, &runtime.track)?;
+    let loaded_modules = resources::resolve_persisted_php_extension_modules(
+        installed.release_path(),
+        &runtime.loaded_extensions,
+    )?;
+    env.extend(resources::php_runtime_exec_environment(
+        &paths,
+        &runtime.track,
+        &runtime.runtime_key,
+        installed.release_path(),
+        &loaded_modules,
+    )?);
     let executable = installed.executable()?;
 
     environment
@@ -270,29 +280,188 @@ pub(crate) fn shim_with_args_and_env(
         .map_err(ExecuteError::from)
 }
 
-fn resolve_php_track_for_shim(
+struct PhpShimRuntime {
+    track: String,
+    runtime_key: String,
+    loaded_extensions: Vec<String>,
+}
+
+fn resolve_php_runtime_for_shim(
     paths: &PvPaths,
     database: &Database,
     environment: &impl Environment,
-) -> Result<String, ExecuteError> {
+) -> Result<PhpShimRuntime, ExecuteError> {
     let current_dir = current_dir(environment)?;
-    if let Some(project) = database.nearest_project_for_path(&current_dir)?
-        && let Some(track) = project.desired_php_track
-    {
-        return Ok(track);
+    if let Some(project) = database.nearest_project_for_path(&current_dir)? {
+        let config_file = match config::ProjectConfigFile::read_from_root(&project.path) {
+            Ok(config_file) => config_file,
+            Err(error) => {
+                if let Some(runtime) = persisted_project_php_runtime_for_shim(&project)? {
+                    return Ok(runtime);
+                }
+
+                return Err(error.into());
+            }
+        };
+        if let Some(track) = project.php_runtime.track.clone() {
+            let php = config_file.config.php.as_ref();
+            let requested_extensions = php
+                .map(|php| php.requested_extensions().to_vec())
+                .unwrap_or_default();
+            let config_track = if let Some(php) = php {
+                match php.version_selector() {
+                    Some(selector) if selector != "latest" && selector != track => Some(
+                        resolve_project_config_php_track_for_shim(paths, database, php)?,
+                    ),
+                    None if database.global_php_default_track()?.is_some()
+                        || paths.downloads().join("manifest.json").exists() =>
+                    {
+                        let resolved_track =
+                            resolve_project_config_php_track_for_shim(paths, database, php)?;
+                        if resolved_track == track {
+                            None
+                        } else {
+                            Some(resolved_track)
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let current_track = config_track.as_deref().unwrap_or(&track).to_string();
+            if requested_extensions.is_empty() {
+                return Ok(PhpShimRuntime {
+                    runtime_key: current_track.clone(),
+                    track: current_track,
+                    loaded_extensions: Vec::new(),
+                });
+            }
+            if config_track.is_none()
+                && project.php_runtime.requested_extensions == requested_extensions
+            {
+                let runtime_key =
+                    state::php_runtime_key(&track, &project.php_runtime.loaded_extensions)?;
+
+                return Ok(PhpShimRuntime {
+                    track,
+                    runtime_key,
+                    loaded_extensions: project.php_runtime.loaded_extensions,
+                });
+            }
+            if let Some(php) = php {
+                return resolve_project_config_php_runtime_for_shim(database, &current_track, php);
+            }
+        } else if let Some(php) = config_file.config.php.as_ref() {
+            let track = resolve_project_config_php_track_for_shim(paths, database, php)?;
+
+            return resolve_project_config_php_runtime_for_shim(database, &track, php);
+        }
     }
 
-    if let Some(track) = database.global_php_default_track()? {
-        return Ok(track);
+    let track = match database.global_php_default_track()? {
+        Some(track) => track,
+        None => {
+            let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+            let php = ResourceName::new("php")?;
+
+            manifest
+                .resolve_track(&php, TrackSelector::Latest)?
+                .as_str()
+                .to_string()
+        }
+    };
+
+    Ok(PhpShimRuntime {
+        runtime_key: track.clone(),
+        track,
+        loaded_extensions: Vec::new(),
+    })
+}
+
+fn persisted_project_php_runtime_for_shim(
+    project: &ProjectRecord,
+) -> Result<Option<PhpShimRuntime>, ExecuteError> {
+    let Some(track) = project.php_runtime.track.clone() else {
+        return Ok(None);
+    };
+    let loaded_extensions = project.php_runtime.loaded_extensions.clone();
+    let runtime_key = state::php_runtime_key(&track, &loaded_extensions)?;
+
+    Ok(Some(PhpShimRuntime {
+        track,
+        runtime_key,
+        loaded_extensions,
+    }))
+}
+
+fn resolve_project_config_php_track_for_shim(
+    paths: &PvPaths,
+    database: &Database,
+    php: &config::PhpConfig,
+) -> Result<String, ExecuteError> {
+    let selector = php
+        .version_selector()
+        .map(TrackSelector::parse)
+        .transpose()?;
+    let track = match selector {
+        Some(TrackSelector::Latest) => {
+            let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+            let php = ResourceName::new("php")?;
+
+            manifest
+                .resolve_track(&php, TrackSelector::Latest)?
+                .as_str()
+                .to_string()
+        }
+        Some(TrackSelector::Track(track)) => track.as_str().to_string(),
+        None => match database.global_php_default_track()? {
+            Some(track) => track,
+            None => {
+                let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
+                let php = ResourceName::new("php")?;
+
+                manifest
+                    .resolve_track(&php, TrackSelector::Latest)?
+                    .as_str()
+                    .to_string()
+            }
+        },
+    };
+    let track = ConcreteTrackName::new(track)?;
+
+    Ok(track.as_str().to_string())
+}
+
+fn resolve_project_config_php_runtime_for_shim(
+    database: &Database,
+    track: &str,
+    php: &config::PhpConfig,
+) -> Result<PhpShimRuntime, ExecuteError> {
+    let requested_extensions = php.requested_extensions().to_vec();
+    if requested_extensions.is_empty() {
+        return Ok(PhpShimRuntime {
+            runtime_key: track.to_string(),
+            track: track.to_string(),
+            loaded_extensions: Vec::new(),
+        });
     }
 
-    let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
-    let php = ResourceName::new("php")?;
+    let installed = installed_php(database, track)?;
+    let resolution =
+        resources::resolve_php_extension_request(installed.release_path(), &requested_extensions)?;
+    let loaded_extensions = resolution
+        .loaded
+        .iter()
+        .map(|module| module.name.clone())
+        .collect::<Vec<_>>();
+    let runtime_key = state::php_runtime_key(track, &loaded_extensions)?;
 
-    Ok(manifest
-        .resolve_track(&php, TrackSelector::Latest)?
-        .as_str()
-        .to_string())
+    Ok(PhpShimRuntime {
+        track: track.to_string(),
+        runtime_key,
+        loaded_extensions,
+    })
 }
 
 fn effective_global_php_default_track(
@@ -322,6 +491,10 @@ impl InstalledPhp {
         let adapter = resources::php_adapter()?;
 
         Ok(adapter.executable_path(&self.release))
+    }
+
+    fn release_path(&self) -> &Utf8Path {
+        &self.release
     }
 }
 

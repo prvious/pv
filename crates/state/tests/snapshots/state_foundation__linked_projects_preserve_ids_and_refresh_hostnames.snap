@@ -1,6 +1,5 @@
 ---
 source: crates/state/tests/state_foundation.rs
-assertion_line: 730
 expression: "(created.status, updated.status, database.projects()?)"
 ---
 (
@@ -16,6 +15,14 @@ expression: "(created.status, updated.status, database.projects()?)"
             desired_php_track: Some(
                 "8.3",
             ),
+            php_runtime: ProjectPhpRuntimeRecord {
+                track: Some(
+                    "8.3",
+                ),
+                requested_extensions: [],
+                loaded_extensions: [],
+                ignored_extensions: [],
+            },
             additional_hostnames: [
                 "admin.store.test",
             ],

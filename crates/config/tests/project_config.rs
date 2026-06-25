@@ -1,7 +1,7 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use config::{ConfigError, ProjectConfig, ProjectConfigFile, write_project_php_track};
@@ -82,9 +82,76 @@ fn project_config_rejects_invalid_scalar_shapes() -> Result<()> {
 }
 
 #[test]
+fn project_config_accepts_php_object_with_version_and_extensions() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+php:
+  version: 8.4
+  extensions:
+    - redis
+    - xdebug
+"#,
+    )?;
+
+    let php = config
+        .php
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing php config"))?;
+    assert_eq!(php.version_selector(), Some("8.4"));
+    assert_eq!(php.requested_extensions(), ["redis", "xdebug"]);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_accepts_php_object_with_extensions_only() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+php:
+  extensions:
+    - xdebug
+"#,
+    )?;
+
+    let php = config
+        .php
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing php config"))?;
+    assert_eq!(php.version_selector(), None);
+    assert_eq!(php.requested_extensions(), ["xdebug"]);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_invalid_php_extensions_shape() -> Result<()> {
+    assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions: redis\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions: null\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions:\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("php:\n  extensions:\n    - true\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn project_config_validates_php_and_resource_tracks() -> Result<()> {
     assert_eq!(
-        ProjectConfig::parse("php: latest\n")?.php.as_deref(),
+        ProjectConfig::parse("php: latest\n")?
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
         Some("latest")
     );
     assert_eq!(
@@ -486,6 +553,44 @@ postgres:
         updated.config,
         reloaded.config,
     ));
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_preserves_php_extensions_when_updating_track() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"
+php:
+  version: 8.2
+  extensions:
+    - redis
+    - xdebug
+"#,
+    )?;
+
+    let updated = write_project_php_track(&project, "8.4")?;
+    let reloaded = ProjectConfigFile::read_from_root(&project)?;
+    let updated_php = updated
+        .config
+        .php
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing updated php config"))?;
+    let reloaded_php = reloaded
+        .config
+        .php
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing reloaded php config"))?;
+
+    assert_eq!(updated_php.version_selector(), Some("8.4"));
+    assert_eq!(updated_php.requested_extensions(), ["redis", "xdebug"]);
+    assert_eq!(reloaded_php.version_selector(), Some("8.4"));
+    assert_eq!(reloaded_php.requested_extensions(), ["redis", "xdebug"]);
     assert_snapshot!(read_file(&project.join("pv.yml"))?);
 
     Ok(())

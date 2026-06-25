@@ -2,6 +2,7 @@ use anyhow::Result;
 use insta::assert_debug_snapshot;
 use resources::ArtifactManifest;
 use resources::ManifestSelection;
+use resources::PhpExtensionLoadKind;
 use resources::ResourcesError;
 use resources::registry;
 use resources::{ArtifactPlatform, TargetPlatform};
@@ -25,6 +26,16 @@ struct DescriptorSnapshot {
     reason = "snapshot-only structure is read through derived Debug"
 )]
 struct InvalidUrlSnapshot {
+    name: &'static str,
+    error: ResourcesError,
+}
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only structure is read through derived Debug"
+)]
+struct InvalidManifestSnapshot {
     name: &'static str,
     error: ResourcesError,
 }
@@ -103,8 +114,38 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
 #[test]
 fn manifest_parses_registry_backed_resources_tracks_and_artifacts() -> Result<()> {
     let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
+    let resource = ResourceName::new("redis")?;
+    let track = TrackName::new("7")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
 
+    assert!(selected.artifact().php_extensions().is_empty());
     assert_debug_snapshot!(manifest);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_parses_php_extension_metadata_for_php_artifacts() -> Result<()> {
+    let manifest = ArtifactManifest::parse(&manifest_with_php_extension_metadata())?;
+    let resource = ResourceName::new("php")?;
+    let track = TrackName::new("8.4")?;
+    let selected =
+        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
+
+    assert_eq!(
+        selected
+            .artifact()
+            .php_extensions()
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect::<Vec<_>>(),
+        ["redis", "xdebug"]
+    );
+    assert_eq!(
+        selected.artifact().php_extensions()[1].load_kind,
+        PhpExtensionLoadKind::ZendExtension
+    );
 
     Ok(())
 }
@@ -499,6 +540,51 @@ fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_invalid_php_extension_metadata() -> Result<()> {
+    let invalid_extensions = [
+        (
+            "empty_path",
+            manifest_with_php_extension_metadata()
+                .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\"\""),
+        ),
+        (
+            "current_dir",
+            manifest_with_php_extension_metadata()
+                .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\".\""),
+        ),
+        (
+            "duplicate_name",
+            manifest_with_php_extension_metadata()
+                .replace("\"name\":\"xdebug\"", "\"name\":\"redis\""),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, json)| {
+        Ok(InvalidManifestSnapshot {
+            name,
+            error: parse_manifest_error(&json)?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(invalid_extensions);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_rejects_php_extension_metadata_for_non_php_artifacts() -> Result<()> {
+    let error = parse_manifest_error(&non_php_manifest_with_php_extension_metadata())?;
+
+    assert!(
+        matches!(error, ResourcesError::InvalidManifest { ref reason } if reason.contains("php_extensions are only supported on php or frankenphp artifacts")),
+        "non-PHP php_extensions should be rejected, got {error:?}",
+    );
+
+    Ok(())
+}
+
+#[test]
 fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Result<()> {
     let manifest_json = VALID_MANIFEST.replacen(
         "\"artifacts\": [",
@@ -526,6 +612,55 @@ fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Resul
     assert_eq!(amd64.artifact().platform(), ArtifactPlatform::DarwinAmd64);
 
     Ok(())
+}
+
+fn manifest_with_php_extension_metadata() -> String {
+    r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "php",
+      "default_track": "8.4",
+      "tracks": [
+        {
+          "name": "8.4",
+          "artifacts": [
+            {
+              "artifact_version": "8.4.20-pv1",
+              "upstream_version": "8.4.20",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/php-8.4.20-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z",
+              "php_extensions": [
+                {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"},
+                {"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#
+    .to_string()
+}
+
+fn non_php_manifest_with_php_extension_metadata() -> String {
+    VALID_MANIFEST.replacen(
+        r#""published_at": "2026-05-26T14:30:00Z""#,
+        r#""published_at": "2026-05-26T14:30:00Z",
+              "php_extensions": [
+                {"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"},
+                {"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}
+              ]"#,
+        1,
+    )
 }
 
 const VALID_MANIFEST: &str = r#"

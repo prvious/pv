@@ -1,0 +1,21 @@
+---
+source: it/cli.rs
+assertion_line: 628
+expression: "(link, list)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: ignored unsupported PHP extension `missing`; ignored unsupported PHP extension `typo`\n",
+        stderr: "",
+    },
+)

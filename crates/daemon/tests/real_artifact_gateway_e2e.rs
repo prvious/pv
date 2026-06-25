@@ -4,7 +4,9 @@ use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use daemon::ProcessSupervisor;
-use daemon::gateway::{FrankenphpCommand, gateway_process_spec, worker_process_spec};
+use daemon::gateway::{
+    FrankenphpCommand, PhpWorkerRuntimePlan, gateway_process_spec, worker_process_spec,
+};
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, frankenphp_adapter, php_adapter,
 };
@@ -166,11 +168,40 @@ async fn stop_gateway_runtimes(
     if let Some(gateway) = supervisor.adopt(&gateway_process_spec(paths, command))? {
         gateway.stop(Duration::from_secs(1)).await?;
     }
-    if let Some(worker) = supervisor.adopt(&worker_process_spec(paths, php_track, command)?)? {
+    let worker_plan = default_worker_plan(php_track);
+    let artifact_root = frankenphp_artifact_root(command)?;
+    if let Some(worker) = supervisor.adopt(&worker_process_spec(
+        paths,
+        &worker_plan,
+        command,
+        artifact_root,
+    )?)? {
         worker.stop(Duration::from_secs(1)).await?;
     }
 
     Ok(())
+}
+
+fn default_worker_plan(php_track: &str) -> PhpWorkerRuntimePlan {
+    PhpWorkerRuntimePlan {
+        php_track: php_track.to_owned(),
+        runtime_key: php_track.to_owned(),
+        loaded_modules: Vec::new(),
+        port: 0,
+        projects: Vec::new(),
+    }
+}
+
+fn frankenphp_artifact_root(command: &FrankenphpCommand) -> Result<&Utf8Path> {
+    let bin_dir = command
+        .executable()
+        .parent()
+        .ok_or_else(|| anyhow!("FrankenPHP command is missing a bin directory"))?;
+    let artifact_root = bin_dir
+        .parent()
+        .ok_or_else(|| anyhow!("FrankenPHP command is missing an artifact root"))?;
+
+    Ok(artifact_root)
 }
 
 #[expect(

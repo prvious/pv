@@ -39,6 +39,7 @@ ReleaseRecord {
     notice_files: [
         "NOTICE",
     ],
+    php_extensions: [],
     provenance: Provenance {
         source_url: "https://download.redis.io/releases/redis-7.2.5.tar.gz",
         source_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

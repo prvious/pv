@@ -1,0 +1,42 @@
+---
+source: crates/pv-release/tests/record_writer.rs
+expression: json
+---
+{
+  "resource": "php",
+  "track": "8.4",
+  "upstream_version": "8.4.20",
+  "pv_build_revision": "pv1",
+  "artifact_version": "8.4.20-pv1",
+  "platform": "darwin-arm64",
+  "object_key": "resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+  "sha256": "4659fc0570122b0e0aa14f4ff7c261b1fe51795a01ba79963f462ebf40d7520d",
+  "size": 14,
+  "published_at": "2026-06-08T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": [
+    "LICENSE"
+  ],
+  "notice_files": [
+    "NOTICE"
+  ],
+  "php_extensions": [
+    {
+      "name": "redis",
+      "load_kind": "extension",
+      "path": "lib/php/extensions/redis.so"
+    },
+    {
+      "name": "xdebug",
+      "load_kind": "zend_extension",
+      "path": "lib/php/extensions/xdebug.so"
+    }
+  ],
+  "provenance": {
+    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+    "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+    "recipe": "release/artifacts/recipes/php/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }
+}

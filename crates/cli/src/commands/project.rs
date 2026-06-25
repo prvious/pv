@@ -28,7 +28,14 @@ pub(crate) fn link(
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
-    let desired_php_track = resolved_project_php_track(&paths, config_file.config.php.as_deref())?;
+    let desired_php_track = resolved_project_php_track(
+        &paths,
+        config_file
+            .config
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
+    )?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
     let primary_hostname = match (args.hostname, existing.as_ref()) {
@@ -618,13 +625,20 @@ fn project_list_env_status(
     has_env_mappings: bool,
     observed: Option<ProjectEnvObservedStateRecord>,
 ) -> (ProjectEnvStatus, Option<String>) {
-    if !has_env_mappings {
-        return (ProjectEnvStatus::None, None);
-    }
-
     let Some(observed) = observed else {
+        if !has_env_mappings {
+            return (ProjectEnvStatus::None, None);
+        }
+
         return (ProjectEnvStatus::Pending, None);
     };
+
+    if !has_env_mappings
+        && (observed.status != ProjectEnvObservedStatus::Warning
+            || !has_ignored_php_extension_warning(&observed))
+    {
+        return (ProjectEnvStatus::None, None);
+    }
 
     match observed.status {
         ProjectEnvObservedStatus::Failed => (
@@ -641,6 +655,16 @@ fn project_list_env_status(
 }
 
 fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord) -> String {
+    let ignored = observed
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == "ignored_php_extension")
+        .map(|warning| warning.message.as_str())
+        .collect::<Vec<_>>();
+    if !ignored.is_empty() {
+        return format!("warning: {}", ignored.join("; "));
+    }
+
     match observed.warnings.as_slice() {
         [warning] => format!("warning: {}", warning.message),
         [] => observed
@@ -650,4 +674,11 @@ fn project_env_observed_warning_summary(observed: &ProjectEnvObservedStateRecord
             .unwrap_or_else(|| "warning".to_string()),
         warnings => format!("warning: {} warnings", warnings.len()),
     }
+}
+
+fn has_ignored_php_extension_warning(observed: &ProjectEnvObservedStateRecord) -> bool {
+    observed
+        .warnings
+        .iter()
+        .any(|warning| warning.kind == "ignored_php_extension")
 }

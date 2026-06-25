@@ -13,6 +13,8 @@ RuntimePlan {
     workers: [
         PhpWorkerRuntimePlan {
             php_track: "8.3",
+            runtime_key: "8.3",
+            loaded_modules: [],
             port: <port>,
             projects: [
                 RuntimeProject {
@@ -27,6 +29,8 @@ RuntimePlan {
         },
         PhpWorkerRuntimePlan {
             php_track: "8.4",
+            runtime_key: "8.4",
+            loaded_modules: [],
             port: <port>,
             projects: [
                 RuntimeProject {

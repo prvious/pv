@@ -1,11 +1,15 @@
 ---
 source: crates/config/tests/project_config.rs
-assertion_line: 30
 expression: config
 ---
 ProjectConfig {
     php: Some(
-        "8.4",
+        PhpConfig {
+            version: Some(
+                "8.4",
+            ),
+            extensions: [],
+        },
     ),
     document_root: Some(
         "public",

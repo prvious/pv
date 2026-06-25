@@ -387,7 +387,9 @@ fn runtime_statuses(runtime_states: &[RuntimeObservedStateRecord]) -> Vec<Runtim
     runtime_states
         .iter()
         .filter_map(|state| match &state.subject {
-            RuntimeSubject::Gateway | RuntimeSubject::PhpWorker { .. } => Some(RuntimeStatus {
+            RuntimeSubject::Gateway
+            | RuntimeSubject::PhpWorker { .. }
+            | RuntimeSubject::PhpRuntimeWorker { .. } => Some(RuntimeStatus {
                 subject: runtime_subject_label(&state.subject),
                 status: runtime_status_label(state.status),
                 message: state.message.clone(),
@@ -431,14 +433,37 @@ fn project_status(
     };
     let env_status = project_env_status_label(observed.status);
     let failure = observed.status == ProjectEnvObservedStatus::Failed;
+    let message = if observed.status == ProjectEnvObservedStatus::Warning {
+        project_env_warning_message(&observed)
+    } else {
+        observed.message
+    };
 
     ProjectStatus {
         hostname: project.primary_hostname,
         env_status,
-        message: observed.message,
+        message,
         observed_at: Some(observed.observed_at),
         failure,
     }
+}
+
+fn project_env_warning_message(observed: &state::ProjectEnvObservedStateRecord) -> Option<String> {
+    let ignored = observed
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == "ignored_php_extension")
+        .map(|warning| warning.message.as_str())
+        .collect::<Vec<_>>();
+    if !ignored.is_empty() {
+        return Some(ignored.join("; "));
+    }
+
+    observed
+        .warnings
+        .first()
+        .map(|warning| warning.message.clone())
+        .or_else(|| observed.message.clone())
 }
 
 fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
@@ -535,6 +560,9 @@ fn runtime_subject_label(subject: &RuntimeSubject) -> String {
     match subject {
         RuntimeSubject::Gateway => "gateway".to_string(),
         RuntimeSubject::PhpWorker { php_track } => format!("worker:{php_track}"),
+        RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+            format!("worker:{php_runtime_key}")
+        }
         RuntimeSubject::Resource { name, track } => format!("{name}:{track}"),
     }
 }

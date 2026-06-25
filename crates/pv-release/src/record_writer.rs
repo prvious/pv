@@ -23,7 +23,15 @@ pub struct WriteReleaseRecordRequest {
     pub published_at: String,
     pub license_files: Vec<String>,
     pub notice_files: Vec<String>,
+    pub php_extensions: Vec<PhpExtensionRecordRequest>,
     pub source_inputs: Vec<SourceInputRequest>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PhpExtensionRecordRequest {
+    pub name: String,
+    pub load_kind: String,
+    pub path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -48,7 +56,16 @@ struct ReleaseRecordJson<'a> {
     minimum_pv_version: &'a str,
     license_files: &'a [String],
     notice_files: &'a [String],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    php_extensions: Vec<PhpExtensionRecordJson<'a>>,
     provenance: ProvenanceJson<'a>,
+}
+
+#[derive(Serialize)]
+struct PhpExtensionRecordJson<'a> {
+    name: &'a str,
+    load_kind: &'a str,
+    path: &'a str,
 }
 
 #[derive(Serialize)]
@@ -71,6 +88,15 @@ struct SourceInputJson<'a> {
 
 pub fn write_release_record(request: &WriteReleaseRecordRequest) -> crate::Result<()> {
     let (sha256, size) = digest_and_size(&request.archive)?;
+    let php_extensions = request
+        .php_extensions
+        .iter()
+        .map(|php_extension| PhpExtensionRecordJson {
+            name: &php_extension.name,
+            load_kind: &php_extension.load_kind,
+            path: &php_extension.path,
+        })
+        .collect::<Vec<_>>();
     let source_inputs = request
         .source_inputs
         .iter()
@@ -94,6 +120,7 @@ pub fn write_release_record(request: &WriteReleaseRecordRequest) -> crate::Resul
         minimum_pv_version: &request.minimum_pv_version,
         license_files: &request.license_files,
         notice_files: &request.notice_files,
+        php_extensions,
         provenance: ProvenanceJson {
             source_url: &request.source_url,
             source_sha256: &request.source_sha256,

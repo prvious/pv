@@ -159,6 +159,138 @@ fn archive_validation_does_not_scan_archive_file_contents() -> Result<()> {
 }
 
 #[test]
+fn archive_validation_rejects_advertised_php_extension_modules_that_are_not_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let missing_module = tempdir.path().join("missing-module.tar.gz");
+    write_archive(
+        &missing_module,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+        ],
+    )?;
+    let (missing_sha256, missing_size) = archive_digest_and_size(&missing_module)?;
+    let missing_record = tempdir.path().join("missing-module.json");
+    write_record(
+        &missing_record,
+        &release_record_json_with_php_extensions(&missing_sha256, missing_size),
+    )?;
+
+    let directory_module = tempdir.path().join("directory-module.tar.gz");
+    write_mixed_archive(
+        &directory_module,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+        ],
+        &["php-8.4.20-pv1/lib/php/extensions/redis.so/"],
+    )?;
+    let (directory_sha256, directory_size) = archive_digest_and_size(&directory_module)?;
+    let directory_record = tempdir.path().join("directory-module.json");
+    write_record(
+        &directory_record,
+        &release_record_json_with_php_extensions(&directory_sha256, directory_size),
+    )?;
+
+    assert_debug_snapshot!((
+        unit_validation_outcome(
+            validate_archive_for_record_file(&missing_module, &missing_record),
+            tempdir.path(),
+        ),
+        unit_validation_outcome(
+            validate_archive_for_record_file(&directory_module, &directory_record),
+            tempdir.path(),
+        ),
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn archive_validation_rejects_php_extension_records_without_matching_artifact_metadata()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let missing_metadata = tempdir.path().join("missing-extension-metadata.tar.gz");
+    write_archive(
+        &missing_metadata,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+            (
+                "php-8.4.20-pv1/lib/php/extensions/redis.so",
+                b"redis" as &[u8],
+            ),
+        ],
+    )?;
+    let (missing_sha256, missing_size) = archive_digest_and_size(&missing_metadata)?;
+    let missing_record = tempdir.path().join("missing-extension-metadata.json");
+    write_record(
+        &missing_record,
+        &release_record_json_with_php_extensions(&missing_sha256, missing_size),
+    )?;
+    let mismatched_metadata = tempdir.path().join("mismatched-extension-metadata.tar.gz");
+    write_archive(
+        &mismatched_metadata,
+        &[
+            ("php-8.4.20-pv1/LICENSE", b"license" as &[u8]),
+            ("php-8.4.20-pv1/NOTICE", b"notice" as &[u8]),
+            ("php-8.4.20-pv1/bin/php", b"php" as &[u8]),
+            (
+                "php-8.4.20-pv1/lib/php/extensions/redis.so",
+                b"redis" as &[u8],
+            ),
+            (
+                "php-8.4.20-pv1/share/pv/php-extensions.json",
+                br#"[{"name":"xdebug","load_kind":"zend_extension","path":"lib/php/extensions/xdebug.so"}]"#
+                    as &[u8],
+            ),
+        ],
+    )?;
+    let (mismatched_sha256, mismatched_size) = archive_digest_and_size(&mismatched_metadata)?;
+    let mismatched_record = tempdir.path().join("mismatched-extension-metadata.json");
+    write_record(
+        &mismatched_record,
+        &release_record_json_with_php_extensions(&mismatched_sha256, mismatched_size),
+    )?;
+
+    assert_debug_snapshot!(
+        (
+            unit_validation_outcome(
+                validate_archive_for_record_file(&missing_metadata, &missing_record),
+                tempdir.path(),
+            ),
+            unit_validation_outcome(
+                validate_archive_for_record_file(&mismatched_metadata, &mismatched_record),
+                tempdir.path(),
+            ),
+        ),
+        @r###"
+    (
+        Err(
+            (
+                "InvalidArchive",
+                "missing-extension-metadata.tar.gz",
+                "missing PHP extension metadata `share/pv/php-extensions.json` for advertised PHP extensions",
+            ),
+        ),
+        Err(
+            (
+                "InvalidArchive",
+                "mismatched-extension-metadata.tar.gz",
+                "PHP extension metadata `share/pv/php-extensions.json` does not match release record php_extensions",
+            ),
+        ),
+    )
+    "###
+    );
+
+    Ok(())
+}
+
+#[test]
 fn archive_validation_runs_smoke_hook_against_extracted_archive_root() -> Result<()> {
     let tempdir = tempdir()?;
     let archive = tempdir.path().join("redis.tar.gz");
@@ -306,6 +438,41 @@ fn write_directory_archive(path: &Utf8Path, entries: &[&str]) -> Result<()> {
 
 #[expect(
     clippy::disallowed_types,
+    reason = "release tooling tests create mixed fixture archives directly"
+)]
+fn write_mixed_archive(
+    path: &Utf8Path,
+    files: &[(&str, &[u8])],
+    directories: &[&str],
+) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+
+    for directory in directories {
+        let mut header = Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_entry_type(EntryType::Directory);
+        header.set_cksum();
+        builder.append_data(&mut header, directory, &[] as &[u8])?;
+    }
+
+    for (path, content) in files {
+        let mut header = Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, *content)?;
+    }
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
     reason = "release tooling tests create malformed fixture archives directly"
 )]
 fn write_unchecked_path_archive(path: &Utf8Path, entry_path: &str, content: &[u8]) -> Result<()> {
@@ -414,6 +581,41 @@ fn release_record_json(sha256: &str, size: u64) -> String {
     "source_url": "https://download.redis.io/releases/redis-7.2.5.tar.gz",
     "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "recipe": "release/artifacts/recipes/redis/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }}
+}}"#,
+    )
+}
+
+fn release_record_json_with_php_extensions(sha256: &str, size: u64) -> String {
+    php_release_record_json(sha256, size).replacen(
+        "  \"provenance\": {",
+        "  \"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    )
+}
+
+fn php_release_record_json(sha256: &str, size: u64) -> String {
+    format!(
+        r#"{{
+  "resource": "php",
+  "track": "8.4",
+  "upstream_version": "8.4.20",
+  "pv_build_revision": "pv1",
+  "artifact_version": "8.4.20-pv1",
+  "platform": "darwin-arm64",
+  "object_key": "resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+  "sha256": "{sha256}",
+  "size": {size},
+  "published_at": "2026-06-06T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": ["LICENSE"],
+  "notice_files": ["NOTICE"],
+  "provenance": {{
+    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "recipe": "release/artifacts/recipes/php/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "local-test"
   }}

@@ -11,7 +11,7 @@ use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runti
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
-use state::{Database, JobStatus, ProjectRecord, PvPaths, StateError};
+use state::{Database, JobStatus, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
@@ -501,8 +501,7 @@ async fn complete_update_job_inner(
         return Ok(unchanged_update_summary(&report));
     }
 
-    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
-    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    let project_report = reconcile_system_projects_and_resources(paths, runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
 
@@ -594,8 +593,7 @@ async fn complete_system_reconciliation(
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
-    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    let project_report = reconcile_system_projects_and_resources(paths, runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let mut database = Database::open(paths)?;
@@ -612,7 +610,7 @@ async fn complete_project_reconciliation(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
     let project_env_summary =
-        reconcile_project_env_for_runtime_catalog(paths, id.as_str(), runtime_catalog).await?;
+        reconcile_project_env_and_missing_resources(paths, id.as_str(), runtime_catalog).await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
@@ -624,6 +622,33 @@ async fn complete_project_reconciliation(
     database.complete_job(job_id, &summary)?;
 
     Ok(summary)
+}
+
+async fn reconcile_project_env_and_missing_resources(
+    paths: &PvPaths,
+    project_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
+    let summary =
+        reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await?;
+    if !summary.requested_php_extensions() || !missing_gateway_runtime_resource(paths)? {
+        return Ok(summary);
+    }
+
+    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await
+}
+
+fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    Ok(database
+        .managed_resource_tracks()?
+        .into_iter()
+        .any(|record| {
+            gateway_runtime_resource(&record.resource_name)
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.current_artifact_path.is_none()
+        }))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -659,6 +684,15 @@ async fn reconcile_system_projects(
     }
 
     Ok(report)
+}
+
+async fn reconcile_system_projects_and_resources(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<SystemProjectReconciliationReport, DaemonError> {
+    reconcile_system_projects(paths, runtime_catalog).await?;
+    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
+    reconcile_system_projects(paths, runtime_catalog).await
 }
 
 async fn reconcile_project_env_for_runtime_catalog(
@@ -958,15 +992,18 @@ async fn run_started_job(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io;
+    use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
+    use std::process;
     use std::task::{Context, Poll};
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use futures_util::StreamExt;
     use serde_json::json;
-    use state::{Database, JobStatus, PvPaths, StateError, UpdateLock};
+    use state::{Database, JobStatus, LinkProjectInput, PvPaths, StateError, UpdateLock};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::oneshot;
     use tokio::time::{Duration, timeout};
@@ -974,11 +1011,107 @@ mod tests {
     use super::{
         complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
         enqueue_reconciliation_job, foreground_reconciliation_result,
+        reconcile_project_env_and_missing_resources, reconcile_system_projects_and_resources,
         record_background_reconciliation_error, run_background_reconciliation_job,
         start_reconciliation_job, stream_started_reconciliation_job,
         write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
+
+    const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+    const PHP_TEST_TRACK: &str = "8.5";
+    const PHP_TEST_ARTIFACT_VERSION: &str = "8.5.0-pv1";
+    const PHP_TEST_ARCHIVE_FILE_NAME: &str = "php-8.5.0-pv1-any.tar.gz";
+    const FRANKENPHP_TEST_ARCHIVE_FILE_NAME: &str = "frankenphp-8.5.0-pv1-any.tar.gz";
+
+    #[tokio::test]
+    async fn system_reconciliation_refreshes_php_extensions_after_missing_php_install()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "php:\n  version: \"8.5\"\n  extensions: [redis]\n",
+        )?;
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let mut database = Database::open(&paths)?;
+        database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let catalog =
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
+                OFFLINE_TEST_MANIFEST_URL,
+            );
+
+        reconcile_system_projects_and_resources(&paths, Some(&catalog)).await?;
+
+        let database = Database::open(&paths)?;
+        let project = database
+            .projects()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
+
+        assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
+        assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
+        assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
+        assert!(project.php_runtime.ignored_extensions.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_reconciliation_refreshes_php_extensions_after_missing_php_install()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "php:\n  version: \"8.5\"\n  extensions: [redis]\n",
+        )?;
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let mut database = Database::open(&paths)?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let catalog =
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
+                OFFLINE_TEST_MANIFEST_URL,
+            );
+
+        reconcile_project_env_and_missing_resources(&paths, &linked.project.id, Some(&catalog))
+            .await?;
+
+        let database = Database::open(&paths)?;
+        let project = database
+            .project_by_id(&linked.project.id)?
+            .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
+
+        assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
+        assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
+        assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
+        assert!(project.php_runtime.ignored_extensions.is_empty());
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn stream_write_error_is_returned_after_job_completion_is_persisted() -> anyhow::Result<()>
@@ -1429,6 +1562,242 @@ mod tests {
 
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
+        let php = CachedArtifact::new(
+            "php",
+            PHP_TEST_ARCHIVE_FILE_NAME,
+            PHP_TEST_ARTIFACT_VERSION,
+            seed_php_archive,
+        );
+        let frankenphp = CachedArtifact::new(
+            "frankenphp",
+            FRANKENPHP_TEST_ARCHIVE_FILE_NAME,
+            PHP_TEST_ARTIFACT_VERSION,
+            seed_frankenphp_archive,
+        );
+        let php = cache_artifact(paths, tempdir, php)?;
+        let frankenphp = cache_artifact(paths, tempdir, frankenphp)?;
+        let manifest = php_pair_manifest(&[php, frankenphp]);
+
+        state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    struct CachedArtifact {
+        resource_name: &'static str,
+        archive_file_name: &'static str,
+        artifact_version: &'static str,
+        seed_archive: fn(&Utf8Path, &Utf8Path) -> anyhow::Result<()>,
+    }
+
+    impl CachedArtifact {
+        fn new(
+            resource_name: &'static str,
+            archive_file_name: &'static str,
+            artifact_version: &'static str,
+            seed_archive: fn(&Utf8Path, &Utf8Path) -> anyhow::Result<()>,
+        ) -> Self {
+            Self {
+                resource_name,
+                archive_file_name,
+                artifact_version,
+                seed_archive,
+            }
+        }
+    }
+
+    struct CachedManifestArtifact {
+        artifact: CachedArtifact,
+        sha256: String,
+        size: u64,
+    }
+
+    fn cache_artifact(
+        paths: &PvPaths,
+        tempdir: &Utf8Path,
+        artifact: CachedArtifact,
+    ) -> anyhow::Result<CachedManifestArtifact> {
+        let archive_path = tempdir.join(artifact.archive_file_name);
+
+        (artifact.seed_archive)(tempdir, &archive_path)?;
+        let sha256 = sha256_file(&archive_path)?;
+        let cache_path = paths
+            .downloads()
+            .join(format!("{sha256}-{}", artifact.archive_file_name));
+
+        copy_file(&archive_path, &cache_path)?;
+
+        Ok(CachedManifestArtifact {
+            artifact,
+            sha256,
+            size: file_size(&cache_path)?,
+        })
+    }
+
+    fn seed_php_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> anyhow::Result<()> {
+        let archive_parent = tempdir.join("php-archive");
+        let root_name = format!("php-{PHP_TEST_ARTIFACT_VERSION}");
+        let root = archive_parent.join(&root_name);
+        let executable = root.join("bin/php");
+
+        state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
+        set_executable(&executable)?;
+        state::fs::write_sensitive_file(
+            &root.join("share/pv/php-extensions.json"),
+            r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+        )?;
+        state::fs::write_sensitive_file(&root.join("lib/php/extensions/redis.so"), "")?;
+        create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    fn seed_frankenphp_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> anyhow::Result<()> {
+        let archive_parent = tempdir.join("frankenphp-archive");
+        let root_name = format!("frankenphp-{PHP_TEST_ARTIFACT_VERSION}");
+        let root = archive_parent.join(&root_name);
+        let executable = root.join("bin/frankenphp");
+
+        state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
+        set_executable(&executable)?;
+        create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    fn php_pair_manifest(artifacts: &[CachedManifestArtifact]) -> String {
+        let resources = artifacts
+            .iter()
+            .map(php_pair_manifest_resource)
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+{resources}
+  ]
+}}
+"#
+        )
+    }
+
+    fn php_pair_manifest_resource(cached: &CachedManifestArtifact) -> String {
+        let artifact = cached.artifact;
+
+        format!(
+            r#"    {{
+      "name": "{resource_name}",
+      "default_track": "{track}",
+      "tracks": [
+        {{
+          "name": "{track}",
+          "artifacts": [
+            {{
+              "artifact_version": "{artifact_version}",
+              "upstream_version": "{track}",
+              "pv_build_revision": "1",
+              "platform": "any",
+              "url": "https://artifacts.example.test/{archive_file_name}",
+              "sha256": "{sha256}",
+              "size": {size},
+              "published_at": "2026-06-08T00:00:00Z"
+            }}
+          ]
+        }}
+      ]
+    }}"#,
+            resource_name = artifact.resource_name,
+            track = PHP_TEST_TRACK,
+            artifact_version = artifact.artifact_version,
+            archive_file_name = artifact.archive_file_name,
+            sha256 = cached.sha256,
+            size = cached.size,
+        )
+    }
+
+    fn create_archive(
+        archive_parent: &Utf8Path,
+        archive_path: &Utf8Path,
+        root_name: &str,
+    ) -> anyhow::Result<()> {
+        run_fixture_command(
+            "tar",
+            &[
+                "-czf",
+                archive_path.as_str(),
+                "-C",
+                archive_parent.as_str(),
+                root_name,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn sha256_file(path: &Utf8Path) -> anyhow::Result<String> {
+        let output = run_fixture_command("shasum", &["-a", "256", path.as_str()])
+            .or_else(|_error| run_fixture_command("sha256sum", &[path.as_str()]))?;
+        let text = String::from_utf8(output)?;
+        let Some(sha256) = text.split_whitespace().next() else {
+            anyhow::bail!("shasum output did not include a sha256 digest");
+        };
+
+        Ok(sha256.to_string())
+    }
+
+    #[expect(
+        clippy::disallowed_types,
+        reason = "daemon jobs tests shell out to build archive fixtures without extra dev-dependencies"
+    )]
+    fn run_fixture_command(program: &str, args: &[&str]) -> anyhow::Result<Vec<u8>> {
+        let output = process::Command::new(program)
+            .env("COPYFILE_DISABLE", "1")
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "fixture command `{program}` failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(output.stdout)
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "daemon jobs tests seed cached artifact fixtures directly"
+    )]
+    fn copy_file(from: &Utf8Path, to: &Utf8Path) -> anyhow::Result<()> {
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(from, to)?;
+
+        Ok(())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "daemon jobs tests read fixture archive metadata for manifest size"
+    )]
+    fn file_size(path: &Utf8Path) -> anyhow::Result<u64> {
+        Ok(fs::metadata(path)?.len())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "daemon jobs tests set fixture executable bits directly"
+    )]
+    fn set_executable(path: &Utf8Path) -> anyhow::Result<()> {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+
+        Ok(())
     }
 
     #[expect(

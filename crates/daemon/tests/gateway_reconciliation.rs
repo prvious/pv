@@ -558,7 +558,7 @@ document_root: public
     let database = Database::open(&paths)?;
     assert!(!database.assigned_ports()?.iter().any(|port| matches!(
         &port.owner,
-        PortOwner::PhpWorker { php_track } if php_track == "8.4"
+        PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.4"
     )));
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
@@ -828,6 +828,56 @@ document_root: public
 
     assert!(worker_83_alive);
     assert!(!worker_84_alive);
+
+    Ok(())
+}
+
+#[test]
+fn gateway_runtime_plan_skips_invalid_config_fallback_when_persisted_loaded_extension_metadata_is_missing()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+
+    create_project(&project_root, "php: [\n")?;
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root,
+        primary_hostname: "acme.test".to_owned(),
+        config_path: tempdir.path().join("acme/pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.replace_project_php_runtime(
+        &project.project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_owned(),
+            requested_extensions: vec!["redis".to_owned()],
+            loaded_extensions: vec!["redis".to_owned()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    seed_installed_php_with_extensions(&paths, "8.4", &[])?;
+
+    let plan = build_runtime_plan(&paths)?;
+    let database = Database::open(&paths)?;
+    let observed = database
+        .project_env_observed_state(&project.project.id)?
+        .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
+
+    assert!(plan.workers.is_empty());
+    assert!(matches!(
+        observed.status,
+        state::ProjectEnvObservedStatus::Failed
+    ));
+    assert!(
+        observed
+            .message
+            .as_deref()
+            .is_some_and(|message| { message.contains("persisted PHP extension `redis`") })
+    );
 
     Ok(())
 }
@@ -1144,6 +1194,37 @@ document_root: public
 }
 
 #[test]
+fn gateway_runtime_plan_groups_projects_by_php_track_and_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let acme = create_project_with_config(
+        tempdir.path(),
+        "acme",
+        "php:\n  version: 8.4\n  extensions: [redis]\n",
+    )?;
+    let api = create_project_with_config(
+        tempdir.path(),
+        "api",
+        "php:\n  version: 8.4\n  extensions: [xdebug, redis]\n",
+    )?;
+    let release = seed_installed_php_with_extensions(&paths, "8.4", &["redis", "xdebug"])?;
+    seed_installed_frankenphp_with_extensions(&paths, "8.4", &release, &["redis", "xdebug"])?;
+    link_project_record(&paths, &acme, "acme.test", Some("8.4"))?;
+    link_project_record(&paths, &api, "api.test", Some("8.4"))?;
+
+    let plan = daemon::gateway::build_runtime_plan(&paths)?;
+    let runtime_keys = plan
+        .workers
+        .iter()
+        .map(|worker| worker.runtime_key.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(runtime_keys, ["8.4+redis", "8.4+redis+xdebug"]);
+
+    Ok(())
+}
+
+#[test]
 fn runtime_plan_resolves_latest_php_track_from_cached_manifest() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1345,7 +1426,8 @@ fn frankenphp_command_and_process_specs_are_stable() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let command = FrankenphpCommand::new(tempdir.path().join("frankenphp"));
     let gateway = gateway_process_spec(&paths, &command);
-    let worker = worker_process_spec(&paths, "8.4", &command)?;
+    let worker_plan = php_worker_plan("8.4");
+    let worker = worker_process_spec(&paths, &worker_plan, &command, tempdir.path())?;
 
     assert_eq!(
         gateway
@@ -1564,7 +1646,9 @@ exit 0
     let paths = PvPaths::for_home(root.join("home"));
     let expected_phprc = paths.resources().join("php/8.4/etc").to_string();
     let expected_scan_dir = paths.resources().join("php/8.4/etc/conf.d").to_string();
-    let private_environment = worker_process_spec(&paths, "8.4", &command)?.private_environment;
+    let worker_plan = php_worker_plan("8.4");
+    let private_environment =
+        worker_process_spec(&paths, &worker_plan, &command, root)?.private_environment;
 
     validate_config(&command, &config_path, &private_environment).await?;
 
@@ -1587,6 +1671,18 @@ fn create_project(project_root: &Utf8Path, config_source: &str) -> Result<()> {
     Ok(())
 }
 
+fn create_project_with_config(
+    workspace_root: &Utf8Path,
+    project_name: &str,
+    config_source: &str,
+) -> Result<camino::Utf8PathBuf> {
+    let project_root = workspace_root.join(project_name);
+
+    create_project(&project_root, config_source)?;
+
+    Ok(project_root)
+}
+
 fn create_project_without_config(project_root: &Utf8Path, public_directory: bool) -> Result<()> {
     let index_path = if public_directory {
         project_root.join("public/index.php")
@@ -1596,6 +1692,16 @@ fn create_project_without_config(project_root: &Utf8Path, public_directory: bool
     fs::write_sensitive_file(&index_path, "<?php\n")?;
 
     Ok(())
+}
+
+fn php_worker_plan(runtime_key: &str) -> daemon::gateway::PhpWorkerRuntimePlan {
+    daemon::gateway::PhpWorkerRuntimePlan {
+        php_track: "8.4".to_owned(),
+        runtime_key: runtime_key.to_owned(),
+        loaded_modules: Vec::new(),
+        port: RUNTIME_PORT_FALLBACK_START,
+        projects: Vec::new(),
+    }
 }
 
 fn write_failing_validator(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
@@ -1832,6 +1938,88 @@ fn seed_stable_runtime_plan_ports(database: &mut Database, php_tracks: &[&str]) 
     }
 
     Ok(())
+}
+
+fn link_project_record(
+    paths: &PvPaths,
+    project_root: &Utf8Path,
+    primary_hostname: &str,
+    desired_php_track: Option<&str>,
+) -> Result<()> {
+    let mut database = Database::open(paths)?;
+
+    database.link_project(LinkProjectInput {
+        path: project_root.to_path_buf(),
+        original_path: project_root.to_path_buf(),
+        primary_hostname: primary_hostname.to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: desired_php_track.map(str::to_owned),
+        additional_hostnames: Vec::new(),
+    })?;
+
+    Ok(())
+}
+
+fn seed_installed_php_with_extensions(
+    paths: &PvPaths,
+    track: &str,
+    extensions: &[&str],
+) -> Result<camino::Utf8PathBuf> {
+    let release = paths
+        .home()
+        .join(format!("{track}-php-release"))
+        .to_path_buf();
+    let metadata = extension_metadata(extensions)?;
+    let mut database = Database::open(paths)?;
+
+    fs::write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
+    fs::write_sensitive_file(&release.join("share/pv/php-extensions.json"), &metadata)?;
+    for extension in extensions {
+        fs::write_sensitive_file(
+            &release.join(format!("lib/php/extensions/{extension}.so")),
+            "",
+        )?;
+    }
+    database.record_managed_resource_track_installed("php", track, "8.4.8-pv1", &release)?;
+
+    Ok(release)
+}
+
+fn seed_installed_frankenphp_with_extensions(
+    paths: &PvPaths,
+    track: &str,
+    release: &Utf8Path,
+    extensions: &[&str],
+) -> Result<()> {
+    let metadata = extension_metadata(extensions)?;
+    let mut database = Database::open(paths)?;
+
+    fs::write_sensitive_file(&release.join("bin/frankenphp"), "#!/bin/sh\n")?;
+    fs::write_sensitive_file(&release.join("share/pv/php-extensions.json"), &metadata)?;
+    for extension in extensions {
+        fs::write_sensitive_file(
+            &release.join(format!("lib/php/extensions/{extension}.so")),
+            "",
+        )?;
+    }
+    database.record_managed_resource_track_installed("frankenphp", track, "8.4.8-pv1", release)?;
+
+    Ok(())
+}
+
+fn extension_metadata(extensions: &[&str]) -> Result<String> {
+    let modules = extensions
+        .iter()
+        .map(|extension| {
+            json!({
+                "name": extension,
+                "load_kind": if *extension == "xdebug" { "zend_extension" } else { "extension" },
+                "path": format!("lib/php/extensions/{extension}.so"),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::to_string(&modules)?)
 }
 
 fn seed_runtime_ports(

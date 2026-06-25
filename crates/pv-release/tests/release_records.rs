@@ -113,6 +113,79 @@ fn release_records_parse_additional_source_inputs() -> Result<()> {
 }
 
 #[test]
+fn release_records_parse_php_extension_metadata() -> Result<()> {
+    let record_with_php_extensions = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    },\n    {\n      \"name\": \"xdebug\",\n      \"load_kind\": \"zend_extension\",\n      \"path\": \"lib/php/extensions/xdebug.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    );
+
+    let record = ReleaseRecord::from_json(
+        Utf8Path::new("frankenphp-with-extensions.json"),
+        &record_with_php_extensions,
+    )?;
+
+    assert_debug_snapshot!(record);
+
+    Ok(())
+}
+
+#[test]
+fn release_records_reject_invalid_php_extension_metadata() -> Result<()> {
+    let valid = release_record_with_php_extensions();
+    let cases = [
+        (
+            "empty_name",
+            valid.replace("\"name\": \"redis\"", "\"name\": \"\""),
+        ),
+        (
+            "invalid_load_kind",
+            valid.replace("\"load_kind\": \"extension\"", "\"load_kind\": \"module\""),
+        ),
+        (
+            "empty_path",
+            valid.replace(
+                "\"path\": \"lib/php/extensions/redis.so\"",
+                "\"path\": \"\"",
+            ),
+        ),
+        (
+            "current_dir_path",
+            valid.replace(
+                "\"path\": \"lib/php/extensions/redis.so\"",
+                "\"path\": \".\"",
+            ),
+        ),
+        (
+            "parent_path",
+            valid.replace(
+                "\"path\": \"lib/php/extensions/redis.so\"",
+                "\"path\": \"../redis.so\"",
+            ),
+        ),
+        (
+            "duplicate_name",
+            valid.replace("\"name\": \"xdebug\"", "\"name\": \"redis\""),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, json)| {
+        Ok((
+            name,
+            release_record_error(ReleaseRecord::from_json(
+                Utf8Path::new("invalid-php-extension.json"),
+                &json,
+            ))?,
+        ))
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(cases);
+
+    Ok(())
+}
+
+#[test]
 fn release_records_reject_invalid_source_inputs() -> Result<()> {
     let invalid_name = FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS
         .replace("\"name\": \"php\"", "\"name\": \"PHP source\"");
@@ -132,6 +205,34 @@ fn release_records_reject_invalid_source_inputs() -> Result<()> {
     ));
 
     Ok(())
+}
+
+#[test]
+fn release_records_reject_php_extensions_for_non_php_resources() -> Result<()> {
+    let invalid = VALID_RELEASE_RECORD.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    );
+    let error = release_record_error(ReleaseRecord::from_json(
+        Utf8Path::new("redis.json"),
+        &invalid,
+    ))?;
+
+    assert!(
+        matches!(error, ReleaseError::InvalidReleaseRecord { ref reason, .. } if reason.contains("php_extensions are only supported on php or frankenphp artifacts")),
+        "non-PHP php_extensions should be rejected, got {error:?}",
+    );
+
+    Ok(())
+}
+
+fn release_record_with_php_extensions() -> String {
+    FRANKENPHP_RELEASE_RECORD_WITH_SOURCE_INPUTS.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    },\n    {\n      \"name\": \"xdebug\",\n      \"load_kind\": \"zend_extension\",\n      \"path\": \"lib/php/extensions/xdebug.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    )
 }
 
 #[test]

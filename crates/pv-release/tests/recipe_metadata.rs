@@ -180,6 +180,22 @@ fn committed_recipe_metadata_parses() -> Result<()> {
 }
 
 #[test]
+fn php_recipe_splits_default_and_optional_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let php = write_php_recipe(&tempdir)?;
+    let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
+
+    assert!(env.contains("PV_DEFAULT_EXTENSIONS='bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip'"));
+    assert!(env.contains(
+        "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml'"
+    ));
+    assert!(env.contains("PV_EXPECTED_EXTENSIONS='bcmath,ctype,curl"));
+    assert!(!env.contains("PV_BUILD_EXTENSIONS=''"));
+
+    Ok(())
+}
+
+#[test]
 fn committed_redis_recipe_collects_current_notice_inputs() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let build_script = read_file(&workspace_root.join("release/artifacts/recipes/redis/build.sh"))?;
@@ -447,23 +463,35 @@ fn recipe_metadata_rejects_invalid_shapes() -> Result<()> {
 
 #[test]
 fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
-    let invalid_deployment_target = VALID_PHP_TOML.replace(
+    let invalid_deployment_target = VALID_PHP_TOML.replacen(
         "deployment_target = \"13.0\"",
         "deployment_target = \"14.0\"",
+        1,
     );
     let php_version_without_patch =
-        VALID_PHP_TOML.replace("php_version = \"8.4.20\"", "php_version = \"8.4\"");
+        VALID_PHP_TOML.replacen("php_version = \"8.4.20\"", "php_version = \"8.4\"", 1);
     let unexpected_expected_extension =
-        VALID_PHP_TOML.replace("\"zlib\"]", "\"zlib\", \"xdebug\"]");
+        VALID_PHP_TOML.replacen("\"zlib\"]", "\"zlib\", \"xdebug\"]", 1);
+    let duplicate_default_extension = VALID_PHP_TOML.replacen(
+        "\"bcmath\", \"curl\"",
+        "\"bcmath\", \"bcmath\", \"curl\"",
+        1,
+    );
+    let invalid_default_extension =
+        VALID_PHP_TOML.replacen("\"bcmath\", \"curl\"", "\"bad-extension\", \"curl\"", 1);
+    let overlapping_optional_extension =
+        VALID_PHP_TOML.replacen("\"redis\", \"sqlsrv\"", "\"bcmath\", \"sqlsrv\"", 1);
     let empty_license_files =
-        VALID_PHP_TOML.replace("license_files = [\"LICENSE\"]", "license_files = []");
-    let unsafe_license_file = VALID_PHP_TOML.replace(
+        VALID_PHP_TOML.replacen("license_files = [\"LICENSE\"]", "license_files = []", 1);
+    let unsafe_license_file = VALID_PHP_TOML.replacen(
         "license_files = [\"LICENSE\"]",
         "license_files = [\"../LICENSE\"]",
+        1,
     );
-    let unsafe_notice_file = VALID_PHP_TOML.replace(
+    let unsafe_notice_file = VALID_PHP_TOML.replacen(
         "notice_files = [\"NOTICE\"]",
         "notice_files = [\"../NOTICE\"]",
+        1,
     );
 
     assert_debug_snapshot!((
@@ -478,6 +506,18 @@ fn recipe_metadata_rejects_strict_php_metadata() -> Result<()> {
         PhpRecipe::from_toml(
             Utf8Path::new("unexpected-expected-extension.toml"),
             &unexpected_expected_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("duplicate-default-extension.toml"),
+            &duplicate_default_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("invalid-default-extension.toml"),
+            &invalid_default_extension,
+        ),
+        PhpRecipe::from_toml(
+            Utf8Path::new("overlapping-optional-extension.toml"),
+            &overlapping_optional_extension,
         ),
         PhpRecipe::from_toml(
             Utf8Path::new("empty-license-files.toml"),
@@ -750,8 +790,9 @@ fn assert_default_track(
 
 fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
     let actual = php
-        .build_extensions()
+        .default_extensions()
         .iter()
+        .chain(php.optional_extensions())
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     let required = [
@@ -777,6 +818,7 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "redis",
         "session",
         "simplexml",
+        "sockets",
         "sodium",
         "sqlite3",
         "sqlsrv",
@@ -838,6 +880,12 @@ fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+fn write_php_recipe(tempdir: &camino_tempfile::Utf8TempDir) -> Result<camino::Utf8PathBuf> {
+    let php = tempdir.path().join("tracks.toml");
+    write_file(&php, VALID_PHP_TOML)?;
+    Ok(php)
+}
+
 const VALID_PHP_TOML: &str = r#"
 [recipe]
 resources = ["php", "frankenphp"]
@@ -850,8 +898,9 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-build_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "redis", "sodium", "sqlsrv", "zip"]
-expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "phar", "posix", "redis", "session", "simplexml", "sodium", "sqlite3", "sqlsrv", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+default_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sockets", "sodium", "zip"]
+optional_extensions = ["redis", "sqlsrv", "pdo_sqlsrv", "xdebug", "apcu", "pcov", "imagick", "mongodb", "yaml"]
+expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sockets", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]
 version = "1.12.3"

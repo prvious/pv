@@ -9,7 +9,12 @@ expression: "(updated.path.file_name(), updated.exists, updated.config)"
     true,
     ProjectConfig {
         php: Some(
-            "latest",
+            PhpConfig {
+                version: Some(
+                    "latest",
+                ),
+                extensions: [],
+            },
         ),
         document_root: None,
         hostnames: [],

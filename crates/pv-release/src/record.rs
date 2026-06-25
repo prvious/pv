@@ -1,7 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use resources::{
-    ArtifactPlatform, ArtifactVersion, PublishedAt, PvVersion, ResourceName, ResourcesError,
-    Sha256Digest, TrackName,
+    ArtifactPlatform, ArtifactVersion, PHP_EXTENSION_METADATA_PATH, PublishedAt, PvVersion,
+    ResourceName, ResourcesError, Sha256Digest, TrackName,
 };
 use serde::Deserialize;
 use std::collections::btree_map::Entry;
@@ -35,7 +35,16 @@ pub struct ReleaseRecord {
     minimum_pv_version: PvVersion,
     license_files: Vec<String>,
     notice_files: Vec<String>,
+    php_extensions: Vec<PhpExtensionRecord>,
     provenance: Provenance,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PhpExtensionRecord {
+    name: String,
+    load_kind: String,
+    path: String,
 }
 
 #[derive(Clone)]
@@ -75,6 +84,8 @@ struct RawReleaseRecord {
     license_files: Vec<String>,
     #[serde(default)]
     notice_files: Vec<String>,
+    #[serde(default)]
+    php_extensions: Vec<PhpExtensionRecord>,
     provenance: Provenance,
 }
 
@@ -172,11 +183,13 @@ impl ReleaseRecord {
         validate_relative_file_list(path, "notice_files", &raw.notice_files)?;
         validate_relative_path(path, "object_key", &raw.object_key)?;
         validate_object_key_layout(path, &raw)?;
+        let resource = ResourceName::new(raw.resource.clone())
+            .map_err(|error| invalid_release_identity(path, "resource", error))?;
+        validate_php_extensions(path, &resource, &raw.php_extensions)?;
         raw.provenance.validate(path)?;
 
         let identity = ArtifactIdentity {
-            resource: ResourceName::new(raw.resource)
-                .map_err(|error| invalid_release_identity(path, "resource", error))?,
+            resource,
             track: TrackName::new(raw.track)
                 .map_err(|error| invalid_release_identity(path, "track", error))?,
             upstream_version: require_non_empty_release(
@@ -211,6 +224,7 @@ impl ReleaseRecord {
                 .map_err(|error| invalid_release_identity(path, "minimum_pv_version", error))?,
             license_files: raw.license_files,
             notice_files: raw.notice_files,
+            php_extensions: raw.php_extensions,
             provenance: raw.provenance,
         })
     }
@@ -275,6 +289,10 @@ impl ReleaseRecord {
         &self.notice_files
     }
 
+    pub fn php_extensions(&self) -> &[PhpExtensionRecord] {
+        &self.php_extensions
+    }
+
     pub fn verify_archive(
         &self,
         validation: &crate::archive::ArchiveValidation,
@@ -295,7 +313,74 @@ impl ReleaseRecord {
             });
         }
 
+        for extension in &self.php_extensions {
+            let expected = format!("{}/{}", validation.root(), extension.path);
+            if !validation.has_regular_file(&expected) {
+                return Err(crate::ReleaseError::InvalidArchive {
+                    path: validation.archive_path().to_string(),
+                    reason: format!(
+                        "missing advertised PHP extension module `{}`",
+                        extension.path
+                    ),
+                });
+            }
+        }
+        self.verify_archive_php_extension_metadata(validation)?;
+
         Ok(())
+    }
+
+    fn verify_archive_php_extension_metadata(
+        &self,
+        validation: &crate::archive::ArchiveValidation,
+    ) -> crate::Result<()> {
+        if self.php_extensions.is_empty() {
+            return Ok(());
+        }
+
+        let metadata_path = format!("{}/{}", validation.root(), PHP_EXTENSION_METADATA_PATH);
+        if !validation.has_regular_file(&metadata_path) {
+            return Err(crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "missing PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}` for advertised PHP extensions"
+                ),
+            });
+        }
+
+        let metadata = validation.read_regular_file_to_string(&metadata_path)?;
+        let archive_extensions = serde_json::from_str::<Vec<PhpExtensionRecord>>(&metadata)
+            .map_err(|error| crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "invalid PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}`: {error}"
+                ),
+            })?;
+        if php_extension_catalog(&archive_extensions) != php_extension_catalog(&self.php_extensions)
+        {
+            return Err(crate::ReleaseError::InvalidArchive {
+                path: validation.archive_path().to_string(),
+                reason: format!(
+                    "PHP extension metadata `{PHP_EXTENSION_METADATA_PATH}` does not match release record php_extensions"
+                ),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+impl PhpExtensionRecord {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn load_kind(&self) -> &str {
+        &self.load_kind
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
     }
 }
 
@@ -563,6 +648,82 @@ fn validate_relative_path(path: &Utf8Path, field: &str, value: &str) -> crate::R
             format!("{field} contains invalid relative path `{value}`"),
         ))
     }
+}
+
+fn validate_php_extensions(
+    path: &Utf8Path,
+    resource: &ResourceName,
+    extensions: &[PhpExtensionRecord],
+) -> crate::Result<()> {
+    if !extensions.is_empty() && !resource_supports_php_extensions(resource) {
+        return Err(invalid_release(
+            path,
+            "php_extensions are only supported on php or frankenphp artifacts",
+        ));
+    }
+
+    let mut names = BTreeSet::new();
+    for extension in extensions {
+        validate_php_extension_name(path, &extension.name)?;
+        validate_php_extension_load_kind(path, &extension.load_kind)?;
+        validate_relative_path(path, "php_extensions.path", &extension.path)?;
+        if !names.insert(extension.name.as_str()) {
+            return Err(invalid_release(
+                path,
+                format!(
+                    "php_extensions contains duplicate extension `{}`",
+                    extension.name
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn resource_supports_php_extensions(resource: &ResourceName) -> bool {
+    matches!(resource.as_str(), "php" | "frankenphp")
+}
+
+fn php_extension_catalog(extensions: &[PhpExtensionRecord]) -> Vec<(String, String, String)> {
+    let mut catalog = extensions
+        .iter()
+        .map(|extension| {
+            (
+                extension.name.clone(),
+                extension.load_kind.clone(),
+                extension.path.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    catalog.sort();
+    catalog
+}
+
+fn validate_php_extension_name(path: &Utf8Path, name: &str) -> crate::Result<()> {
+    let valid = !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if valid {
+        return Ok(());
+    }
+
+    Err(invalid_release(
+        path,
+        format!("php_extensions contains invalid extension `{name}`"),
+    ))
+}
+
+fn validate_php_extension_load_kind(path: &Utf8Path, load_kind: &str) -> crate::Result<()> {
+    if matches!(load_kind, "extension" | "zend_extension") {
+        return Ok(());
+    }
+
+    Err(invalid_release(
+        path,
+        format!("php_extensions contains invalid load kind `{load_kind}`"),
+    ))
 }
 
 fn validate_object_key_layout(path: &Utf8Path, raw: &RawReleaseRecord) -> crate::Result<()> {

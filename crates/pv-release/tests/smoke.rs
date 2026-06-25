@@ -182,6 +182,96 @@ exit 28
 }
 
 #[test]
+fn php_smoke_requires_frankenphp_optional_metadata_names_to_load() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+    let frankenphp_log = tempdir.path().join("frankenphp.log");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(&extension_dir.join("redis.so"), "redis module\n")?;
+    write_file(
+        &metadata_dir.join("php-extensions.json"),
+        r#"[
+  {
+    "name": "redis",
+    "load_kind": "extension",
+    "path": "lib/php/extensions/redis.so"
+  }
+]
+"#,
+    )?;
+    write_file(&frankenphp_log, "")?;
+    write_executable(
+        &artifact_bin.join("frankenphp"),
+        r#"#!/bin/sh
+set -eu
+case "${1:-}" in
+  php-cli)
+    [ "${2:-}" = "-r" ] || exit 99
+    code=${3:-}
+    if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
+      printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
+      printf '%s\n' 'json'
+    else
+      exit 99
+    fi
+    ;;
+  php-server)
+    printf '%s\n' 'php-server' >>"$PV_FRANKENPHP_LOG"
+    exec sleep 60
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+    write_executable(
+        &command_bin.join("curl"),
+        r#"#!/bin/sh
+set -eu
+if grep -F 'php-server' "$PV_FRANKENPHP_LOG" >/dev/null; then
+  printf '%s\n' 'pv-frankenphp-ok'
+  printf '%s\n' 'Configuration File (php.ini) Path => /var/empty/com.prvious.pv/php'
+  exit 0
+fi
+exit 28
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_FRANKENPHP_LOG", &frankenphp_log)
+        .env("PV_UPSTREAM_VERSION", "8.4.20-frankenphp1.12.3")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require FrankenPHP metadata extension names: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(43));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing PHP extension: redis"),
+        "smoke hook should report the missing metadata extension: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_normalizes_realistic_module_output() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -262,6 +352,147 @@ esac
     assert!(
         output.status.success(),
         "smoke hook failed: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_smoke_loads_optional_extensions_from_metadata() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+    let smoke_log = tempdir.path().join("php-smoke.log");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(&extension_dir.join("redis.so"), "redis module\n")?;
+    write_file(&extension_dir.join("xdebug.so"), "xdebug module\n")?;
+    write_file(
+        &metadata_dir.join("php-extensions.json"),
+        r#"[
+  {
+    "name": "redis",
+    "load_kind": "extension",
+    "path": "lib/php/extensions/redis.so"
+  },
+  {
+    "name": "xdebug",
+    "load_kind": "zend_extension",
+    "path": "lib/php/extensions/xdebug.so"
+  }
+]
+"#,
+    )?;
+    write_file(&smoke_log, "")?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v)
+    printf '%s\n' 'PHP 8.4.20 (cli)'
+    ;;
+  --ini)
+    [ -z "${PHP_INI_SCAN_DIR:-}" ] || exit 70
+    printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php'
+    ;;
+  -m)
+    if [ -n "${PHP_INI_SCAN_DIR:-}" ] \
+      && grep -R -F "extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/redis.so" "$PHP_INI_SCAN_DIR" >/dev/null \
+      && grep -R -F "zend_extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/xdebug.so" "$PHP_INI_SCAN_DIR" >/dev/null; then
+      printf '%s\n' optional >>"$PV_TEST_PHP_SMOKE_LOG"
+      printf '%s\n' 'json' 'redis' 'xdebug'
+    else
+      printf '%s\n' default >>"$PV_TEST_PHP_SMOKE_LOG"
+      printf '%s\n' 'json'
+    fi
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let smoke_hook = php_smoke_hook();
+    let output = StdCommand::new(smoke_hook)
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_PHP_SMOKE_LOG", &smoke_log)
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "smoke hook failed: {}",
+        command_output_debug(&output)
+    );
+    let smoke_log = read_file(&smoke_log)?;
+    assert!(
+        smoke_log.contains("optional\n"),
+        "smoke hook should check optional extension metadata: {smoke_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_smoke_rejects_optional_metadata_names_that_do_not_load() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(&extension_dir.join("redis.so"), "redis module\n")?;
+    write_file(
+        &metadata_dir.join("php-extensions.json"),
+        r#"[
+  {
+    "name": "redis",
+    "load_kind": "extension",
+    "path": "lib/php/extensions/redis.so"
+  }
+]
+"#,
+    )?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
+  -m) printf '%s\n' 'json' ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require metadata extension names: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(43));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing PHP extension: redis"),
+        "smoke hook should report the missing metadata extension: {}",
         command_output_debug(&output)
     );
 
@@ -436,7 +667,7 @@ fn php_build_recipe_smoke() -> Result<()> {
     );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json,redis,xdebug][--build-shared=redis,xdebug][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -1608,6 +1839,74 @@ fn php_pair_build_smoke_removes_unmanaged_frankenphp_rpath_before_validation() -
 }
 
 #[test]
+fn php_pair_build_smoke_removes_unmanaged_optional_extension_rpath_before_validation() -> Result<()>
+{
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        extension_macho_rpaths: "@loader_path/../lib\n/usr/local/lib",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    let removed_rpaths_log = run.removed_rpaths_log.replace(&run.out_dir, "<out>");
+    assert!(
+        removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/lib/php/extensions/redis.so|/usr/local/lib"),
+        "PHP optional redis module should have its stale rpath deleted: {removed_rpaths_log}"
+    );
+    assert!(
+        removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/lib/php/extensions/xdebug.so|/usr/local/lib"),
+        "PHP optional xdebug module should have its stale rpath deleted: {removed_rpaths_log}"
+    );
+    assert!(
+        removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/lib/php/extensions/redis.so|/usr/local/lib"),
+        "FrankenPHP optional redis module should have its stale rpath deleted: {removed_rpaths_log}"
+    );
+    assert!(
+        removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/lib/php/extensions/xdebug.so|/usr/local/lib"),
+        "FrankenPHP optional xdebug module should have its stale rpath deleted: {removed_rpaths_log}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_pair_build_smoke_rejects_unmanaged_optional_extension_library() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        extension_macho_libraries: "\t/usr/local/lib/libfoo.dylib (compatibility version 1.0.0, current version 1.0.0)",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "build recipe unexpectedly succeeded: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(
+        run.validate_log, "",
+        "archive validation should not run before optional extension Mach-O validation succeeds"
+    );
+    assert_debug_snapshot!(build_recipe_output_summary(&run), @r#"
+    (
+        false,
+        Some(
+            1,
+        ),
+        "",
+        "error: <out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/lib/php/extensions/redis.so Mach-O linked library references unmanaged runtime path /usr/local/lib/libfoo.dylib\n",
+    )
+    "#);
+
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_accepts_system_and_relative_macho_runtime_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         macho_libraries: "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 2503.1.0)\n\t@rpath/libphp.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@loader_path/../lib/libz.dylib (compatibility version 1.0.0, current version 1.3.1)",
@@ -1639,6 +1938,7 @@ struct BuildRecipeRun {
     curl_log: String,
     validate_log: String,
     deleted_rpath_log: String,
+    removed_rpaths_log: String,
     php_archive_exists: bool,
     frankenphp_archive_exists: bool,
 }
@@ -1726,6 +2026,8 @@ struct BuildRecipeOptions<'a> {
     macho_minos: &'a str,
     macho_libraries: &'a str,
     macho_rpaths: &'a str,
+    extension_macho_libraries: &'a str,
+    extension_macho_rpaths: &'a str,
     frankenphp_macho_libraries: &'a str,
     frankenphp_macho_rpaths: &'a str,
     validate_archive_failure_resource: &'a str,
@@ -2330,6 +2632,8 @@ fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
         macho_minos: "13.0",
         macho_libraries: "",
         macho_rpaths: "",
+        extension_macho_libraries: "",
+        extension_macho_rpaths: "",
         frankenphp_macho_libraries: "",
         frankenphp_macho_rpaths: "",
         validate_archive_failure_resource: "",
@@ -2397,6 +2701,14 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_TEST_MACHO_LIBRARIES", options.macho_libraries)
         .env("PV_TEST_MACHO_MINOS", options.macho_minos)
         .env("PV_TEST_MACHO_RPATHS", options.macho_rpaths)
+        .env(
+            "PV_TEST_EXTENSION_MACHO_LIBRARIES",
+            options.extension_macho_libraries,
+        )
+        .env(
+            "PV_TEST_EXTENSION_MACHO_RPATHS",
+            options.extension_macho_rpaths,
+        )
         .env("PV_TEST_CURL_LOG", &curl_log)
         .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
         .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
@@ -2479,6 +2791,7 @@ fn run_php_build_recipe_smoke_with_options(
         curl_log: read_file(&curl_log)?,
         validate_log: read_file(&validate_log)?,
         deleted_rpath_log: read_file(&deleted_rpath_log)?,
+        removed_rpaths_log: read_file(&removed_rpaths_log)?,
         php_archive_exists: path_exists(&php_archive),
         frankenphp_archive_exists: path_exists(&frankenphp_archive),
     })
@@ -2583,7 +2896,9 @@ PV_SOURCE_URL=$source_url
 PV_SOURCE_SHA256=$source_sha256
 $php_source_env
 PV_EXPECTED_EXTENSIONS=json
-PV_BUILD_EXTENSIONS=json
+PV_DEFAULT_EXTENSIONS=json
+PV_OPTIONAL_EXTENSIONS=redis,xdebug
+PV_BUILD_EXTENSIONS=json,redis,xdebug
 PV_DEPLOYMENT_TARGET=13.0
 PV_PV_BUILD_REVISION=pv1
 PV_MINIMUM_PV_VERSION=0.1.0
@@ -2599,6 +2914,8 @@ EOF
       build_run_id=
       source_inputs_json=
       source_input_count=0
+      php_extensions_json=
+      php_extension_count=0
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --record)
@@ -2629,6 +2946,22 @@ EOF
             shift
             build_run_id=${1:-}
             ;;
+          --php-extension)
+            shift
+            extension_name=${1:-}
+            shift
+            extension_load_kind=${1:-}
+            shift
+            extension_path=${1:-}
+            extension_json="    {\"name\": \"$extension_name\", \"load_kind\": \"$extension_load_kind\", \"path\": \"$extension_path\"}"
+            if [ "$php_extension_count" -eq 0 ]; then
+              php_extensions_json=$extension_json
+            else
+              php_extensions_json="$php_extensions_json,
+$extension_json"
+            fi
+            php_extension_count=$((php_extension_count + 1))
+            ;;
           --source-input)
             shift
             input_name=${1:-}
@@ -2650,7 +2983,11 @@ $input_json"
       done
       mkdir -p "$(dirname "$record")"
       {
-        printf '{\n  "object_key": "%s",\n  "provenance": {\n' "$object_key"
+        printf '{\n  "object_key": "%s",\n' "$object_key"
+        if [ "$php_extension_count" -gt 0 ]; then
+          printf '  "php_extensions": [\n%s\n  ],\n' "$php_extensions_json"
+        fi
+        printf '  "provenance": {\n'
         printf '    "source_url": "%s",\n' "$source_url"
         printf '    "source_sha256": "%s",\n' "$source_sha256"
         if [ "$source_input_count" -gt 0 ]; then
@@ -3429,7 +3766,17 @@ fn write_fake_lipo(path: &Utf8Path) -> Result<()> {
 set -eu
 
 [ "${1:-}" = "-archs" ] || exit 78
-printf '%s\n' "$PV_TEST_LIPO_ARCHS"
+binary=${2:-}
+archs=$PV_TEST_LIPO_ARCHS
+case "$binary" in
+  */lib/php/extensions/*.so)
+    archs=${PV_TEST_EXTENSION_LIPO_ARCHS:-arm64}
+    ;;
+  */bin/frankenphp)
+    archs=${PV_TEST_FRANKENPHP_LIPO_ARCHS:-arm64}
+    ;;
+esac
+printf '%s\n' "$archs"
 "#,
     )
 }
@@ -3442,11 +3789,26 @@ set -eu
 
 binary=${2:-}
 macho_libraries=${PV_TEST_MACHO_LIBRARIES:-}
+macho_minos=${PV_TEST_MACHO_MINOS:-}
 macho_rpaths=${PV_TEST_MACHO_RPATHS:-}
 case "$binary" in
+  */lib/php/extensions/*.so)
+    macho_minos=${PV_TEST_EXTENSION_MACHO_MINOS:-13.0}
+    if [ "${PV_TEST_EXTENSION_MACHO_LIBRARIES+x}" = x ]; then
+      macho_libraries=$PV_TEST_EXTENSION_MACHO_LIBRARIES
+    fi
+    if [ "${PV_TEST_EXTENSION_MACHO_RPATHS+x}" = x ]; then
+      macho_rpaths=$PV_TEST_EXTENSION_MACHO_RPATHS
+    fi
+    ;;
   */bin/frankenphp)
-    macho_libraries=${PV_TEST_FRANKENPHP_MACHO_LIBRARIES:-$macho_libraries}
-    macho_rpaths=${PV_TEST_FRANKENPHP_MACHO_RPATHS:-$macho_rpaths}
+    macho_minos=${PV_TEST_FRANKENPHP_MACHO_MINOS:-13.0}
+    if [ "${PV_TEST_FRANKENPHP_MACHO_LIBRARIES+x}" = x ]; then
+      macho_libraries=$PV_TEST_FRANKENPHP_MACHO_LIBRARIES
+    fi
+    if [ "${PV_TEST_FRANKENPHP_MACHO_RPATHS+x}" = x ]; then
+      macho_rpaths=$PV_TEST_FRANKENPHP_MACHO_RPATHS
+    fi
     ;;
 esac
 
@@ -3463,7 +3825,7 @@ Load command 1
       cmd LC_BUILD_VERSION
   cmdsize 32
  platform MACOS
-    minos $PV_TEST_MACHO_MINOS
+    minos $macho_minos
       sdk 15.0
 EOF
     if [ -n "$macho_rpaths" ]; then
@@ -3889,6 +4251,20 @@ esac
   printf '%s\n' 'missing StaticPHP build target flag' >&2
   exit 78
 }
+for arg in "$@"; do
+  case "$arg" in
+    --build-shared=*)
+      mkdir -p buildroot/lib/php/extensions
+      old_ifs=$IFS
+      IFS=,
+      for extension in ${arg#--build-shared=}; do
+        [ -n "$extension" ] || continue
+        printf '%s\n' "$extension module" >"buildroot/lib/php/extensions/$extension.so"
+      done
+      IFS=$old_ifs
+      ;;
+  esac
+done
 "#,
     )
 }

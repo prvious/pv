@@ -14,6 +14,7 @@ DatabaseInspection {
         "005:project_resource_requirements",
         "006:global_php_default",
         "007:resource_port_roles",
+        "008:project_php_runtime_extensions",
     ],
     tables: [
         "global_php_default_track",

@@ -73,6 +73,55 @@ fn manifest_generator_writes_versioned_manifest_file_locally() -> Result<()> {
 }
 
 #[test]
+fn manifest_generator_includes_php_extension_metadata() -> Result<()> {
+    let tempdir = tempdir()?;
+    let records_dir = tempdir.path().join("records");
+    let revocations_dir = tempdir.path().join("revocations");
+    let output = tempdir.path().join("dist/manifest.json");
+    let php_with_extensions = PHP_8_4_20_ARM64.replacen(
+        "\"provenance\": {",
+        "\"php_extensions\": [\n    {\n      \"name\": \"redis\",\n      \"load_kind\": \"extension\",\n      \"path\": \"lib/php/extensions/redis.so\"\n    },\n    {\n      \"name\": \"xdebug\",\n      \"load_kind\": \"zend_extension\",\n      \"path\": \"lib/php/extensions/xdebug.so\"\n    }\n  ],\n  \"provenance\": {",
+        1,
+    );
+
+    create_dir_all(&records_dir)?;
+    create_dir_all(&revocations_dir)?;
+    write_file(
+        &records_dir.join("php-8.4.20-pv1-darwin-arm64.json"),
+        &php_with_extensions,
+    )?;
+
+    generate_manifest_file(
+        &records_dir,
+        &revocations_dir,
+        &output,
+        "https://artifacts.example.test",
+    )?;
+    let manifest_json = read_file(&output)?;
+    ArtifactManifest::parse(&manifest_json)?;
+    let manifest: Value = serde_json::from_str(&manifest_json)?;
+    let artifact = artifact_by_version(&manifest, "8.4.20-pv1")?;
+
+    assert_eq!(
+        artifact.get("php_extensions"),
+        Some(&serde_json::json!([
+            {
+                "name": "redis",
+                "load_kind": "extension",
+                "path": "lib/php/extensions/redis.so"
+            },
+            {
+                "name": "xdebug",
+                "load_kind": "zend_extension",
+                "path": "lib/php/extensions/xdebug.so"
+            }
+        ]))
+    );
+
+    Ok(())
+}
+
+#[test]
 fn manifest_generator_rejects_revocation_for_missing_artifact() -> Result<()> {
     let tempdir = tempdir()?;
     let records_dir = tempdir.path().join("records");
@@ -340,6 +389,29 @@ const REDIS_7_2_5_ARM64: &str = r#"{
     "source_url": "https://download.redis.io/releases/redis-7.2.5.tar.gz",
     "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "recipe": "release/artifacts/recipes/redis/build.sh",
+    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+    "build_run_id": "local-test"
+  }
+}"#;
+
+const PHP_8_4_20_ARM64: &str = r#"{
+  "resource": "php",
+  "track": "8.4",
+  "upstream_version": "8.4.20",
+  "pv_build_revision": "pv1",
+  "artifact_version": "8.4.20-pv1",
+  "platform": "darwin-arm64",
+  "object_key": "resources/php/8.4/8.4.20-pv1/darwin-arm64/php-8.4.20-pv1-darwin-arm64.tar.gz",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "size": 42,
+  "published_at": "2026-06-06T12:00:00Z",
+  "minimum_pv_version": "0.1.0",
+  "license_files": ["LICENSE"],
+  "notice_files": ["NOTICE"],
+  "provenance": {
+    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "recipe": "release/artifacts/recipes/php/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "local-test"
   }

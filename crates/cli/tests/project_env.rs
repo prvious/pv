@@ -324,13 +324,19 @@ fn register_project(
 ) -> anyhow::Result<ProjectRecord> {
     let config_file = ProjectConfigFile::read_from_root(project)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
+    let desired_php_track = config_file
+        .config
+        .php
+        .as_ref()
+        .and_then(|php| php.version_selector())
+        .map(str::to_owned);
     let mut database = Database::open(&pv_paths(home))?;
     let result = database.link_project(LinkProjectInput {
         path: project_path,
         original_path: project.to_path_buf(),
         primary_hostname: primary_hostname.to_string(),
         config_path: config_file.path,
-        desired_php_track: config_file.config.php,
+        desired_php_track,
         additional_hostnames: config_file.config.hostnames,
     })?;
 

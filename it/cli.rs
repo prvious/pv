@@ -585,6 +585,53 @@ fn project_list_reports_env_observed_status() -> Result<()> {
 }
 
 #[test]
+fn project_list_reports_ignored_php_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php:\n  extensions: [redis, missing]\n",
+    )?;
+
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    let paths = PvPaths::for_home(home.clone());
+    let mut database = Database::open(&paths)?;
+    let linked_project = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked project"))?;
+    database.record_project_env_observed_snapshot(
+        &linked_project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("Project runtime has warnings"),
+        &[
+            ProjectEnvObservedWarningInput {
+                kind: "ignored_php_extension".to_string(),
+                message: "ignored unsupported PHP extension `missing`".to_string(),
+            },
+            ProjectEnvObservedWarningInput {
+                kind: "ignored_php_extension".to_string(),
+                message: "ignored unsupported PHP extension `typo`".to_string(),
+            },
+        ],
+    )?;
+
+    let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, list));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn project_list_clears_stale_env_status_without_mappings() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

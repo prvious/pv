@@ -24,7 +24,9 @@ use crate::gateway_config::{
     render_gateway_config, render_gateway_project_config, render_php_worker_config,
     render_php_worker_project_config,
 };
-use crate::project_env::{resolve_project_php_track, validate_project_config_for_gateway};
+use crate::project_env::{
+    ResolvedPhpRuntime, resolve_project_php_runtime, validate_project_config_for_gateway,
+};
 use crate::structured_log;
 use crate::supervisor::{ManagedProcess, probe_readiness_once};
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
@@ -89,6 +91,8 @@ pub struct GatewayRuntimePlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpWorkerRuntimePlan {
     pub php_track: String,
+    pub runtime_key: String,
+    pub loaded_modules: Vec<resources::PhpExtensionModule>,
     pub port: u16,
     pub projects: Vec<RuntimeProject>,
 }
@@ -101,6 +105,12 @@ pub struct RuntimeProject {
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
     pub document_root: Utf8PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InstalledFrankenphpRuntime {
+    command: FrankenphpCommand,
+    artifact_root: Utf8PathBuf,
 }
 
 pub fn promote_validated_config_for_test(
@@ -143,12 +153,10 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     let mut worker_commands = Vec::new();
 
     for worker in &plan.workers {
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: worker.php_track.clone(),
-        };
-        let worker_command = match installed_frankenphp_command_for_track(paths, &worker.php_track)
+        let subject = worker_runtime_subject(worker);
+        let worker_runtime = match installed_frankenphp_runtime_for_track(paths, &worker.php_track)
         {
-            Ok(Some(command)) => command,
+            Ok(Some(runtime)) => runtime,
             Ok(None) => {
                 let error = DaemonError::UnexpectedProtocolResponse {
                     reason: format!(
@@ -166,14 +174,17 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
                 return Err(error);
             }
         };
-        worker_commands.push((worker, worker_command));
+        worker_commands.push((worker, worker_runtime));
     }
 
-    for (worker, worker_command) in worker_commands {
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: worker.php_track.clone(),
-        };
-        let process_spec = match worker_process_spec(paths, &worker.php_track, &worker_command) {
+    for (worker, worker_runtime) in worker_commands {
+        let subject = worker_runtime_subject(worker);
+        let process_spec = match worker_process_spec(
+            paths,
+            worker,
+            &worker_runtime.command,
+            &worker_runtime.artifact_root,
+        ) {
             Ok(process_spec) => process_spec,
             Err(error) => {
                 record_runtime_error(paths, subject.clone(), &error)?;
@@ -181,7 +192,13 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
                 return Err(error);
             }
         };
-        let promoted_config = reconcile_worker_config(paths, &worker_command, worker).await?;
+        let promoted_config = reconcile_worker_config(
+            paths,
+            &worker_runtime.command,
+            &worker_runtime.artifact_root,
+            worker,
+        )
+        .await?;
         start_or_adopt_promoted_runtime(
             paths,
             &supervisor,
@@ -414,27 +431,28 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &FrankenphpCommand) -> Pro
 
 pub fn worker_process_spec(
     paths: &PvPaths,
-    php_track: &str,
+    worker: &PhpWorkerRuntimePlan,
     command: &FrankenphpCommand,
+    artifact_root: &Utf8Path,
 ) -> Result<ProcessSpec, DaemonError> {
     Ok(ProcessSpec {
-        name: format!("php-worker-{php_track}"),
+        name: format!("php-worker-{}", worker.runtime_key),
         command: command.executable.clone(),
-        arguments: command.run_arguments(&paths.worker_root_config(php_track)),
-        private_environment: frankenphp_worker_environment(paths, php_track)?,
-        config_path: paths.worker_root_config(php_track),
-        log_path: paths.worker_log(php_track),
-        pid_path: paths.worker_pid(php_track),
-        metadata_path: paths.worker_runtime_metadata(php_track),
+        arguments: command.run_arguments(&paths.worker_root_config(&worker.runtime_key)),
+        private_environment: frankenphp_worker_environment(paths, worker, artifact_root)?,
+        config_path: paths.worker_root_config(&worker.runtime_key),
+        log_path: paths.worker_log(&worker.runtime_key),
+        pid_path: paths.worker_pid(&worker.runtime_key),
+        metadata_path: paths.worker_runtime_metadata(&worker.runtime_key),
         resource_name: "php-worker".to_owned(),
-        track: php_track.to_owned(),
+        track: worker.runtime_key.clone(),
     })
 }
 
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut database = Database::open(paths)?;
     let gateway_ports = database.assign_gateway_ports(local_loopback_port_available)?;
-    let mut projects_by_php_track: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
 
     for project in database.projects()? {
         let config_file = match ProjectConfigFile::read_from_root(&project.path) {
@@ -447,9 +465,8 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                     &[],
                 )?;
                 append_persisted_runtime_project(
-                    paths,
                     &mut database,
-                    &mut projects_by_php_track,
+                    &mut projects_by_runtime_key,
                     project,
                 )?;
                 continue;
@@ -468,9 +485,8 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                             &[],
                         )?;
                         append_persisted_runtime_project(
-                            paths,
                             &mut database,
-                            &mut projects_by_php_track,
+                            &mut projects_by_runtime_key,
                             project,
                         )?;
                         continue;
@@ -479,13 +495,12 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             }
             None => None,
         };
-        let config_php = config.as_ref().and_then(|config| config.php.as_deref());
-        let stored_php_track = if config_php.is_some() {
-            project.desired_php_track.as_deref()
-        } else {
-            None
-        };
-        let php_track = resolve_project_php_track(paths, config_php, stored_php_track)?;
+        let runtime = resolve_project_php_runtime(
+            paths,
+            &database,
+            &project,
+            config.as_ref().and_then(|config| config.php.as_ref()),
+        )?;
         let document_root = resolve_project_document_root(&project.path, config.as_ref())?;
         let runtime_project = RuntimeProject {
             id: project.id,
@@ -505,13 +520,13 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
 
         append_runtime_project(
             &mut database,
-            &mut projects_by_php_track,
-            php_track,
+            &mut projects_by_runtime_key,
+            runtime,
             runtime_project,
         )?;
     }
 
-    let workers = projects_by_php_track
+    let workers = projects_by_runtime_key
         .into_values()
         .map(|mut worker| {
             worker
@@ -565,12 +580,30 @@ fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
 }
 
 fn append_persisted_runtime_project(
-    paths: &PvPaths,
     database: &mut Database,
-    projects_by_php_track: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     project: state::ProjectRecord,
 ) -> Result<(), DaemonError> {
-    let php_track = resolve_project_php_track(paths, None, project.desired_php_track.as_deref())?;
+    let runtime = match persisted_project_php_runtime(database, &project) {
+        Ok(Some(runtime)) => runtime,
+        Ok(None) => return Ok(()),
+        Err(
+            error @ DaemonError::Resources(resources::ResourcesError::InvalidArtifactLayout {
+                ..
+            }),
+        ) => {
+            let message = error.to_string();
+            database.record_project_env_observed_snapshot(
+                &project.id,
+                ProjectEnvObservedStatus::Failed,
+                Some(&message),
+                &[],
+            )?;
+
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let runtime_project = RuntimeProject {
         id: project.id,
         render_config: false,
@@ -584,23 +617,23 @@ fn append_persisted_runtime_project(
         document_root: project.path,
     };
 
-    append_runtime_project(database, projects_by_php_track, php_track, runtime_project)
+    append_runtime_project(database, projects_by_runtime_key, runtime, runtime_project)
 }
 
 fn append_runtime_project(
     database: &mut Database,
-    projects_by_php_track: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
-    php_track: String,
+    projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    runtime: ResolvedPhpRuntime,
     runtime_project: RuntimeProject,
 ) -> Result<(), DaemonError> {
-    match projects_by_php_track.entry(php_track.clone()) {
+    match projects_by_runtime_key.entry(runtime.runtime_key.clone()) {
         btree_map::Entry::Occupied(mut entry) => {
             entry.get_mut().projects.push(runtime_project);
         }
         btree_map::Entry::Vacant(entry) => {
             let assignment = database.assign_port(
                 PortRequest::php_worker(
-                    &php_track,
+                    &runtime.runtime_key,
                     RUNTIME_PORT_FALLBACK_START,
                     RUNTIME_PORT_FALLBACK_START,
                     RUNTIME_PORT_FALLBACK_END,
@@ -609,7 +642,9 @@ fn append_runtime_project(
             )?;
 
             entry.insert(PhpWorkerRuntimePlan {
-                php_track,
+                php_track: runtime.track,
+                runtime_key: runtime.runtime_key,
+                loaded_modules: runtime.loaded_modules,
                 port: assignment.port,
                 projects: vec![runtime_project],
             });
@@ -617,6 +652,76 @@ fn append_runtime_project(
     }
 
     Ok(())
+}
+
+fn persisted_project_php_runtime(
+    database: &Database,
+    project: &state::ProjectRecord,
+) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    let Some(track) = &project.php_runtime.track else {
+        return Ok(None);
+    };
+    let loaded_modules =
+        loaded_php_extension_modules(database, track, &project.php_runtime.loaded_extensions)?;
+    let runtime_key = state::php_runtime_key(track, &project.php_runtime.loaded_extensions)?;
+
+    Ok(Some(ResolvedPhpRuntime {
+        track: track.clone(),
+        runtime_key,
+        requested_extensions: project.php_runtime.requested_extensions.clone(),
+        loaded_extensions: project.php_runtime.loaded_extensions.clone(),
+        ignored_extensions: project.php_runtime.ignored_extensions.clone(),
+        loaded_modules,
+    }))
+}
+
+fn loaded_php_extension_modules(
+    database: &Database,
+    track: &str,
+    loaded_extensions: &[String],
+) -> Result<Vec<resources::PhpExtensionModule>, DaemonError> {
+    let Some(release) = installed_php_release(database, track)? else {
+        if !loaded_extensions.is_empty() {
+            return Err(DaemonError::Resources(
+                resources::ResourcesError::InvalidArtifactLayout {
+                    resource: "php".to_string(),
+                    reason: format!(
+                        "persisted PHP extension `{}` cannot be reconstructed because PHP track `{track}` is not installed",
+                        loaded_extensions.join(", ")
+                    ),
+                },
+            ));
+        }
+
+        return Ok(Vec::new());
+    };
+
+    Ok(resources::resolve_persisted_php_extension_modules(
+        &release,
+        loaded_extensions,
+    )?)
+}
+
+fn installed_php_release(
+    database: &Database,
+    track: &str,
+) -> Result<Option<Utf8PathBuf>, DaemonError> {
+    let release = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .find_map(|record| {
+            if record.resource_name == "php"
+                && record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+            {
+                return record.current_artifact_path;
+            }
+
+            None
+        });
+
+    Ok(release)
 }
 
 async fn reconcile_gateway_config(
@@ -697,12 +802,12 @@ struct GatewayConfigReconciliation {
 async fn reconcile_worker_config(
     paths: &PvPaths,
     command: &FrankenphpCommand,
+    artifact_root: &Utf8Path,
     worker: &PhpWorkerRuntimePlan,
 ) -> Result<PromotedConfigTree, DaemonError> {
-    let subject = RuntimeSubject::PhpWorker {
-        php_track: worker.php_track.clone(),
-    };
-    let private_environment = match worker_config_private_environment(paths, &worker.php_track) {
+    let subject = worker_runtime_subject(worker);
+    let private_environment = match worker_config_private_environment(paths, worker, artifact_root)
+    {
         Ok(private_environment) => private_environment,
         Err(error) => {
             record_runtime_error(paths, subject.clone(), &error)?;
@@ -710,7 +815,7 @@ async fn reconcile_worker_config(
             return Err(error);
         }
     };
-    let active_dir = paths.worker_projects_config_dir(&worker.php_track);
+    let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = worker_project_config_fragments(paths, worker)?;
     let fragment_project_ids = fragments
@@ -758,7 +863,7 @@ async fn reconcile_worker_config(
         Ok(()) => {
             let promotion = RuntimeConfigTreePromotion {
                 subject,
-                config_path: paths.worker_root_config(&worker.php_track),
+                config_path: paths.worker_root_config(&worker.runtime_key),
                 candidate_content: &candidate_content,
                 active_content: &active_content,
                 private_environment,
@@ -1034,7 +1139,7 @@ fn worker_project_config_fragments(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
 ) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
-    let active_dir = paths.worker_projects_config_dir(&worker.php_track);
+    let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let mut fragments = Vec::new();
 
     for project in &worker.projects {
@@ -1090,23 +1195,21 @@ async fn stop_stale_worker_runtimes(
     supervisor: &ProcessSupervisor,
     plan: &RuntimePlan,
 ) -> Result<(), DaemonError> {
-    let desired_tracks = plan
+    let desired_runtime_keys = plan
         .workers
         .iter()
-        .map(|worker| worker.php_track.as_str())
+        .map(|worker| worker.runtime_key.as_str())
         .collect::<BTreeSet<_>>();
 
-    for php_track in runtime_worker_tracks(paths)? {
-        if desired_tracks.contains(php_track.as_str()) {
+    for runtime_key in runtime_worker_tracks(paths)? {
+        if desired_runtime_keys.contains(runtime_key.as_str()) {
             continue;
         }
-        let subject = RuntimeSubject::PhpWorker {
-            php_track: php_track.clone(),
-        };
+        let subject = php_runtime_subject(&runtime_key);
 
         if let Some(adopted) = supervisor.adopt_recorded(
-            &paths.worker_pid(&php_track),
-            &paths.worker_runtime_metadata(&php_track),
+            &paths.worker_pid(&runtime_key),
+            &paths.worker_runtime_metadata(&runtime_key),
         )? {
             adopted.stop(Duration::from_secs(1)).await?;
         }
@@ -1116,24 +1219,48 @@ async fn stop_stale_worker_runtimes(
             RuntimeObservedStatus::Stopped,
             Some("PHP worker stopped; no Projects remain on this track"),
         )?;
-        cleanup_stale_worker_runtime(paths, &php_track)?;
+        cleanup_stale_worker_runtime(paths, &runtime_key)?;
     }
 
     Ok(())
 }
 
-fn cleanup_stale_worker_runtime(paths: &PvPaths, php_track: &str) -> Result<(), DaemonError> {
-    delete_optional_file(&paths.worker_pid(php_track))?;
-    delete_optional_file(&paths.worker_runtime_metadata(php_track))?;
-    delete_optional_file(&paths.worker_root_config(php_track))?;
-    delete_optional_dir(&paths.worker_projects_config_dir(php_track))?;
+fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<(), DaemonError> {
+    delete_optional_file(&paths.worker_pid(runtime_key))?;
+    delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
+    delete_optional_file(&paths.worker_root_config(runtime_key))?;
+    delete_optional_dir(&paths.worker_projects_config_dir(runtime_key))?;
 
     let mut database = Database::open(paths)?;
     database.release_port(PortOwner::PhpWorker {
-        php_track: php_track.to_owned(),
+        php_runtime_key: runtime_key.to_owned(),
     })?;
 
     Ok(())
+}
+
+fn worker_runtime_subject(worker: &PhpWorkerRuntimePlan) -> RuntimeSubject {
+    if worker.runtime_key == worker.php_track {
+        RuntimeSubject::PhpWorker {
+            php_track: worker.php_track.clone(),
+        }
+    } else {
+        RuntimeSubject::PhpRuntimeWorker {
+            php_runtime_key: worker.runtime_key.clone(),
+        }
+    }
+}
+
+fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
+    if runtime_key.contains('+') {
+        RuntimeSubject::PhpRuntimeWorker {
+            php_runtime_key: runtime_key.to_owned(),
+        }
+    } else {
+        RuntimeSubject::PhpWorker {
+            php_track: runtime_key.to_owned(),
+        }
+    }
 }
 
 fn project_config_file_name(project_id: &str) -> String {
@@ -1253,18 +1380,18 @@ fn first_installed_frankenphp_command(
     Ok(Some(frankenphp_command_from_record(record)?))
 }
 
-fn installed_frankenphp_command_for_track(
+fn installed_frankenphp_runtime_for_track(
     paths: &PvPaths,
     php_track: &str,
-) -> Result<Option<FrankenphpCommand>, DaemonError> {
+) -> Result<Option<InstalledFrankenphpRuntime>, DaemonError> {
     let database = Database::open(paths)?;
-    let command = installed_frankenphp_tracks(&database)?
+    let runtime = installed_frankenphp_tracks(&database)?
         .into_iter()
         .find(|record| record.track == php_track)
-        .map(frankenphp_command_from_record)
+        .map(frankenphp_runtime_from_record)
         .transpose()?;
 
-    Ok(command)
+    Ok(runtime)
 }
 
 fn installed_frankenphp_tracks(
@@ -1285,6 +1412,12 @@ fn installed_frankenphp_tracks(
 fn frankenphp_command_from_record(
     record: ManagedResourceTrackRecord,
 ) -> Result<FrankenphpCommand, DaemonError> {
+    Ok(frankenphp_runtime_from_record(record)?.command)
+}
+
+fn frankenphp_runtime_from_record(
+    record: ManagedResourceTrackRecord,
+) -> Result<InstalledFrankenphpRuntime, DaemonError> {
     let Some(artifact_path) = record.current_artifact_path else {
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: format!(
@@ -1297,9 +1430,10 @@ fn frankenphp_command_from_record(
 
     adapter.validate_installation(&artifact_path)?;
 
-    Ok(FrankenphpCommand::new(
-        adapter.executable_path(&artifact_path),
-    ))
+    Ok(InstalledFrankenphpRuntime {
+        command: FrankenphpCommand::new(adapter.executable_path(&artifact_path)),
+        artifact_root: artifact_path,
+    })
 }
 
 fn record_runtime_error(
@@ -1372,21 +1506,29 @@ fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
 
 fn frankenphp_worker_environment(
     paths: &PvPaths,
-    php_track: &str,
-) -> Result<BTreeMap<String, String>, StateError> {
+    worker: &PhpWorkerRuntimePlan,
+    artifact_root: &Utf8Path,
+) -> Result<BTreeMap<String, String>, DaemonError> {
     let mut environment = frankenphp_xdg_environment(paths);
-    environment.extend(resources::php_track_environment(paths, php_track)?);
+    environment.extend(resources::php_runtime_environment(
+        paths,
+        &worker.php_track,
+        &worker.runtime_key,
+        artifact_root,
+        &worker.loaded_modules,
+    )?);
 
     Ok(environment)
 }
 
 fn worker_config_private_environment(
     paths: &PvPaths,
-    php_track: &str,
+    worker: &PhpWorkerRuntimePlan,
+    artifact_root: &Utf8Path,
 ) -> Result<BTreeMap<String, String>, DaemonError> {
-    resources::ensure_php_track_defaults(paths, php_track)?;
+    resources::ensure_php_track_defaults(paths, &worker.php_track)?;
 
-    Ok(frankenphp_worker_environment(paths, php_track)?)
+    frankenphp_worker_environment(paths, worker, artifact_root)
 }
 
 #[cfg(test)]

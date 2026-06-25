@@ -10,7 +10,7 @@ PV has laravel style commands where commmands under the same category/famility a
 - PHP — managed per-version, no homebrew/apt needed
 - Mysql, Postgresql, Redis, Composer, Mailpit, Rustfs all Ready to go
 
-Per-project versions are supported too — add a pv.yml file with php: "8.4" in your project root. Multiple PHP versions run simultaneously, with Projects routed through workers grouped by PHP track.
+Per-project versions are supported too — add a pv.yml file with php: "8.4" in your project root. Multiple PHP versions run simultaneously, with Projects routed through workers grouped by PHP runtime identity.
 
 ## High-Level Features
 
@@ -222,9 +222,9 @@ Crash restart backoff retries a desired child process up to 3 times with increas
 
 PV resets a child process crash counter after the process stays healthy for 60 seconds.
 
-Crash-loop failures are scoped to the affected runtime. A failed Managed Resource track degrades only Projects that need that resource track. A failed PHP-track worker affects only Projects on that PHP track. Gateway failure is system-wide because all Project routing depends on it.
+Crash-loop failures are scoped to the affected runtime. A failed Managed Resource track degrades only Projects that need that resource track. A failed PHP runtime worker affects only Projects on that PHP runtime identity. Gateway failure is system-wide because all Project routing depends on it.
 
-Backing Managed Resource failures do not remove Project routes. PV keeps serving the web app in a degraded state when the Gateway and PHP-track worker are healthy.
+Backing Managed Resource failures do not remove Project routes. PV keeps serving the web app in a degraded state when the Gateway and PHP runtime worker are healthy.
 
 PV writes pid files under `~/.pv/run/` for the Gateway, Project-serving workers, and Managed Resource tracks. After daemon restart, PV may use these pid files to discover existing PV-owned child processes, but it must verify ownership before acting by checking the process command/path matches the expected PV-managed binary and config. PV never kills a process based on PID alone.
 
@@ -254,7 +254,7 @@ If a linked Project config becomes invalid, the daemon keeps serving the last va
 
 Project config changes restart or reload only affected runtime processes. PHP version or routing changes may restart/reassign FrankenPHP serving for the affected Project. Env-only changes update `.env` without restarting the Gateway.
 
-When a Project's PHP track changes, PV reconfigures only affected Project-serving workers. It may stop an old PHP worker if no Projects remain on that track and start or reload the new track's worker. Unrelated PHP workers are not touched.
+When a Project's PHP track or optional extension set changes, PV reconfigures only affected Project-serving workers. It may stop an old PHP worker if no Projects remain on that runtime identity and start or reload the new runtime's worker. Unrelated PHP workers are not touched.
 
 `pv setup` is the friendly first-time bootstrap path and includes daemon registration. `pv daemon:*` commands remain available as lower-level lifecycle and troubleshooting commands.
 
@@ -321,11 +321,11 @@ export COMPOSER_CACHE_DIR="/Users/<user>/.pv/composer/cache";
 ## Multi-version PHP
 
 The Gateway is a Managed Resource role implemented by a PV-managed FrankenPHP/Caddy process, not an HTTP server implemented inside the PV daemon. The PV daemon provisions a Gateway that listens on high loopback ports; macOS `pf` redirects external loopback ports `80` and `443` to the Gateway.
-Projects using a different PHP version are proxied to secondary FrankenPHP processes running on high ports.
+Projects using a different PHP runtime are proxied to secondary FrankenPHP processes running on high ports.
 
-The Gateway is always-on core PV infrastructure after setup. It only routes/proxies and does not serve Projects directly. Version-specific Project-serving FrankenPHP processes run only when at least one linked Project needs that PHP version.
+The Gateway is always-on core PV infrastructure after setup. It only routes/proxies and does not serve Projects directly. Runtime-specific Project-serving FrankenPHP processes run only when at least one linked Project needs that PHP runtime identity.
 
-Each Project-serving FrankenPHP worker serves all Projects assigned to one PHP track. PV does not run one worker per Project.
+Each Project-serving FrankenPHP worker serves all Projects assigned to one PHP runtime identity. The runtime identity is the resolved PHP track plus the sorted available optional extension set. PV does not run one worker per Project.
 
 Project-serving FrankenPHP workers bind only to loopback high ports. They are internal to PV behind the Gateway.
 
@@ -337,13 +337,13 @@ When proxying to Project-serving workers, the Gateway preserves the original `Ho
 
 PV generates a Gateway root config that imports per-Project generated config files. Splitting Project config keeps debugging easier and reduces config-generation blast radius.
 
-For each PHP track, PV generates a worker root config that imports per-Project generated config files for Projects on that track.
+For each PHP runtime identity, PV generates a worker root config that imports per-Project generated config files for Projects on that runtime.
 
-When PHP-track worker config changes, PV reloads the worker where supported and restarts it only if reload fails or is unavailable.
+When PHP runtime worker config changes, PV reloads the worker where supported and restarts it only if reload fails or is unavailable.
 
-Project-serving worker logs are captured per PHP track, with Project hostname included in access logs where feasible. PV v1 does not create per-Project log files. Caddy/FrankenPHP log rotation directives should be used where practical.
+Project-serving worker logs are captured per PHP runtime identity, with Project hostname included in access logs where feasible. PV v1 does not create per-Project log files. Caddy/FrankenPHP log rotation directives should be used where practical.
 
-Project-serving worker logs are split by PHP track, such as `~/.pv/logs/workers/php-8.4.log`, because one worker serves all Projects assigned to that PHP track.
+Project-serving worker logs are split by PHP runtime identity, such as `~/.pv/logs/workers/php-8.4.log` or `~/.pv/logs/workers/php-8.4+redis.log`, because one worker serves all Projects assigned to that runtime.
 
 Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, and rotated. Gateway logs are split into access and error logs, such as `~/.pv/logs/gateway/access.log` and `~/.pv/logs/gateway/error.log`, when FrankenPHP/Caddy supports that cleanly. Structured/JSON logs should be used when Caddy/FrankenPHP supports them cleanly.
 
@@ -355,32 +355,37 @@ The Gateway does not automatically route `*.project.test` to a Project. Subdomai
 
 For unknown `.test` hostnames, the Gateway should return a simple self-contained HTML response explaining that no PV Project is linked for the hostname and suggesting `pv link` when technically feasible.
 
-PV v1 avoids PHP extension management. PHP and FrankenPHP Managed Resource artifacts are distributed as prebuilt macOS binaries with a fixed, common extension set baked in. PV does not expose extension install, uninstall, or per-Project extension configuration in v1.
+PV supports Project-level PHP extension opt-ins without named profiles, local compilation, or arbitrary user-provided shared modules. PHP and FrankenPHP Managed Resource artifacts are distributed as prebuilt macOS binaries with a common default extension set plus a curated catalog of bundled optional shared modules. Optional modules are disabled by default and loaded only through PV-generated runtime ini overlays when a Project asks for them.
 
-PV v1 builds standalone PHP and FrankenPHP as single-binary/static-style artifacts with fixed compiled-in extensions. These artifacts must not depend on Homebrew or local package-manager libraries. PV v1 does not support dynamic PHP extension loading, `phpize`, or PECL-installed extensions.
+PV builds standalone PHP and FrankenPHP as single-binary/static-style artifacts with fixed default compiled-in extensions and bundled optional shared modules. These artifacts must not depend on Homebrew or local package-manager libraries. PV does not support arbitrary dynamic PHP extension loading, `phpize`, or PECL-installed extensions.
 
 Standalone PHP artifacts include the `php` executable and runtime files needed by that build. They do not include `phpize` or `php-config` in v1 because user-built extensions are not supported.
 
-The v1 fixed PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `pdo_sqlsrv`, `phar`, `posix`, `redis`, `session`, `simplexml`, `sodium`, `sqlite3`, `sqlsrv`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
+The default loaded PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `phar`, `posix`, `session`, `simplexml`, `sockets`, `sodium`, `sqlite3`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
 
-For a given PHP track, standalone PHP and FrankenPHP must expose the same compiled-in PHP extension set so CLI and browser execution do not drift.
+The initial bundled optional extension catalog is `redis`, `sqlsrv`, `pdo_sqlsrv`, `xdebug`, `apcu`, `pcov`, `imagick`, `mongodb`, and `yaml`. Future optional extensions should be added only when users ask for them and PV can build, smoke-test, license, and support them across the intended PHP track and platform matrix.
+
+For a given PHP runtime identity, standalone PHP and FrankenPHP must expose the same loaded PHP extension set so CLI and browser execution do not drift.
 
 For a given PHP track, standalone PHP and FrankenPHP must use the exact same PHP patch version. For example, if the `8.4` track resolves to PHP `8.4.8`, both the standalone PHP artifact and the FrankenPHP artifact for that track use PHP `8.4.8`.
 
-PV v1 ships one PHP build flavor per PHP track. Xdebug is not included in the default v1 PHP build. Extra-extension flavors, such as builds with `xdebug`, `imagick`, `swoole`, or `mongodb`, are out of v1 scope until PV deliberately designs multi-flavor PHP artifacts.
+PV ships one PHP artifact pair per PHP track. Optional extension combinations do not create separate downloaded artifact flavors in the first implementation; they create runtime-specific ini overlays and FrankenPHP workers from the same installed track artifact.
 
 PV builds its own FrankenPHP artifacts for the PHP tracks it supports because upstream FrankenPHP releases do not provide the exact PV-required build matrix. The initial PV-managed FrankenPHP/PHP tracks are `8.3`, `8.4`, and `8.5`, with `8.5` as the manifest default track.
 
-PV v1 does not support custom PHP ini settings in Project config.
+PV does not support custom PHP ini settings in Project config.
 
 For each installed PHP track, PV seeds track-level PHP defaults under `~/.pv/resources/php/<track>/etc/php.ini` and `~/.pv/resources/php/<track>/etc/conf.d/`. The defaults are mutable track data, not artifact release payload data, so artifact updates and old-release pruning do not remove user edits. PV runs standalone PHP, Composer-through-PHP, and Project-serving FrankenPHP workers with process-level `PHPRC` and `PHP_INI_SCAN_DIR` pointing at the track defaults. PV does not pass these ini discovery paths through Caddyfile `env` and does not expand the default profile into Caddyfile `php_ini` directives.
 
+For Project-level extension opt-ins, PV generates runtime-specific `conf.d` overlays under PV-owned config storage and appends those overlays to `PHP_INI_SCAN_DIR` for the affected standalone PHP, Composer-through-PHP, and Project-serving FrankenPHP worker processes. Generated extension ini files are PV-owned and replaced during reconciliation. Unsupported extension names in Project config are ignored at runtime and surfaced as non-blocking diagnostics rather than Project config errors.
+
 - If there are 5 Projects and all of them use the same PHP version, PV provisions 1 Project-serving FrankenPHP process.
-- If 2 Projects use PHP 8.3, 2 use PHP 8.4, and 1 uses PHP 8.5, PV provisions 3 Project-serving FrankenPHP processes. The Gateway proxies each Project hostname to the worker for that Project's PHP version.
+- If 2 Projects use PHP 8.3, 2 use PHP 8.4, and 1 uses PHP 8.5, PV provisions 3 Project-serving FrankenPHP processes. The Gateway proxies each Project hostname to the worker for that Project's PHP runtime.
+- If 2 Projects use PHP 8.4 with no optional extensions and 1 Project uses PHP 8.4 with `redis`, PV provisions 2 Project-serving FrankenPHP processes for PHP 8.4.
 
 User commands describe what should exist. The daemon reconciles the machine toward that desired state and records observed status when reality does not match.
 
-PHP version resolution: Project config `php` field → global default.
+PHP runtime resolution: Project config `php` field → global default. Project config may use either scalar form, such as `php: 8.4`, or object form, such as `php: { version: 8.4, extensions: [redis] }`. If the object form omits `version`, PV resolves the PHP track through the global/default flow and applies the requested extension list to that resolved track.
 
 PV does not infer PHP versions from `composer.json`. Composer constraints can be complex and are not always present, so Projects that need a specific PHP version should declare it in Project config.
 
@@ -752,11 +757,11 @@ Reconciliation scopes are `system`, `project:<id>`, and `resource:<name>:<track>
 
 PV v1 exposes generic shims only. It does not create versioned shims like `php8.4` or `mysql8.0`; exact versioned binaries remain available under `~/.pv/resources/` for advanced use.
 
-The `php` shim is Project-aware, similar to version managers such as `fnm` or `nvm`. When run inside a linked Project, it uses that Project's resolved PHP track. Outside a linked Project, it uses the global default PHP track.
+The `php` shim is Project-aware, similar to version managers such as `fnm` or `nvm`. When run inside a linked Project, it uses that Project's resolved PHP runtime identity. Outside a linked Project, it uses the global default PHP track without Project-level optional extensions.
 
 Composer is split by responsibility: the Composer PHAR and version metadata live under `~/.pv/resources/composer/`, the Composer shim lives under `~/.pv/bin/`, and `~/.pv/composer/` is the user-facing `COMPOSER_HOME` for global packages and cache.
 
-The Composer shim invokes the Composer PHAR through PV's `php` shim so Composer inherits Project-aware PHP selection. Inside a linked Project, Composer uses that Project's PHP track; outside, it uses the global default PHP track.
+The Composer shim invokes the Composer PHAR through PV's `php` shim so Composer inherits Project-aware PHP selection. Inside a linked Project, Composer uses that Project's PHP runtime identity; outside, it uses the global default PHP track without Project-level optional extensions.
 
 Composer uses the same artifact track model as other Managed Resources, but v1 exposes only one Composer track: `2`. PV installs and updates the latest non-revoked Composer artifact in the `2` track. Composer 1 compatibility is out of v1 scope.
 
@@ -1328,7 +1333,7 @@ When `pv logs --follow` streams multiple files, PV prefixes each line with the s
 
 `pv logs --gateway` shows both Gateway access and error logs by default when split Gateway logs exist. When following both streams, PV prefixes lines with sources such as `gateway:access` and `gateway:error`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
 
-`pv logs --worker <php-track>` accepts explicit PHP tracks and `latest`. `latest` resolves to the manifest default PHP track. If the resolved track has no log file, PV prints a clear message that no logs exist for that PHP track.
+`pv logs --worker <php-runtime>` accepts explicit PHP runtime identities, such as `8.4` or `8.4+redis`, and `latest`. `latest` resolves to the manifest default PHP track without Project-level optional extensions. If the resolved runtime has no log file, PV prints a clear message that no logs exist for that PHP runtime.
 
 `pv logs` supports Managed Resource log filtering with flags such as `--resource mysql --track 8.0`, matching the resource/track log layout.
 

@@ -15,7 +15,12 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
     "php: latest\nhostnames:\n- api.acme.test\n",
     ProjectConfig {
         php: Some(
-            "latest",
+            PhpConfig {
+                version: Some(
+                    "latest",
+                ),
+                extensions: [],
+            },
         ),
         document_root: None,
         hostnames: [

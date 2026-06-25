@@ -1,8 +1,19 @@
 ---
 source: crates/state/tests/state_foundation.rs
+assertion_line: 1773
 expression: database.runtime_observed_states()?
 ---
 [
+    RuntimeObservedStateRecord {
+        subject: PhpRuntimeWorker {
+            php_runtime_key: "8.4+redis",
+        },
+        status: Running,
+        message: Some(
+            "extension worker is ready",
+        ),
+        observed_at: "<timestamp>",
+    },
     RuntimeObservedStateRecord {
         subject: Gateway,
         status: Degraded,

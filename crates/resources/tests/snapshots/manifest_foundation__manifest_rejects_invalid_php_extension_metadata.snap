@@ -1,0 +1,25 @@
+---
+source: crates/resources/tests/manifest_foundation.rs
+assertion_line: 556
+expression: invalid_extensions
+---
+[
+    InvalidManifestSnapshot {
+        name: "empty_path",
+        error: InvalidManifest {
+            reason: "invalid PHP extension path ``",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "current_dir",
+        error: InvalidManifest {
+            reason: "invalid PHP extension path `.`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "duplicate_name",
+        error: InvalidManifest {
+            reason: "duplicate PHP extension `redis`",
+        },
+    },
+]

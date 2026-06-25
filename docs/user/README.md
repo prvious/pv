@@ -120,6 +120,28 @@ redis:
 
 Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV resolves them before validating keys and values. Unknown keys that remain after YAML resolution fail validation.
 
+### PHP Extensions
+
+The `php` key may be a scalar version or an object:
+
+```yaml
+php:
+  version: 8.4
+  extensions:
+    - redis
+    - xdebug
+```
+
+If `version` is omitted, PV uses the configured default PHP track:
+
+```yaml
+php:
+  extensions:
+    - xdebug
+```
+
+PV loads bundled optional extensions that are available in the installed PHP artifact. Unknown extension names are ignored and reported as warnings.
+
 Preview rendered environment values without editing `.env`:
 
 ```shell

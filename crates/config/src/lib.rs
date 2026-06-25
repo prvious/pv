@@ -18,5 +18,5 @@ pub use error::ConfigError;
 pub use hostname::{
     hostname_from_project_path, normalize_additional_hostname, normalize_primary_hostname,
 };
-pub use model::{AllocationConfig, ProjectConfig, ProjectConfigFile, ResourceConfig};
+pub use model::{AllocationConfig, PhpConfig, ProjectConfig, ProjectConfigFile, ResourceConfig};
 pub use writer::write_project_php_track;

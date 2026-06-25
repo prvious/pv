@@ -14,6 +14,8 @@ const PROJECT_RESOURCE_REQUIREMENTS_SQL: &str =
     include_str!("sql/005_project_resource_requirements.sql");
 const GLOBAL_PHP_DEFAULT_SQL: &str = include_str!("sql/006_global_php_default.sql");
 const RESOURCE_PORT_ROLES_SQL: &str = include_str!("sql/007_resource_port_roles.sql");
+const PROJECT_PHP_RUNTIME_EXTENSIONS_SQL: &str =
+    include_str!("sql/008_project_php_runtime_extensions.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -35,6 +37,11 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     ),
     Migration::new(6, "global_php_default", GLOBAL_PHP_DEFAULT_SQL),
     Migration::new(7, "resource_port_roles", RESOURCE_PORT_ROLES_SQL),
+    Migration::new(
+        8,
+        "project_php_runtime_extensions",
+        PROJECT_PHP_RUNTIME_EXTENSIONS_SQL,
+    ),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

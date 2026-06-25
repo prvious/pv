@@ -9,7 +9,7 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-build_extensions = [
+default_extensions = [
   "bcmath",
   "ctype",
   "curl",
@@ -26,21 +26,30 @@ build_extensions = [
   "pdo_mysql",
   "pdo_pgsql",
   "pdo_sqlite",
-  "pdo_sqlsrv",
   "phar",
   "posix",
-  "redis",
   "session",
   "simplexml",
+  "sockets",
   "sodium",
   "sqlite3",
-  "sqlsrv",
   "tokenizer",
   "xml",
   "xmlreader",
   "xmlwriter",
   "zip",
   "zlib",
+]
+optional_extensions = [
+  "redis",
+  "sqlsrv",
+  "pdo_sqlsrv",
+  "xdebug",
+  "apcu",
+  "pcov",
+  "imagick",
+  "mongodb",
+  "yaml",
 ]
 expected_extensions = [
   "bcmath",
@@ -62,15 +71,13 @@ expected_extensions = [
   "pdo_mysql",
   "pdo_pgsql",
   "pdo_sqlite",
-  "pdo_sqlsrv",
   "phar",
   "posix",
-  "redis",
   "session",
   "simplexml",
+  "sockets",
   "sodium",
   "sqlite3",
-  "sqlsrv",
   "tokenizer",
   "xml",
   "xmlreader",
