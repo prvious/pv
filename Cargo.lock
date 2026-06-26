@@ -385,13 +385,18 @@ dependencies = [
  "h2 0.3.27",
  "h2 0.4.14",
  "http 0.2.12",
+ "http 1.4.1",
  "http-body 0.4.6",
  "hyper 0.14.32",
+ "hyper 1.10.1",
  "hyper-rustls 0.24.2",
+ "hyper-util",
  "pin-project-lite",
  "rustls 0.21.12",
  "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -1041,6 +1046,7 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "aws-sdk-s3",
+ "aws-smithy-http-client",
  "camino",
  "camino-tempfile",
  "config",

@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 aws-sdk-s3 = { workspace = true }
+aws-smithy-http-client = { workspace = true }
 camino = { workspace = true }
 config = { path = "../config" }
 futures-util = { workspace = true }

@@ -4,6 +4,7 @@ use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::create_bucket::CreateBucketError;
 use aws_sdk_s3::{Client, Config};
+use aws_smithy_http_client::Builder as HttpClientBuilder;
 use object_store::ObjectStoreExt;
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use object_store::client::ClientConfigKey;
@@ -259,6 +260,7 @@ fn s3_client(resource_env: &EnvContextValues) -> Result<Client, DaemonError> {
         .region(Region::new(REGION))
         .endpoint_url(required_env_value(resource_env, "endpoint")?)
         .force_path_style(true)
+        .http_client(HttpClientBuilder::new().build_http())
         .build();
 
     Ok(Client::from_conf(config))
