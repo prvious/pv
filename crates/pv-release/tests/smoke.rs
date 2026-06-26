@@ -731,6 +731,30 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
 }
 
 #[test]
+fn php_pair_build_smoke_skips_frankenphp_pdo_sqlsrv_extension_metadata() -> Result<()> {
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        php_optional_extensions: "redis,pdo_sqlsrv,xdebug",
+        ..default_build_recipe_options()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(
+        build_recipe_record_php_extension_names(run.php_record_json.as_deref())?,
+        vec!["pdo_sqlsrv", "redis", "xdebug"]
+    );
+    assert_eq!(
+        build_recipe_record_php_extension_names(run.frankenphp_record_json.as_deref())?,
+        vec!["redis", "xdebug"]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_pair_build_smoke_prepatches_frankenphp_for_staticphp_php83_avx512_probe() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         recipe_track: "8.3",
@@ -2865,6 +2889,26 @@ fn build_recipe_record_provenance(record_json: Option<&str>) -> Result<Value> {
         .get("provenance")
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("build recipe record did not contain provenance"))
+}
+
+fn build_recipe_record_php_extension_names(record_json: Option<&str>) -> Result<Vec<String>> {
+    let record_json =
+        record_json.ok_or_else(|| anyhow::anyhow!("build recipe did not produce a record"))?;
+    let record: Value = serde_json::from_str(record_json)?;
+    let mut names = record
+        .get("php_extensions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|extensions| extensions.iter())
+        .filter_map(|extension| {
+            extension
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
 }
 
 fn mysql_record_source_inputs(run: &MysqlBuildRecipeRun) -> Result<Value> {

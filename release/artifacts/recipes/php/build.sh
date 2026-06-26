@@ -86,6 +86,33 @@ csv_contains() {
   esac
 }
 
+csv_without() {
+  list=$1
+  shift
+
+  result=
+  old_ifs=$IFS
+  IFS=,
+  for item in $list; do
+    [ -n "$item" ] || continue
+    skip=
+    for excluded in "$@"; do
+      if [ "$item" = "$excluded" ]; then
+        skip=1
+        break
+      fi
+    done
+    [ -z "$skip" ] || continue
+    if [ -z "$result" ]; then
+      result=$item
+    else
+      result=$result,$item
+    fi
+  done
+  IFS=$old_ifs
+  printf '%s\n' "$result"
+}
+
 ensure_pkg_config() {
   if [ -z "${PKG_CONFIG:-}" ]; then
     if command -v pkg-config >/dev/null 2>&1; then
@@ -296,6 +323,11 @@ print_php_env frankenphp "$frankenphp_env_file"
   [ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
 }
 
+PHP_ARTIFACT_OPTIONAL_EXTENSIONS=$PHP_OPTIONAL_EXTENSIONS
+# StaticPHP builds pdo_sqlsrv for php-cli, but FrankenPHP's embedded php-cli
+# does not report the module as loaded. Do not advertise broken optional modules.
+FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS=$(csv_without "$PHP_OPTIONAL_EXTENSIONS" pdo_sqlsrv)
+
 export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
 
 php_source_dir=$(download_source php "$PHP_PHP_VERSION" "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256")
@@ -336,13 +368,14 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
 
 stage_optional_php_extensions() {
   root_dir=$1
+  optional_extensions=$2
   mkdir -p "$root_dir/lib/php/extensions" "$root_dir/share/pv"
   metadata="$root_dir/share/pv/php-extensions.json"
   printf '[' >"$metadata"
   first=1
   old_ifs=$IFS
   IFS=,
-  for extension in $PHP_OPTIONAL_EXTENSIONS; do
+  for extension in $optional_extensions; do
     [ -n "$extension" ] || continue
     module=$(find "$spc_work_dir/buildroot" -type f -name "$extension.so" | head -n 1)
     [ -n "$module" ] || die "optional PHP extension $extension did not produce a shared module"
@@ -367,6 +400,7 @@ stage_artifact() {
   source_url=$4
   source_sha256=$5
   binary_name=$6
+  optional_extensions=$7
 
   artifact_basename="$resource-$artifact_version-$PLATFORM"
   root_dir="$work_dir/$artifact_basename"
@@ -374,7 +408,7 @@ stage_artifact() {
   mkdir -p "$root_dir/bin"
   cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
   [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
-  stage_optional_php_extensions "$root_dir"
+  stage_optional_php_extensions "$root_dir" "$optional_extensions"
   delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
   validate_macho_binary "$root_dir/bin/$binary_name"
 
@@ -404,7 +438,8 @@ write_staged_artifact() {
   minimum_pv_version=$6
   pv_build_revision=$7
   expected_extensions=$8
-  shift 8
+  optional_extensions=$9
+  shift 9
 
   artifact_basename="$resource-$artifact_version-$PLATFORM"
   archive="$work_dir/staged-archives/$artifact_basename.tar.gz"
@@ -416,7 +451,7 @@ write_staged_artifact() {
 
   old_ifs=$IFS
   IFS=,
-  for extension in $PHP_OPTIONAL_EXTENSIONS; do
+  for extension in $optional_extensions; do
     [ -n "$extension" ] || continue
     load_kind=extension
     [ "$extension" = "xdebug" ] && load_kind=zend_extension
@@ -453,14 +488,16 @@ stage_artifact php \
   "$PHP_ARTIFACT_VERSION" \
   "$PHP_SOURCE_URL" \
   "$PHP_SOURCE_SHA256" \
-  php
+  php \
+  "$PHP_ARTIFACT_OPTIONAL_EXTENSIONS"
 
 stage_artifact frankenphp \
   "$FRANKENPHP_UPSTREAM_VERSION" \
   "$FRANKENPHP_ARTIFACT_VERSION" \
   "$FRANKENPHP_SOURCE_URL" \
   "$FRANKENPHP_SOURCE_SHA256" \
-  frankenphp
+  frankenphp \
+  "$FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS"
 
 write_staged_artifact php \
   "$PHP_UPSTREAM_VERSION" \
@@ -469,7 +506,8 @@ write_staged_artifact php \
   "$PHP_SOURCE_SHA256" \
   "$PHP_MINIMUM_PV_VERSION" \
   "$PHP_PV_BUILD_REVISION" \
-  "$PHP_EXPECTED_EXTENSIONS"
+  "$PHP_EXPECTED_EXTENSIONS" \
+  "$PHP_ARTIFACT_OPTIONAL_EXTENSIONS"
 
 write_staged_artifact frankenphp \
   "$FRANKENPHP_UPSTREAM_VERSION" \
@@ -479,6 +517,7 @@ write_staged_artifact frankenphp \
   "$FRANKENPHP_MINIMUM_PV_VERSION" \
   "$FRANKENPHP_PV_BUILD_REVISION" \
   "$PHP_EXPECTED_EXTENSIONS" \
+  "$FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS" \
   --source-input frankenphp "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256" \
   --source-input php "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256"
 
