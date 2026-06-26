@@ -672,11 +672,16 @@ fn php_build_recipe_smoke() -> Result<()> {
         "{}/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/include/ImageMagick-7",
         run.out_dir
     );
+    let pkg_config_libdir = format!(
+        "{}/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/lib/pkgconfig",
+        run.out_dir
+    );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
 spc-pkg-config=pkg-config\n\
+spc-pkg-config-libdir={pkg_config_libdir}\n\
 argv=[build:php][json][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
@@ -4234,6 +4239,9 @@ printf 'spc-cflags=%s\n' "${CFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 printf 'spc-cxxflags=%s\n' "${CXXFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 if [ -n "${PKG_CONFIG:-}" ]; then
   printf 'spc-pkg-config=%s\n' "$PKG_CONFIG" >>"$PV_TEST_SPC_LOG"
+fi
+if [ -n "${PKG_CONFIG_LIBDIR:-}" ]; then
+  printf 'spc-pkg-config-libdir=%s\n' "$PKG_CONFIG_LIBDIR" >>"$PV_TEST_SPC_LOG"
 fi
 printf 'argv=' >>"$PV_TEST_SPC_LOG"
 for arg in "$@"; do

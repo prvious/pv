@@ -87,19 +87,19 @@ csv_contains() {
 }
 
 ensure_pkg_config() {
-  if [ -n "${PKG_CONFIG:-}" ]; then
-    export PKG_CONFIG
-    return 0
+  if [ -z "${PKG_CONFIG:-}" ]; then
+    if command -v pkg-config >/dev/null 2>&1; then
+      PKG_CONFIG=pkg-config
+    elif command -v pkgconf >/dev/null 2>&1; then
+      PKG_CONFIG=pkgconf
+    else
+      die "pkg-config is required to build the shared imagick extension"
+    fi
   fi
-
-  if command -v pkg-config >/dev/null 2>&1; then
-    PKG_CONFIG=pkg-config
-  elif command -v pkgconf >/dev/null 2>&1; then
-    PKG_CONFIG=pkgconf
-  else
-    die "pkg-config is required to build the shared imagick extension"
+  if [ -z "${PKG_CONFIG_LIBDIR:-}" ]; then
+    PKG_CONFIG_LIBDIR="$spc_work_dir/buildroot/lib/pkgconfig"
   fi
-  export PKG_CONFIG
+  export PKG_CONFIG PKG_CONFIG_LIBDIR
 }
 
 expected_arch_for_platform() {
