@@ -38,6 +38,7 @@ const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const ASYNC_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const RESOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
+const RESOURCE_PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RESOURCE_START_ATTEMPTS: usize = 10;
 const RESERVED_RESOURCE_PORT_NAME: &str = "default";
 
@@ -966,25 +967,56 @@ async fn start_or_adopt_runtime(
     }
 
     let mut process = supervisor.start(spec.clone()).await?;
-    if let Err(error) = wait_for_managed_resource_readiness(readiness, readiness_timeout).await {
+    if let Err(error) =
+        wait_for_started_runtime_readiness(&mut process, &spec.name, readiness, readiness_timeout)
+            .await
+    {
         process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
         cleanup_started_runtime_files(&spec)?;
 
         return Err(error);
     }
-    tokio::time::sleep(Duration::from_millis(25)).await;
+    tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
     if process.has_exited()? {
         cleanup_started_runtime_files(&spec)?;
 
-        return Err(DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime `{}` exited before readiness was verified",
-                spec.name
-            ),
-        });
+        return Err(runtime_exited_before_readiness_error(&spec.name));
     }
 
     Ok(())
+}
+
+async fn wait_for_started_runtime_readiness(
+    process: &mut crate::supervisor::ManagedProcess,
+    runtime_name: &str,
+    readiness: &ManagedResourceReadiness,
+    readiness_timeout: Duration,
+) -> Result<(), DaemonError> {
+    let readiness_wait = wait_for_managed_resource_readiness(readiness, readiness_timeout);
+    tokio::pin!(readiness_wait);
+
+    loop {
+        tokio::select! {
+            result = &mut readiness_wait => {
+                if result.is_err() && process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+
+                return result;
+            }
+            () = sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL) => {
+                if process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+            }
+        }
+    }
+}
+
+fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
+    DaemonError::UnexpectedProtocolResponse {
+        reason: format!("runtime `{runtime_name}` exited before readiness was verified"),
+    }
 }
 
 async fn wait_for_managed_resource_readiness(
