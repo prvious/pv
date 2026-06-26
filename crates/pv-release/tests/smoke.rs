@@ -731,9 +731,9 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
 }
 
 #[test]
-fn php_pair_build_smoke_skips_frankenphp_pdo_sqlsrv_extension_metadata() -> Result<()> {
+fn php_pair_build_smoke_skips_frankenphp_sqlsrv_extension_metadata() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        php_optional_extensions: "redis,pdo_sqlsrv,xdebug",
+        php_optional_extensions: "redis,sqlsrv,pdo_sqlsrv,xdebug",
         ..default_build_recipe_options()
     })?;
 
@@ -744,7 +744,7 @@ fn php_pair_build_smoke_skips_frankenphp_pdo_sqlsrv_extension_metadata() -> Resu
     );
     assert_eq!(
         build_recipe_record_php_extension_names(run.php_record_json.as_deref())?,
-        vec!["pdo_sqlsrv", "redis", "xdebug"]
+        vec!["pdo_sqlsrv", "redis", "sqlsrv", "xdebug"]
     );
     assert_eq!(
         build_recipe_record_php_extension_names(run.frankenphp_record_json.as_deref())?,

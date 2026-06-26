@@ -324,9 +324,9 @@ print_php_env frankenphp "$frankenphp_env_file"
 }
 
 PHP_ARTIFACT_OPTIONAL_EXTENSIONS=$PHP_OPTIONAL_EXTENSIONS
-# StaticPHP builds pdo_sqlsrv for php-cli, but FrankenPHP's embedded php-cli
-# does not report the module as loaded. Do not advertise broken optional modules.
-FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS=$(csv_without "$PHP_OPTIONAL_EXTENSIONS" pdo_sqlsrv)
+# StaticPHP builds SQL Server modules for php-cli, but FrankenPHP's embedded
+# php-cli does not report them as loaded. Do not advertise broken optional modules.
+FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS=$(csv_without "$PHP_OPTIONAL_EXTENSIONS" sqlsrv pdo_sqlsrv)
 
 export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
 
