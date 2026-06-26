@@ -1857,7 +1857,7 @@ fn php_pair_build_smoke_removes_unmanaged_frankenphp_rpath_before_validation() -
 fn php_pair_build_smoke_removes_unmanaged_optional_extension_rpath_before_validation() -> Result<()>
 {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        extension_macho_rpaths: "@loader_path/../lib\n/usr/local/lib",
+        extension_macho_rpaths: "@loader_path/../lib\n/usr/local/lib\n__PV_TEST_STATICPHP_BUILDROOT_LIB__",
         ..default_build_recipe_options()
     })?;
 
@@ -1879,6 +1879,11 @@ fn php_pair_build_smoke_removes_unmanaged_optional_extension_rpath_before_valida
     );
     assert!(
         removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/php-8.4.20-pv1-darwin-arm64/lib/php/extensions/xdebug.so|<out>/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/lib"),
+        "PHP optional xdebug module should have its StaticPHP buildroot rpath deleted: {removed_rpaths_log}"
+    );
+    assert!(
+        removed_rpaths_log
             .contains("<out>/work/php-pair-8.4-darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/lib/php/extensions/redis.so|/usr/local/lib"),
         "FrankenPHP optional redis module should have its stale rpath deleted: {removed_rpaths_log}"
     );
@@ -1886,6 +1891,11 @@ fn php_pair_build_smoke_removes_unmanaged_optional_extension_rpath_before_valida
         removed_rpaths_log
             .contains("<out>/work/php-pair-8.4-darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/lib/php/extensions/xdebug.so|/usr/local/lib"),
         "FrankenPHP optional xdebug module should have its stale rpath deleted: {removed_rpaths_log}"
+    );
+    assert!(
+        removed_rpaths_log
+            .contains("<out>/work/php-pair-8.4-darwin-arm64/frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64/lib/php/extensions/xdebug.so|<out>/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/lib"),
+        "FrankenPHP optional xdebug module should have its StaticPHP buildroot rpath deleted: {removed_rpaths_log}"
     );
 
     Ok(())
@@ -2726,6 +2736,15 @@ fn run_php_build_recipe_smoke_with_options(
         .env(
             "PV_TEST_EXTENSION_MACHO_RPATHS",
             options.extension_macho_rpaths,
+        )
+        .env(
+            "PV_TEST_STATICPHP_BUILDROOT_LIB",
+            out_dir
+                .join("work")
+                .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
+                .join("staticphp")
+                .join("buildroot")
+                .join("lib"),
         )
         .env("PV_TEST_CURL_LOG", &curl_log)
         .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
@@ -3853,6 +3872,9 @@ EOF
     if [ -n "$macho_rpaths" ]; then
       load_command=2
       printf '%s\n' "$macho_rpaths" | while IFS= read -r macho_rpath; do
+        if [ "$macho_rpath" = "__PV_TEST_STATICPHP_BUILDROOT_LIB__" ]; then
+          macho_rpath=$PV_TEST_STATICPHP_BUILDROOT_LIB
+        fi
         if [ -n "${PV_TEST_REMOVED_RPATHS_LOG:-}" ] \
           && grep -Fqx "$binary|$macho_rpath" "$PV_TEST_REMOVED_RPATHS_LOG"; then
           continue

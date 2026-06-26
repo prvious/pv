@@ -212,7 +212,7 @@ delete_known_stale_macho_rpaths() {
 
   macho_rpaths "$binary" | while IFS= read -r macho_rpath; do
     case "$macho_rpath" in
-      /usr/local/lib)
+      /usr/local/lib | "$spc_work_dir/buildroot/lib")
         need install_name_tool
         install_name_tool -delete_rpath "$macho_rpath" "$binary"
         ;;
