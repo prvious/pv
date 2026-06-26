@@ -76,6 +76,16 @@ prepare_staticphp_php83_frankenphp_patch_context() {
   esac
 }
 
+csv_contains() {
+  list=$1
+  item=$2
+
+  case ",$list," in
+    *",$item,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 expected_arch_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' arm64 ;;
@@ -282,6 +292,13 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
   optional_shared_args=
   if [ -n "$PHP_OPTIONAL_EXTENSIONS" ]; then
     optional_shared_args="--build-shared=$PHP_OPTIONAL_EXTENSIONS"
+  fi
+  if csv_contains "$PHP_OPTIONAL_EXTENSIONS" imagick; then
+    # StaticPHP v3 finds this header but omits its parent include dir for shared imagick builds.
+    imagick_include="-I$spc_work_dir/buildroot/include/ImageMagick-7"
+    CFLAGS="${CFLAGS:+$CFLAGS }$imagick_include"
+    CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
+    export CFLAGS CXXFLAGS
   fi
   # shellcheck disable=SC2086
   spc build:php "$PHP_BUILD_EXTENSIONS" \

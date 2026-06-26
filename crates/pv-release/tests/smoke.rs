@@ -659,15 +659,24 @@ printf '%s\n' 'Composer version 2.10.10 2026-01-01 00:00:00'
 
 #[test]
 fn php_build_recipe_smoke() -> Result<()> {
-    let run = run_php_build_recipe_smoke()?;
+    let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+        php_optional_extensions: "redis,xdebug,imagick",
+        ..default_build_recipe_options()
+    })?;
     let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
     let frankenphp_source_dir = format!(
         "{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source/frankenphp-source",
         run.out_dir
     );
+    let imagick_include = format!(
+        "{}/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/include/ImageMagick-7",
+        run.out_dir
+    );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json][--build-shared=redis,xdebug][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+spc-cflags=-I{imagick_include}\n\
+spc-cxxflags=-I{imagick_include}\n\
+argv=[build:php][json][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -2032,6 +2041,7 @@ struct BuildRecipeOptions<'a> {
     frankenphp_macho_rpaths: &'a str,
     validate_archive_failure_resource: &'a str,
     require_staticphp_php83_frankenphp_patch_context: bool,
+    php_optional_extensions: &'a str,
 }
 
 struct RedisBuildRecipeOptions {
@@ -2638,6 +2648,7 @@ fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
         frankenphp_macho_rpaths: "",
         validate_archive_failure_resource: "",
         require_staticphp_php83_frankenphp_patch_context: false,
+        php_optional_extensions: "redis,xdebug",
     }
 }
 
@@ -2718,6 +2729,10 @@ fn run_php_build_recipe_smoke_with_options(
             file_sha256(&php_source_archive)?,
         )
         .env("PV_TEST_PHP_VERSION", options.php_version)
+        .env(
+            "PV_TEST_PHP_OPTIONAL_EXTENSIONS",
+            options.php_optional_extensions,
+        )
         .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
         .env(
             "PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT",
@@ -2897,7 +2912,7 @@ PV_SOURCE_SHA256=$source_sha256
 $php_source_env
 PV_EXPECTED_EXTENSIONS=json
 PV_DEFAULT_EXTENSIONS=json
-PV_OPTIONAL_EXTENSIONS=redis,xdebug
+PV_OPTIONAL_EXTENSIONS=${PV_TEST_PHP_OPTIONAL_EXTENSIONS:-redis,xdebug}
 PV_BUILD_EXTENSIONS=json
 PV_DEPLOYMENT_TARGET=13.0
 PV_PV_BUILD_REVISION=pv1
@@ -4202,6 +4217,8 @@ fn write_fake_spc(path: &Utf8Path) -> Result<()> {
 set -eu
 
 printf 'pwd=%s\n' "$(pwd)" >>"$PV_TEST_SPC_LOG"
+printf 'spc-cflags=%s\n' "${CFLAGS:-}" >>"$PV_TEST_SPC_LOG"
+printf 'spc-cxxflags=%s\n' "${CXXFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 printf 'argv=' >>"$PV_TEST_SPC_LOG"
 for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_SPC_LOG"
