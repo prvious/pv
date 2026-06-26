@@ -676,6 +676,7 @@ fn php_build_recipe_smoke() -> Result<()> {
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
+spc-pkg-config=pkg-config\n\
 argv=[build:php][json][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
@@ -2680,6 +2681,7 @@ fn run_php_build_recipe_smoke_with_options(
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
     write_file(&deleted_rpath_log, "")?;
@@ -4210,6 +4212,17 @@ exit 0
     )
 }
 
+fn write_fake_pkg_config(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+exit 0
+"#,
+    )
+}
+
 fn write_fake_spc(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -4219,6 +4232,9 @@ set -eu
 printf 'pwd=%s\n' "$(pwd)" >>"$PV_TEST_SPC_LOG"
 printf 'spc-cflags=%s\n' "${CFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 printf 'spc-cxxflags=%s\n' "${CXXFLAGS:-}" >>"$PV_TEST_SPC_LOG"
+if [ -n "${PKG_CONFIG:-}" ]; then
+  printf 'spc-pkg-config=%s\n' "$PKG_CONFIG" >>"$PV_TEST_SPC_LOG"
+fi
 printf 'argv=' >>"$PV_TEST_SPC_LOG"
 for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_SPC_LOG"

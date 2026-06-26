@@ -86,6 +86,22 @@ csv_contains() {
   esac
 }
 
+ensure_pkg_config() {
+  if [ -n "${PKG_CONFIG:-}" ]; then
+    export PKG_CONFIG
+    return 0
+  fi
+
+  if command -v pkg-config >/dev/null 2>&1; then
+    PKG_CONFIG=pkg-config
+  elif command -v pkgconf >/dev/null 2>&1; then
+    PKG_CONFIG=pkgconf
+  else
+    die "pkg-config is required to build the shared imagick extension"
+  fi
+  export PKG_CONFIG
+}
+
 expected_arch_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' arm64 ;;
@@ -294,6 +310,7 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     optional_shared_args="--build-shared=$PHP_OPTIONAL_EXTENSIONS"
   fi
   if csv_contains "$PHP_OPTIONAL_EXTENSIONS" imagick; then
+    ensure_pkg_config
     # StaticPHP v3 finds this header but omits its parent include dir for shared imagick builds.
     imagick_include="-I$spc_work_dir/buildroot/include/ImageMagick-7"
     CFLAGS="${CFLAGS:+$CFLAGS }$imagick_include"

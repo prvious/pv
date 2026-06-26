@@ -124,7 +124,7 @@ jobs:
         run: |
           set -eu
           brew update
-          brew install php
+          brew install php pkgconf
 
       - name: Install StaticPHP CLI
         run: |
