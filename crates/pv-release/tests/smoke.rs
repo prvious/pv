@@ -667,7 +667,7 @@ fn php_build_recipe_smoke() -> Result<()> {
     );
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
-argv=[build:php][json,redis,xdebug][--build-shared=redis,xdebug][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json][--build-shared=redis,xdebug][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -2898,7 +2898,7 @@ $php_source_env
 PV_EXPECTED_EXTENSIONS=json
 PV_DEFAULT_EXTENSIONS=json
 PV_OPTIONAL_EXTENSIONS=redis,xdebug
-PV_BUILD_EXTENSIONS=json,redis,xdebug
+PV_BUILD_EXTENSIONS=json
 PV_DEPLOYMENT_TARGET=13.0
 PV_PV_BUILD_REVISION=pv1
 PV_MINIMUM_PV_VERSION=0.1.0

@@ -185,12 +185,14 @@ fn php_recipe_splits_default_and_optional_extensions() -> Result<()> {
     let php = write_php_recipe(&tempdir)?;
     let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
 
-    assert!(env.contains("PV_DEFAULT_EXTENSIONS='bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip'"));
+    let default_extensions =
+        "bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip";
+    assert!(env.contains(&format!("PV_DEFAULT_EXTENSIONS='{default_extensions}'")));
     assert!(env.contains(
         "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml'"
     ));
+    assert!(env.contains(&format!("PV_BUILD_EXTENSIONS='{default_extensions}'")));
     assert!(env.contains("PV_EXPECTED_EXTENSIONS='bcmath,ctype,curl"));
-    assert!(!env.contains("PV_BUILD_EXTENSIONS=''"));
 
     Ok(())
 }
@@ -792,7 +794,6 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
     let actual = php
         .default_extensions()
         .iter()
-        .chain(php.optional_extensions())
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     let required = [
@@ -812,16 +813,13 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "pdo_mysql",
         "pdo_pgsql",
         "pdo_sqlite",
-        "pdo_sqlsrv",
         "phar",
         "posix",
-        "redis",
         "session",
         "simplexml",
         "sockets",
         "sodium",
         "sqlite3",
-        "sqlsrv",
         "tokenizer",
         "xml",
         "xmlreader",

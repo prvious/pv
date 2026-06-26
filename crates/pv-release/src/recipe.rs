@@ -913,11 +913,7 @@ pub fn php_recipe_env(
     let artifact_version = format!("{upstream_version}-{pv_build_revision}");
     let default_extensions = recipe.default_extensions().join(",");
     let optional_extensions = recipe.optional_extensions().join(",");
-    let build_extensions = if optional_extensions.is_empty() {
-        default_extensions.clone()
-    } else {
-        format!("{default_extensions},{optional_extensions}")
-    };
+    let build_extensions = default_extensions.clone();
     let expected_extensions = recipe.expected_extensions().join(",");
     let minimum_pv_version = recipe.minimum_pv_version().as_str();
     let deployment_target = recipe.deployment_target();
