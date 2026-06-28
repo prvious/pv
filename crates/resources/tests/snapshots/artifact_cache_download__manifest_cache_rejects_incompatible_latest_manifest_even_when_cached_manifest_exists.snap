@@ -5,6 +5,6 @@ expression: "cache.refresh(MANIFEST_URL, &newer_client)"
 Err(
     RequiresNewerPv {
         minimum_pv_version: "999.0.0",
-        current_pv_version: "0.1.4",
+        current_pv_version: "0.1.5",
     },
 )

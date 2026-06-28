@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "PV update\nPV application: update failed; rollback failed\n",
-    stderr: "error: PV application update failed (daemon did not become healthy after update); rollback failed: PV app release `0.1.4` is missing at <pv-home>/bin/releases/0.1.4/pv\n",
+    stderr: "error: PV application update failed (daemon did not become healthy after update); rollback failed: PV app release `0.1.5` is missing at <pv-home>/bin/releases/0.1.5/pv\n",
 }
