@@ -190,6 +190,12 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
             if placeholder == "ProjectUrl"
     ));
     assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
+    assert!(
+        ProjectConfig::parse(
+            "env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n  VITE_DEV_SERVER_CERT: \"${tls_cert}\"\n  PV_TLS_CA: \"${tls_ca}\"\n"
+        )
+        .is_ok()
+    );
     assert!(ProjectConfig::parse("rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n").is_ok());
 
     Ok(())
@@ -204,6 +210,17 @@ fn project_config_validates_url_placeholder_scopes() {
                 r#"
 env:
   APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "tls-placeholders-project-env",
+            ProjectConfig::parse(
+                r#"
+env:
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  PV_TLS_CA: "${tls_ca}"
 "#,
             ),
         ),
@@ -236,6 +253,18 @@ mysql:
             ),
         ),
         (
+            "resource-project-tls",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  env:
+    VITE_DEV_SERVER_KEY: "${tls_key}"
+    VITE_DEV_SERVER_CERT: "${tls_cert}"
+    PV_TLS_CA: "${tls_ca}"
+"#,
+            ),
+        ),
+        (
             "resource-scoped-url",
             ProjectConfig::parse(
                 r#"
@@ -264,6 +293,20 @@ mysql:
     app:
       env:
         APP_URL: "${project_url}"
+"#,
+            ),
+        ),
+        (
+            "allocation-project-tls",
+            ProjectConfig::parse(
+                r#"
+mysql:
+  allocations:
+    app:
+      env:
+        VITE_DEV_SERVER_KEY: "${tls_key}"
+        VITE_DEV_SERVER_CERT: "${tls_cert}"
+        PV_TLS_CA: "${tls_ca}"
 "#,
             ),
         ),

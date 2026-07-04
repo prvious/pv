@@ -971,7 +971,7 @@ Version/track fields may be YAML strings or numbers. PV normalizes them to strin
 
 Project config can request Managed Resource tracks and define environment variable mappings for a Project. The mappings may use PV-provided placeholder values such as resource username, password, database, bucket, prefix, endpoint, and assigned port.
 
-Project config can declare additional Project hostnames with `hostnames:`. These hostnames are routed to the same Project and included in that Project's certificate SANs. `hostnames:` is additive and does not include or redefine the primary Project hostname, which comes from `pv link --hostname` or the directory-derived default. Additional hostnames must be full `.test` hostnames; PV v1 rejects non-`.test` hostnames and wildcard hostnames.
+Project config can declare additional Project hostnames with `hostnames:`. These hostnames are routed to the same Project and receive Gateway TLS certificates for their own hostnames. `hostnames:` is additive and does not include or redefine the primary Project hostname, which comes from `pv link --hostname` or the directory-derived default. Additional hostnames must be full `.test` hostnames; PV v1 rejects non-`.test` hostnames and wildcard hostnames.
 
 All hostnames in PV's desired routing table are unique across primary and additional hostnames. If an additional hostname conflicts with another Project's primary or additional hostname, the Project config is invalid. If `pv link --hostname` tries to use a hostname that is already primary or additional for another Project, it fails with a clear collision error. PV keeps serving the last valid desired state and surfaces conflicts in `pv list` and `pv status`.
 
@@ -1084,6 +1084,12 @@ Project config env values support PV's simple placeholder syntax: `${name}`. PV 
 Placeholder names must use lowercase snake_case, such as `${project_url}`, `${access_key}`, `${secret_key}`, and `${smtp_port}`.
 
 `${project_url}` renders the URL for the primary Project hostname, such as `https://acme.test`. It does not vary by additional hostnames.
+
+`${tls_key}` renders the stable PV-owned path to the TLS private key for the Project's primary hostname. `${tls_cert}` renders the stable PV-owned path to the TLS certificate chain for the Project's primary hostname. `${tls_ca}` renders the path to PV's local CA certificate. PV must never expose the local CA private key through Project env placeholders.
+
+TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with Gateway-managed TLS certificates.
+
+PV owns stable Project TLS files under Project-specific storage in `~/.pv/certificates/` and refreshes them during reconciliation when the Project's primary hostname or local CA changes. Placeholder values must not point at Caddy/FrankenPHP's internal certificate storage; that layout is an implementation detail of the managed Gateway.
 
 Unknown placeholders fail Project config validation. PV keeps serving the last valid desired state and surfaces the validation error in `pv list` and `pv status`.
 

@@ -210,7 +210,7 @@ async fn reconcile_loaded_project(
         return Ok(summary);
     }
 
-    let context = project_env_context_for_plan(database, project, &plan)?;
+    let context = project_env_context_for_plan(paths, database, project, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
     let transform = config::write_project_env_file(&project.path.join(".env"), &rendered)?;
     let mut warnings = observed_warnings(&transform.warnings);
@@ -542,6 +542,7 @@ fn apply_project_resource_plan(
 }
 
 fn project_env_context_for_plan(
+    paths: &PvPaths,
     database: &Database,
     project: &ProjectRecord,
     plan: &ProjectResourcePlan,
@@ -576,6 +577,9 @@ fn project_env_context_for_plan(
 
     Ok(ProjectEnvContext {
         primary_hostname: project.primary_hostname.clone(),
+        tls_ca_path: paths.ca_certificate().to_string(),
+        tls_cert_path: paths.project_tls_certificate(&project.id).to_string(),
+        tls_key_path: paths.project_tls_private_key(&project.id).to_string(),
         resources,
     })
 }

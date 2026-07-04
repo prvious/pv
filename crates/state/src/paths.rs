@@ -173,6 +173,18 @@ impl PvPaths {
         self.certificates().join("ca-key.pem")
     }
 
+    pub fn project_tls_dir(&self, project_id: &str) -> Utf8PathBuf {
+        self.certificates().join("projects").join(project_id)
+    }
+
+    pub fn project_tls_certificate(&self, project_id: &str) -> Utf8PathBuf {
+        self.project_tls_dir(project_id).join("tls.crt")
+    }
+
+    pub fn project_tls_private_key(&self, project_id: &str) -> Utf8PathBuf {
+        self.project_tls_dir(project_id).join("tls.key")
+    }
+
     pub fn gateway_log(&self) -> Utf8PathBuf {
         self.logs().join("gateway/gateway.log")
     }

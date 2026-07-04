@@ -11,6 +11,9 @@ const CREATED_PROJECT_ENV_FILE_MODE: u32 = 0o600;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectEnvContext {
     pub primary_hostname: String,
+    pub tls_ca_path: String,
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
     pub resources: BTreeMap<String, ResourceEnvContext>,
 }
 
@@ -261,6 +264,15 @@ fn project_context_values(
         "project_url".to_string(),
         format!("https://{}", context.primary_hostname),
     );
+    if !context.tls_ca_path.is_empty() {
+        values.insert("tls_ca".to_string(), context.tls_ca_path.clone());
+    }
+    if !context.tls_cert_path.is_empty() {
+        values.insert("tls_cert".to_string(), context.tls_cert_path.clone());
+    }
+    if !context.tls_key_path.is_empty() {
+        values.insert("tls_key".to_string(), context.tls_key_path.clone());
+    }
 
     Ok(values)
 }

@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "APP_ENV=local\nAPP_URL=https://acme.test\n",
+    stdout: "APP_ENV=local\nAPP_URL=https://acme.test\nPV_TLS_CA=<tempdir>/home/.pv/certificates/ca.pem\nVITE_DEV_SERVER_CERT=<tempdir>/home/.pv/certificates/projects/<project-id>/tls.crt\nVITE_DEV_SERVER_KEY=<tempdir>/home/.pv/certificates/projects/<project-id>/tls.key\n",
     stderr: "",
 }

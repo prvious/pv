@@ -25,13 +25,19 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: acme\n",
+        r#"env:
+  APP_URL: "${project_url}"
+  APP_NAME: acme
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  PV_TLS_CA: "${tls_ca}"
+"#,
     )?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
 
-    assert_with_normalized_timestamps(
+    assert_with_normalized_timestamps_and_tempdir(
         "root_only_env_rendering_writes_dotenv_and_records_rendered_state",
         (
             lines,
@@ -39,6 +45,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
             database.project_env_observed_state(&project.id)?,
             database.recent_jobs()?,
         ),
+        tempdir.path(),
     )?;
 
     Ok(())
@@ -1524,6 +1531,29 @@ fn assert_with_normalized_timestamps(
     let mut settings = Settings::clone_current();
     settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
+    settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
+    settings.add_filter(r"Project `[a-z0-9]{10}`", "Project `<project_id>`");
+    settings.bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn assert_with_normalized_timestamps_and_tempdir(
+    name: &'static str,
+    snapshot: impl std::fmt::Debug,
+    tempdir: &Utf8Path,
+) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
+    settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
         r#"project_id: "<project_id>""#,

@@ -37,6 +37,18 @@ fn ca_paths_are_derived_from_an_injected_home() {
         paths.ca_private_key().as_str(),
         "/tmp/pv-test-home/.pv/certificates/ca-key.pem"
     );
+    assert_eq!(
+        paths.project_tls_dir("project123").as_str(),
+        "/tmp/pv-test-home/.pv/certificates/projects/project123"
+    );
+    assert_eq!(
+        paths.project_tls_certificate("project123").as_str(),
+        "/tmp/pv-test-home/.pv/certificates/projects/project123/tls.crt"
+    );
+    assert_eq!(
+        paths.project_tls_private_key("project123").as_str(),
+        "/tmp/pv-test-home/.pv/certificates/projects/project123/tls.key"
+    );
 }
 
 #[test]

@@ -1117,24 +1117,24 @@ the owner of the agent ecosystem.
 
 ## Project TLS Placeholders
 
-PV should expose stable Project TLS file paths as env placeholders instead of
-building framework-specific integrations for every frontend tool.
+Status: accepted into `DESIGN.md`. PV should expose stable Project TLS file
+paths as env placeholders instead of building framework-specific integrations
+for every frontend tool.
 
-Possible placeholders:
+The first version should expose only primary-hostname TLS material:
 
 ```yaml
 env:
-  APP_URL: "${project_url}"
   VITE_DEV_SERVER_KEY: "${tls_key}"
   VITE_DEV_SERVER_CERT: "${tls_cert}"
   PV_TLS_CA: "${tls_ca}"
 ```
 
-The concrete placeholders should be:
+The concrete placeholders are:
 
-- `${tls_key}`: path to the Project TLS private key
-- `${tls_cert}`: path to the Project TLS certificate
-- `${tls_ca}`: path to PV's local CA certificate, if exposed
+- `${tls_key}`: path to the Project primary-hostname TLS private key
+- `${tls_cert}`: path to the Project primary-hostname TLS certificate chain
+- `${tls_ca}`: path to PV's local CA certificate
 
 `${tls_ca}` should point only to the CA certificate. PV must never expose the CA
 private key through Project env placeholders.
@@ -1163,12 +1163,14 @@ Do not make Caddy/FrankenPHP's internal certificate storage part of PV's public
 contract.
 
 The current design says the Gateway uses PV's local CA and Caddy/FrankenPHP
-generates Project certificates as needed. For placeholders, PV probably needs a
-deliberate export or generation path with stable filenames under PV-owned
-storage, such as a future `~/.pv/certificates/projects/...` layout.
+generates Project certificates as needed. For placeholders, PV needs a deliberate
+export or generation path with stable filenames under PV-owned storage, such as
+a future `~/.pv/certificates/projects/...` layout.
 
-The exact storage path can wait for implementation design, but the env contract
-should be stable from the user's point of view.
+The exact storage path, whether stable files are symlinks or exported copies,
+and when reconciliation forces or refreshes certificate material can wait for
+implementation design. The env contract should be stable from the user's point
+of view.
 
 ### Boundaries
 
@@ -1178,6 +1180,8 @@ This should not turn into:
 - automatic edits to `webpack.mix.js`
 - frontend build tool detection
 - JS dev server process management
+- JS dev server path-proxying through the Gateway
+- wildcard certificate or wildcard routing support in the first version
 - a PV plugin ecosystem for frontend TLS
 
 If a Project wants custom behavior, it can use normal env mappings and its own
