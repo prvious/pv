@@ -102,6 +102,63 @@ impl ProjectConfig {
                         .any(|allocation| !allocation.env.is_empty())
             })
     }
+
+    pub fn uses_tls_placeholders(&self) -> bool {
+        self.env
+            .values()
+            .any(|value| value_uses_tls_placeholder(value))
+            || self.resources.values().any(|resource| {
+                resource
+                    .env
+                    .values()
+                    .any(|value| value_uses_tls_placeholder(value))
+                    || resource.allocations.values().any(|allocation| {
+                        allocation
+                            .env
+                            .values()
+                            .any(|value| value_uses_tls_placeholder(value))
+                    })
+            })
+    }
+}
+
+fn value_uses_tls_placeholder(value: &str) -> bool {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut index = 0;
+
+    while index < characters.len() {
+        if characters[index] != '$' {
+            index += 1;
+            continue;
+        }
+
+        if characters.get(index + 1) == Some(&'$') {
+            index += 2;
+            continue;
+        }
+
+        if characters.get(index + 1) != Some(&'{') {
+            index += 1;
+            continue;
+        }
+
+        let Some(end_index) = characters[index + 2..]
+            .iter()
+            .position(|character| *character == '}')
+            .map(|offset| index + 2 + offset)
+        else {
+            index += 2;
+            continue;
+        };
+        let placeholder = characters[index + 2..end_index].iter().collect::<String>();
+        if matches!(placeholder.as_str(), "tls_ca" | "tls_cert" | "tls_key") {
+            return true;
+        }
+
+        index = end_index + 1;
+    }
+
+    false
 }
 
 fn serialize_optional_path<S>(path: &Option<Utf8PathBuf>, serializer: S) -> Result<S::Ok, S::Error>

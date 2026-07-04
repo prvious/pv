@@ -340,6 +340,25 @@ mysql:
 }
 
 #[test]
+fn project_config_reports_tls_placeholder_usage() -> Result<()> {
+    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n")?;
+    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls_cert}\"\n")?;
+    let allocation_tls = ProjectConfig::parse(
+        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls_ca}\"\n",
+    )?;
+    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls_key}\"\n")?;
+    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n")?;
+
+    assert!(project_tls.uses_tls_placeholders());
+    assert!(resource_tls.uses_tls_placeholders());
+    assert!(allocation_tls.uses_tls_placeholders());
+    assert!(!escaped_tls.uses_tls_placeholders());
+    assert!(!no_tls.uses_tls_placeholders());
+
+    Ok(())
+}
+
+#[test]
 fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("env:\n  DB_DATABASE: \"${database}\"\n"),

@@ -7,9 +7,10 @@ use insta::{Settings, assert_debug_snapshot};
 use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
-    TrustDomainState, generate_local_ca, inspect_local_ca_files, inspect_pf_anchor_file,
-    inspect_pf_conf_reference, inspect_resolver_file, inspect_system_ca_trust,
-    loopback_tcp_listener_ports, trusted_pv_ca_fingerprints,
+    TrustDomainState, generate_local_ca, generate_project_certificate, inspect_local_ca_files,
+    inspect_pf_anchor_file, inspect_pf_conf_reference, inspect_resolver_file,
+    inspect_system_ca_trust, loopback_tcp_listener_ports, project_certificate_matches,
+    trusted_pv_ca_fingerprints,
 };
 use state::fs;
 
@@ -299,6 +300,38 @@ fn local_ca_generation_produces_matching_pv_root_certificate_and_key() -> Result
     assert!(!metadata.fingerprint.is_empty());
     assert!(generated.certificate_pem.contains("BEGIN CERTIFICATE"));
     assert!(generated.private_key_pem.contains("BEGIN PRIVATE KEY"));
+
+    Ok(())
+}
+
+#[test]
+fn project_certificate_generation_signs_primary_hostname_with_local_ca() -> Result<()> {
+    let local = generate_local_ca()?;
+    let stale = generate_local_ca()?;
+    let generated =
+        generate_project_certificate("acme.test", &local.certificate_pem, &local.private_key_pem)?;
+    let certificate_chain = format!("{}{}", generated.certificate_pem, local.certificate_pem);
+
+    assert!(generated.certificate_pem.contains("BEGIN CERTIFICATE"));
+    assert!(generated.private_key_pem.contains("BEGIN PRIVATE KEY"));
+    assert!(project_certificate_matches(
+        &certificate_chain,
+        &generated.private_key_pem,
+        "acme.test",
+        &local.certificate_pem
+    ));
+    assert!(!project_certificate_matches(
+        &certificate_chain,
+        &generated.private_key_pem,
+        "api.acme.test",
+        &local.certificate_pem
+    ));
+    assert!(!project_certificate_matches(
+        &certificate_chain,
+        &generated.private_key_pem,
+        "acme.test",
+        &stale.certificate_pem
+    ));
 
     Ok(())
 }

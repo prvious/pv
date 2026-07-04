@@ -3,10 +3,11 @@ use std::io::Cursor;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
-    PKCS_ECDSA_P256_SHA256, PublicKeyData, date_time_ymd,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    Issuer, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKeyData, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
+use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::FromDer;
 use x509_parser::prelude::X509Certificate;
 
@@ -20,6 +21,12 @@ pub struct GeneratedLocalCa {
     pub certificate_pem: String,
     pub private_key_pem: String,
     pub metadata: LocalCaMetadata,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedProjectCertificate {
+    pub certificate_pem: String,
+    pub private_key_pem: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +94,73 @@ pub fn generate_local_ca() -> Result<GeneratedLocalCa, PlatformError> {
         private_key_pem,
         metadata,
     })
+}
+
+pub fn generate_project_certificate(
+    primary_hostname: &str,
+    ca_certificate_pem: &str,
+    ca_private_key_pem: &str,
+) -> Result<GeneratedProjectCertificate, PlatformError> {
+    let ca_key_pair = KeyPair::from_pem(ca_private_key_pem)
+        .map_err(PlatformError::ProjectCertificateGeneration)?;
+    let issuer = Issuer::from_ca_cert_pem(ca_certificate_pem, ca_key_pair)
+        .map_err(PlatformError::ProjectCertificateGeneration)?;
+    let mut params = CertificateParams::new(vec![primary_hostname.to_string()])
+        .map_err(PlatformError::ProjectCertificateGeneration)?;
+    params.not_before = date_time_ymd(2026, 1, 1);
+    params.not_after = date_time_ymd(2036, 1, 1);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(PlatformError::ProjectCertificateGeneration)?;
+    let certificate = params
+        .signed_by(&key_pair, &issuer)
+        .map_err(PlatformError::ProjectCertificateGeneration)?;
+
+    Ok(GeneratedProjectCertificate {
+        certificate_pem: certificate.pem(),
+        private_key_pem: key_pair.serialize_pem(),
+    })
+}
+
+pub fn project_certificate_matches(
+    certificate_chain_pem: &str,
+    private_key_pem: &str,
+    primary_hostname: &str,
+    ca_certificate_pem: &str,
+) -> bool {
+    let Ok(certificate_der) = first_certificate_der_from_pem(certificate_chain_pem) else {
+        return false;
+    };
+    let Ok(ca_certificate_der) = certificate_der_from_pem(ca_certificate_pem) else {
+        return false;
+    };
+    let Ok(key_pair) = KeyPair::from_pem(private_key_pem) else {
+        return false;
+    };
+    let Ok((_remaining, certificate)) = X509Certificate::from_der(&certificate_der) else {
+        return false;
+    };
+    let Ok((_remaining, ca_certificate)) = X509Certificate::from_der(&ca_certificate_der) else {
+        return false;
+    };
+
+    if certificate.public_key().raw != key_pair.subject_public_key_info().as_slice() {
+        return false;
+    }
+    if certificate
+        .verify_signature(Some(&ca_certificate.tbs_certificate.subject_pki))
+        .is_err()
+    {
+        return false;
+    }
+
+    certificate_has_dns_name(&certificate, primary_hostname)
 }
 
 impl LocalCaMetadata {
@@ -273,6 +347,31 @@ pub(crate) fn certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>,
     }
 }
 
+fn first_certificate_der_from_pem(certificate_pem: &str) -> Result<Vec<u8>, io::Error> {
+    let mut reader = Cursor::new(certificate_pem.as_bytes());
+    let mut certificates = rustls_pemfile::certs(&mut reader);
+
+    match certificates.next().transpose()? {
+        Some(certificate) => Ok(certificate.as_ref().to_vec()),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected at least one certificate PEM block",
+        )),
+    }
+}
+
+fn certificate_has_dns_name(certificate: &X509Certificate<'_>, primary_hostname: &str) -> bool {
+    let Ok(Some(subject_alternative_name)) = certificate.subject_alternative_name() else {
+        return false;
+    };
+
+    subject_alternative_name
+        .value
+        .general_names
+        .iter()
+        .any(|name| matches!(name, GeneralName::DNSName(hostname) if *hostname == primary_hostname))
+}
+
 fn certificate_fingerprint(certificate_der: &[u8]) -> String {
     let digest = Sha256::digest(certificate_der);
     digest
@@ -288,6 +387,7 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         PlatformError::InvalidCaShape => CaRepairReason::InvalidCaShape,
         PlatformError::KeyMismatch => CaRepairReason::KeyMismatch,
         PlatformError::CaGeneration(_)
+        | PlatformError::ProjectCertificateGeneration(_)
         | PlatformError::Pem(_)
         | PlatformError::LocalCaPostWriteMissing
         | PlatformError::LocalCaPostWriteRepairRequired { .. }

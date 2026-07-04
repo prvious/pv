@@ -210,6 +210,10 @@ async fn reconcile_loaded_project(
         return Ok(summary);
     }
 
+    if config_file.config.uses_tls_placeholders() {
+        ensure_project_tls_files(paths, project)?;
+    }
+
     let context = project_env_context_for_plan(paths, database, project, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
     let transform = config::write_project_env_file(&project.path.join(".env"), &rendered)?;
@@ -241,6 +245,49 @@ async fn reconcile_loaded_project(
     };
 
     Ok(summary)
+}
+
+fn ensure_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<(), DaemonError> {
+    let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
+    let ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
+    let certificate_path = paths.project_tls_certificate(&project.id);
+    let private_key_path = paths.project_tls_private_key(&project.id);
+    let existing_certificate_pem = read_optional_file(&certificate_path)?;
+    let existing_private_key_pem = read_optional_file(&private_key_path)?;
+
+    if let (Some(certificate_pem), Some(private_key_pem)) =
+        (&existing_certificate_pem, &existing_private_key_pem)
+        && platform::project_certificate_matches(
+            certificate_pem,
+            private_key_pem,
+            &project.primary_hostname,
+            &ca_certificate_pem,
+        )
+    {
+        return Ok(());
+    }
+
+    let generated = platform::generate_project_certificate(
+        &project.primary_hostname,
+        &ca_certificate_pem,
+        &ca_private_key_pem,
+    )?;
+    let certificate_chain_pem = format!("{}{}", generated.certificate_pem, ca_certificate_pem);
+
+    state::fs::write_sensitive_file(&certificate_path, &certificate_chain_pem)?;
+    state::fs::write_sensitive_file(&private_key_path, &generated.private_key_pem)?;
+
+    Ok(())
+}
+
+fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError> {
+    match state::fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn maybe_resolve_project_php_runtime(

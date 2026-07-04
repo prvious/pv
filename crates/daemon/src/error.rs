@@ -75,6 +75,9 @@ pub enum DaemonError {
     #[error("Managed Resource command failed: {0}")]
     ManagedResourceCommand(#[from] ManagedResourceCommandError),
 
+    #[error("platform error: {0}")]
+    Platform(#[from] platform::PlatformError),
+
     #[error("Managed Resource default installs failed: {}", default_install_failures(.failures))]
     ManagedResourceDefaultInstallFailures { failures: Vec<String> },
 

@@ -11,8 +11,9 @@ mod trust;
 
 pub use browser::open_url;
 pub use ca::{
-    CaFileState, CaRepairReason, GeneratedLocalCa, LocalCaMetadata, generate_local_ca,
-    inspect_local_ca_files,
+    CaFileState, CaRepairReason, GeneratedLocalCa, GeneratedProjectCertificate, LocalCaMetadata,
+    generate_local_ca, generate_project_certificate, inspect_local_ca_files,
+    project_certificate_matches,
 };
 pub use error::PlatformError;
 pub use launch_agent::{
