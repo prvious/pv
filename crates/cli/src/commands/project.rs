@@ -105,6 +105,7 @@ pub(crate) fn unlink(
     let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
+    delete_optional_project_tls_dir(&paths, &project)?;
     let project = database.unlink_project(&project.id)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -115,6 +116,19 @@ pub(crate) fn unlink(
     request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn delete_optional_project_tls_dir(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+) -> Result<(), ExecuteError> {
+    match state::fs::delete_dir_all(&paths.project_tls_dir(&project.id)) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn open(

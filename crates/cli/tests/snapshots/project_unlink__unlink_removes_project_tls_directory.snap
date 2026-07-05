@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/project_unlink.rs
+expression: "(&output.exit_code, &output.stdout, &output.stderr)"
+---
+(
+    ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    "Unlinked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    "",
+)
