@@ -16,7 +16,7 @@ main idea list.
 - [Richer CLI Presentation](#richer-cli-presentation)
 - [ZDOTDIR-Aware Shell Integration](#zdotdir-aware-shell-integration)
 - [Agent-Friendly CLI Contracts](#agent-friendly-cli-contracts)
-- [Project TLS Placeholders](#project-tls-placeholders)
+- [~~Project TLS Placeholders~~](#project-tls-placeholders)
 - [PHP Extension Profiles](#php-extension-profiles)
 - [Auto-Reconcile Action Commands](#auto-reconcile-action-commands)
 - [Project Details Command](#project-details-command)
@@ -1115,7 +1115,7 @@ That would pull PV away from its local development control-plane job. PV should
 make project/resource state easy for any tool to read, but it should not become
 the owner of the agent ecosystem.
 
-## Project TLS Placeholders
+## ~~Project TLS Placeholders~~
 
 Status: accepted into `DESIGN.md`. PV should expose stable Project TLS file
 paths as env placeholders instead of building framework-specific integrations
