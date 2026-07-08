@@ -336,16 +336,17 @@ fn update_check_with_catalog(
     Ok(ProtocolUpdateCheck { managed_resources })
 }
 
-pub(crate) fn update_installed(
+pub(crate) fn update_installed_with_progress(
     paths: PvPaths,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: &impl resources::DownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     match catalog {
-        Some(catalog) => update_installed_with_catalog(paths, catalog),
+        Some(catalog) => update_installed_with_catalog(paths, catalog, progress),
         None => {
             let catalog = ManagedResourceRuntimeCatalog::production();
 
-            update_installed_with_catalog(paths, &catalog)
+            update_installed_with_catalog(paths, &catalog, progress)
         }
     }
 }
@@ -353,6 +354,7 @@ pub(crate) fn update_installed(
 fn update_installed_with_catalog(
     paths: PvPaths,
     catalog: &ManagedResourceRuntimeCatalog,
+    progress: &impl resources::DownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
@@ -366,11 +368,11 @@ fn update_installed_with_catalog(
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
     let update = if let Some(client) = catalog.update_check_client.as_deref() {
-        commands.update_all_installed(&backing_adapters, client)?
+        commands.update_all_installed_with_progress(&backing_adapters, client, progress)?
     } else {
         let client = resources::UreqResourceHttpClient::default();
 
-        commands.update_all_installed(&backing_adapters, &client)?
+        commands.update_all_installed_with_progress(&backing_adapters, &client, progress)?
     };
 
     Ok(ManagedResourceUpdateReport {

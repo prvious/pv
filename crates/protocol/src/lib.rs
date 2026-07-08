@@ -17,4 +17,4 @@ pub use update_check::{
     ManagedResourceUpdateRevocation, ManagedResourceUpdateStatus,
 };
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;

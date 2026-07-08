@@ -28,7 +28,10 @@ pub use command::{
     ManagedResourceUpdateRevocation, ManagedResourceUpdateStatus, PhpPairInstall,
     PhpPairRemovalIntent, PhpPairUpdate,
 };
-pub use download::{ArtifactDownload, ArtifactDownloader};
+pub use download::{
+    ArtifactDownload, ArtifactDownloader, DownloadProgress, DownloadProgressEvent,
+    NoDownloadProgress,
+};
 pub use endpoint::{
     ARTIFACT_MANIFEST_URL_BUILD_ENV, STABLE_ARTIFACT_MANIFEST_URL, default_artifact_manifest_url,
 };

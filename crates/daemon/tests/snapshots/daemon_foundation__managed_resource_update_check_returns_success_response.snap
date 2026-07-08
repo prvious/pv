@@ -6,7 +6,7 @@ expression: snapshot
     [
         Object {
             "message": String("Managed Resource update check completed"),
-            "protocol_version": Number(2),
+            "protocol_version": Number(3),
             "status": String("ok"),
             "type": String("response"),
             "update_check": Object {

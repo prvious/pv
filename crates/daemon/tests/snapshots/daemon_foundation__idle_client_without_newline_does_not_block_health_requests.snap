@@ -5,7 +5,7 @@ expression: lines
 [
     Object {
         "message": String("daemon healthy"),
-        "protocol_version": Number(2),
+        "protocol_version": Number(3),
         "status": String("ok"),
         "type": String("response"),
     },
