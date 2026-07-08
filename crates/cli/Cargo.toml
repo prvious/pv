@@ -16,6 +16,7 @@ clap_complete = { workspace = true }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
+indicatif = { workspace = true }
 linemux = { workspace = true }
 platform = { path = "../platform" }
 protocol = { path = "../protocol" }

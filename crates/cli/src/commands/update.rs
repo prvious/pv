@@ -18,6 +18,7 @@ use crate::args::UpdateArgs;
 use crate::environment::{Environment, app_update_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
+use crate::progress::DownloadProgressRenderer;
 
 static APP_DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MANAGED_RESOURCE_UPDATE_CONTINUATION: &str = "internal:update-managed-resources";
@@ -71,7 +72,7 @@ pub(crate) fn run_managed_resource_continuation(
     let current_version = AppUpdateVersion::current()?;
     validate_active_release(&layout, &current_version)?;
 
-    run_managed_resource_update_phase(paths, stdout)
+    run_managed_resource_update_phase(paths, environment, stdout)
 }
 
 fn run_update(
@@ -82,7 +83,9 @@ fn run_update(
     let outcome = run_app_update_phase(environment, stdout, stderr)?;
 
     match outcome {
-        AppUpdateOutcome::Current { paths } => run_managed_resource_update_phase(paths, stdout),
+        AppUpdateOutcome::Current { paths } => {
+            run_managed_resource_update_phase(paths, environment, stdout)
+        }
         AppUpdateOutcome::Updated { paths } => {
             let active_pv_binary = paths.active_pv_binary();
 
@@ -93,9 +96,11 @@ fn run_update(
 
 fn run_managed_resource_update_phase(
     paths: PvPaths,
+    environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let job = daemon::run_job_blocking(paths, "update", "system")
+    let mut progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let job = daemon::run_job_with_events_blocking(paths, "update", "system", &mut progress)
         .map_err(managed_resource_update_daemon_error)?;
     let mut output = Output::new(stdout, OutputMode::plain());
     write_managed_resource_update_summary(&mut output, &job.summary)?;
@@ -217,13 +222,20 @@ fn fetch_app_update_manifest(
 fn download_app_asset(
     environment: &impl Environment,
     paths: &PvPaths,
+    version: &str,
     asset: &AppUpdateAsset,
+    progress: &DownloadProgressRenderer,
     stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
     state::fs::ensure_user_dir(paths.downloads())?;
     let path = temporary_app_download_path(paths);
     let file = create_download_file(&path)?;
-    let mut writer = CountingSha256Writer::new(file);
+    let mut writer = AppDownloadProgressWriter::new(
+        CountingSha256Writer::new(file),
+        progress,
+        version,
+        asset.size(),
+    );
     let download_result = with_resource_http_client(environment, |client| {
         client.download(asset.url(), &mut writer)
     });
@@ -233,6 +245,7 @@ fn download_app_asset(
     }
 
     let stats = writer.finish();
+    progress.update_app_progress(version, stats.size, asset.size());
     if stats.size != asset.size() {
         write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(CliError::AppUpdateSizeMismatch {
@@ -395,6 +408,49 @@ impl Write for CountingSha256Writer {
     }
 }
 
+struct AppDownloadProgressWriter<'progress> {
+    inner: CountingSha256Writer,
+    progress: &'progress DownloadProgressRenderer,
+    version: &'progress str,
+    total_size: u64,
+}
+
+impl<'progress> AppDownloadProgressWriter<'progress> {
+    fn new(
+        inner: CountingSha256Writer,
+        progress: &'progress DownloadProgressRenderer,
+        version: &'progress str,
+        total_size: u64,
+    ) -> Self {
+        progress.update_app_progress(version, 0, total_size);
+
+        Self {
+            inner,
+            progress,
+            version,
+            total_size,
+        }
+    }
+
+    fn finish(self) -> DownloadStats {
+        self.inner.finish()
+    }
+}
+
+impl Write for AppDownloadProgressWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.progress
+            .update_app_progress(self.version, self.inner.size, self.total_size);
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn sha256_digest_hex(digest: impl IntoIterator<Item = u8>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut hex = String::with_capacity(64);
@@ -441,7 +497,15 @@ fn run_app_update_phase(
         .map(Ok)
         .unwrap_or_else(AppUpdatePlatform::current)?;
     let asset = manifest.select_platform(platform)?;
-    let downloaded = download_app_asset(environment, &paths, asset, stderr)?;
+    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let downloaded = download_app_asset(
+        environment,
+        &paths,
+        manifest.version().as_str(),
+        asset,
+        &progress,
+        stderr,
+    )?;
     let install_result = layout.install_release_binary(manifest.version().as_str(), &downloaded);
     let cleanup_result = remove_download(&downloaded);
     match (install_result, cleanup_result) {
