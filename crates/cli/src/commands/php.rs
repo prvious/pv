@@ -32,12 +32,13 @@ pub(crate) fn use_track(
     let selector = TrackSelector::parse(requested_track.as_str())?;
     let commands = resource_commands(&paths, environment);
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
-    let mut output = Output::new(stdout, OutputMode::plain());
 
     if args.global {
         let installed = with_resource_http_client(environment, |client| {
             commands.install_php_pair_with_progress(selector, client, &progress)
         })?;
+        drop(progress);
+        let mut output = Output::new(stdout, OutputMode::plain());
         let track = installed.php().track().as_str().to_string();
         let mut database = Database::open(&paths)?;
         database.record_global_php_default_track(&track)?;
@@ -55,6 +56,8 @@ pub(crate) fn use_track(
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
     })?;
+    drop(progress);
+    let mut output = Output::new(stdout, OutputMode::plain());
     let track = installed.php().track().as_str().to_string();
     let config_file = config::write_project_php_track(&project.path, &requested_track)?;
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
@@ -85,6 +88,7 @@ pub(crate) fn install(
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     write_install_lines(&installed, &mut output)?;
@@ -103,6 +107,7 @@ pub(crate) fn update(
     let updated = with_resource_http_client(environment, |client| {
         commands.update_php_pairs_with_progress(client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;

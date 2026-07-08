@@ -25,6 +25,10 @@ impl DownloadProgressRenderer {
         downloaded_bytes: u64,
         total_bytes: u64,
     ) {
+        if !self.enabled {
+            return;
+        }
+
         self.update_progress(
             progress_key("pv", "app", version),
             format!("Downloading PV {version}"),

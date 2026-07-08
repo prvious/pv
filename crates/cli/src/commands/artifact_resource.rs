@@ -44,6 +44,7 @@ pub(crate) fn install(
     let installed = with_resource_http_client(environment, |client| {
         commands.install_with_progress(&adapter, selector, client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warning(&installed, &mut output)?;
@@ -69,6 +70,7 @@ pub(crate) fn update(
     let updated = with_resource_http_client(environment, |client| {
         commands.update_with_progress(&adapter, client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;

@@ -102,6 +102,7 @@ fn run_managed_resource_update_phase(
     let mut progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let job = daemon::run_job_with_events_blocking(paths, "update", "system", &mut progress)
         .map_err(managed_resource_update_daemon_error)?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
     write_managed_resource_update_summary(&mut output, &job.summary)?;
 
@@ -506,6 +507,7 @@ fn run_app_update_phase(
         &progress,
         stderr,
     )?;
+    drop(progress);
     let install_result = layout.install_release_binary(manifest.version().as_str(), &downloaded);
     let cleanup_result = remove_download(&downloaded);
     match (install_result, cleanup_result) {

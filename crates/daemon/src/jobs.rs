@@ -13,11 +13,12 @@ use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{Database, JobStatus, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
 use tokio::io::AsyncWrite;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
 
 #[derive(Debug)]
 enum ForegroundJobEvent {
@@ -32,11 +33,11 @@ enum ForegroundJobEvent {
 
 #[derive(Clone, Debug)]
 struct SocketDownloadProgress {
-    sender: UnboundedSender<ForegroundJobEvent>,
+    sender: Sender<ForegroundJobEvent>,
 }
 
 impl SocketDownloadProgress {
-    fn new(sender: UnboundedSender<ForegroundJobEvent>) -> Self {
+    fn new(sender: Sender<ForegroundJobEvent>) -> Self {
         Self { sender }
     }
 
@@ -45,7 +46,7 @@ impl SocketDownloadProgress {
         artifact: &resources::ManifestArtifact,
         downloaded_bytes: u64,
     ) {
-        let _sent = self.sender.send(ForegroundJobEvent::DownloadProgress {
+        let _sent = self.sender.try_send(ForegroundJobEvent::DownloadProgress {
             resource: artifact.resource_name().as_str().to_string(),
             track: artifact.track().as_str().to_string(),
             artifact_version: artifact.artifact_version().as_str().to_string(),
@@ -312,7 +313,7 @@ where
     };
 
     let update_result = if stream_is_open && started_stream_result.is_ok() {
-        let (event_sender, event_receiver) = unbounded_channel();
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
         let progress = SocketDownloadProgress::new(event_sender);
         complete_streamed_job_with_heartbeat_and_events(
             &mut transport,
@@ -501,7 +502,7 @@ async fn complete_streamed_job_with_heartbeat_and_events<Stream, Completion>(
     heartbeat_message: &'static str,
     heartbeat_interval: Duration,
     completion: Completion,
-    mut events: UnboundedReceiver<ForegroundJobEvent>,
+    mut events: Receiver<ForegroundJobEvent>,
 ) -> Result<String, DaemonError>
 where
     Stream: AsyncWrite + Unpin,
@@ -510,34 +511,20 @@ where
     let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     tokio::pin!(completion);
+    let mut events_open = true;
 
     loop {
         tokio::select! {
-            result = &mut completion => {
-                while let Ok(event) = events.try_recv() {
-                    let write_result = timeout(
-                        FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT,
-                        write_foreground_job_event(transport, job_id, event),
-                    )
-                    .await;
-                    if let Ok(result) = write_result {
-                        result?;
-                    }
-                }
-
-                return result;
-            }
-            event = events.recv() => {
+            result = &mut completion => return result,
+            event = events.recv(), if events_open => {
                 if let Some(event) = event {
                     let write_result = write_foreground_job_event(transport, job_id, event);
                     tokio::select! {
                         result = &mut completion => return result,
-                        result = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, write_result) => {
-                            if let Ok(result) = result {
-                                result?;
-                            }
-                        }
+                        _ = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, write_result) => {}
                     }
+                } else {
+                    events_open = false;
                 }
             }
             _ = heartbeat.tick() => {
@@ -1190,17 +1177,17 @@ mod tests {
     use serde_json::json;
     use state::{Database, JobStatus, LinkProjectInput, PvPaths, StateError, UpdateLock};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
-    use tokio::sync::{mpsc::unbounded_channel, oneshot};
+    use tokio::sync::{mpsc::channel, oneshot};
     use tokio::time::{Duration, timeout};
 
     use super::{
-        ForegroundJobEvent, complete_or_fail_background_reconciliation,
-        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
-        reconcile_project_env_and_missing_resources, reconcile_system_projects_and_resources,
-        record_background_reconciliation_error, run_background_reconciliation_job,
-        start_reconciliation_job, stream_started_reconciliation_job,
-        write_coalesced_update_response,
+        FOREGROUND_JOB_PROGRESS_BUFFER, ForegroundJobEvent,
+        complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
+        complete_streamed_job_with_heartbeat_and_events, enqueue_reconciliation_job,
+        foreground_reconciliation_result, reconcile_project_env_and_missing_resources,
+        reconcile_system_projects_and_resources, record_background_reconciliation_error,
+        run_background_reconciliation_job, start_reconciliation_job,
+        stream_started_reconciliation_job, write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -1380,7 +1367,7 @@ mod tests {
     async fn streamed_job_writes_download_progress_events() -> anyhow::Result<()> {
         let (client, server) = duplex(1024);
         let mut writer = protocol::transport(server);
-        let (event_sender, event_receiver) = unbounded_channel();
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat_and_events(
@@ -1400,13 +1387,16 @@ mod tests {
             .await
         });
 
-        event_sender.send(ForegroundJobEvent::DownloadProgress {
-            resource: "redis".to_string(),
-            track: "8.8".to_string(),
-            artifact_version: "8.8.1-pv1".to_string(),
-            downloaded_bytes: 42,
-            total_bytes: 100,
-        })?;
+        event_sender
+            .send(ForegroundJobEvent::DownloadProgress {
+                resource: "redis".to_string(),
+                track: "8.8".to_string(),
+                artifact_version: "8.8.1-pv1".to_string(),
+                downloaded_bytes: 42,
+                total_bytes: 100,
+            })
+            .await
+            .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
 
         let mut reader = protocol::transport(client);
         let line = timeout(Duration::from_millis(100), reader.next())
@@ -1473,7 +1463,7 @@ mod tests {
     async fn streamed_job_completion_wins_when_download_progress_write_blocks() -> anyhow::Result<()>
     {
         let mut writer = protocol::transport(PendingStream);
-        let (event_sender, event_receiver) = unbounded_channel();
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let mut task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat_and_events(
@@ -1493,13 +1483,62 @@ mod tests {
             .await
         });
 
-        event_sender.send(ForegroundJobEvent::DownloadProgress {
-            resource: "redis".to_string(),
-            track: "8.8".to_string(),
-            artifact_version: "8.8.1-pv1".to_string(),
-            downloaded_bytes: 42,
-            total_bytes: 100,
-        })?;
+        event_sender
+            .send(ForegroundJobEvent::DownloadProgress {
+                resource: "redis".to_string(),
+                track: "8.8".to_string(),
+                artifact_version: "8.8.1-pv1".to_string(),
+                downloaded_bytes: 42,
+                total_bytes: 100,
+            })
+            .await
+            .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        if outcome.is_err() {
+            task.abort();
+        }
+        assert_eq!(outcome???, "job done");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_job_ignores_download_progress_write_errors() -> anyhow::Result<()> {
+        let mut writer = protocol::transport(FailingWriteStream);
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let mut task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat_and_events(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_secs(60),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+                event_receiver,
+            )
+            .await
+        });
+
+        event_sender
+            .send(ForegroundJobEvent::DownloadProgress {
+                resource: "redis".to_string(),
+                track: "8.8".to_string(),
+                artifact_version: "8.8.1-pv1".to_string(),
+                downloaded_bytes: 42,
+                total_bytes: 100,
+            })
+            .await
+            .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
         tokio::time::sleep(Duration::from_millis(20)).await;
         finish_sender
             .send(())
@@ -1532,6 +1571,39 @@ mod tests {
             _buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
             Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct FailingWriteStream;
+
+    impl AsyncRead for FailingWriteStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for FailingWriteStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "stream closed",
+            )))
         }
 
         fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {

@@ -33,6 +33,7 @@ pub(crate) fn install(
     let installed = with_resource_http_client(environment, |client| {
         commands.install_composer_with_php_pair_and_progress(selector, client, &progress)
     })?;
+    drop(progress);
     let php_pair = installed.php_pair();
     let composer = installed.composer();
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -61,6 +62,7 @@ pub(crate) fn update(
     let updated = with_resource_http_client(environment, |client| {
         commands.update_composer_with_progress(client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
