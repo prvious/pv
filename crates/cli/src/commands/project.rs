@@ -105,6 +105,7 @@ pub(crate) fn unlink(
     let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
+    delete_optional_project_tls_dir(&paths, &project)?;
     let project = database.unlink_project(&project.id)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -115,6 +116,19 @@ pub(crate) fn unlink(
     request_system_reconciliation(&paths, &mut output)?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn delete_optional_project_tls_dir(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+) -> Result<(), ExecuteError> {
+    match state::fs::delete_dir_all(&paths.project_tls_dir(&project.id)) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn open(
@@ -162,7 +176,7 @@ pub(crate) fn env(
     )?;
     config::validate_project_env_shape(&config_file.config)?;
 
-    let context = project_env_context(database.project_env_context(&project.id)?);
+    let context = project_env_context(&paths, database.project_env_context(&project.id)?);
     let rendered = config::render_project_env(&config_file.config, &context)?;
     let existing_env = read_project_env_file(&project.path)?;
     let transform = config::transform_managed_env_block(existing_env.as_deref(), &rendered)?;
@@ -346,9 +360,14 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
     )
 }
 
-fn project_env_context(context: ProjectEnvStateContext) -> ProjectEnvContext {
+fn project_env_context(paths: &PvPaths, context: ProjectEnvStateContext) -> ProjectEnvContext {
+    let project_id = context.project_id;
+
     ProjectEnvContext {
         primary_hostname: context.primary_hostname,
+        tls_ca_path: paths.ca_certificate().to_string(),
+        tls_cert_path: paths.project_tls_certificate(&project_id).to_string(),
+        tls_key_path: paths.project_tls_private_key(&project_id).to_string(),
         resources: context
             .resources
             .into_iter()

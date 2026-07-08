@@ -1,0 +1,20 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(&rendered, format_project_env(&rendered))"
+---
+(
+    RenderedProjectEnv {
+        values: {
+            "ALLOCATION_TLS_CA": "/Users/alice/.pv/certificates/ca.pem",
+            "ALLOCATION_TLS_CERT": "/Users/alice/.pv/certificates/projects/project123/tls.crt",
+            "ALLOCATION_TLS_KEY": "/Users/alice/.pv/certificates/projects/project123/tls.key",
+            "RESOURCE_TLS_CA": "/Users/alice/.pv/certificates/ca.pem",
+            "RESOURCE_TLS_CERT": "/Users/alice/.pv/certificates/projects/project123/tls.crt",
+            "RESOURCE_TLS_KEY": "/Users/alice/.pv/certificates/projects/project123/tls.key",
+            "ROOT_TLS_CA": "/Users/alice/.pv/certificates/ca.pem",
+            "ROOT_TLS_CERT": "/Users/alice/.pv/certificates/projects/project123/tls.crt",
+            "ROOT_TLS_KEY": "/Users/alice/.pv/certificates/projects/project123/tls.key",
+        },
+    },
+    "ALLOCATION_TLS_CA=/Users/alice/.pv/certificates/ca.pem\nALLOCATION_TLS_CERT=/Users/alice/.pv/certificates/projects/project123/tls.crt\nALLOCATION_TLS_KEY=/Users/alice/.pv/certificates/projects/project123/tls.key\nRESOURCE_TLS_CA=/Users/alice/.pv/certificates/ca.pem\nRESOURCE_TLS_CERT=/Users/alice/.pv/certificates/projects/project123/tls.crt\nRESOURCE_TLS_KEY=/Users/alice/.pv/certificates/projects/project123/tls.key\nROOT_TLS_CA=/Users/alice/.pv/certificates/ca.pem\nROOT_TLS_CERT=/Users/alice/.pv/certificates/projects/project123/tls.crt\nROOT_TLS_KEY=/Users/alice/.pv/certificates/projects/project123/tls.key\n",
+)

@@ -10,6 +10,9 @@ pub enum PlatformError {
     #[error("could not generate PV local CA: {0}")]
     CaGeneration(#[from] rcgen::Error),
 
+    #[error("could not generate Project TLS certificate: {0}")]
+    ProjectCertificateGeneration(#[source] rcgen::Error),
+
     #[error("could not parse PEM file: {0}")]
     Pem(#[from] io::Error),
 

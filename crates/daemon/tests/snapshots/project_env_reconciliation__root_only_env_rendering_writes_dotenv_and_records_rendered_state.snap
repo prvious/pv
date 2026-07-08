@@ -33,7 +33,7 @@ expression: snapshot
             "type": String("job_completed"),
         },
     ],
-    "# >>> PV MANAGED\nAPP_NAME=acme\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+    "# >>> PV MANAGED\nAPP_NAME=acme\nAPP_URL=https://acme.test\nPV_TLS_CA=<tempdir>/home/.pv/certificates/ca.pem\nVITE_DEV_SERVER_CERT=<tempdir>/home/.pv/certificates/projects/<project_id>/tls.crt\nVITE_DEV_SERVER_KEY=<tempdir>/home/.pv/certificates/projects/<project_id>/tls.key\n# <<< PV MANAGED\n",
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",

@@ -10,7 +10,7 @@ use yaml_serde::{Mapping, Number, Value};
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
-const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url"];
+const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url", "tls_ca", "tls_cert", "tls_key"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnvPlaceholderScope<'a> {

@@ -18,6 +18,22 @@ expression: cases
         ),
     ),
     (
+        "tls-placeholders-project-env",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {
+                    "PV_TLS_CA": "${tls_ca}",
+                    "VITE_DEV_SERVER_CERT": "${tls_cert}",
+                    "VITE_DEV_SERVER_KEY": "${tls_key}",
+                },
+                resources: {},
+            },
+        ),
+    ),
+    (
         "legacy-url-project-env",
         Err(
             UnknownEnvPlaceholder {
@@ -48,6 +64,28 @@ expression: cases
                         track: None,
                         env: {
                             "APP_URL": "${project_url}",
+                        },
+                        allocations: {},
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "resource-project-tls",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {
+                            "PV_TLS_CA": "${tls_ca}",
+                            "VITE_DEV_SERVER_CERT": "${tls_cert}",
+                            "VITE_DEV_SERVER_KEY": "${tls_key}",
                         },
                         allocations: {},
                     },
@@ -100,6 +138,32 @@ expression: cases
                             "app": AllocationConfig {
                                 env: {
                                     "APP_URL": "${project_url}",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "allocation-project-tls",
+        Ok(
+            ProjectConfig {
+                php: None,
+                document_root: None,
+                hostnames: [],
+                env: {},
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {},
+                        allocations: {
+                            "app": AllocationConfig {
+                                env: {
+                                    "PV_TLS_CA": "${tls_ca}",
+                                    "VITE_DEV_SERVER_CERT": "${tls_cert}",
+                                    "VITE_DEV_SERVER_KEY": "${tls_key}",
                                 },
                             },
                         },

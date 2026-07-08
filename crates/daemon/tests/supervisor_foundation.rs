@@ -479,8 +479,8 @@ async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> 
     let mut spec = process_spec(
         &paths,
         "private-env-runtime",
-        "/bin/sh",
-        vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+        "/bin/sleep",
+        vec!["30".to_string()],
     );
     spec.private_environment = BTreeMap::from([(
         "RUSTFS_SECRET_KEY".to_string(),

@@ -7,6 +7,7 @@ use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use platform::GeneratedLocalCa;
 use serde_json::{Value, json};
 use state::fs::write_sensitive_file;
 use state::{
@@ -25,13 +26,23 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: acme\n",
+        r#"env:
+  APP_URL: "${project_url}"
+  APP_NAME: acme
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  PV_TLS_CA: "${tls_ca}"
+"#,
     )?;
+    let local_ca = seed_local_ca(&paths)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
+    let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
 
-    assert_with_normalized_timestamps(
+    assert_project_certificate_matches(&certificate_pem, &private_key_pem, "acme.test", &local_ca);
+
+    assert_with_normalized_timestamps_and_tempdir(
         "root_only_env_rendering_writes_dotenv_and_records_rendered_state",
         (
             lines,
@@ -39,7 +50,74 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
             database.project_env_observed_state(&project.id)?,
             database.recent_jobs()?,
         ),
+        tempdir.path(),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_placeholders_generate_and_refresh_primary_hostname_certificate() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    let (initial_certificate_pem, initial_private_key_pem) =
+        read_project_tls_files(&paths, &project)?;
+
+    assert_eq!(certificate_pem_block_count(&initial_certificate_pem), 2);
+    assert_project_certificate_matches(
+        &initial_certificate_pem,
+        &initial_private_key_pem,
+        "acme.test",
+        &local_ca,
+    );
+
+    run_project_reconciliation(&paths, &project).await?;
+    let (rerun_certificate_pem, rerun_private_key_pem) = read_project_tls_files(&paths, &project)?;
+    assert_eq!(
+        (
+            initial_certificate_pem.as_str(),
+            initial_private_key_pem.as_str()
+        ),
+        (
+            rerun_certificate_pem.as_str(),
+            rerun_private_key_pem.as_str()
+        ),
+        "unchanged TLS placeholders should not rewrite Project cert files"
+    );
+
+    let renamed_project = update_project_primary_hostname(&paths, &project, "renamed.test")?;
+    run_project_reconciliation(&paths, &renamed_project).await?;
+    let (renamed_certificate_pem, renamed_private_key_pem) =
+        read_project_tls_files(&paths, &renamed_project)?;
+
+    assert_ne!(
+        renamed_certificate_pem, initial_certificate_pem,
+        "primary hostname changes should refresh the Project certificate"
+    );
+    assert_project_certificate_matches(
+        &renamed_certificate_pem,
+        &renamed_private_key_pem,
+        "renamed.test",
+        &local_ca,
+    );
+    assert!(!platform::project_certificate_matches(
+        &renamed_certificate_pem,
+        &renamed_private_key_pem,
+        "acme.test",
+        &local_ca.certificate_pem
+    ));
 
     Ok(())
 }
@@ -1382,6 +1460,15 @@ fn seed_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
     Ok(())
 }
 
+fn seed_local_ca(paths: &PvPaths) -> Result<GeneratedLocalCa> {
+    let local_ca = platform::generate_local_ca()?;
+
+    write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+    write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
+
+    Ok(local_ca)
+}
+
 fn test_manifest(default_track: &str) -> String {
     json!({
         "schema_version": 1,
@@ -1479,6 +1566,34 @@ fn read_dotenv(project: &ProjectRecord) -> Result<String> {
     state::fs::read_to_string(&project.path.join(".env")).map_err(Into::into)
 }
 
+fn read_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<(String, String)> {
+    let certificate_pem = state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
+    let private_key_pem = state::fs::read_to_string(&paths.project_tls_private_key(&project.id))?;
+
+    Ok((certificate_pem, private_key_pem))
+}
+
+fn assert_project_certificate_matches(
+    certificate_pem: &str,
+    private_key_pem: &str,
+    primary_hostname: &str,
+    local_ca: &GeneratedLocalCa,
+) {
+    assert!(
+        platform::project_certificate_matches(
+            certificate_pem,
+            private_key_pem,
+            primary_hostname,
+            &local_ca.certificate_pem,
+        ),
+        "Project certificate should match the primary hostname and current local CA"
+    );
+}
+
+fn certificate_pem_block_count(content: &str) -> usize {
+    content.matches("-----BEGIN CERTIFICATE-----").count()
+}
+
 fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>> {
     match state::fs::read_to_string(&project.path.join(".env")) {
         Ok(content) => Ok(Some(content)),
@@ -1524,6 +1639,29 @@ fn assert_with_normalized_timestamps(
     let mut settings = Settings::clone_current();
     settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
+    settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
+    settings.add_filter(
+        r#"project_id: "[a-z0-9]{10}""#,
+        r#"project_id: "<project_id>""#,
+    );
+    settings.add_filter(r"Project `[a-z0-9]{10}`", "Project `<project_id>`");
+    settings.bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn assert_with_normalized_timestamps_and_tempdir(
+    name: &'static str,
+    snapshot: impl std::fmt::Debug,
+    tempdir: &Utf8Path,
+) -> Result<()> {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
+    settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
         r#"project_id: "<project_id>""#,

@@ -21,6 +21,9 @@ mysql:
     )?;
     let context = ProjectEnvContext {
         primary_hostname: "acme.test".to_string(),
+        tls_ca_path: "/Users/alice/.pv/certificates/ca.pem".to_string(),
+        tls_cert_path: "/Users/alice/.pv/certificates/projects/project123/tls.crt".to_string(),
+        tls_key_path: "/Users/alice/.pv/certificates/projects/project123/tls.key".to_string(),
         resources: BTreeMap::new(),
     };
 
@@ -193,6 +196,62 @@ mysql:
             .map(String::as_str),
         Some("https://primary.acme.test")
     );
+    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
+
+    Ok(())
+}
+
+#[test]
+fn project_env_renderer_resolves_tls_paths_across_scopes() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+env:
+  ROOT_TLS_KEY: "${tls_key}"
+  ROOT_TLS_CERT: "${tls_cert}"
+  ROOT_TLS_CA: "${tls_ca}"
+mysql:
+  env:
+    RESOURCE_TLS_KEY: "${tls_key}"
+    RESOURCE_TLS_CERT: "${tls_cert}"
+    RESOURCE_TLS_CA: "${tls_ca}"
+  allocations:
+    app:
+      env:
+        ALLOCATION_TLS_KEY: "${tls_key}"
+        ALLOCATION_TLS_CERT: "${tls_cert}"
+        ALLOCATION_TLS_CA: "${tls_ca}"
+"#,
+    )?;
+    let context = project_context(&[(
+        "mysql",
+        ResourceEnvContext {
+            track: "8.4".to_string(),
+            values: values(&[
+                ("host", "127.0.0.1"),
+                ("password", "secret"),
+                ("port", "3306"),
+                ("tls_key", "/unexpected/resource.key"),
+                ("tls_cert", "/unexpected/resource.crt"),
+                ("tls_ca", "/unexpected/resource-ca.pem"),
+                ("username", "root"),
+            ]),
+            allocations: allocations(&[(
+                "app",
+                AllocationEnvContext {
+                    generated_name: "acme_test_app".to_string(),
+                    values: values(&[
+                        ("database", "acme_test_app"),
+                        ("tls_key", "/unexpected/allocation.key"),
+                        ("tls_cert", "/unexpected/allocation.crt"),
+                        ("tls_ca", "/unexpected/allocation-ca.pem"),
+                    ]),
+                },
+            )]),
+        },
+    )]);
+
+    let rendered = render_project_env(&config, &context)?;
+
     assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
 
     Ok(())
@@ -549,6 +608,9 @@ fn project_context_with_primary(
 ) -> ProjectEnvContext {
     ProjectEnvContext {
         primary_hostname: primary_hostname.to_string(),
+        tls_ca_path: "/Users/alice/.pv/certificates/ca.pem".to_string(),
+        tls_cert_path: "/Users/alice/.pv/certificates/projects/project123/tls.crt".to_string(),
+        tls_key_path: "/Users/alice/.pv/certificates/projects/project123/tls.key".to_string(),
         resources: resources
             .iter()
             .map(|(resource, context)| ((*resource).to_string(), context.clone()))

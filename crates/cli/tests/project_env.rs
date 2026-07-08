@@ -9,7 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use config::ProjectConfigFile;
-use insta::assert_debug_snapshot;
+use insta::{Settings, assert_debug_snapshot};
 use state::{
     Database, EnvContextValues, LinkProjectInput, ProjectManagedResourceInput, ProjectRecord,
     PvPaths, ResourceAllocationInput,
@@ -69,7 +69,13 @@ fn project_env_renders_current_project_values_to_stdout() -> anyhow::Result<()> 
     create_dir(&nested)?;
     write_file(
         &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_ENV: local\n",
+        r#"env:
+  APP_URL: "${project_url}"
+  APP_ENV: local
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  PV_TLS_CA: "${tls_ca}"
+"#,
     )?;
     let project_record = register_project(&home, &project, "acme.test")?;
     let environment = TestEnvironment::new(&home, &project_record.path.join("nested"));
@@ -78,7 +84,13 @@ fn project_env_renders_current_project_values_to_stdout() -> anyhow::Result<()> 
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(project_record.id.as_str(), "<project-id>");
+    settings.bind(|| {
+        assert_debug_snapshot!(output);
+    });
 
     Ok(())
 }

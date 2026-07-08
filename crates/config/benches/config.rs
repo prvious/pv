@@ -121,6 +121,9 @@ fn render_inputs() -> (ProjectConfig, ProjectEnvContext) {
 
     let context = ProjectEnvContext {
         primary_hostname: "acme.test".to_string(),
+        tls_ca_path: "/Users/alice/.pv/certificates/ca.pem".to_string(),
+        tls_cert_path: "/Users/alice/.pv/certificates/projects/project123/tls.crt".to_string(),
+        tls_key_path: "/Users/alice/.pv/certificates/projects/project123/tls.key".to_string(),
         resources,
     };
 
