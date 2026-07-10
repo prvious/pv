@@ -893,6 +893,7 @@ dependencies = [
  "insta",
  "resources",
  "serde",
+ "serde_json",
  "thiserror",
  "yaml_serde",
 ]

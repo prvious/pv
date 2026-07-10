@@ -33,6 +33,9 @@ pub enum ConfigError {
         source: yaml_serde::Error,
     },
 
+    #[error("Project init could not parse JSON file {path}: {reason}")]
+    InvalidInitJson { path: Utf8PathBuf, reason: String },
+
     #[error("Project config root must be a mapping, found {found}")]
     RootMustBeMapping { found: &'static str },
 

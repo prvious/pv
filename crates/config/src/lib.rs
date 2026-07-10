@@ -3,6 +3,7 @@ mod env;
 mod error;
 mod filesystem;
 mod hostname;
+mod init;
 mod model;
 mod parser;
 mod writer;
@@ -17,6 +18,11 @@ pub use env::{
 pub use error::ConfigError;
 pub use hostname::{
     hostname_from_project_path, normalize_additional_hostname, normalize_primary_hostname,
+};
+pub use init::{
+    ProjectInitDetection, ProjectInitResourceDetection, ProjectInitResourceName,
+    ProjectInitResourceSelection, ProjectInitSelection, ProjectInitSignal,
+    default_project_init_selection, detect_project_init, render_project_init_config,
 };
 pub use model::{AllocationConfig, PhpConfig, ProjectConfig, ProjectConfigFile, ResourceConfig};
 pub use writer::{update_project_config, write_project_config, write_project_php_track};

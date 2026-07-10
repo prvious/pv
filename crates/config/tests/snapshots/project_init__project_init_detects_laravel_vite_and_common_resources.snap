@@ -1,0 +1,51 @@
+---
+source: crates/config/tests/project_init.rs
+expression: "(&detection.signals, &selection.resources)"
+---
+(
+    [
+        ProjectInitSignal {
+            label: "Laravel",
+            detail: "Detected composer.json, artisan, and Laravel project files",
+        },
+        ProjectInitSignal {
+            label: "Vite",
+            detail: "Detected Vite in package.json",
+        },
+    ],
+    {
+        Mailpit: ProjectInitResourceSelection {
+            selected: true,
+            track: "latest",
+            allocations: [],
+        },
+        Mysql: ProjectInitResourceSelection {
+            selected: true,
+            track: "latest",
+            allocations: [
+                "app",
+            ],
+        },
+        Postgres: ProjectInitResourceSelection {
+            selected: false,
+            track: "latest",
+            allocations: [
+                "app",
+            ],
+        },
+        Redis: ProjectInitResourceSelection {
+            selected: true,
+            track: "latest",
+            allocations: [
+                "cache",
+            ],
+        },
+        Rustfs: ProjectInitResourceSelection {
+            selected: true,
+            track: "latest",
+            allocations: [
+                "uploads",
+            ],
+        },
+    },
+)
