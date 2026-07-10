@@ -4,10 +4,10 @@ use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
-    ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport, reconcile_system_resources,
-    reconcile_system_resources_with_catalog,
+    ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
+    reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
 };
-use crate::project_env::{reconcile_project_env, reconcile_project_env_with_runtime_catalog};
+use crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -32,13 +32,19 @@ enum ForegroundJobEvent {
 }
 
 #[derive(Clone, Debug)]
-struct SocketDownloadProgress {
-    sender: Sender<ForegroundJobEvent>,
+pub(crate) struct DaemonDownloadProgress {
+    sender: Option<Sender<ForegroundJobEvent>>,
 }
 
-impl SocketDownloadProgress {
+impl DaemonDownloadProgress {
     fn new(sender: Sender<ForegroundJobEvent>) -> Self {
-        Self { sender }
+        Self {
+            sender: Some(sender),
+        }
+    }
+
+    pub(crate) fn disabled() -> Self {
+        Self { sender: None }
     }
 
     fn send_download_progress(
@@ -46,7 +52,10 @@ impl SocketDownloadProgress {
         artifact: &resources::ManifestArtifact,
         downloaded_bytes: u64,
     ) {
-        let _sent = self.sender.try_send(ForegroundJobEvent::DownloadProgress {
+        let Some(sender) = &self.sender else {
+            return;
+        };
+        let _sent = sender.try_send(ForegroundJobEvent::DownloadProgress {
             resource: artifact.resource_name().as_str().to_string(),
             track: artifact.track().as_str().to_string(),
             artifact_version: artifact.artifact_version().as_str().to_string(),
@@ -56,7 +65,7 @@ impl SocketDownloadProgress {
     }
 }
 
-impl resources::DownloadProgress for SocketDownloadProgress {
+impl resources::DownloadProgress for DaemonDownloadProgress {
     fn report(&self, event: resources::DownloadProgressEvent<'_>) {
         match event {
             resources::DownloadProgressEvent::Started { artifact } => {
@@ -314,7 +323,7 @@ where
 
     let update_result = if stream_is_open && started_stream_result.is_ok() {
         let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
-        let progress = SocketDownloadProgress::new(event_sender);
+        let progress = DaemonDownloadProgress::new(event_sender);
         complete_streamed_job_with_heartbeat_and_events(
             &mut transport,
             job_id,
@@ -410,12 +419,21 @@ where
     };
 
     let reconciliation_result = if stream_is_open && started_stream_result.is_ok() {
-        complete_streamed_job_with_heartbeat(
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let progress = DaemonDownloadProgress::new(event_sender);
+        complete_streamed_job_with_heartbeat_and_events(
             &mut transport,
             job_id,
             "Reconciliation still running",
             FOREGROUND_JOB_HEARTBEAT_INTERVAL,
-            complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog),
+            complete_reconciliation_job_with_progress(
+                &paths,
+                job_id,
+                &scope,
+                runtime_catalog,
+                progress,
+            ),
+            event_receiver,
         )
         .await
     } else {
@@ -463,6 +481,7 @@ where
     Ok(())
 }
 
+#[cfg(test)]
 async fn complete_streamed_job_with_heartbeat<Stream, Completion>(
     transport: &mut DaemonTransport<Stream>,
     job_id: &str,
@@ -618,20 +637,17 @@ async fn complete_update_job(
         paths,
         job_id,
         runtime_catalog,
-        resources::NoDownloadProgress,
+        DaemonDownloadProgress::disabled(),
     )
     .await
 }
 
-async fn complete_update_job_with_progress<Progress>(
+async fn complete_update_job_with_progress(
     paths: &PvPaths,
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: Progress,
-) -> Result<String, DaemonError>
-where
-    Progress: resources::DownloadProgress + Send + 'static,
-{
+    progress: DaemonDownloadProgress,
+) -> Result<String, DaemonError> {
     let result = complete_update_job_inner(paths, runtime_catalog, progress).await;
 
     match &result {
@@ -654,7 +670,7 @@ where
 async fn complete_update_job_inner(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: impl resources::DownloadProgress + Send + 'static,
+    progress: DaemonDownloadProgress,
 ) -> Result<String, DaemonError> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
@@ -691,14 +707,16 @@ fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
     }
 }
 
-async fn complete_managed_resource_reconciliation(
+async fn complete_managed_resource_reconciliation_with_progress(
     paths: &PvPaths,
     job_id: &str,
     name: &crate::reconciliation::ReconciliationScopeComponent,
     track: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects(paths, runtime_catalog).await?;
+    let project_report =
+        reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await?;
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut database = Database::open(paths)?;
@@ -714,19 +732,51 @@ async fn complete_reconciliation_job(
     scope: &ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
+    complete_reconciliation_job_with_progress(
+        paths,
+        job_id,
+        scope,
+        runtime_catalog,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
+}
+
+async fn complete_reconciliation_job_with_progress(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+) -> Result<String, DaemonError> {
     let result = match scope {
         ReconciliationScope::System => {
-            complete_system_reconciliation(paths, job_id, runtime_catalog).await
+            complete_system_reconciliation_with_progress(paths, job_id, runtime_catalog, progress)
+                .await
         }
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
             complete_gateway_reconciliation(paths, job_id).await
         }
         ReconciliationScope::Resource { name, track } => {
-            complete_managed_resource_reconciliation(paths, job_id, name, track, runtime_catalog)
-                .await
+            complete_managed_resource_reconciliation_with_progress(
+                paths,
+                job_id,
+                name,
+                track,
+                runtime_catalog,
+                progress,
+            )
+            .await
         }
         ReconciliationScope::Project { id } => {
-            complete_project_reconciliation(paths, job_id, id, runtime_catalog).await
+            complete_project_reconciliation_with_progress(
+                paths,
+                job_id,
+                id,
+                runtime_catalog,
+                progress,
+            )
+            .await
         }
     };
 
@@ -760,12 +810,15 @@ async fn complete_gateway_reconciliation(
     Ok(summary)
 }
 
-async fn complete_system_reconciliation(
+async fn complete_system_reconciliation_with_progress(
     paths: &PvPaths,
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<String, DaemonError> {
-    let project_report = reconcile_system_projects_and_resources(paths, runtime_catalog).await?;
+    let project_report =
+        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
+            .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let mut database = Database::open(paths)?;
@@ -775,14 +828,20 @@ async fn complete_system_reconciliation(
     Ok(summary)
 }
 
-async fn complete_project_reconciliation(
+async fn complete_project_reconciliation_with_progress(
     paths: &PvPaths,
     job_id: &str,
     id: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<String, DaemonError> {
-    let project_env_summary =
-        reconcile_project_env_and_missing_resources(paths, id.as_str(), runtime_catalog).await?;
+    let project_env_summary = reconcile_project_env_and_missing_resources_with_progress(
+        paths,
+        id.as_str(),
+        runtime_catalog,
+        progress,
+    )
+    .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
@@ -796,19 +855,51 @@ async fn complete_project_reconciliation(
     Ok(summary)
 }
 
+#[cfg(test)]
 async fn reconcile_project_env_and_missing_resources(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
-    let summary =
-        reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await?;
+    reconcile_project_env_and_missing_resources_with_progress(
+        paths,
+        project_id,
+        runtime_catalog,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
+}
+
+async fn reconcile_project_env_and_missing_resources_with_progress(
+    paths: &PvPaths,
+    project_id: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
+    let summary = reconcile_project_env_for_runtime_catalog_with_progress(
+        paths,
+        project_id,
+        runtime_catalog,
+        progress.clone(),
+    )
+    .await?;
     if !summary.requested_php_extensions() || !missing_gateway_runtime_resource(paths)? {
         return Ok(summary);
     }
 
-    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
-    reconcile_project_env_for_runtime_catalog(paths, project_id, runtime_catalog).await
+    reconcile_system_resources_with_runtime_catalog_and_progress(
+        paths,
+        runtime_catalog,
+        progress.clone(),
+    )
+    .await?;
+    reconcile_project_env_for_runtime_catalog_with_progress(
+        paths,
+        project_id,
+        runtime_catalog,
+        progress,
+    )
+    .await
 }
 
 fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError> {
@@ -831,9 +922,10 @@ struct SystemProjectReconciliationReport {
     failures: Vec<String>,
 }
 
-async fn reconcile_system_projects(
+async fn reconcile_system_projects_with_progress(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: &DaemonDownloadProgress,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let projects = linked_projects(paths)?;
     let mut report = SystemProjectReconciliationReport {
@@ -842,7 +934,14 @@ async fn reconcile_system_projects(
     };
 
     for project in projects {
-        match reconcile_project_env_for_runtime_catalog(paths, &project.id, runtime_catalog).await {
+        match reconcile_project_env_for_runtime_catalog_with_progress(
+            paths,
+            &project.id,
+            runtime_catalog,
+            progress.clone(),
+        )
+        .await
+        {
             Ok(summary) => {
                 report.succeeded += 1;
                 report.summaries.push(summary.as_str().to_owned());
@@ -862,34 +961,62 @@ async fn reconcile_system_projects_and_resources(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    reconcile_system_projects(paths, runtime_catalog).await?;
-    reconcile_system_resources_with_runtime_catalog(paths, runtime_catalog).await?;
-    reconcile_system_projects(paths, runtime_catalog).await
+    reconcile_system_projects_and_resources_with_progress(
+        paths,
+        runtime_catalog,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
 }
 
-async fn reconcile_project_env_for_runtime_catalog(
+async fn reconcile_system_projects_and_resources_with_progress(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+) -> Result<SystemProjectReconciliationReport, DaemonError> {
+    reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await?;
+    reconcile_system_resources_with_runtime_catalog_and_progress(
+        paths,
+        runtime_catalog,
+        progress.clone(),
+    )
+    .await?;
+    reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await
+}
+
+async fn reconcile_project_env_for_runtime_catalog_with_progress(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
-    if let Some(catalog) = runtime_catalog {
-        return reconcile_project_env_with_runtime_catalog(paths, project_id, Some(catalog)).await;
-    }
-
-    reconcile_project_env(paths, project_id).await
+    reconcile_project_env_with_runtime_catalog_and_progress(
+        paths,
+        project_id,
+        runtime_catalog,
+        progress,
+    )
+    .await
 }
 
-async fn reconcile_system_resources_with_runtime_catalog(
+async fn reconcile_system_resources_with_runtime_catalog_and_progress(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     if let Some(catalog) = runtime_catalog {
         let mut database = Database::open(paths)?;
 
-        return reconcile_system_resources_with_catalog(paths, &mut database, catalog).await;
+        return reconcile_system_resources_with_catalog_and_progress(
+            paths,
+            &mut database,
+            catalog,
+            progress,
+        )
+        .await;
     }
 
-    reconcile_system_resources(paths).await
+    reconcile_system_resources_with_progress(paths, progress).await
 }
 
 fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
@@ -1165,7 +1292,7 @@ async fn run_started_job(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io;
+    use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
@@ -1196,6 +1323,12 @@ mod tests {
     const PHP_TEST_ARTIFACT_VERSION: &str = "8.5.0-pv1";
     const PHP_TEST_ARCHIVE_FILE_NAME: &str = "php-8.5.0-pv1-any.tar.gz";
     const FRANKENPHP_TEST_ARCHIVE_FILE_NAME: &str = "frankenphp-8.5.0-pv1-any.tar.gz";
+    const COMPOSER_TEST_TRACK: &str = "2";
+    const COMPOSER_TEST_ARTIFACT_VERSION: &str = "2.8.0-pv1";
+    const COMPOSER_TEST_ARCHIVE_FILE_NAME: &str = "composer-2.8.0-pv1-any.tar.gz";
+    const MAILPIT_TEST_TRACK: &str = "1.0";
+    const MAILPIT_TEST_ARTIFACT_VERSION: &str = "1.0.0-pv1";
+    const MAILPIT_TEST_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 
     #[tokio::test]
     async fn system_reconciliation_refreshes_php_extensions_after_missing_php_install()
@@ -1313,6 +1446,110 @@ mod tests {
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Succeeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_system_reconciliation_streams_setup_download_progress() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let (resource_client, total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "composer",
+            COMPOSER_TEST_TRACK,
+            COMPOSER_TEST_ARTIFACT_VERSION,
+            COMPOSER_TEST_ARCHIVE_FILE_NAME,
+            "bin/composer",
+        )?;
+
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_desired(
+            "composer",
+            COMPOSER_TEST_TRACK,
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let job_id = start_reconciliation_job(&paths, "system")?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            resource_client,
+        );
+        let download_progress = reconciliation_download_progress_events(
+            paths,
+            &job_id,
+            ReconciliationScope::System,
+            &catalog,
+        )
+        .await?;
+
+        assert_eq!(
+            download_progress.first(),
+            Some(&json!({
+                "type": "download_progress",
+                "job_id": job_id,
+                "resource": "composer",
+                "track": COMPOSER_TEST_TRACK,
+                "artifact_version": COMPOSER_TEST_ARTIFACT_VERSION,
+                "downloaded_bytes": 0,
+                "total_bytes": total_bytes,
+            }))
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_project_reconciliation_streams_download_progress() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+        )?;
+        let (resource_client, total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "mailpit",
+            MAILPIT_TEST_TRACK,
+            MAILPIT_TEST_ARTIFACT_VERSION,
+            MAILPIT_TEST_ARCHIVE_FILE_NAME,
+            "bin/pv-fake-mailpit",
+        )?;
+        let mut database = Database::open(&paths)?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let scope = format!("project:{}", linked.project.id).parse::<ReconciliationScope>()?;
+        let job_id = start_reconciliation_job(&paths, &scope.to_string())?;
+        let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            resource_client,
+        )?;
+        let download_progress =
+            reconciliation_download_progress_events(paths, &job_id, scope, &catalog).await?;
+
+        assert_eq!(
+            download_progress.first(),
+            Some(&json!({
+                "type": "download_progress",
+                "job_id": job_id,
+                "resource": "mailpit",
+                "track": MAILPIT_TEST_TRACK,
+                "artifact_version": MAILPIT_TEST_ARTIFACT_VERSION,
+                "downloaded_bytes": 0,
+                "total_bytes": total_bytes,
+            }))
+        );
 
         Ok(())
     }
@@ -1925,6 +2162,36 @@ mod tests {
         }
     }
 
+    async fn reconciliation_download_progress_events(
+        paths: PvPaths,
+        job_id: &str,
+        scope: ReconciliationScope,
+        catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let (client, daemon) = duplex(64 * 1024);
+
+        stream_started_reconciliation_job(
+            paths,
+            protocol::transport(daemon),
+            true,
+            job_id,
+            scope,
+            Some(catalog),
+        )
+        .await?;
+
+        let mut reader = protocol::transport(client);
+        let mut download_progress = Vec::new();
+        while let Some(line) = reader.next().await {
+            let event = serde_json::from_str::<serde_json::Value>(&line?)?;
+            if event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress") {
+                download_progress.push(event);
+            }
+        }
+
+        Ok(download_progress)
+    }
+
     fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
         let php = CachedArtifact::new(
             "php",
@@ -2024,6 +2291,92 @@ mod tests {
         state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
         set_executable(&executable)?;
         create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    fn scripted_artifact_client(
+        tempdir: &Utf8Path,
+        resource_name: &str,
+        track: &str,
+        artifact_version: &str,
+        archive_file_name: &str,
+        executable_relative_path: &str,
+    ) -> anyhow::Result<(ScriptedArtifactClient, u64)> {
+        let archive_path = tempdir.join(archive_file_name);
+
+        seed_artifact_archive(
+            tempdir,
+            &archive_path,
+            resource_name,
+            artifact_version,
+            executable_relative_path,
+        )?;
+        let archive = read_file(&archive_path)?;
+        let total_bytes = archive.len() as u64;
+        let sha256 = sha256_file(&archive_path)?;
+        let upstream_version = artifact_version
+            .strip_suffix("-pv1")
+            .unwrap_or(artifact_version);
+        let manifest = serde_json::to_string(&json!({
+            "schema_version": 1,
+            "minimum_pv_version": "0.1.0",
+            "resources": [{
+                "name": resource_name,
+                "default_track": track,
+                "tracks": [{
+                    "name": track,
+                    "artifacts": [{
+                        "artifact_version": artifact_version,
+                        "upstream_version": upstream_version,
+                        "pv_build_revision": "1",
+                        "platform": "any",
+                        "url": format!("https://artifacts.example.test/{archive_file_name}"),
+                        "sha256": sha256,
+                        "size": total_bytes,
+                        "published_at": "2026-06-08T00:00:00Z",
+                    }],
+                }],
+            }],
+        }))?;
+
+        Ok((ScriptedArtifactClient { manifest, archive }, total_bytes))
+    }
+
+    fn seed_artifact_archive(
+        tempdir: &Utf8Path,
+        archive_path: &Utf8Path,
+        resource_name: &str,
+        artifact_version: &str,
+        executable_relative_path: &str,
+    ) -> anyhow::Result<()> {
+        let archive_parent = tempdir.join(format!("{resource_name}-archive"));
+        let root_name = format!("{resource_name}-{artifact_version}");
+        let root = archive_parent.join(&root_name);
+        let executable = root.join(executable_relative_path);
+
+        state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
+        set_executable(&executable)?;
+        create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    #[derive(Debug)]
+    struct ScriptedArtifactClient {
+        manifest: String,
+        archive: Vec<u8>,
+    }
+
+    impl resources::ResourceHttpClient for ScriptedArtifactClient {
+        fn get_text(&self, _url: &str) -> resources::Result<String> {
+            Ok(self.manifest.clone())
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            writer.write_all(&self.archive).map_err(|error| {
+                resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: error.to_string(),
+                }
+            })
+        }
     }
 
     fn php_pair_manifest(artifacts: &[CachedManifestArtifact]) -> String {
@@ -2139,6 +2492,14 @@ mod tests {
         fs::copy(from, to)?;
 
         Ok(())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "daemon jobs tests read generated archive fixture bytes"
+    )]
+    fn read_file(path: &Utf8Path) -> anyhow::Result<Vec<u8>> {
+        Ok(fs::read(path)?)
     }
 
     #[expect(

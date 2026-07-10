@@ -16,6 +16,7 @@ use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
+use crate::progress::DownloadProgressRenderer;
 use crate::shell::Shell;
 
 const PV_ENV_START: &str = "# >>> PV ENV";
@@ -129,7 +130,10 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
 
-    let completed = ::daemon::run_job_blocking(paths, "reconcile", "system")?;
+    let mut progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let completed =
+        ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line(&format!(

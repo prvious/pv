@@ -32,6 +32,7 @@ use state::{
 };
 use tokio::time::{sleep, timeout};
 
+use crate::jobs::DaemonDownloadProgress;
 use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
 
 const RESOURCE_HOST: &str = "127.0.0.1";
@@ -150,7 +151,7 @@ pub(crate) struct ManagedResourceInstallOptions {
 pub(crate) struct ManagedResourceRuntimeCatalog {
     adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>>,
     install_options: ManagedResourceInstallOptions,
-    update_check_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,7 +184,7 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: resources::default_artifact_manifest_url().to_string(),
                 target_platform: current_target_platform(),
             },
-            update_check_client: None,
+            http_client: None,
         }
     }
 
@@ -198,7 +199,7 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: manifest_url.into(),
                 target_platform: current_target_platform(),
             },
-            update_check_client: None,
+            http_client: None,
         }
     }
 
@@ -212,7 +213,7 @@ impl ManagedResourceRuntimeCatalog {
                 manifest_url: manifest_url.into(),
                 target_platform: current_target_platform(),
             },
-            update_check_client: Some(Arc::new(client)),
+            http_client: Some(Arc::new(client)),
         }
     }
 
@@ -228,7 +229,7 @@ impl ManagedResourceRuntimeCatalog {
         Self {
             adapters,
             install_options,
-            update_check_client: None,
+            http_client: None,
         }
     }
 
@@ -244,23 +245,28 @@ impl ManagedResourceRuntimeCatalog {
     }
 }
 
-pub(crate) async fn reconcile_project_resources(
+pub(crate) async fn reconcile_project_resources_with_progress(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production();
 
-    reconcile_project_resources_with_catalog(paths, database, project, plan, &catalog).await
+    reconcile_project_resources_with_catalog_and_progress(
+        paths, database, project, plan, &catalog, progress,
+    )
+    .await
 }
 
-pub(crate) async fn reconcile_project_resources_with_catalog(
+pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
     catalog: &ManagedResourceRuntimeCatalog,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let demanded_tracks = plan
@@ -271,28 +277,28 @@ pub(crate) async fn reconcile_project_resources_with_catalog(
 
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
+    let context = ResourceTrackReconciliationContext {
+        catalog,
+        supervisor: &supervisor,
+        progress: &progress,
+    };
 
     for resource in &plan.resources {
-        reconcile_resource_track(
-            paths,
-            database,
-            project,
-            plan,
-            catalog,
-            &supervisor,
-            resource,
-        )
-        .await?;
+        reconcile_resource_track(paths, database, project, plan, &context, resource).await?;
     }
 
     Ok(())
 }
 
-pub(crate) async fn reconcile_system_resources(paths: &PvPaths) -> Result<(), DaemonError> {
+pub(crate) async fn reconcile_system_resources_with_progress(
+    paths: &PvPaths,
+    progress: DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production();
     let mut database = Database::open(paths)?;
 
-    reconcile_system_resources_with_catalog(paths, &mut database, &catalog).await
+    reconcile_system_resources_with_catalog_and_progress(paths, &mut database, &catalog, progress)
+        .await
 }
 
 pub(crate) fn update_check(
@@ -320,7 +326,7 @@ fn update_check_with_catalog(
         catalog.install_options.manifest_url.clone(),
         catalog.install_options.target_platform,
     );
-    let check = if let Some(client) = catalog.update_check_client.as_deref() {
+    let check = if let Some(client) = catalog.http_client.as_deref() {
         commands.check_updates(client)?
     } else {
         let client = resources::UreqResourceHttpClient::default();
@@ -367,7 +373,7 @@ fn update_installed_with_catalog(
         .iter()
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
-    let update = if let Some(client) = catalog.update_check_client.as_deref() {
+    let update = if let Some(client) = catalog.http_client.as_deref() {
         commands.update_all_installed_with_progress(&backing_adapters, client, progress)?
     } else {
         let client = resources::UreqResourceHttpClient::default();
@@ -387,10 +393,26 @@ fn protocol_update_check_track(
     track.clone().into()
 }
 
+#[cfg(test)]
 pub(crate) async fn reconcile_system_resources_with_catalog(
     paths: &PvPaths,
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<(), DaemonError> {
+    reconcile_system_resources_with_catalog_and_progress(
+        paths,
+        database,
+        catalog,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
+}
+
+pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
+    paths: &PvPaths,
+    database: &mut Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let demanded_tracks = BTreeSet::new();
@@ -399,13 +421,22 @@ pub(crate) async fn reconcile_system_resources_with_catalog(
         .await?;
     let installs = missing_desired_resource_installs(database, catalog)?;
 
-    install_missing_desired_resource_tracks(paths, catalog.install_options.clone(), installs).await
+    install_missing_desired_resource_tracks(
+        paths,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
+        progress,
+    )
+    .await
 }
 
 async fn install_missing_desired_resource_tracks(
     paths: &PvPaths,
     install_options: ManagedResourceInstallOptions,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
     installs: DesiredResourceInstallPlan,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     if installs.is_empty() {
         return Ok(());
@@ -414,7 +445,13 @@ async fn install_missing_desired_resource_tracks(
     let install_paths = paths.clone();
 
     tokio::task::spawn_blocking(move || {
-        install_missing_desired_resource_tracks_blocking(install_paths, install_options, installs)
+        install_missing_desired_resource_tracks_blocking(
+            install_paths,
+            install_options,
+            http_client,
+            installs,
+            progress,
+        )
     })
     .await?
 }
@@ -559,14 +596,18 @@ fn missing_desired_resource_installs(
 fn install_missing_desired_resource_tracks_blocking(
     paths: PvPaths,
     install_options: ManagedResourceInstallOptions,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
     installs: DesiredResourceInstallPlan,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
         install_options.manifest_url,
         install_options.target_platform,
     );
-    let client = resources::UreqResourceHttpClient::default();
+    let default_client = resources::UreqResourceHttpClient::default();
+    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
+        http_client.as_deref().unwrap_or(&default_client);
     let DesiredResourceInstallPlan {
         installs,
         mut failures,
@@ -579,12 +620,16 @@ fn install_missing_desired_resource_tracks_blocking(
                 .map_err(DaemonError::from)
                 .and_then(|track| {
                     commands
-                        .install_php_pair(TrackSelector::Track(track), &client)
+                        .install_php_pair_with_progress(
+                            TrackSelector::Track(track),
+                            client,
+                            &progress,
+                        )
                         .map(|_install| ())
                         .map_err(DaemonError::from)
                 }),
             DesiredResourceInstall::Composer => commands
-                .install_composer(&client)
+                .install_composer_with_progress(client, &progress)
                 .map(|_install| ())
                 .map_err(DaemonError::from),
             DesiredResourceInstall::Runtime {
@@ -594,12 +639,13 @@ fn install_missing_desired_resource_tracks_blocking(
             } => TrackName::new(track)
                 .map_err(DaemonError::from)
                 .and_then(|track| {
-                    install_runtime_resource_track(
+                    install_runtime_resource_track_with_progress(
                         &commands,
-                        &client,
+                        client,
                         &adapter,
                         &resource_name,
                         track,
+                        &progress,
                     )
                 }),
         };
@@ -621,20 +667,25 @@ fn install_missing_desired_resource_tracks_blocking(
     }
 }
 
+struct ResourceTrackReconciliationContext<'context> {
+    catalog: &'context ManagedResourceRuntimeCatalog,
+    supervisor: &'context ProcessSupervisor,
+    progress: &'context DaemonDownloadProgress,
+}
+
 async fn reconcile_resource_track(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
-    catalog: &ManagedResourceRuntimeCatalog,
-    supervisor: &ProcessSupervisor,
+    reconciliation: &ResourceTrackReconciliationContext<'_>,
     resource: &state::ProjectManagedResourceInput,
 ) -> Result<(), DaemonError> {
     let subject = RuntimeSubject::Resource {
         name: resource.resource_name.clone(),
         track: resource.track.clone(),
     };
-    let Some(adapter) = catalog.adapter(&resource.resource_name) else {
+    let Some(adapter) = reconciliation.catalog.adapter(&resource.resource_name) else {
         if unsupported_resource_has_seeded_env_context(database, resource)? {
             return Ok(());
         }
@@ -651,8 +702,15 @@ async fn reconcile_resource_track(
         return Err(error);
     };
     let result = async {
-        let track_record =
-            ensure_track_artifact(paths, database, catalog, adapter, resource).await?;
+        let track_record = ensure_track_artifact(
+            paths,
+            database,
+            reconciliation.catalog,
+            adapter,
+            resource,
+            reconciliation.progress,
+        )
+        .await?;
         let Some(artifact_path) = track_record.current_artifact_path else {
             return Err(DaemonError::ManagedResourceArtifactMissing {
                 resource: resource.resource_name.clone(),
@@ -665,8 +723,12 @@ async fn reconcile_resource_track(
             attempt += 1;
             let ports =
                 assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
-            if ports_occupied_without_recorded_runtime(paths, supervisor, resource, &ports)?
-                && attempt < RESOURCE_START_ATTEMPTS
+            if ports_occupied_without_recorded_runtime(
+                paths,
+                reconciliation.supervisor,
+                resource,
+                &ports,
+            )? && attempt < RESOURCE_START_ATTEMPTS
             {
                 cleanup_resource_runtime_files(paths, resource)?;
                 release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
@@ -687,7 +749,7 @@ async fn reconcile_resource_track(
                 project,
                 plan,
                 adapter,
-                supervisor,
+                supervisor: reconciliation.supervisor,
                 resource,
                 subject: &subject,
             };
@@ -787,6 +849,7 @@ async fn ensure_track_artifact(
     catalog: &ManagedResourceRuntimeCatalog,
     adapter: &dyn ManagedResourceRuntimeAdapter,
     resource: &state::ProjectManagedResourceInput,
+    progress: &DaemonDownloadProgress,
 ) -> Result<ManagedResourceTrackRecord, DaemonError> {
     if let Some(record) = installed_track(database, &resource.resource_name, &resource.track)? {
         return Ok(record);
@@ -797,14 +860,18 @@ async fn ensure_track_artifact(
     let install_paths = paths.clone();
     let resource_name = resource.resource_name.clone();
     let track = resource.track.clone();
+    let http_client = catalog.http_client.clone();
+    let progress = progress.clone();
 
     tokio::task::spawn_blocking(move || {
         install_missing_track_blocking(
             install_paths,
             install_options,
+            http_client,
             artifact_adapter,
             resource_name,
             track,
+            progress,
         )
     })
     .await??;
@@ -846,29 +913,41 @@ fn installed_track(
 fn install_missing_track_blocking(
     paths: PvPaths,
     install_options: ManagedResourceInstallOptions,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
     adapter: resources::RuntimeArtifactAdapter,
     resource_name: String,
     track: String,
+    progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
         install_options.manifest_url,
         install_options.target_platform,
     );
-    let client = resources::UreqResourceHttpClient::default();
+    let default_client = resources::UreqResourceHttpClient::default();
+    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
+        http_client.as_deref().unwrap_or(&default_client);
     let track = TrackName::new(track)?;
 
-    install_runtime_resource_track(&commands, &client, &adapter, &resource_name, track)
+    install_runtime_resource_track_with_progress(
+        &commands,
+        client,
+        &adapter,
+        &resource_name,
+        track,
+        &progress,
+    )
 }
 
-fn install_runtime_resource_track(
+fn install_runtime_resource_track_with_progress(
     commands: &ManagedResourceCommands,
     client: &(impl resources::ResourceHttpClient + ?Sized),
     adapter: &resources::RuntimeArtifactAdapter,
     resource_name: &str,
     track: TrackName,
+    progress: &DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
-    commands.install(adapter, TrackSelector::Track(track), client)?;
+    commands.install_with_progress(adapter, TrackSelector::Track(track), client, progress)?;
     if adapter.resource_name().as_str() != resource_name {
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: format!(
@@ -1260,6 +1339,18 @@ pub(crate) fn fake_runtime_catalog(
         },
         fake::FakeMailpitRuntimeAdapter::new()?,
     ))
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn fake_runtime_catalog_with_manifest_client(
+    manifest_url: &str,
+    client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
+    let mut catalog = fake_runtime_catalog(manifest_url)?;
+    catalog.http_client = Some(Arc::new(client));
+
+    Ok(catalog)
 }
 
 #[cfg(test)]

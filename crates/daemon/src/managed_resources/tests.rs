@@ -185,7 +185,7 @@ fn update_check_refreshes_manifest_when_no_resources_are_installed() -> Result<(
             manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_string(),
             target_platform: super::current_target_platform(),
         },
-        update_check_client: Some(Arc::new(RecordingManifestClient {
+        http_client: Some(Arc::new(RecordingManifestClient {
             body: EMPTY_ARTIFACT_MANIFEST,
             requests: Arc::clone(&manifest_requests),
         })),
@@ -3530,7 +3530,7 @@ fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: super::current_target_platform(),
         },
-        update_check_client: None,
+        http_client: None,
     }
 }
 
