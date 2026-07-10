@@ -1,0 +1,42 @@
+---
+source: crates/config/tests/project_config.rs
+expression: "(written.path.file_name(), written.exists, reloaded.config)"
+---
+(
+    Some(
+        "pv.yml",
+    ),
+    true,
+    ProjectConfig {
+        php: Some(
+            PhpConfig {
+                version: Some(
+                    "8.4",
+                ),
+                extensions: [],
+            },
+        ),
+        document_root: Some(
+            "public",
+        ),
+        hostnames: [],
+        env: {
+            "APP_URL": "${project_url}",
+        },
+        resources: {
+            "mysql": ResourceConfig {
+                track: Some(
+                    "latest",
+                ),
+                env: {},
+                allocations: {
+                    "app": AllocationConfig {
+                        env: {
+                            "DB_HOST": "${host}",
+                        },
+                    },
+                },
+            },
+        },
+    },
+)
