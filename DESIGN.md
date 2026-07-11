@@ -1187,7 +1187,7 @@ PV does not watch `.env` files. It only writes the PV-managed block during recon
 
 PV v1 includes `pv init [path]` as a guided Project config initializer for existing directories. By default, it inspects local Project files, suggests conservative PHP, document root, env, and Managed Resource config, allows structured edits, previews the generated YAML, and writes only after confirmation. `pv init --yes` writes the detected defaults without prompting, while `pv init --print` prints the generated YAML without writing. Existing Project config values are preserved unless changed through the guided flow.
 
-`pv init` only writes Project config. It does not link or reconcile the Project, call the daemon, install or start Managed Resources, write `.env`, edit `vite.config.js`, run framework or package commands, or otherwise change runtime state. Vite detection generates the exact `VITE_DEV_SERVER_CERT` and `VITE_DEV_SERVER_KEY` env mappings, but the Project's Vite config must read them. PV v1 does not migrate Herd config and does not generate `serve: false`.
+`pv init` directly writes only Project config. It does not link the Project, request reconciliation, call the daemon, install or start Managed Resources, write `.env`, edit `vite.config.js`, or run framework or package commands. Writing config for an already-linked Project can still trigger the daemon's normal file-watcher reconciliation. Vite detection generates the exact `VITE_DEV_SERVER_CERT` and `VITE_DEV_SERVER_KEY` env mappings, but the Project's Vite config must read them. PV v1 does not migrate Herd config and does not generate `serve: false`.
 
 PV does not create sample Project config files during setup and does not create Project config during `pv link`.
 

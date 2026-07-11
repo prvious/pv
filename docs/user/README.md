@@ -67,11 +67,11 @@ pv init --yes
 
 `--print` writes the generated YAML to standard output without changing files. `--yes` writes the detected defaults without prompting. Without either flag, non-interactive input fails rather than choosing for you.
 
-New config is written to `pv.yml`. If only `pv.yaml` already exists, PV updates it instead. Existing config values are preserved unless changed in the interactive editor, and detected resources are added without removing existing resources or env mappings.
+New config is written to `pv.yml`. If only `pv.yaml` already exists, PV updates it instead. Existing config values are preserved unless changed in the interactive editor. Explicit allocation edits replace that resource's allocation names, while detected resources are added without removing existing resources or env mappings.
 
 When Vite is detected, the generated env mappings are named exactly `VITE_DEV_SERVER_CERT` and `VITE_DEV_SERVER_KEY`. The Project's `vite.config.js` must read those values; `pv init` does not edit it.
 
-`pv init` only writes Project config. It does not link or reconcile the Project, call the daemon, install or start resources, write `.env`, or run framework or package commands. It does not migrate Herd config and does not generate `serve: false`. Run `pv link` afterward to register and reconcile the Project.
+`pv init` directly writes only Project config. It does not link the Project, request reconciliation, call the daemon, install or start resources, write `.env`, or run framework or package commands. An already-linked Project may still reconcile automatically when the daemon observes the config change. `pv init` does not migrate Herd config and does not generate `serve: false`. Run `pv link` afterward when initializing an unlinked Project.
 
 ## Link, Open, And List
 
