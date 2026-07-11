@@ -1,0 +1,16 @@
+---
+source: crates/config/tests/project_init.rs
+expression: detections
+---
+[
+    (
+        "postgres",
+        true,
+        "Detected DB_CONNECTION=postgres",
+    ),
+    (
+        "pgsql",
+        true,
+        "Detected DB_CONNECTION=pgsql",
+    ),
+]

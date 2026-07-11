@@ -61,6 +61,32 @@ fn project_init_keeps_ambiguous_database_selection_unselected() -> Result<()> {
 }
 
 #[test]
+fn project_init_reports_detected_postgres_connection_value() -> Result<()> {
+    let tempdir = tempdir()?;
+    let mut detections = Vec::new();
+
+    for connection in ["postgres", "pgsql"] {
+        let project = tempdir.path().join(connection);
+        create_dir(&project)?;
+        write_file(
+            &project.join(".env.example"),
+            &format!("DB_CONNECTION={connection}\n"),
+        )?;
+
+        let detection = detect_project_init(&project)?;
+        let postgres = detection
+            .resources
+            .get(&ProjectInitResourceName::Postgres)
+            .ok_or_else(|| anyhow!("missing postgres detection"))?;
+        detections.push((connection, postgres.selected, postgres.reason.clone()));
+    }
+
+    assert_debug_snapshot!(detections);
+
+    Ok(())
+}
+
+#[test]
 fn project_init_maps_only_clear_composer_php_constraints() -> Result<()> {
     let tempdir = tempdir()?;
     let cases = [

@@ -368,10 +368,11 @@ fn detect_resources(
         ProjectInitResourceName::Postgres,
         ProjectInitResourceDetection {
             selected: postgres_selected,
-            reason: if postgres_selected {
-                "Detected DB_CONNECTION=pgsql".to_string()
-            } else {
-                "No strong Postgres signal".to_string()
+            reason: match db_connection {
+                Some(connection @ ("pgsql" | "postgres")) => {
+                    format!("Detected DB_CONNECTION={connection}")
+                }
+                _ => "No strong Postgres signal".to_string(),
             },
             default_allocations: vec!["app".to_string()],
         },
