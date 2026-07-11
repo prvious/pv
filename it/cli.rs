@@ -5,7 +5,9 @@ use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
-use state::{Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths};
+use state::{
+    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
+};
 
 #[derive(Debug)]
 struct CommandOutput {
@@ -495,6 +497,7 @@ fn project_init_prints_detected_laravel_config_without_writing() -> Result<()> {
     assert_eq!(output.code, Some(0));
     assert!(output.stderr.is_empty());
     assert!(!path_exists(&project.join("pv.yml"))?);
+    assert!(!path_exists(&project.join("pv.yaml"))?);
     assert!(!output.stdout.contains("Vite config"));
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -503,6 +506,33 @@ fn project_init_prints_detected_laravel_config_without_writing() -> Result<()> {
         assert_debug_snapshot!(output);
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn project_init_print_succeeds_without_writing_during_update() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+    let paths = PvPaths::for_home(home.clone());
+    state::fs::ensure_layout(&paths)?;
+    let _update_lock = UpdateLock::acquire(&paths)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--print"], &project, &home)?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(output);
+        Ok::<(), anyhow::Error>(())
+    })?;
+    assert_eq!(output.code, Some(0));
+    assert!(output.stderr.is_empty());
+    assert!(!path_exists(&project.join("pv.yml"))?);
+    assert!(!path_exists(&project.join("pv.yaml"))?);
 
     Ok(())
 }
@@ -538,6 +568,8 @@ fn project_init_requires_yes_or_print_when_non_interactive() -> Result<()> {
 
     let output = run_pv_in_dir_with_home(&["init"], &project, &home)?;
 
+    assert!(!path_exists(&project.join("pv.yml"))?);
+    assert!(!path_exists(&project.join("pv.yaml"))?);
     assert_debug_snapshot!(output);
 
     Ok(())

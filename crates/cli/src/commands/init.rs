@@ -33,7 +33,7 @@ pub(crate) fn run(
         let written = write_project_config(&project_root, &config)?;
         let mut output = Output::new(stdout, OutputMode::plain());
         output.line(&format!("Wrote Project config: {}", written.path))?;
-        write_detection_summary(&mut output, &detection.signals)?;
+        write_detection_summary(&mut output, &detection, &selection)?;
         if selection.include_vite_tls {
             output.line(
                 "Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.",
@@ -78,19 +78,47 @@ fn run_interactive(
 
 fn write_detection_summary(
     output: &mut Output<'_, impl Write>,
-    signals: &[config::ProjectInitSignal],
+    detection: &config::ProjectInitDetection,
+    selection: &config::ProjectInitSelection,
 ) -> Result<(), ExecuteError> {
-    if signals.is_empty() {
+    if detection.signals.is_empty() {
         output.line("No framework-specific Project signals detected.")?;
-        return Ok(());
+    } else {
+        output.line("Detected Project signals:")?;
+        for signal in &detection.signals {
+            output.line(&format!("  {}: {}", signal.label, signal.detail))?;
+        }
     }
 
-    output.line("Detected Project signals:")?;
-    for signal in signals {
-        output.line(&format!("  {}: {}", signal.label, signal.detail))?;
+    let selected_resources = detection
+        .resources
+        .iter()
+        .filter(|(name, resource)| {
+            resource.selected
+                && selection
+                    .resources
+                    .get(name)
+                    .is_some_and(|selection| selection.selected)
+        })
+        .collect::<Vec<_>>();
+    if !selected_resources.is_empty() {
+        output.line("Selected Project resources:")?;
+        for (name, resource) in selected_resources {
+            output.line(&format!("  {}: {}", resource_name(*name), resource.reason))?;
+        }
     }
 
     Ok(())
+}
+
+fn resource_name(name: config::ProjectInitResourceName) -> &'static str {
+    match name {
+        config::ProjectInitResourceName::Mailpit => "mailpit",
+        config::ProjectInitResourceName::Mysql => "mysql",
+        config::ProjectInitResourceName::Postgres => "postgres",
+        config::ProjectInitResourceName::Redis => "redis",
+        config::ProjectInitResourceName::Rustfs => "rustfs",
+    }
 }
 
 fn resolve_project_path(

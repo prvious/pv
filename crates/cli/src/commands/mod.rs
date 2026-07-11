@@ -155,7 +155,6 @@ fn command_blocked_during_update(command: &Command) -> bool {
                 | Command::CaTrust
                 | Command::CaUntrust
                 | Command::Link(_)
-                | Command::Init(_)
                 | Command::Unlink(_)
                 | Command::PhpUse(_)
                 | Command::PhpInstall(_)
