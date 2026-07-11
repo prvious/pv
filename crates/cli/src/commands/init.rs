@@ -188,13 +188,17 @@ fn run_structured_edit(
         return Ok(ExitCode::FAILURE);
     }
 
-    let mut explicitly_edited_allocations = Vec::new();
+    let mut explicitly_edited_allocation_resources = Vec::new();
     for name in resource_names() {
         if prompt_resource_details(name, &mut selection, environment, output)? {
-            explicitly_edited_allocations.push(name);
+            explicitly_edited_allocation_resources.push(name);
         }
     }
-    clear_explicitly_edited_allocations(&mut detection, &explicitly_edited_allocations);
+    prune_explicitly_edited_allocations(
+        &mut detection,
+        &selection,
+        &explicitly_edited_allocation_resources,
+    );
 
     let config = render_project_init_config(&detection, &selection)?;
     let content =
@@ -268,18 +272,28 @@ fn prompt_resource_details(
     Ok(false)
 }
 
-fn clear_explicitly_edited_allocations(
+fn prune_explicitly_edited_allocations(
     detection: &mut config::ProjectInitDetection,
+    selection: &config::ProjectInitSelection,
     resources: &[config::ProjectInitResourceName],
 ) {
     for name in resources {
-        if let Some(resource) = detection
+        let Some(selected_allocations) = selection
+            .resources
+            .get(name)
+            .map(|resource| &resource.allocations)
+        else {
+            continue;
+        };
+        if let Some(existing_resource) = detection
             .config_file
             .config
             .resources
             .get_mut(resource_name(*name))
         {
-            resource.allocations.clear();
+            existing_resource
+                .allocations
+                .retain(|allocation, _config| selected_allocations.contains(allocation));
         }
     }
 }
@@ -643,6 +657,63 @@ mod tests {
         assert!(!config.contains("    primary:"));
         assert_snapshot!(
             "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
+            config
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_interactive_explicit_allocation_edits_preserve_retained_allocation_config()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let project = tempdir.path().join("acme");
+        create_laravel_fixture(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
+        )?;
+        let environment = TestEnvironment::new(
+            &project,
+            &[
+                "edit",
+                "",
+                "",
+                "",
+                "",
+                "primary,app",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "y",
+            ],
+        );
+        let mut stdout = Vec::new();
+
+        let exit = run(default_args(), &environment, &mut stdout)?;
+
+        assert_eq!(exit, ExitCode::SUCCESS);
+        let output = String::from_utf8(stdout)?;
+        assert!(output.contains("    app:"));
+        assert!(output.contains("    primary:"));
+        assert!(output.contains("CUSTOM_PRIMARY: preserved"));
+        assert!(output.contains("DB_HOST: custom.internal"));
+        assert!(!output.contains("    legacy:"));
+        assert_output_snapshot(
+            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_output",
+            tempdir.path(),
+            output,
+        );
+        let config = read_file(&project.join("pv.yml"))?;
+        assert!(config.contains("    app:"));
+        assert!(config.contains("    primary:"));
+        assert!(config.contains("CUSTOM_PRIMARY: preserved"));
+        assert!(config.contains("DB_HOST: custom.internal"));
+        assert!(!config.contains("    legacy:"));
+        assert_snapshot!(
+            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
             config
         );
 
