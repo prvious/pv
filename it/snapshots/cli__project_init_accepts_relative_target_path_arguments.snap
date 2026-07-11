@@ -1,0 +1,14 @@
+---
+source: it/cli.rs
+expression: "(output, config)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Wrote Project config: <tempdir>/parent/Acme Store/pv.yml\nDetected Project signals:\n  Laravel: Detected composer.json, artisan, and Laravel project files\n  Vite: Detected Vite in package.json\nVite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.\n",
+        stderr: "",
+    },
+    "php: '8.4'\ndocument_root: public\nenv:\n  APP_URL: ${project_url}\n  VITE_DEV_SERVER_CERT: ${tls_cert}\n  VITE_DEV_SERVER_KEY: ${tls_key}\nmailpit:\n  version: latest\n  env:\n    MAIL_HOST: ${smtp_host}\n    MAIL_MAILER: smtp\n    MAIL_PORT: ${smtp_port}\nmysql:\n  version: latest\n  allocations:\n    app:\n      env:\n        DB_CONNECTION: mysql\n        DB_DATABASE: ${database}\n        DB_HOST: ${host}\n        DB_PASSWORD: ${password}\n        DB_PORT: ${port}\n        DB_USERNAME: ${username}\nredis:\n  version: latest\n  allocations:\n    cache:\n      env:\n        REDIS_HOST: ${host}\n        REDIS_PORT: ${port}\n        REDIS_PREFIX: ${prefix}\nrustfs:\n  version: latest\n  allocations:\n    uploads:\n      env:\n        AWS_ACCESS_KEY_ID: ${access_key}\n        AWS_BUCKET: ${bucket}\n        AWS_ENDPOINT: ${endpoint}\n        AWS_SECRET_ACCESS_KEY: ${secret_key}\n",
+)

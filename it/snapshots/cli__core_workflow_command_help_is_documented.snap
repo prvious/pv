@@ -21,6 +21,13 @@ expression: output
         code: Some(
             0,
         ),
+        stdout: "Initialize Project config\n\nUsage: pv init [OPTIONS] [path]\n\nArguments:\n  [path]  Project path to initialize\n\nOptions:\n      --no-color  Disable colored output\n      --yes       Write detected config without prompting\n      --print     Print generated Project config without writing\n  -h, --help      Print help\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
         stdout: "Link a Project\n\nUsage: pv link [OPTIONS] [path]\n\nArguments:\n  [path]  Project path to link\n\nOptions:\n      --hostname <hostname>  Primary .test hostname\n      --no-color             Disable colored output\n  -h, --help                 Print help\n",
         stderr: "",
     },

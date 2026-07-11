@@ -180,6 +180,16 @@ _arguments "${_arguments_options[@]}" : \
 '::path -- Project path to link:_default' \
 && ret=0
 ;;
+(init)
+_arguments "${_arguments_options[@]}" : \
+'(--print)--yes[Write detected config without prompting]' \
+'--print[Print generated Project config without writing]' \
+'--no-color[Disable colored output]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::path -- Project path to initialize:_default' \
+&& ret=0
+;;
 (unlink)
 _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
@@ -654,6 +664,7 @@ _pv_commands() {
 'ca:trust:Trust PV local CA in the System keychain' \
 'ca:untrust:Remove PV local CA trust' \
 'link:Link a Project' \
+'init:Initialize Project config' \
 'unlink:Unlink a Project' \
 'open:Open a linked Project' \
 'project:env:Print generated Project environment values' \
@@ -790,6 +801,11 @@ _pv__subcmd__doctor_commands() {
 _pv__subcmd__env_commands() {
     local commands; commands=()
     _describe -t commands 'pv env commands' commands "$@"
+}
+(( $+functions[_pv__subcmd__init_commands] )) ||
+_pv__subcmd__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'pv init commands' commands "$@"
 }
 (( $+functions[_pv__subcmd__internal:update-managed-resources_commands] )) ||
 _pv__subcmd__internal:update-managed-resources_commands() {

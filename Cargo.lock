@@ -769,6 +769,7 @@ dependencies = [
  "state",
  "thiserror",
  "tokio",
+ "yaml_serde",
 ]
 
 [[package]]

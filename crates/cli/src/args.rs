@@ -97,6 +97,9 @@ pub(crate) enum Command {
     #[command(name = "link", about = "Link a Project")]
     Link(LinkArgs),
 
+    #[command(name = "init", about = "Initialize Project config")]
+    Init(InitArgs),
+
     #[command(name = "unlink", about = "Unlink a Project")]
     Unlink(UnlinkArgs),
 
@@ -458,6 +461,22 @@ pub(crate) struct LinkArgs {
 
     #[arg(long, value_name = "hostname", help = "Primary .test hostname")]
     pub(crate) hostname: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct InitArgs {
+    #[arg(value_name = "path", help = "Project path to initialize")]
+    pub(crate) path: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with = "print",
+        help = "Write detected config without prompting"
+    )]
+    pub(crate) yes: bool,
+
+    #[arg(long, help = "Print generated Project config without writing")]
+    pub(crate) print: bool,
 }
 
 #[derive(Debug, clap::Args)]

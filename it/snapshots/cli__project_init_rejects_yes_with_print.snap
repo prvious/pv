@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        2,
+    ),
+    stdout: "",
+    stderr: "error: the argument '--yes' cannot be used with '--print'\n\nUsage: pv init --yes [path]\n\nFor more information, try '--help'.\n",
+}

@@ -270,6 +270,7 @@ fn core_workflow_command_help_is_documented() -> Result<()> {
     let output = [
         run_pv(&["setup", "--help"])?,
         run_pv(&["uninstall", "--help"])?,
+        run_pv(&["init", "--help"])?,
         run_pv(&["link", "--help"])?,
         run_pv(&["unlink", "--help"])?,
         run_pv(&["open", "--help"])?,
@@ -478,6 +479,194 @@ fn project_link_accepts_relative_path_arguments() -> Result<()> {
     settings.bind(|| {
         assert_debug_snapshot!((link, list));
     });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_prints_detected_laravel_config_without_writing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--print"], &project, &home)?;
+
+    assert_eq!(output.code, Some(0));
+    assert!(output.stderr.is_empty());
+    assert!(!path_exists(&project.join("pv.yml"))?);
+    assert!(!output.stdout.contains("Vite config"));
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(output);
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn project_init_yes_writes_detected_laravel_config() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
+    let config = read_file(&project.join("pv.yml"))?;
+
+    assert_eq!(output.code, Some(0));
+    assert!(output.stderr.is_empty());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((output, config));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_requires_yes_or_print_when_non_interactive() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+
+    let output = run_pv_in_dir_with_home(&["init"], &project, &home)?;
+
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn project_init_accepts_relative_target_path_arguments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let parent = tempdir.path().join("parent");
+    let project = parent.join("Acme Store");
+    let work = parent.join("work");
+    create_laravel_init_fixture(&project)?;
+    create_dir(&work)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "../Acme Store", "--yes"], &work, &home)?;
+    let config = read_file(&project.join("pv.yml"))?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((output, config));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_updates_existing_pv_yaml_without_creating_pv_yml() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+    write_file(
+        &project.join("pv.yaml"),
+        "php: 8.3\nenv:\n  USER_VALUE: preserved\n",
+    )?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
+    let config = read_file(&project.join("pv.yaml"))?;
+
+    assert!(!path_exists(&project.join("pv.yml"))?);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((output, config));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_rejects_conflicting_config_files_without_writing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+    let preferred = "php: 8.3\n";
+    let alternate = "php: 8.4\n";
+    write_file(&project.join("pv.yml"), preferred)?;
+    write_file(&project.join("pv.yaml"), alternate)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
+
+    assert_eq!(read_file(&project.join("pv.yml"))?, preferred);
+    assert_eq!(read_file(&project.join("pv.yaml"))?, alternate);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(output);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_rejects_invalid_existing_config_without_writing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+    let config = "unexpected: true\n";
+    write_file(&project.join("pv.yml"), config)?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
+
+    assert_eq!(read_file(&project.join("pv.yml"))?, config);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(output);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_preserves_existing_config_values_while_adding_detected_defaults() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Acme Store");
+    create_laravel_init_fixture(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "php: 8.3\nenv:\n  APP_URL: https://user.test\n  USER_VALUE: preserved\n",
+    )?;
+
+    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
+    let config = read_file(&project.join("pv.yml"))?;
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((output, config));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn project_init_rejects_yes_with_print() -> Result<()> {
+    let output = run_pv(&["init", "--yes", "--print"])?;
+
+    assert_debug_snapshot!(output);
 
     Ok(())
 }
@@ -779,4 +968,47 @@ fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
 )]
 fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
+}
+
+fn create_laravel_init_fixture(project: &Utf8Path) -> Result<()> {
+    create_dir(&project.join("bootstrap"))?;
+    create_dir(&project.join("config"))?;
+    create_dir(&project.join("public"))?;
+    write_file(&project.join("artisan"), "")?;
+    write_file(&project.join("bootstrap/app.php"), "<?php\n")?;
+    write_file(&project.join("config/app.php"), "<?php\n")?;
+    write_file(&project.join("public/index.php"), "<?php\n")?;
+    write_file(
+        &project.join("composer.json"),
+        r#"{"require":{"php":"^8.4","laravel/framework":"^12.0"}}"#,
+    )?;
+    write_file(
+        &project.join("package.json"),
+        r#"{"devDependencies":{"vite":"^7.0.0","laravel-vite-plugin":"^2.0.0"}}"#,
+    )?;
+    write_file(
+        &project.join(".env.example"),
+        r#"APP_URL=http://localhost
+DB_CONNECTION=mysql
+REDIS_HOST=127.0.0.1
+CACHE_STORE=redis
+MAIL_MAILER=smtp
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+"#,
+    )?;
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests check fixture file presence"
+)]
+fn path_exists(path: &Utf8Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_metadata) => Ok(true),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(source.into()),
+    }
 }
