@@ -27,12 +27,12 @@ mysql:
   allocations:
     app:
       env:
-        DB_CONNECTION: mysql
+        APP_DB_CONNECTION: mysql
+        APP_DB_HOST: ${host}
+        APP_DB_PASSWORD: ${password}
+        APP_DB_PORT: ${port}
+        APP_DB_USERNAME: ${username}
         DB_DATABASE: custom_database
-        DB_HOST: ${host}
-        DB_PASSWORD: ${password}
-        DB_PORT: ${port}
-        DB_USERNAME: ${username}
 redis:
   version: '7.4'
   env:

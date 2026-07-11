@@ -3,14 +3,8 @@ source: crates/config/tests/project_init.rs
 expression: "yaml_serde::to_string(&config)?"
 ---
 php: latest
-mailpit:
-  version: latest
-  env:
-    MAIL_HOST: ${smtp_host}
-    MAIL_MAILER: smtp
-    MAIL_PORT: ${smtp_port}
 mysql:
-  version: latest
+  version: '8.4'
   allocations:
     analytics:
       env:
@@ -20,7 +14,7 @@ mysql:
         ANALYTICS_DB_PASSWORD: ${password}
         ANALYTICS_DB_PORT: ${port}
         ANALYTICS_DB_USERNAME: ${username}
-    app:
+    reporting:
       env:
         DB_CONNECTION: mysql
         DB_DATABASE: ${database}
@@ -39,31 +33,11 @@ postgres:
         APP_DB_PASSWORD: ${password}
         APP_DB_PORT: ${port}
         APP_DB_USERNAME: ${username}
-redis:
-  version: latest
-  allocations:
-    cache:
+    warehouse:
       env:
-        REDIS_HOST: ${host}
-        REDIS_PORT: ${port}
-        REDIS_PREFIX: ${prefix}
-    sessions:
-      env:
-        SESSIONS_REDIS_HOST: ${host}
-        SESSIONS_REDIS_PORT: ${port}
-        SESSIONS_REDIS_PREFIX: ${prefix}
-rustfs:
-  version: latest
-  allocations:
-    backups:
-      env:
-        BACKUPS_AWS_ACCESS_KEY_ID: ${access_key}
-        BACKUPS_AWS_BUCKET: ${bucket}
-        BACKUPS_AWS_ENDPOINT: ${endpoint}
-        BACKUPS_AWS_SECRET_ACCESS_KEY: ${secret_key}
-    uploads:
-      env:
-        AWS_ACCESS_KEY_ID: ${access_key}
-        AWS_BUCKET: ${bucket}
-        AWS_ENDPOINT: ${endpoint}
-        AWS_SECRET_ACCESS_KEY: ${secret_key}
+        WAREHOUSE_DB_CONNECTION: pgsql
+        WAREHOUSE_DB_DATABASE: ${database}
+        WAREHOUSE_DB_HOST: ${host}
+        WAREHOUSE_DB_PASSWORD: ${password}
+        WAREHOUSE_DB_PORT: ${port}
+        WAREHOUSE_DB_USERNAME: ${username}

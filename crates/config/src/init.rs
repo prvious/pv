@@ -4,9 +4,11 @@ use std::io;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value as JsonValue;
 
+use crate::discovery::validate_config_for_root;
 use crate::filesystem::{is_directory, path_present, read_to_string};
 use crate::{
-    AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ProjectConfigFile, ResourceConfig,
+    ConfigError, PhpConfig, ProjectConfig, ProjectConfigFile, ResourceConfig,
+    validate_project_env_shape,
 };
 
 const SUPPORTED_PHP_TRACKS: &[&str] = &["8.3", "8.4", "8.5"];
@@ -131,12 +133,23 @@ pub fn default_project_init_selection(detection: &ProjectInitDetection) -> Proje
         .resources
         .iter()
         .map(|(name, detected)| {
+            let existing = detection
+                .config_file
+                .config
+                .resources
+                .get(name.config_key());
+            let existing_allocations =
+                existing.map(|resource| resource.allocations.keys().cloned().collect());
+
             (
                 *name,
                 ProjectInitResourceSelection {
-                    selected: detected.selected,
-                    track: "latest".to_string(),
-                    allocations: detected.default_allocations.clone(),
+                    selected: detected.selected || existing.is_some(),
+                    track: existing
+                        .and_then(|resource| resource.track.clone())
+                        .unwrap_or_else(|| "latest".to_string()),
+                    allocations: existing_allocations
+                        .unwrap_or_else(|| detected.default_allocations.clone()),
                 },
             )
         })
@@ -157,7 +170,8 @@ pub fn default_project_init_selection(detection: &ProjectInitDetection) -> Proje
             .document_root
             .clone()
             .or_else(|| detection.suggested_document_root.clone()),
-        include_app_url: detection.include_app_url || !detection.config_file.config.env.is_empty(),
+        include_app_url: detection.include_app_url
+            || detection.config_file.config.env.contains_key("APP_URL"),
         include_vite_tls: detection.include_vite_tls,
         resources,
     }
@@ -169,9 +183,7 @@ pub fn render_project_init_config(
 ) -> Result<ProjectConfig, ConfigError> {
     let mut config = detection.config_file.config.clone();
     config.php.get_or_insert_with(PhpConfig::default).version = Some(selection.php.clone());
-    if config.document_root.is_none() {
-        config.document_root = selection.document_root.clone();
-    }
+    config.document_root = selection.document_root.clone();
     if selection.include_app_url {
         config
             .env
@@ -191,12 +203,23 @@ pub fn render_project_init_config(
 
     for (name, resource) in &selection.resources {
         if resource.selected {
-            merge_resource(&mut config, *name, resource);
+            merge_resource_structure(&mut config, *name, resource);
         }
     }
+    merge_generated_resource_env(&mut config, selection);
+    merge_generated_allocation_env(&mut config, selection);
 
     let content = yaml_serde::to_string(&config).map_err(|source| ConfigError::Parse { source })?;
-    ProjectConfig::parse(&content)
+    let config = ProjectConfig::parse(&content)?;
+    let project_root = detection.config_file.path.parent().ok_or_else(|| {
+        ConfigError::ProjectRootNotDirectory {
+            path: detection.config_file.path.clone(),
+        }
+    })?;
+    let config = validate_config_for_root(project_root, config)?;
+    validate_project_env_shape(&config)?;
+
+    Ok(config)
 }
 
 fn read_json_file(path: &Utf8Path) -> Result<Option<JsonValue>, ConfigError> {
@@ -394,7 +417,7 @@ fn detect_resources(
     resources
 }
 
-fn merge_resource(
+fn merge_resource_structure(
     config: &mut ProjectConfig,
     name: ProjectInitResourceName,
     selection: &ProjectInitResourceSelection,
@@ -403,22 +426,43 @@ fn merge_resource(
         .resources
         .entry(name.config_key().to_string())
         .or_default();
-    resource
-        .track
-        .get_or_insert_with(|| selection.track.clone());
+    resource.track = Some(selection.track.clone());
 
-    match name {
-        ProjectInitResourceName::Mailpit => merge_mailpit(resource),
-        ProjectInitResourceName::Mysql => merge_sql(resource, "mysql", &selection.allocations),
-        ProjectInitResourceName::Postgres => merge_sql(resource, "pgsql", &selection.allocations),
-        ProjectInitResourceName::Redis => merge_redis(resource, &selection.allocations),
-        ProjectInitResourceName::Rustfs => merge_rustfs(resource, &selection.allocations),
+    let mut seen = BTreeSet::new();
+    for allocation_name in &selection.allocations {
+        if !seen.insert(allocation_name) {
+            continue;
+        }
+
+        resource
+            .allocations
+            .entry(allocation_name.clone())
+            .or_default();
     }
 }
 
-fn merge_mailpit(resource: &mut ResourceConfig) {
-    merge_env_defaults(
-        &mut resource.env,
+fn merge_generated_resource_env(config: &mut ProjectConfig, selection: &ProjectInitSelection) {
+    let Some(mailpit_selection) = selection.resources.get(&ProjectInitResourceName::Mailpit) else {
+        return;
+    };
+    if !mailpit_selection.selected {
+        return;
+    }
+
+    let root_keys = config.env.keys().cloned().collect::<BTreeSet<_>>();
+    let mut resource_keys = config
+        .resources
+        .values()
+        .flat_map(|resource| resource.env.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    let Some(mailpit) = config.resources.get_mut("mailpit") else {
+        return;
+    };
+
+    merge_resource_env_defaults(
+        &mut mailpit.env,
+        &root_keys,
+        &mut resource_keys,
         [
             ("MAIL_MAILER", "smtp"),
             ("MAIL_HOST", "${smtp_host}"),
@@ -427,56 +471,97 @@ fn merge_mailpit(resource: &mut ResourceConfig) {
     );
 }
 
-fn merge_sql(resource: &mut ResourceConfig, connection: &str, allocations: &[String]) {
-    merge_allocations(resource, allocations, |allocation, prefix| {
-        merge_prefixed_env_defaults(
-            &mut allocation.env,
-            prefix,
-            [
-                ("DB_CONNECTION", connection),
+fn merge_generated_allocation_env(config: &mut ProjectConfig, selection: &ProjectInitSelection) {
+    let ancestor_keys = config
+        .env
+        .keys()
+        .chain(
+            config
+                .resources
+                .values()
+                .flat_map(|resource| resource.env.keys()),
+        )
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut allocation_keys = config
+        .resources
+        .values()
+        .flat_map(|resource| resource.allocations.values())
+        .flat_map(|allocation| allocation.env.keys().cloned())
+        .collect::<BTreeSet<_>>();
+
+    for (name, resource_selection) in &selection.resources {
+        if !resource_selection.selected || *name == ProjectInitResourceName::Mailpit {
+            continue;
+        }
+
+        let defaults = match name {
+            ProjectInitResourceName::Mysql => vec![
+                ("DB_CONNECTION", "mysql"),
                 ("DB_HOST", "${host}"),
                 ("DB_PORT", "${port}"),
                 ("DB_DATABASE", "${database}"),
                 ("DB_USERNAME", "${username}"),
                 ("DB_PASSWORD", "${password}"),
             ],
-        );
-    });
-}
-
-fn merge_redis(resource: &mut ResourceConfig, allocations: &[String]) {
-    merge_allocations(resource, allocations, |allocation, prefix| {
-        merge_prefixed_env_defaults(
-            &mut allocation.env,
-            prefix,
-            [
+            ProjectInitResourceName::Postgres => vec![
+                ("DB_CONNECTION", "pgsql"),
+                ("DB_HOST", "${host}"),
+                ("DB_PORT", "${port}"),
+                ("DB_DATABASE", "${database}"),
+                ("DB_USERNAME", "${username}"),
+                ("DB_PASSWORD", "${password}"),
+            ],
+            ProjectInitResourceName::Redis => vec![
                 ("REDIS_HOST", "${host}"),
                 ("REDIS_PORT", "${port}"),
                 ("REDIS_PREFIX", "${prefix}"),
             ],
-        );
-    });
-}
-
-fn merge_rustfs(resource: &mut ResourceConfig, allocations: &[String]) {
-    merge_allocations(resource, allocations, |allocation, prefix| {
-        merge_prefixed_env_defaults(
-            &mut allocation.env,
-            prefix,
-            [
+            ProjectInitResourceName::Rustfs => vec![
                 ("AWS_ENDPOINT", "${endpoint}"),
                 ("AWS_BUCKET", "${bucket}"),
                 ("AWS_ACCESS_KEY_ID", "${access_key}"),
                 ("AWS_SECRET_ACCESS_KEY", "${secret_key}"),
             ],
+            ProjectInitResourceName::Mailpit => continue,
+        };
+        let Some(resource) = config.resources.get_mut(name.config_key()) else {
+            continue;
+        };
+        merge_allocation_env_defaults(
+            name.config_key(),
+            resource,
+            &resource_selection.allocations,
+            &ancestor_keys,
+            &mut allocation_keys,
+            &defaults,
         );
-    });
+    }
 }
 
-fn merge_allocations(
+fn merge_resource_env_defaults<const N: usize>(
+    env: &mut BTreeMap<String, String>,
+    root_keys: &BTreeSet<String>,
+    resource_keys: &mut BTreeSet<String>,
+    defaults: [(&str, &str); N],
+) {
+    for (key, value) in defaults {
+        if env.contains_key(key) || root_keys.contains(key) || resource_keys.contains(key) {
+            continue;
+        }
+
+        env.insert(key.to_string(), value.to_string());
+        resource_keys.insert(key.to_string());
+    }
+}
+
+fn merge_allocation_env_defaults(
+    resource_name: &str,
     resource: &mut ResourceConfig,
     allocations: &[String],
-    mut merge: impl FnMut(&mut AllocationConfig, Option<&str>),
+    ancestor_keys: &BTreeSet<String>,
+    allocation_keys: &mut BTreeSet<String>,
+    defaults: &[(&str, &str)],
 ) {
     let mut seen = BTreeSet::new();
     for allocation_name in allocations {
@@ -484,12 +569,37 @@ fn merge_allocations(
             continue;
         }
 
-        let prefix = (seen.len() > 1).then(|| allocation_env_prefix(allocation_name));
-        let allocation = resource
-            .allocations
-            .entry(allocation_name.clone())
-            .or_default();
-        merge(allocation, prefix.as_deref());
+        let Some(allocation) = resource.allocations.get_mut(allocation_name) else {
+            continue;
+        };
+        let allocation_prefix = allocation_env_prefix(allocation_name);
+        let resource_prefix = format!(
+            "{}_{}",
+            allocation_env_prefix(resource_name),
+            allocation_prefix
+        );
+        let prefix = [None, Some(allocation_prefix), Some(resource_prefix)]
+            .into_iter()
+            .find(|prefix| {
+                defaults.iter().all(|(key, _)| {
+                    allocation.env.contains_key(*key) || {
+                        let key = generated_env_key(prefix.as_deref(), key);
+                        allocation.env.contains_key(&key)
+                            || (!ancestor_keys.contains(&key) && !allocation_keys.contains(&key))
+                    }
+                })
+            });
+        let Some(prefix) = prefix else {
+            continue;
+        };
+
+        merge_prefixed_env_defaults(
+            &mut allocation.env,
+            prefix.as_deref(),
+            ancestor_keys,
+            allocation_keys,
+            defaults,
+        );
     }
 }
 
@@ -506,23 +616,28 @@ fn allocation_env_prefix(allocation: &str) -> String {
         .collect()
 }
 
-fn merge_prefixed_env_defaults<const N: usize>(
-    env: &mut BTreeMap<String, String>,
-    prefix: Option<&str>,
-    defaults: [(&str, &str); N],
-) {
-    for (key, value) in defaults {
-        let key = prefix.map_or_else(|| key.to_string(), |prefix| format!("{prefix}_{key}"));
-        env.entry(key).or_insert_with(|| value.to_string());
-    }
+fn generated_env_key(prefix: Option<&str>, key: &str) -> String {
+    prefix.map_or_else(|| key.to_string(), |prefix| format!("{prefix}_{key}"))
 }
 
-fn merge_env_defaults<const N: usize>(
+fn merge_prefixed_env_defaults(
     env: &mut BTreeMap<String, String>,
-    defaults: [(&str, &str); N],
+    prefix: Option<&str>,
+    ancestor_keys: &BTreeSet<String>,
+    allocation_keys: &mut BTreeSet<String>,
+    defaults: &[(&str, &str)],
 ) {
     for (key, value) in defaults {
-        env.entry(key.to_string())
-            .or_insert_with(|| value.to_string());
+        if env.contains_key(*key) {
+            continue;
+        }
+        let key = generated_env_key(prefix, key);
+        if env.contains_key(&key) || ancestor_keys.contains(&key) || allocation_keys.contains(&key)
+        {
+            continue;
+        }
+
+        env.insert(key.clone(), (*value).to_string());
+        allocation_keys.insert(key);
     }
 }

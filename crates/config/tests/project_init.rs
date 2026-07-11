@@ -1,11 +1,21 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Result, anyhow};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use config::{
-    ConfigError, ProjectInitResourceName, default_project_init_selection, detect_project_init,
-    render_project_init_config,
+    AllocationEnvContext, ConfigError, ProjectEnvContext, ProjectInitResourceName,
+    ResourceEnvContext, default_project_init_selection, detect_project_init, render_project_env,
+    render_project_init_config, validate_project_env_shape,
 };
 use insta::{assert_debug_snapshot, assert_snapshot};
+
+#[derive(Clone, Copy, Debug)]
+enum ExpectedDocumentRootError {
+    Absolute,
+    Escaping,
+    Missing,
+}
 
 #[test]
 fn project_init_detects_laravel_vite_and_common_resources() -> Result<()> {
@@ -164,6 +174,285 @@ redis:
 }
 
 #[test]
+fn project_init_avoids_collisions_across_the_final_sql_allocation_set() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"mysql:
+  version: "8.4"
+  allocations:
+    reporting: {}
+"#,
+    )?;
+
+    let detection = detect_project_init(&project)?;
+    let mut selection = default_project_init_selection(&detection);
+    let mysql = selection
+        .resources
+        .get(&ProjectInitResourceName::Mysql)
+        .ok_or_else(|| anyhow!("missing MySQL selection"))?;
+    assert_eq!(mysql.allocations, ["reporting"]);
+    select_resource(
+        &mut selection,
+        ProjectInitResourceName::Mysql,
+        &["reporting", "analytics"],
+    )?;
+    select_resource(
+        &mut selection,
+        ProjectInitResourceName::Postgres,
+        &["app", "warehouse"],
+    )?;
+
+    let config = render_project_init_config(&detection, &selection)?;
+    validate_project_env_shape(&config)?;
+
+    let mysql = config
+        .resources
+        .get("mysql")
+        .ok_or_else(|| anyhow!("missing generated MySQL config"))?;
+    let postgres = config
+        .resources
+        .get("postgres")
+        .ok_or_else(|| anyhow!("missing generated Postgres config"))?;
+    assert!(mysql.allocations.contains_key("reporting"));
+    assert!(mysql.allocations.contains_key("analytics"));
+    assert!(postgres.allocations.contains_key("app"));
+    assert!(postgres.allocations.contains_key("warehouse"));
+    assert_snapshot!(yaml_serde::to_string(&config)?);
+
+    Ok(())
+}
+
+#[test]
+fn project_init_generated_defaults_preserve_effective_ancestor_env_values() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"env:
+  DB_CONNECTION: custom-root
+mysql:
+  version: "8.4"
+  env:
+    DB_HOST: custom-host
+    DB_PORT: custom-port
+  allocations:
+    app: {}
+"#,
+    )?;
+
+    let detection = detect_project_init(&project)?;
+    let mut selection = default_project_init_selection(&detection);
+    select_resource(&mut selection, ProjectInitResourceName::Mysql, &["app"])?;
+    let config = render_project_init_config(&detection, &selection)?;
+    validate_project_env_shape(&config)?;
+
+    let app_env = &config
+        .resources
+        .get("mysql")
+        .and_then(|resource| resource.allocations.get("app"))
+        .ok_or_else(|| anyhow!("missing MySQL app allocation"))?
+        .env;
+    assert!(!app_env.contains_key("DB_CONNECTION"));
+    assert!(!app_env.contains_key("DB_HOST"));
+    assert!(!app_env.contains_key("DB_PORT"));
+
+    let rendered = render_project_env(&config, &mysql_project_env_context())?;
+    assert_eq!(
+        rendered.values.get("DB_CONNECTION").map(String::as_str),
+        Some("custom-root")
+    );
+    assert_eq!(
+        rendered.values.get("DB_HOST").map(String::as_str),
+        Some("custom-host")
+    );
+    assert_eq!(
+        rendered.values.get("DB_PORT").map(String::as_str),
+        Some("custom-port")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_init_seeds_existing_structured_values_and_applies_edits() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project.join("web"))?;
+    create_dir(&project.join("edited"))?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"document_root: web
+mysql:
+  version: "8.4"
+  allocations:
+    analytics: {}
+redis:
+  version: "7.4"
+  allocations:
+    sessions: {}
+"#,
+    )?;
+
+    let detection = detect_project_init(&project)?;
+    let mut selection = default_project_init_selection(&detection);
+    assert_eq!(
+        selection.document_root.as_deref(),
+        Some(Utf8Path::new("web"))
+    );
+    let mysql = selection
+        .resources
+        .get(&ProjectInitResourceName::Mysql)
+        .ok_or_else(|| anyhow!("missing MySQL selection"))?;
+    assert!(mysql.selected);
+    assert_eq!(mysql.track, "8.4");
+    assert_eq!(mysql.allocations, ["analytics"]);
+    let redis = selection
+        .resources
+        .get(&ProjectInitResourceName::Redis)
+        .ok_or_else(|| anyhow!("missing Redis selection"))?;
+    assert!(redis.selected);
+    assert_eq!(redis.track, "7.4");
+    assert_eq!(redis.allocations, ["sessions"]);
+
+    selection.document_root = Some(Utf8PathBuf::from("edited"));
+    selection
+        .resources
+        .get_mut(&ProjectInitResourceName::Mysql)
+        .ok_or_else(|| anyhow!("missing MySQL selection"))?
+        .track = "9.1".to_string();
+    selection
+        .resources
+        .get_mut(&ProjectInitResourceName::Redis)
+        .ok_or_else(|| anyhow!("missing Redis selection"))?
+        .track = "8.0".to_string();
+
+    let config = render_project_init_config(&detection, &selection)?;
+    assert_eq!(
+        config.document_root.as_deref(),
+        Some(Utf8Path::new("edited"))
+    );
+    assert_eq!(
+        config
+            .resources
+            .get("mysql")
+            .and_then(|resource| resource.track.as_deref()),
+        Some("9.1")
+    );
+    assert_eq!(
+        config
+            .resources
+            .get("redis")
+            .and_then(|resource| resource.track.as_deref()),
+        Some("8.0")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_init_validates_edited_document_roots_before_returning() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    create_dir(&project.join("public"))?;
+    create_dir(&tempdir.path().join("outside"))?;
+
+    let detection = detect_project_init(&project)?;
+    let selection = default_project_init_selection(&detection);
+    let cases = [
+        (project.join("public"), ExpectedDocumentRootError::Absolute),
+        (
+            Utf8PathBuf::from("../outside"),
+            ExpectedDocumentRootError::Escaping,
+        ),
+        (
+            Utf8PathBuf::from("missing"),
+            ExpectedDocumentRootError::Missing,
+        ),
+    ];
+
+    for (document_root, expected) in cases {
+        let mut selection = selection.clone();
+        selection.document_root = Some(document_root);
+        let Err(error) = render_project_init_config(&detection, &selection) else {
+            return Err(anyhow!(
+                "expected {expected:?} document root to reject the proposal"
+            ));
+        };
+        let matches_expected = match expected {
+            ExpectedDocumentRootError::Absolute => {
+                matches!(error, ConfigError::AbsoluteDocumentRoot { .. })
+            }
+            ExpectedDocumentRootError::Escaping => {
+                matches!(error, ConfigError::DocumentRootEscapesProject { .. })
+            }
+            ExpectedDocumentRootError::Missing => {
+                matches!(error, ConfigError::DocumentRootNotDirectory { .. })
+            }
+        };
+        assert!(matches_expected, "unexpected {expected:?} error: {error:?}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn project_init_validates_existing_env_shape_before_returning() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"mysql:
+  allocations:
+    app:
+      env:
+        SHARED_KEY: mysql
+postgres:
+  allocations:
+    app:
+      env:
+        SHARED_KEY: postgres
+"#,
+    )?;
+
+    let detection = detect_project_init(&project)?;
+    let selection = default_project_init_selection(&detection);
+    let result = render_project_init_config(&detection, &selection);
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "SHARED_KEY"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn project_init_does_not_add_app_url_for_unrelated_existing_root_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "env:\n  CUSTOM_VALUE: preserved\n")?;
+
+    let detection = detect_project_init(&project)?;
+    let selection = default_project_init_selection(&detection);
+    assert!(!selection.include_app_url);
+
+    let config = render_project_init_config(&detection, &selection)?;
+    assert_eq!(
+        config.env,
+        BTreeMap::from([("CUSTOM_VALUE".to_string(), "preserved".to_string())])
+    );
+
+    Ok(())
+}
+
+#[test]
 fn project_init_returns_typed_error_for_invalid_json() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
@@ -229,6 +518,37 @@ fn select_resource(
         .collect();
 
     Ok(())
+}
+
+fn mysql_project_env_context() -> ProjectEnvContext {
+    ProjectEnvContext {
+        primary_hostname: "acme.test".to_string(),
+        tls_ca_path: "/tmp/ca.pem".to_string(),
+        tls_cert_path: "/tmp/acme.crt".to_string(),
+        tls_key_path: "/tmp/acme.key".to_string(),
+        resources: BTreeMap::from([(
+            "mysql".to_string(),
+            ResourceEnvContext {
+                track: "8.4".to_string(),
+                values: BTreeMap::from([
+                    ("host".to_string(), "generated-host".to_string()),
+                    ("password".to_string(), "generated-password".to_string()),
+                    ("port".to_string(), "3306".to_string()),
+                    ("username".to_string(), "generated-user".to_string()),
+                ]),
+                allocations: BTreeMap::from([(
+                    "app".to_string(),
+                    AllocationEnvContext {
+                        generated_name: "acme_test_app".to_string(),
+                        values: BTreeMap::from([(
+                            "database".to_string(),
+                            "acme_test_app".to_string(),
+                        )]),
+                    },
+                )]),
+            },
+        )]),
+    }
 }
 
 #[expect(
