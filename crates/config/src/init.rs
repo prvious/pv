@@ -578,19 +578,30 @@ fn merge_allocation_env_defaults(
             allocation_env_prefix(resource_name),
             allocation_prefix
         );
-        let prefix = [None, Some(allocation_prefix), Some(resource_prefix)]
-            .into_iter()
-            .find(|prefix| {
-                defaults.iter().all(|(key, _)| {
-                    allocation.env.contains_key(*key) || {
-                        let key = generated_env_key(prefix.as_deref(), key);
-                        allocation.env.contains_key(&key)
-                            || (!ancestor_keys.contains(&key) && !allocation_keys.contains(&key))
-                    }
-                })
-            });
-        let Some(prefix) = prefix else {
-            continue;
+        let prefix_available = |prefix: Option<&str>| {
+            defaults.iter().all(|(key, _)| {
+                allocation.env.contains_key(*key) || {
+                    let key = generated_env_key(prefix, key);
+                    allocation.env.contains_key(&key)
+                        || (!ancestor_keys.contains(&key) && !allocation_keys.contains(&key))
+                }
+            })
+        };
+        let prefix = if let Some(prefix) =
+            [None, Some(allocation_prefix), Some(resource_prefix.clone())]
+                .into_iter()
+                .find(|prefix| prefix_available(prefix.as_deref()))
+        {
+            prefix
+        } else {
+            let mut suffix = 2_usize;
+            loop {
+                let prefix = format!("{resource_prefix}_{suffix}");
+                if prefix_available(Some(&prefix)) {
+                    break Some(prefix);
+                }
+                suffix = suffix.saturating_add(1);
+            }
         };
 
         merge_prefixed_env_defaults(

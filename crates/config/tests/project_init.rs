@@ -226,6 +226,81 @@ fn project_init_avoids_collisions_across_the_final_sql_allocation_set() -> Resul
 }
 
 #[test]
+fn project_init_falls_back_when_existing_mappings_occupy_all_initial_namespaces() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"mysql:
+  version: "8.4"
+  allocations:
+    legacy:
+      env:
+        DB_HOST: custom-unprefixed
+        APP_DB_PORT: custom-allocation-prefixed
+        MYSQL_APP_DB_DATABASE: custom-resource-allocation-prefixed
+"#,
+    )?;
+
+    let detection = detect_project_init(&project)?;
+    let mut selection = default_project_init_selection(&detection);
+    select_resource(&mut selection, ProjectInitResourceName::Mysql, &["app"])?;
+
+    let config = render_project_init_config(&detection, &selection)?;
+    validate_project_env_shape(&config)?;
+
+    let mysql = config
+        .resources
+        .get("mysql")
+        .ok_or_else(|| anyhow!("missing generated MySQL config"))?;
+    let legacy = mysql
+        .allocations
+        .get("legacy")
+        .ok_or_else(|| anyhow!("missing existing legacy allocation"))?;
+    assert_eq!(
+        legacy.env,
+        BTreeMap::from([
+            (
+                "APP_DB_PORT".to_string(),
+                "custom-allocation-prefixed".to_string()
+            ),
+            ("DB_HOST".to_string(), "custom-unprefixed".to_string()),
+            (
+                "MYSQL_APP_DB_DATABASE".to_string(),
+                "custom-resource-allocation-prefixed".to_string(),
+            ),
+        ])
+    );
+    let app = mysql
+        .allocations
+        .get("app")
+        .ok_or_else(|| anyhow!("missing selected app allocation"))?;
+    assert_eq!(
+        app.env,
+        BTreeMap::from([
+            ("MYSQL_APP_2_DB_CONNECTION".to_string(), "mysql".to_string()),
+            (
+                "MYSQL_APP_2_DB_DATABASE".to_string(),
+                "${database}".to_string(),
+            ),
+            ("MYSQL_APP_2_DB_HOST".to_string(), "${host}".to_string()),
+            (
+                "MYSQL_APP_2_DB_PASSWORD".to_string(),
+                "${password}".to_string(),
+            ),
+            ("MYSQL_APP_2_DB_PORT".to_string(), "${port}".to_string()),
+            (
+                "MYSQL_APP_2_DB_USERNAME".to_string(),
+                "${username}".to_string(),
+            ),
+        ])
+    );
+
+    Ok(())
+}
+
+#[test]
 fn project_init_generated_defaults_preserve_effective_ancestor_env_values() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
