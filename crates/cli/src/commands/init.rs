@@ -158,7 +158,7 @@ fn write_resource_checklist(
 
 fn run_structured_edit(
     project_root: Utf8PathBuf,
-    detection: config::ProjectInitDetection,
+    mut detection: config::ProjectInitDetection,
     mut selection: config::ProjectInitSelection,
     environment: &impl Environment,
     output: &mut Output<'_, impl Write>,
@@ -188,9 +188,13 @@ fn run_structured_edit(
         return Ok(ExitCode::FAILURE);
     }
 
+    let mut explicitly_edited_allocations = Vec::new();
     for name in resource_names() {
-        prompt_resource_details(name, &mut selection, environment, output)?;
+        if prompt_resource_details(name, &mut selection, environment, output)? {
+            explicitly_edited_allocations.push(name);
+        }
     }
+    clear_explicitly_edited_allocations(&mut detection, &explicitly_edited_allocations);
 
     let config = render_project_init_config(&detection, &selection)?;
     let content =
@@ -230,12 +234,12 @@ fn prompt_resource_details(
     selection: &mut config::ProjectInitSelection,
     environment: &impl Environment,
     output: &mut Output<'_, impl Write>,
-) -> Result<(), ExecuteError> {
+) -> Result<bool, ExecuteError> {
     let Some(resource) = selection.resources.get_mut(&name) else {
-        return Ok(());
+        return Ok(false);
     };
     if !resource.selected {
-        return Ok(());
+        return Ok(false);
     }
 
     output.line(&format!(
@@ -257,10 +261,27 @@ fn prompt_resource_details(
         let allocations = environment.read_line()?;
         if !allocations.trim().is_empty() {
             resource.allocations = parse_csv(allocations.trim());
+            return Ok(true);
         }
     }
 
-    Ok(())
+    Ok(false)
+}
+
+fn clear_explicitly_edited_allocations(
+    detection: &mut config::ProjectInitDetection,
+    resources: &[config::ProjectInitResourceName],
+) {
+    for name in resources {
+        if let Some(resource) = detection
+            .config_file
+            .config
+            .resources
+            .get_mut(resource_name(*name))
+        {
+            resource.allocations.clear();
+        }
+    }
 }
 
 fn parse_csv(value: &str) -> Vec<String> {
@@ -585,6 +606,44 @@ mod tests {
         assert_snapshot!(
             "init_interactive_blank_edits_preserve_existing_defaults_config",
             read_file(&project.join("pv.yml"))?
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_interactive_explicit_allocation_edits_replace_existing_allocations()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let project = tempdir.path().join("acme");
+        create_laravel_fixture(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
+        )?;
+        let environment = TestEnvironment::new(
+            &project,
+            &["edit", "", "", "", "", "app", "", "", "", "", "", "y"],
+        );
+        let mut stdout = Vec::new();
+
+        let exit = run(default_args(), &environment, &mut stdout)?;
+
+        assert_eq!(exit, ExitCode::SUCCESS);
+        let output = String::from_utf8(stdout)?;
+        assert!(output.contains("    app:"));
+        assert!(!output.contains("    primary:"));
+        assert_output_snapshot(
+            "init_interactive_explicit_allocation_edits_replace_existing_allocations_output",
+            tempdir.path(),
+            output,
+        );
+        let config = read_file(&project.join("pv.yml"))?;
+        assert!(config.contains("    app:"));
+        assert!(!config.contains("    primary:"));
+        assert_snapshot!(
+            "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
+            config
         );
 
         Ok(())
