@@ -16,6 +16,7 @@ use crate::args::ListArgs;
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
+use crate::progress::DownloadProgressRenderer;
 
 const RECONCILE_KIND: &str = "reconcile";
 const SYSTEM_SCOPE: &str = "system";
@@ -39,9 +40,11 @@ pub(crate) fn install(
     };
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment);
+    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
-        commands.install(&adapter, selector, client)
+        commands.install_with_progress(&adapter, selector, client, &progress)
     })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warning(&installed, &mut output)?;
@@ -63,8 +66,11 @@ pub(crate) fn update(
     let paths = pv_paths(environment)?;
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment);
-    let updated =
-        with_resource_http_client(environment, |client| commands.update(&adapter, client))?;
+    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let updated = with_resource_http_client(environment, |client| {
+        commands.update_with_progress(&adapter, client, &progress)
+    })?;
+    drop(progress);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;

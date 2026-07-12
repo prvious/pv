@@ -3,6 +3,7 @@ mod commands;
 mod environment;
 mod error;
 mod output;
+mod progress;
 mod shell;
 
 use std::ffi::OsString;

@@ -18,6 +18,7 @@ use state::{
 };
 
 use crate::DaemonError;
+use crate::jobs::DaemonDownloadProgress;
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,17 +58,25 @@ impl ProjectEnvReconciliationSummary {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn reconcile_project_env(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_with_runtime_catalog(paths, project_id, None).await
+    reconcile_project_env_with_runtime_catalog_and_progress(
+        paths,
+        project_id,
+        None,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
 }
 
-pub(crate) async fn reconcile_project_env_with_runtime_catalog(
+pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
     paths: &PvPaths,
     project_id: &str,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let mut database = Database::open(paths)?;
     let project =
@@ -77,7 +86,7 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(paths, &mut database, &project, catalog).await {
+    match reconcile_loaded_project(paths, &mut database, &project, catalog, progress).await {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();
@@ -102,7 +111,15 @@ pub(crate) async fn reconcile_project_env_with_catalog(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(paths, database, &project, Some(catalog)).await {
+    match reconcile_loaded_project(
+        paths,
+        database,
+        &project,
+        Some(catalog),
+        DaemonDownloadProgress::disabled(),
+    )
+    .await
+    {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();
@@ -129,6 +146,7 @@ async fn reconcile_loaded_project(
     database: &mut Database,
     project: &ProjectRecord,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
@@ -145,13 +163,15 @@ async fn reconcile_loaded_project(
     }
     apply_project_resource_plan(database, &project.id, &plan)?;
     if let Some(catalog) = catalog {
-        crate::managed_resources::reconcile_project_resources_with_catalog(
-            paths, database, project, &plan, catalog,
+        crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
+            paths, database, project, &plan, catalog, progress,
         )
         .await?;
     } else {
-        crate::managed_resources::reconcile_project_resources(paths, database, project, &plan)
-            .await?;
+        crate::managed_resources::reconcile_project_resources_with_progress(
+            paths, database, project, &plan, progress,
+        )
+        .await?;
     }
     if let Some(runtime) = &resolved_php_runtime {
         database.replace_project_php_runtime(

@@ -180,7 +180,7 @@ Default Managed Resources installed by `pv setup` are not started until a linked
 
 Default tool/resource installation is owned by the daemon. `pv setup` records desired install state, starts the daemon, requests reconciliation, and waits for that reconciliation job to finish.
 
-One-off CLI commands communicate with the daemon through a Unix domain socket at `~/.pv/run/pv.sock` using newline-delimited JSON messages. Each request is one JSON line and includes a daemon protocol version field. The immediate response is one JSON line. For long-running work, the daemon then emits NDJSON progress events over the same connection. Event types include `job_started`, `progress`, `log`, `job_completed`, and `job_failed`. `pv setup` listens to the progress stream, renders progress, and exits when the reconciliation job completes or fails.
+One-off CLI commands communicate with the daemon through a Unix domain socket at `~/.pv/run/pv.sock` using newline-delimited JSON messages. Each request is one JSON line and includes a daemon protocol version field. The immediate response is one JSON line. For long-running work, the daemon then emits best-effort NDJSON progress snapshots over the same connection. Event types include `job_started`, `progress`, `download_progress`, `log`, `job_completed`, and `job_failed`. `pv setup` listens to the progress stream, renders download bars only when stdout is a terminal, clears those bars before final command output, and exits when the reconciliation job completes or fails.
 
 If the CLI and daemon protocol versions are incompatible, commands print a clear repair command such as `pv daemon:restart` rather than automatically restarting the daemon. `pv update` may handle daemon restart explicitly as part of the update flow.
 
@@ -506,7 +506,7 @@ The daemon protocol adds a read-only `managed_resource_update_check` request:
 
 ```json
 {
-  "protocol_version": 2,
+  "protocol_version": 3,
   "command": "managed_resource_update_check"
 }
 ```
@@ -516,7 +516,7 @@ The daemon response is a normal response line with `status: "ok"` and an `update
 ```json
 {
   "type": "response",
-  "protocol_version": 2,
+  "protocol_version": 3,
   "status": "ok",
   "message": "Managed Resource update check completed",
   "update_check": {

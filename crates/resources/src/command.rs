@@ -12,8 +12,9 @@ use crate::registry;
 use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
     ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
-    ArtifactManifestCache, ArtifactManifestSource, ArtifactVersion, ManifestArtifact,
-    ResourceAdapter, ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector,
+    ArtifactManifestCache, ArtifactManifestSource, ArtifactVersion, DownloadProgress,
+    ManifestArtifact, NoDownloadProgress, ResourceAdapter, ResourceName, ResourcesError,
+    TargetPlatform, TrackName, TrackSelector,
 };
 
 pub type ManagedResourceCommandResult<T> = std::result::Result<T, ManagedResourceCommandError>;
@@ -52,6 +53,33 @@ pub struct ManagedResourceCommands {
     paths: PvPaths,
     manifest_url: String,
     target_platform: TargetPlatform,
+}
+
+struct ArtifactInstallContext<'context, Client, Progress>
+where
+    Client: ResourceHttpClient + ?Sized,
+    Progress: DownloadProgress,
+{
+    manifest_source: &'context ArtifactManifestSource,
+    client: &'context Client,
+    progress: &'context Progress,
+}
+
+impl<Client, Progress> Clone for ArtifactInstallContext<'_, Client, Progress>
+where
+    Client: ResourceHttpClient + ?Sized,
+    Progress: DownloadProgress,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Client, Progress> Copy for ArtifactInstallContext<'_, Client, Progress>
+where
+    Client: ResourceHttpClient + ?Sized,
+    Progress: DownloadProgress,
+{
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,6 +210,16 @@ impl ManagedResourceCommands {
         selector: TrackSelector,
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        self.install_with_progress(adapter, selector, client, &NoDownloadProgress)
+    }
+
+    pub fn install_with_progress(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
         let refresh = ArtifactManifestCache::new(self.paths.downloads())
@@ -191,13 +229,22 @@ impl ManagedResourceCommands {
             .resolve_track(adapter.resource_name(), selector)?
             .clone();
 
-        self.install_track(adapter, track, manifest, refresh.source(), client)
+        self.install_track(adapter, track, manifest, refresh.source(), client, progress)
     }
 
     pub fn install_php_pair(
         &self,
         selector: TrackSelector,
         client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        self.install_php_pair_with_progress(selector, client, &NoDownloadProgress)
+    }
+
+    pub fn install_php_pair_with_progress(
+        &self,
+        selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<PhpPairInstall> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
@@ -213,13 +260,17 @@ impl ManagedResourceCommands {
         self.validate_install_selection(&php, &track, manifest)?;
         self.validate_install_selection(&frankenphp, &track, manifest)?;
 
-        let install = self.prepare_php_pair_install(
+        let context = ArtifactInstallContext {
+            manifest_source: refresh.source(),
+            client,
+            progress,
+        };
+        let install = self.prepare_php_pair_install_with_progress(
             &php,
             &frankenphp,
             track,
             manifest,
-            refresh.source(),
-            client,
+            context,
         )?;
         if let Err(error) = self.record_php_pair_install(&install) {
             return Err(self.rollback_php_pair_after_error(&install, error));
@@ -246,6 +297,7 @@ impl ManagedResourceCommands {
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
         client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let selection =
             manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
@@ -260,14 +312,13 @@ impl ManagedResourceCommands {
         )?;
 
         let artifact = selection.artifact().clone();
-        let install = self.install_selected_artifact(
-            adapter,
-            track,
-            artifact,
-            revoked_latest,
+        let context = ArtifactInstallContext {
             manifest_source,
             client,
-        )?;
+            progress,
+        };
+        let install =
+            self.install_selected_artifact(adapter, track, artifact, revoked_latest, context)?;
         database.record_managed_resource_track_installed(
             adapter.resource_name().as_str(),
             install.track.as_str(),
@@ -278,13 +329,14 @@ impl ManagedResourceCommands {
         Ok(install)
     }
 
-    fn prepare_track_install(
+    fn prepare_track_install_with_progress(
         &self,
         adapter: &(impl ResourceAdapter + ?Sized),
         track: TrackName,
         manifest: &ArtifactManifest,
         manifest_source: &ArtifactManifestSource,
         client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         let selection =
             manifest.select_latest(adapter.resource_name(), &track, self.target_platform)?;
@@ -292,39 +344,41 @@ impl ManagedResourceCommands {
             .revoked_latest()
             .map(revoked_fallback_from_artifact);
         let artifact = selection.artifact().clone();
-
-        self.install_selected_artifact(
-            adapter,
-            track,
-            artifact,
-            revoked_latest,
+        let context = ArtifactInstallContext {
             manifest_source,
             client,
-        )
+            progress,
+        };
+
+        self.install_selected_artifact(adapter, track, artifact, revoked_latest, context)
     }
 
-    fn install_selected_artifact(
+    fn install_selected_artifact<Client, Progress>(
         &self,
         adapter: &(impl ResourceAdapter + ?Sized),
         track: TrackName,
         artifact: ManifestArtifact,
         revoked_latest: Option<ManagedResourceRevokedLatest>,
-        manifest_source: &ArtifactManifestSource,
-        client: &(impl ResourceHttpClient + ?Sized),
-    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        context: ArtifactInstallContext<'_, Client, Progress>,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall>
+    where
+        Client: ResourceHttpClient + ?Sized,
+        Progress: DownloadProgress,
+    {
         let installer = ArtifactInstaller::new(self.paths.resources());
-        let (install, downloaded_from_cache) = if let Some(existing_install) =
-            installer.install_existing_release(adapter, &track, &artifact)?
-        {
-            (existing_install, false)
-        } else {
-            let download =
-                ArtifactDownloader::new(self.paths.downloads()).download(&artifact, client)?;
-            (
-                installer.install(adapter, &track, &artifact, download.path())?,
-                download.is_from_cache(),
-            )
-        };
+        let (install, downloaded_from_cache) =
+            if let Some(existing_install) =
+                installer.install_existing_release(adapter, &track, &artifact)?
+            {
+                (existing_install, false)
+            } else {
+                let download = ArtifactDownloader::new(self.paths.downloads())
+                    .download_with_progress(&artifact, context.client, context.progress)?;
+                (
+                    installer.install(adapter, &track, &artifact, download.path())?,
+                    download.is_from_cache(),
+                )
+            };
 
         let current_artifact_path = install.release_path().to_path_buf();
 
@@ -333,30 +387,40 @@ impl ManagedResourceCommands {
             track,
             artifact_version: artifact.artifact_version().clone(),
             current_artifact_path,
-            manifest_source: manifest_source.clone(),
+            manifest_source: context.manifest_source.clone(),
             revoked_latest,
             downloaded_from_cache,
             artifact_install: install,
         })
     }
 
-    fn prepare_php_pair_install(
+    fn prepare_php_pair_install_with_progress<Client, Progress>(
         &self,
         php: &impl ResourceAdapter,
         frankenphp: &impl ResourceAdapter,
         track: TrackName,
         manifest: &ArtifactManifest,
-        manifest_source: &ArtifactManifestSource,
-        client: &(impl ResourceHttpClient + ?Sized),
-    ) -> ManagedResourceCommandResult<PhpPairInstall> {
-        let php =
-            self.prepare_track_install(php, track.clone(), manifest, manifest_source, client)?;
-        let frankenphp = match self.prepare_track_install(
+        context: ArtifactInstallContext<'_, Client, Progress>,
+    ) -> ManagedResourceCommandResult<PhpPairInstall>
+    where
+        Client: ResourceHttpClient + ?Sized,
+        Progress: DownloadProgress,
+    {
+        let php = self.prepare_track_install_with_progress(
+            php,
+            track.clone(),
+            manifest,
+            context.manifest_source,
+            context.client,
+            context.progress,
+        )?;
+        let frankenphp = match self.prepare_track_install_with_progress(
             frankenphp,
             track,
             manifest,
-            manifest_source,
-            client,
+            context.manifest_source,
+            context.client,
+            context.progress,
         ) {
             Ok(install) => install,
             Err(error) => return Err(self.rollback_after_error(&[&php], error)),
@@ -499,6 +563,15 @@ impl ManagedResourceCommands {
         adapter: &(impl ResourceAdapter + ?Sized),
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        self.update_with_progress(adapter, client, &NoDownloadProgress)
+    }
+
+    pub fn update_with_progress(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
         let installed_tracks = self.list(Some(adapter.resource_name()))?;
@@ -517,6 +590,7 @@ impl ManagedResourceCommands {
                 refresh.manifest(),
                 refresh.source(),
                 client,
+                progress,
             )?);
         }
 
@@ -526,6 +600,14 @@ impl ManagedResourceCommands {
     pub fn update_php_pairs(
         &self,
         client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<PhpPairUpdate> {
+        self.update_php_pairs_with_progress(client, &NoDownloadProgress)
+    }
+
+    pub fn update_php_pairs_with_progress(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<PhpPairUpdate> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
@@ -552,13 +634,17 @@ impl ManagedResourceCommands {
         }
 
         for track in tracks {
-            let install = self.prepare_php_pair_install(
+            let context = ArtifactInstallContext {
+                manifest_source: refresh.source(),
+                client,
+                progress,
+            };
+            let install = self.prepare_php_pair_install_with_progress(
                 &php,
                 &frankenphp,
                 track,
                 refresh.manifest(),
-                refresh.source(),
-                client,
+                context,
             )?;
             if let Err(error) = self.record_php_pair_install(&install) {
                 return Err(self.rollback_php_pair_after_error(&install, error));
@@ -574,10 +660,24 @@ impl ManagedResourceCommands {
         &self,
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
-        self.install(
+        self.install_with_progress(
             &composer_adapter()?,
             TrackSelector::Track(composer_track()?),
             client,
+            &NoDownloadProgress,
+        )
+    }
+
+    pub fn install_composer_with_progress(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        self.install_with_progress(
+            &composer_adapter()?,
+            TrackSelector::Track(composer_track()?),
+            client,
+            progress,
         )
     }
 
@@ -585,6 +685,15 @@ impl ManagedResourceCommands {
         &self,
         php_selector: TrackSelector,
         client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ComposerWithPhpPairInstall> {
+        self.install_composer_with_php_pair_and_progress(php_selector, client, &NoDownloadProgress)
+    }
+
+    pub fn install_composer_with_php_pair_and_progress(
+        &self,
+        php_selector: TrackSelector,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ComposerWithPhpPairInstall> {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
@@ -604,20 +713,25 @@ impl ManagedResourceCommands {
         self.validate_install_selection(&frankenphp, &php_track, manifest)?;
         self.validate_install_selection(&composer, &composer_track, manifest)?;
 
-        let php_pair = self.prepare_php_pair_install(
+        let context = ArtifactInstallContext {
+            manifest_source: refresh.source(),
+            client,
+            progress,
+        };
+        let php_pair = self.prepare_php_pair_install_with_progress(
             &php,
             &frankenphp,
             php_track,
             manifest,
-            refresh.source(),
-            client,
+            context,
         )?;
-        let composer = match self.prepare_track_install(
+        let composer = match self.prepare_track_install_with_progress(
             &composer,
             composer_track,
             manifest,
             refresh.source(),
             client,
+            progress,
         ) {
             Ok(install) => install,
             Err(error) => return Err(self.rollback_php_pair_after_error(&php_pair, error)),
@@ -634,6 +748,14 @@ impl ManagedResourceCommands {
     pub fn update_composer(
         &self,
         client: &(impl ResourceHttpClient + ?Sized),
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        self.update_composer_with_progress(client, &NoDownloadProgress)
+    }
+
+    pub fn update_composer_with_progress(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         let composer = composer_adapter()?;
         let track = composer_track()?;
@@ -654,6 +776,7 @@ impl ManagedResourceCommands {
             refresh.manifest(),
             refresh.source(),
             client,
+            progress,
         )?);
 
         Ok(ManagedResourceUpdate { installs })
@@ -664,6 +787,15 @@ impl ManagedResourceCommands {
         backing_adapters: &[&dyn ResourceAdapter],
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        self.update_all_installed_with_progress(backing_adapters, client, &NoDownloadProgress)
+    }
+
+    pub fn update_all_installed_with_progress(
+        &self,
+        backing_adapters: &[&dyn ResourceAdapter],
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
         for adapter in backing_adapters {
             registry::resolve_canonical(adapter.resource_name().as_str())?;
         }
@@ -673,41 +805,36 @@ impl ManagedResourceCommands {
         let manifest = refresh.manifest();
         let installed_tracks = self.list(None)?;
         let mut installs = Vec::new();
+        let context = ArtifactInstallContext {
+            manifest_source: refresh.source(),
+            client,
+            progress,
+        };
 
-        self.update_installed_php_pairs(
-            &installed_tracks,
-            manifest,
-            refresh.source(),
-            client,
-            &mut installs,
-        )?;
-        self.update_installed_composer(
-            &installed_tracks,
-            manifest,
-            refresh.source(),
-            client,
-            &mut installs,
-        )?;
+        self.update_installed_php_pairs(&installed_tracks, manifest, &mut installs, context)?;
+        self.update_installed_composer(&installed_tracks, manifest, &mut installs, context)?;
         self.update_installed_backing_resources(
             &installed_tracks,
             backing_adapters,
             manifest,
-            refresh.source(),
-            client,
             &mut installs,
+            context,
         )?;
 
         Ok(ManagedResourceUpdate { installs })
     }
 
-    fn update_installed_php_pairs(
+    fn update_installed_php_pairs<Client, Progress>(
         &self,
         installed_tracks: &[ManagedResourceTrack],
         manifest: &ArtifactManifest,
-        manifest_source: &ArtifactManifestSource,
-        client: &(impl ResourceHttpClient + ?Sized),
         installs: &mut Vec<ManagedResourceInstall>,
-    ) -> ManagedResourceCommandResult<()> {
+        context: ArtifactInstallContext<'_, Client, Progress>,
+    ) -> ManagedResourceCommandResult<()>
+    where
+        Client: ResourceHttpClient + ?Sized,
+        Progress: DownloadProgress,
+    {
         let php = php_adapter()?;
         let frankenphp = frankenphp_adapter()?;
         let mut tracks = BTreeSet::new();
@@ -730,13 +857,12 @@ impl ManagedResourceCommands {
                 continue;
             }
 
-            let install = self.prepare_php_pair_install(
+            let install = self.prepare_php_pair_install_with_progress(
                 &php,
                 &frankenphp,
                 track,
                 manifest,
-                manifest_source,
-                client,
+                context,
             )?;
             if let Err(error) = self.record_php_pair_install(&install) {
                 return Err(self.rollback_php_pair_after_error(&install, error));
@@ -748,14 +874,17 @@ impl ManagedResourceCommands {
         Ok(())
     }
 
-    fn update_installed_composer(
+    fn update_installed_composer<Client, Progress>(
         &self,
         installed_tracks: &[ManagedResourceTrack],
         manifest: &ArtifactManifest,
-        manifest_source: &ArtifactManifestSource,
-        client: &(impl ResourceHttpClient + ?Sized),
         installs: &mut Vec<ManagedResourceInstall>,
-    ) -> ManagedResourceCommandResult<()> {
+        context: ArtifactInstallContext<'_, Client, Progress>,
+    ) -> ManagedResourceCommandResult<()>
+    where
+        Client: ResourceHttpClient + ?Sized,
+        Progress: DownloadProgress,
+    {
         let composer = composer_adapter()?;
         let track = composer_track()?;
         let Some(installed) =
@@ -767,20 +896,30 @@ impl ManagedResourceCommands {
             return Ok(());
         }
 
-        installs.push(self.install_track(&composer, track, manifest, manifest_source, client)?);
+        installs.push(self.install_track(
+            &composer,
+            track,
+            manifest,
+            context.manifest_source,
+            context.client,
+            context.progress,
+        )?);
 
         Ok(())
     }
 
-    fn update_installed_backing_resources(
+    fn update_installed_backing_resources<Client, Progress>(
         &self,
         installed_tracks: &[ManagedResourceTrack],
         backing_adapters: &[&dyn ResourceAdapter],
         manifest: &ArtifactManifest,
-        manifest_source: &ArtifactManifestSource,
-        client: &(impl ResourceHttpClient + ?Sized),
         installs: &mut Vec<ManagedResourceInstall>,
-    ) -> ManagedResourceCommandResult<()> {
+        context: ArtifactInstallContext<'_, Client, Progress>,
+    ) -> ManagedResourceCommandResult<()>
+    where
+        Client: ResourceHttpClient + ?Sized,
+        Progress: DownloadProgress,
+    {
         for adapter in backing_adapters {
             for installed in installed_tracks
                 .iter()
@@ -798,8 +937,9 @@ impl ManagedResourceCommands {
                     *adapter,
                     installed.track().clone(),
                     manifest,
-                    manifest_source,
-                    client,
+                    context.manifest_source,
+                    context.client,
+                    context.progress,
                 )?);
             }
         }

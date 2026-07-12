@@ -3,7 +3,7 @@ use serde_json::json;
 use tokio::io::duplex;
 
 use crate::{
-    DaemonCommand, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck,
+    DaemonCommand, DaemonEvent, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck,
     ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus, PROTOCOL_VERSION, ResponseStatus,
     transport, write_line,
 };
@@ -15,11 +15,11 @@ fn managed_resource_update_check_command_bumps_protocol_version() -> anyhow::Res
         command: DaemonCommand::ManagedResourceUpdateCheck,
     };
 
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
     assert_eq!(
         serde_json::to_value(&request)?,
         json!({
-            "protocol_version": 2,
+            "protocol_version": 3,
             "command": "managed_resource_update_check",
         })
     );
@@ -108,6 +108,33 @@ fn update_check_response_round_trips_with_managed_resources() -> anyhow::Result<
             .update_check()
             .map(|check| check.managed_resources.len()),
         Some(1)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn download_progress_event_serializes_resource_artifact_progress() -> anyhow::Result<()> {
+    let event = DaemonEvent::DownloadProgress {
+        job_id: "job-1",
+        resource: "redis",
+        track: "8.8",
+        artifact_version: "8.8.1-pv1",
+        downloaded_bytes: 42,
+        total_bytes: 100,
+    };
+
+    assert_eq!(
+        serde_json::to_value(&event)?,
+        json!({
+            "type": "download_progress",
+            "job_id": "job-1",
+            "resource": "redis",
+            "track": "8.8",
+            "artifact_version": "8.8.1-pv1",
+            "downloaded_bytes": 42,
+            "total_bytes": 100
+        })
     );
 
     Ok(())

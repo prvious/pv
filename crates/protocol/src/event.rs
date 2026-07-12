@@ -12,6 +12,14 @@ pub enum DaemonEvent<'message> {
         job_id: &'message str,
         message: &'message str,
     },
+    DownloadProgress {
+        job_id: &'message str,
+        resource: &'message str,
+        track: &'message str,
+        artifact_version: &'message str,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
     Log {
         job_id: &'message str,
         message: &'message str,

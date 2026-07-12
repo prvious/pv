@@ -1,0 +1,9 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: progress.events()
+---
+[
+    "started redis 7.2 7.2.5-pv1 total=126",
+    "advanced redis 7.2 7.2.5-pv1 downloaded=126/126",
+    "finished redis 7.2 7.2.5-pv1 downloaded=126/126",
+]

@@ -9,12 +9,13 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use resources::{
-    ArtifactManifestSource, ManagedResourceCommandError, ManagedResourceCommands,
-    ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceTrack,
-    ManagedResourceUninstallOptions, ManagedResourceUpdate, ManagedResourceUpdateCheck,
-    ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI, ResourceAdapter, ResourceHttpClient,
-    ResourceName, ResourcesError, TargetPlatform, TrackName, TrackSelector, composer_adapter,
-    frankenphp_adapter, mailpit_adapter, php_adapter, php_track_defaults, redis_adapter,
+    ArtifactManifestSource, DownloadProgress, DownloadProgressEvent, ManagedResourceCommandError,
+    ManagedResourceCommands, ManagedResourceInstall, ManagedResourceRemovalIntent,
+    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
+    ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI,
+    ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
+    TrackSelector, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
+    php_track_defaults, redis_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths, fs};
@@ -56,6 +57,51 @@ fn managed_resource_commands_install_update_list_and_uninstall_fake_adapter() ->
         track_records_summary(&listed_after_uninstall, tempdir.path())?,
         state_after_uninstall,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_reports_download_progress() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let progress = RecordingDownloadProgress::default();
+
+    commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
+
+    assert_debug_snapshot!(progress.events());
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_update_reports_download_progress() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
+    let first_manifest = manifest_with_artifacts(&[&first_artifact]);
+    let second_manifest = manifest_with_artifacts(&[&first_artifact, &second_artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&first_manifest)
+        .with_bytes(first_artifact.bytes())
+        .with_text(&second_manifest)
+        .with_bytes(second_artifact.bytes());
+    let progress = RecordingDownloadProgress::default();
+
+    commands.install(&adapter, TrackSelector::Latest, &client)?;
+    commands.update_with_progress(&adapter, &client, &progress)?;
+
+    assert_debug_snapshot!(progress.events());
 
     Ok(())
 }
@@ -291,6 +337,43 @@ fn managed_resource_commands_install_php_pair_resolves_latest_once_for_both_reso
         track_records_summary(&listed_after_install, tempdir.path())?,
         manifest_request_count,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_php_pair_reports_download_progress() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+    let progress = RecordingDownloadProgress::default();
+
+    commands.install_php_pair_with_progress(TrackSelector::Latest, &client, &progress)?;
+
+    assert_debug_snapshot!(progress.events());
 
     Ok(())
 }
@@ -2159,6 +2242,59 @@ impl Write for FailingWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingDownloadProgress {
+    events: RefCell<Vec<String>>,
+}
+
+impl RecordingDownloadProgress {
+    fn events(&self) -> Vec<String> {
+        self.events.borrow().clone()
+    }
+}
+
+impl DownloadProgress for RecordingDownloadProgress {
+    fn report(&self, event: DownloadProgressEvent<'_>) {
+        self.events.borrow_mut().push(match event {
+            DownloadProgressEvent::Started { artifact } => {
+                format!(
+                    "started {} {} {} total={}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    artifact.size()
+                )
+            }
+            DownloadProgressEvent::Advanced {
+                artifact,
+                downloaded_bytes,
+            } => {
+                format!(
+                    "advanced {} {} {} downloaded={}/{}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    downloaded_bytes,
+                    artifact.size()
+                )
+            }
+            DownloadProgressEvent::Finished {
+                artifact,
+                downloaded_bytes,
+            } => {
+                format!(
+                    "finished {} {} {} downloaded={}/{}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    downloaded_bytes,
+                    artifact.size()
+                )
+            }
+        });
     }
 }
 

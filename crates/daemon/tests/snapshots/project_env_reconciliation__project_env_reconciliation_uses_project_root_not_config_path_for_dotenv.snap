@@ -8,7 +8,7 @@ expression: snapshot
         Object {
             "job_id": String("job_000001"),
             "message": String("job accepted"),
-            "protocol_version": Number(2),
+            "protocol_version": Number(3),
             "status": String("accepted"),
             "type": String("response"),
         },

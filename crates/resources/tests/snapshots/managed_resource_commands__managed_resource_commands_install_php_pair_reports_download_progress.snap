@@ -1,0 +1,12 @@
+---
+source: crates/resources/tests/managed_resource_commands.rs
+expression: progress.events()
+---
+[
+    "started php 8.4 8.4.8-pv1 total=109",
+    "advanced php 8.4 8.4.8-pv1 downloaded=109/109",
+    "finished php 8.4 8.4.8-pv1 downloaded=109/109",
+    "started frankenphp 8.4 8.4.8-pv1 total=116",
+    "advanced frankenphp 8.4 8.4.8-pv1 downloaded=116/116",
+    "finished frankenphp 8.4 8.4.8-pv1 downloaded=116/116",
+]

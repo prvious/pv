@@ -9,8 +9,8 @@ use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
 use resources::{
     ArtifactDownloader, ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource,
-    ManifestArtifact, ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
-    UreqResourceHttpClient,
+    DownloadProgress, DownloadProgressEvent, ManifestArtifact, ResourceHttpClient, ResourceName,
+    ResourcesError, TargetPlatform, TrackName, UreqResourceHttpClient,
 };
 
 #[test]
@@ -195,6 +195,22 @@ fn artifact_downloader_replaces_corrupt_cached_artifact_with_verified_download()
     assert!(!downloaded.is_from_cache());
     assert_eq!(downloaded.path(), cached_path);
     assert_eq!(read_test_file(&cached_path)?, ARTIFACT_BYTES);
+
+    Ok(())
+}
+
+#[test]
+fn artifact_downloader_reports_download_progress_events() -> Result<()> {
+    let tempdir = tempdir()?;
+    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
+    let artifact = redis_artifact()?;
+    let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
+    let progress = RecordingDownloadProgress::default();
+
+    let downloaded = downloader.download_with_progress(&artifact, &client, &progress)?;
+
+    assert!(!downloaded.is_from_cache());
+    assert_debug_snapshot!(progress.events());
 
     Ok(())
 }
@@ -433,6 +449,59 @@ impl Write for FailingWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingDownloadProgress {
+    events: RefCell<Vec<String>>,
+}
+
+impl RecordingDownloadProgress {
+    fn events(&self) -> Vec<String> {
+        self.events.borrow().clone()
+    }
+}
+
+impl DownloadProgress for RecordingDownloadProgress {
+    fn report(&self, event: DownloadProgressEvent<'_>) {
+        self.events.borrow_mut().push(match event {
+            DownloadProgressEvent::Started { artifact } => {
+                format!(
+                    "started {} {} {} total={}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    artifact.size()
+                )
+            }
+            DownloadProgressEvent::Advanced {
+                artifact,
+                downloaded_bytes,
+            } => {
+                format!(
+                    "advanced {} {} {} downloaded={}/{}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    downloaded_bytes,
+                    artifact.size()
+                )
+            }
+            DownloadProgressEvent::Finished {
+                artifact,
+                downloaded_bytes,
+            } => {
+                format!(
+                    "finished {} {} {} downloaded={}/{}",
+                    artifact.resource_name(),
+                    artifact.track(),
+                    artifact.artifact_version(),
+                    downloaded_bytes,
+                    artifact.size()
+                )
+            }
+        });
     }
 }
 

@@ -23,6 +23,36 @@ pub struct ArtifactDownloader {
     downloads_dir: Utf8PathBuf,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum DownloadProgressEvent<'artifact> {
+    Started {
+        artifact: &'artifact ManifestArtifact,
+    },
+    Advanced {
+        artifact: &'artifact ManifestArtifact,
+        downloaded_bytes: u64,
+    },
+    Finished {
+        artifact: &'artifact ManifestArtifact,
+        downloaded_bytes: u64,
+    },
+}
+
+pub trait DownloadProgress {
+    /// Receives synchronous download updates on the calling thread.
+    ///
+    /// Cache hits emit no events. Retried downloads emit a new [`DownloadProgressEvent::Started`]
+    /// event for each attempt.
+    fn report(&self, event: DownloadProgressEvent<'_>);
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NoDownloadProgress;
+
+impl DownloadProgress for NoDownloadProgress {
+    fn report(&self, _event: DownloadProgressEvent<'_>) {}
+}
+
 impl ArtifactDownloader {
     pub fn new(downloads_dir: impl Into<Utf8PathBuf>) -> Self {
         Self {
@@ -35,13 +65,22 @@ impl ArtifactDownloader {
         artifact: &ManifestArtifact,
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> Result<ArtifactDownload> {
+        self.download_with_progress(artifact, client, &NoDownloadProgress)
+    }
+
+    pub fn download_with_progress(
+        &self,
+        artifact: &ManifestArtifact,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &(impl DownloadProgress + ?Sized),
+    ) -> Result<ArtifactDownload> {
         let path = self.cache_path(artifact)?;
 
         if let Some(cached) = self.cached_download(artifact, &path)? {
             return Ok(cached);
         }
 
-        self.download_with_retry(artifact, client, &path)?;
+        self.download_with_retry(artifact, client, &path, progress)?;
 
         Ok(ArtifactDownload {
             path,
@@ -74,9 +113,10 @@ impl ArtifactDownloader {
         artifact: &ManifestArtifact,
         client: &(impl ResourceHttpClient + ?Sized),
         path: &Utf8Path,
+        progress: &(impl DownloadProgress + ?Sized),
     ) -> Result<()> {
         for _ in 1..DOWNLOAD_ATTEMPTS {
-            match write_download(artifact, client, path) {
+            match write_download(artifact, client, path, progress) {
                 Err(error) if is_retriable_download_error(&error) => {
                     thread::sleep(DOWNLOAD_RETRY_BACKOFF)
                 }
@@ -84,7 +124,7 @@ impl ArtifactDownloader {
             }
         }
 
-        write_download(artifact, client, path)
+        write_download(artifact, client, path, progress)
     }
 
     fn cache_path(&self, artifact: &ManifestArtifact) -> Result<Utf8PathBuf> {
@@ -141,14 +181,28 @@ fn write_download(
     artifact: &ManifestArtifact,
     client: &(impl ResourceHttpClient + ?Sized),
     path: &Utf8Path,
+    progress: &(impl DownloadProgress + ?Sized),
 ) -> Result<()> {
+    progress.report(DownloadProgressEvent::Started { artifact });
+    let mut downloaded_bytes = 0;
     fs::write_atomically_with(path, |writer| {
-        let mut writer = HashingWriter::new(writer);
-        client.download(artifact.url(), &mut writer)?;
-        let actual = writer.finish();
+        let mut writer = ProgressWriter::new(writer, artifact, progress);
+        let actual = {
+            let mut hashing_writer = HashingWriter::new(&mut writer);
+            client.download(artifact.url(), &mut hashing_writer)?;
+
+            hashing_writer.finish()
+        };
+        downloaded_bytes = writer.downloaded_bytes();
 
         verify_checksum(artifact, &actual)
-    })
+    })?;
+    progress.report(DownloadProgressEvent::Finished {
+        artifact,
+        downloaded_bytes,
+    });
+
+    Ok(())
 }
 
 fn verify_checksum(artifact: &ManifestArtifact, actual: &str) -> Result<()> {
@@ -220,6 +274,63 @@ impl Write for HashingWriter<'_> {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         let written = self.inner.write(buffer)?;
         self.hasher.update(&buffer[..written]);
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct ProgressWriter<'a, Progress>
+where
+    Progress: DownloadProgress + ?Sized,
+{
+    inner: &'a mut dyn Write,
+    artifact: &'a ManifestArtifact,
+    progress: &'a Progress,
+    downloaded_bytes: u64,
+}
+
+impl<'a, Progress> ProgressWriter<'a, Progress>
+where
+    Progress: DownloadProgress + ?Sized,
+{
+    fn new(
+        inner: &'a mut dyn Write,
+        artifact: &'a ManifestArtifact,
+        progress: &'a Progress,
+    ) -> Self {
+        Self {
+            inner,
+            artifact,
+            progress,
+            downloaded_bytes: 0,
+        }
+    }
+
+    fn downloaded_bytes(&self) -> u64 {
+        self.downloaded_bytes
+    }
+}
+
+impl<Progress> Write for ProgressWriter<'_, Progress>
+where
+    Progress: DownloadProgress + ?Sized,
+{
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        let written_bytes =
+            u64::try_from(written).map_err(|_| std::io::Error::other("download size overflow"))?;
+        self.downloaded_bytes = self
+            .downloaded_bytes
+            .checked_add(written_bytes)
+            .ok_or_else(|| std::io::Error::other("download size overflow"))?;
+        self.progress.report(DownloadProgressEvent::Advanced {
+            artifact: self.artifact,
+            downloaded_bytes: self.downloaded_bytes,
+        });
 
         Ok(written)
     }

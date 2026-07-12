@@ -25,8 +25,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use client::{
-    CompletedJob, SubmittedJob, health_blocking, managed_resource_update_check_blocking,
-    run_job_blocking, submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
+    CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
+    managed_resource_update_check_blocking, run_job_blocking, run_job_with_events_blocking,
+    submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
     wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};

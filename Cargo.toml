@@ -40,6 +40,7 @@ getrandom = "0.4.2"
 flate2 = "1.1.9"
 hickory-proto = "0.26.1"
 home = "0"
+indicatif = { version = "0.18.6", default-features = false, features = ["unicode-width"] }
 insta = { version = "1", features = ["filters"] }
 linemux = "0.3.0"
 netstat = { package = "netstat-esr", version = "0.8.1" }
