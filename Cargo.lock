@@ -770,6 +770,7 @@ dependencies = [
  "state",
  "thiserror",
  "tokio",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -894,6 +895,7 @@ dependencies = [
  "insta",
  "resources",
  "serde",
+ "serde_json",
  "thiserror",
  "yaml_serde",
 ]

@@ -1,0 +1,23 @@
+---
+source: crates/cli/src/commands/init.rs
+expression: output
+---
+Detected Project signals:
+  Laravel: Detected composer.json, artisan, and Laravel project files
+  Vite: Detected Vite in package.json
+Selected Project resources:
+  mailpit: Detected SMTP mail env keys when selected
+  mysql: Detected DB_CONNECTION=mysql
+  redis: Detected Redis-compatible env keys when selected
+  rustfs: Detected AWS/S3 env keys when selected
+Resource checklist:
+  [x] MySQL
+  [ ] Postgres
+  [x] Redis
+  [x] Mailpit
+  [x] RustFS/S3
+Use these selections? Enter y to preview, n to cancel, or edit to change selections:
+PHP track [8.4]:
+Document root [public]:
+Selected resources [mysql,redis,mailpit,rustfs]:
+Unknown resource selection: unknown

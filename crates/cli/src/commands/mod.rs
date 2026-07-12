@@ -17,6 +17,7 @@ mod daemon;
 mod dns;
 mod doctor;
 mod env;
+mod init;
 mod jobs;
 mod logs;
 mod mailpit;
@@ -60,6 +61,7 @@ pub(crate) fn execute(
         Command::CaTrust => ca::trust(environment, stdout),
         Command::CaUntrust => ca::untrust(environment, stdout),
         Command::Link(args) => project::link(args, environment, stdout),
+        Command::Init(args) => init::run(args, environment, stdout),
         Command::Unlink(args) => project::unlink(args, environment, stdout),
         Command::Open(args) => project::open(args, environment, stdout),
         Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),

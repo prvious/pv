@@ -1,0 +1,82 @@
+---
+source: crates/cli/src/commands/init.rs
+expression: output
+---
+Detected Project signals:
+  Laravel: Detected composer.json, artisan, and Laravel project files
+  Vite: Detected Vite in package.json
+Selected Project resources:
+  mailpit: Detected SMTP mail env keys when selected
+  mysql: Detected DB_CONNECTION=mysql
+  redis: Detected Redis-compatible env keys when selected
+  rustfs: Detected AWS/S3 env keys when selected
+Resource checklist:
+  [x] MySQL
+  [ ] Postgres
+  [x] Redis
+  [x] Mailpit
+  [x] RustFS/S3
+Use these selections? Enter y to preview, n to cancel, or edit to change selections:
+PHP track [8.3]:
+Document root [public]:
+Selected resources [mysql,redis,mailpit,rustfs]:
+MySQL track [8.4]:
+MySQL allocations [legacy,primary]:
+Redis track [latest]:
+Redis allocations [cache]:
+Mailpit track [latest]:
+RustFS/S3 track [latest]:
+RustFS/S3 allocations [uploads]:
+Project config preview:
+php: '8.3'
+document_root: public
+env:
+  APP_URL: ${project_url}
+  VITE_DEV_SERVER_CERT: ${tls_cert}
+  VITE_DEV_SERVER_KEY: ${tls_key}
+mailpit:
+  version: latest
+  env:
+    MAIL_HOST: ${smtp_host}
+    MAIL_MAILER: smtp
+    MAIL_PORT: ${smtp_port}
+mysql:
+  version: '8.4'
+  allocations:
+    app:
+      env:
+        APP_DB_CONNECTION: mysql
+        APP_DB_DATABASE: ${database}
+        APP_DB_HOST: ${host}
+        APP_DB_PASSWORD: ${password}
+        APP_DB_PORT: ${port}
+        APP_DB_USERNAME: ${username}
+    primary:
+      env:
+        CUSTOM_PRIMARY: preserved
+        DB_CONNECTION: mysql
+        DB_DATABASE: ${database}
+        DB_HOST: custom.internal
+        DB_PASSWORD: ${password}
+        DB_PORT: ${port}
+        DB_USERNAME: ${username}
+redis:
+  version: latest
+  allocations:
+    cache:
+      env:
+        REDIS_HOST: ${host}
+        REDIS_PORT: ${port}
+        REDIS_PREFIX: ${prefix}
+rustfs:
+  version: latest
+  allocations:
+    uploads:
+      env:
+        AWS_ACCESS_KEY_ID: ${access_key}
+        AWS_BUCKET: ${bucket}
+        AWS_ENDPOINT: ${endpoint}
+        AWS_SECRET_ACCESS_KEY: ${secret_key}
+Write Project config? Enter y to continue:
+Wrote Project config: <tempdir>/acme/pv.yml
+Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.

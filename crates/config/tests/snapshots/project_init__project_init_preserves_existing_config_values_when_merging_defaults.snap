@@ -1,0 +1,39 @@
+---
+source: crates/config/tests/project_init.rs
+expression: "yaml_serde::to_string(&config)?"
+---
+php:
+  version: '8.3'
+  extensions:
+  - intl
+document_root: web
+hostnames:
+- admin.acme.test
+env:
+  APP_URL: https://custom.test
+  CUSTOM_VALUE: preserved
+  VITE_DEV_SERVER_CERT: ${tls_cert}
+  VITE_DEV_SERVER_KEY: ${tls_key}
+mailpit:
+  version: latest
+  env:
+    MAIL_HOST: ${smtp_host}
+    MAIL_MAILER: smtp
+    MAIL_PORT: ${smtp_port}
+mysql:
+  version: '8.4'
+  env:
+    DB_HOST: custom-host
+  allocations:
+    app:
+      env:
+        APP_DB_CONNECTION: mysql
+        APP_DB_HOST: ${host}
+        APP_DB_PASSWORD: ${password}
+        APP_DB_PORT: ${port}
+        APP_DB_USERNAME: ${username}
+        DB_DATABASE: custom_database
+redis:
+  version: '7.4'
+  env:
+    CUSTOM_REDIS: preserved

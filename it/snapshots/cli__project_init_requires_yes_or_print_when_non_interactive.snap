@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "pv init requires an interactive terminal; rerun with --yes or --print.\n",
+    stderr: "",
+}

@@ -28,6 +28,7 @@ self-update = { path = "../self-update" }
 state = { path = "../state" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+yaml_serde = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }

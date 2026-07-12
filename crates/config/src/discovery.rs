@@ -55,6 +55,13 @@ impl ProjectConfigFile {
     }
 }
 
+pub(crate) fn validate_config_for_root(
+    project_root: &Utf8Path,
+    config: ProjectConfig,
+) -> Result<ProjectConfig, ConfigError> {
+    validate_project_paths(project_root, config)
+}
+
 fn validate_project_paths(
     project_root: &Utf8Path,
     config: ProjectConfig,

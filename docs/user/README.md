@@ -47,6 +47,32 @@ Supported shells are `zsh`, `bash`, and `fish`. PV does not auto-install shell c
 pv completions zsh
 ```
 
+## Initialize Project Config
+
+Run `pv init` from an existing Project directory, or pass a Project path:
+
+```shell
+pv init
+pv init path/to/project
+```
+
+In an interactive terminal, PV inspects existing Project config plus local Composer, package, env, Laravel, and document-root signals. It suggests PHP, document root, `APP_URL`, Vite TLS env mappings, and detected MySQL, Postgres, Redis, Mailpit, and RustFS/S3 resources. You can accept those defaults or edit the PHP track, document root, selected resources, resource tracks, and allocation names before previewing the YAML and confirming the write.
+
+For non-interactive use, choose one of these modes:
+
+```shell
+pv init --print
+pv init --yes
+```
+
+`--print` writes the generated YAML to standard output without changing files. `--yes` writes the detected defaults without prompting. Without either flag, non-interactive input fails rather than choosing for you.
+
+New config is written to `pv.yml`. If only `pv.yaml` already exists, PV updates it instead. Existing config values are preserved unless changed in the interactive editor. Explicit allocation edits replace that resource's allocation names, while detected resources are added without removing existing resources or env mappings.
+
+When Vite is detected, the generated env mappings are named exactly `VITE_DEV_SERVER_CERT` and `VITE_DEV_SERVER_KEY`. The Project's `vite.config.js` must read those values; `pv init` does not edit it.
+
+`pv init` directly writes only Project config. It does not link the Project, request reconciliation, call the daemon, install or start resources, write `.env`, or run framework or package commands. An already-linked Project may still reconcile automatically when the daemon observes the config change. `pv init` does not migrate Herd config and does not generate `serve: false`. Run `pv link` afterward when initializing an unlinked Project.
+
 ## Link, Open, And List
 
 Link a Project from the current directory:

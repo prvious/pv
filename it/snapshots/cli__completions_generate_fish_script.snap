@@ -51,6 +51,7 @@ complete -c pv -n "__fish_pv_needs_command" -f -a "ca:status" -d 'Show PV local 
 complete -c pv -n "__fish_pv_needs_command" -f -a "ca:trust" -d 'Trust PV local CA in the System keychain'
 complete -c pv -n "__fish_pv_needs_command" -f -a "ca:untrust" -d 'Remove PV local CA trust'
 complete -c pv -n "__fish_pv_needs_command" -f -a "link" -d 'Link a Project'
+complete -c pv -n "__fish_pv_needs_command" -f -a "init" -d 'Initialize Project config'
 complete -c pv -n "__fish_pv_needs_command" -f -a "unlink" -d 'Unlink a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "open" -d 'Open a linked Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "project:env" -d 'Print generated Project environment values'
@@ -152,6 +153,10 @@ complete -c pv -n "__fish_pv_using_subcommand ca:untrust" -s h -l help -d 'Print
 complete -c pv -n "__fish_pv_using_subcommand link" -l hostname -d 'Primary .test hostname' -r
 complete -c pv -n "__fish_pv_using_subcommand link" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand link" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand init" -l yes -d 'Write detected config without prompting'
+complete -c pv -n "__fish_pv_using_subcommand init" -l print -d 'Print generated Project config without writing'
+complete -c pv -n "__fish_pv_using_subcommand init" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand init" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand unlink" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand unlink" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand open" -l no-color -d 'Disable colored output'

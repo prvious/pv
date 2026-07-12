@@ -621,6 +621,54 @@ postgres:
 }
 
 #[test]
+fn project_config_writer_writes_full_config_to_preferred_file() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project.join("public"))?;
+    let config = ProjectConfig::parse(
+        r#"
+php: 8.4
+document_root: public
+env:
+  APP_URL: "${project_url}"
+mysql:
+  version: latest
+  allocations:
+    app:
+      env:
+        DB_HOST: "${host}"
+"#,
+    )?;
+
+    let written = config::write_project_config(&project, &config)?;
+    let reloaded = ProjectConfigFile::read_from_root(&project)?;
+
+    assert_debug_snapshot!((written.path.file_name(), written.exists, reloaded.config));
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_rejects_invalid_document_root_without_writing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let config = ProjectConfig::parse("document_root: missing\n")?;
+
+    let result = config::write_project_config(&project, &config);
+
+    assert!(matches!(
+        result,
+        Err(ConfigError::DocumentRootNotDirectory { document_root })
+            if document_root == "missing"
+    ));
+    assert!(!path_exists(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_writer_preserves_php_extensions_when_updating_track() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");

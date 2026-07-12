@@ -1,0 +1,43 @@
+---
+source: crates/config/tests/project_init.rs
+expression: "yaml_serde::to_string(&config)?"
+---
+php: latest
+mysql:
+  version: '8.4'
+  allocations:
+    analytics:
+      env:
+        ANALYTICS_DB_CONNECTION: mysql
+        ANALYTICS_DB_DATABASE: ${database}
+        ANALYTICS_DB_HOST: ${host}
+        ANALYTICS_DB_PASSWORD: ${password}
+        ANALYTICS_DB_PORT: ${port}
+        ANALYTICS_DB_USERNAME: ${username}
+    reporting:
+      env:
+        DB_CONNECTION: mysql
+        DB_DATABASE: ${database}
+        DB_HOST: ${host}
+        DB_PASSWORD: ${password}
+        DB_PORT: ${port}
+        DB_USERNAME: ${username}
+postgres:
+  version: latest
+  allocations:
+    app:
+      env:
+        APP_DB_CONNECTION: pgsql
+        APP_DB_DATABASE: ${database}
+        APP_DB_HOST: ${host}
+        APP_DB_PASSWORD: ${password}
+        APP_DB_PORT: ${port}
+        APP_DB_USERNAME: ${username}
+    warehouse:
+      env:
+        WAREHOUSE_DB_CONNECTION: pgsql
+        WAREHOUSE_DB_DATABASE: ${database}
+        WAREHOUSE_DB_HOST: ${host}
+        WAREHOUSE_DB_PASSWORD: ${password}
+        WAREHOUSE_DB_PORT: ${port}
+        WAREHOUSE_DB_USERNAME: ${username}
