@@ -42,12 +42,12 @@ expression: manifest_json
           "name": "8.3",
           "artifacts": [
             {
-              "artifact_version": "8.3.31-frankenphp1.12.4-pv4",
+              "artifact_version": "8.3.31-frankenphp1.12.4-pv5",
               "upstream_version": "8.3.31-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv4/darwin-amd64/frankenphp-8.3.31-frankenphp1.12.4-pv4-darwin-amd64.tar.gz",
-              "sha256": "f55ac4801d6a4c3aeee096261b10991563be4ede94384a19d0425ea7313f0607",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv5/darwin-amd64/frankenphp-8.3.31-frankenphp1.12.4-pv5-darwin-amd64.tar.gz",
+              "sha256": "4ae971ca1d04ae5bedc051b2d46f4b592a89a3bba0484ba8ce1f8837b0af76d0",
               "size": 219,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -71,12 +71,12 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.3.31-frankenphp1.12.4-pv4",
+              "artifact_version": "8.3.31-frankenphp1.12.4-pv5",
               "upstream_version": "8.3.31-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv4/darwin-arm64/frankenphp-8.3.31-frankenphp1.12.4-pv4-darwin-arm64.tar.gz",
-              "sha256": "10633f4e9f3c0336eec6e4bf6ea9388e92e05577a4a9651bee1c8871e0ee0cd3",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv5/darwin-arm64/frankenphp-8.3.31-frankenphp1.12.4-pv5-darwin-arm64.tar.gz",
+              "sha256": "54d85713556dc759eede44d1f44985f81a137bdf1df522e6a6f859fc15938cd3",
               "size": 219,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -105,13 +105,13 @@ expression: manifest_json
           "name": "8.4",
           "artifacts": [
             {
-              "artifact_version": "8.4.22-frankenphp1.12.4-pv4",
+              "artifact_version": "8.4.22-frankenphp1.12.4-pv5",
               "upstream_version": "8.4.22-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv4/darwin-amd64/frankenphp-8.4.22-frankenphp1.12.4-pv4-darwin-amd64.tar.gz",
-              "sha256": "cbf40eb53d707fb8dc754c9a8cfcf416e043e86416652f3716de257fba2f1abd",
-              "size": 218,
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv5/darwin-amd64/frankenphp-8.4.22-frankenphp1.12.4-pv5-darwin-amd64.tar.gz",
+              "sha256": "d2a6f968fc45bca03352e23e4010f46041aa6e2169f364df38d8633535b29233",
+              "size": 219,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
@@ -134,13 +134,13 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.4.22-frankenphp1.12.4-pv4",
+              "artifact_version": "8.4.22-frankenphp1.12.4-pv5",
               "upstream_version": "8.4.22-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv4/darwin-arm64/frankenphp-8.4.22-frankenphp1.12.4-pv4-darwin-arm64.tar.gz",
-              "sha256": "006d163323eb86989bdeae79615a7d4148ffafbed2847b82b4295eca2797c0b2",
-              "size": 218,
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv5/darwin-arm64/frankenphp-8.4.22-frankenphp1.12.4-pv5-darwin-arm64.tar.gz",
+              "sha256": "c4271d4783d252503186248055dc37a88ef37ca3ae7cfc1d5bb29c1e3a966fbe",
+              "size": 219,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
@@ -168,12 +168,12 @@ expression: manifest_json
           "name": "8.5",
           "artifacts": [
             {
-              "artifact_version": "8.5.7-frankenphp1.12.4-pv4",
+              "artifact_version": "8.5.7-frankenphp1.12.4-pv5",
               "upstream_version": "8.5.7-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv4/darwin-amd64/frankenphp-8.5.7-frankenphp1.12.4-pv4-darwin-amd64.tar.gz",
-              "sha256": "3c77fd8b5622875ebb4db67c69e7065cc23abe36efbc29d292b62b3daf9669d7",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv5/darwin-amd64/frankenphp-8.5.7-frankenphp1.12.4-pv5-darwin-amd64.tar.gz",
+              "sha256": "8bc3791993d8224ba70dba583efa8d2ba2f125b6d4e3e399bb51e079e1564d87",
               "size": 218,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -197,12 +197,12 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.5.7-frankenphp1.12.4-pv4",
+              "artifact_version": "8.5.7-frankenphp1.12.4-pv5",
               "upstream_version": "8.5.7-frankenphp1.12.4",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv4/darwin-arm64/frankenphp-8.5.7-frankenphp1.12.4-pv4-darwin-arm64.tar.gz",
-              "sha256": "53be7748c484a70ff8f6126521869c7d398d5dbe698242ecb6f263eab037dfd3",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv5/darwin-arm64/frankenphp-8.5.7-frankenphp1.12.4-pv5-darwin-arm64.tar.gz",
+              "sha256": "4af7098e98c95aa00c37db27a7c580a13691b3d2b949df4147045147a8f849ea",
               "size": 217,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -405,12 +405,12 @@ expression: manifest_json
           "name": "8.3",
           "artifacts": [
             {
-              "artifact_version": "8.3.31-pv4",
+              "artifact_version": "8.3.31-pv5",
               "upstream_version": "8.3.31",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv4/darwin-amd64/php-8.3.31-pv4-darwin-amd64.tar.gz",
-              "sha256": "be017c437b7d2c395bbba805b337d91508ea0a43205b8c2100862527bb06e312",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv5/darwin-amd64/php-8.3.31-pv5-darwin-amd64.tar.gz",
+              "sha256": "99f0183471bd9249b92e5887371de6e5851539cbca4e8982990497294dc2b55c",
               "size": 204,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -422,12 +422,12 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.3.31-pv4",
+              "artifact_version": "8.3.31-pv5",
               "upstream_version": "8.3.31",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv4/darwin-arm64/php-8.3.31-pv4-darwin-arm64.tar.gz",
-              "sha256": "4f2e61fbe6747a71cbb66c2ec55606c5d4eda1369e70a6eccc2cca8f1ef902cb",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv5/darwin-arm64/php-8.3.31-pv5-darwin-arm64.tar.gz",
+              "sha256": "b4ffc358d2fafb8b55c1da7a3955cfc4aa0a4a18c9a46cb16b2a48d8014122b1",
               "size": 204,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -444,13 +444,13 @@ expression: manifest_json
           "name": "8.4",
           "artifacts": [
             {
-              "artifact_version": "8.4.22-pv4",
+              "artifact_version": "8.4.22-pv5",
               "upstream_version": "8.4.22",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv4/darwin-amd64/php-8.4.22-pv4-darwin-amd64.tar.gz",
-              "sha256": "4c6a234e1f988151d396d517821452585849bd26e9b64673c377b9ffbc22524b",
-              "size": 204,
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv5/darwin-amd64/php-8.4.22-pv5-darwin-amd64.tar.gz",
+              "sha256": "4459b3ef659cb6431cb17894cb3b70c1f6bd4ab790cb1fbd0759e988236d8ba3",
+              "size": 203,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://www.php.net/distributions/php-8.4.22.tar.gz",
@@ -461,12 +461,12 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.4.22-pv4",
+              "artifact_version": "8.4.22-pv5",
               "upstream_version": "8.4.22",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv4/darwin-arm64/php-8.4.22-pv4-darwin-arm64.tar.gz",
-              "sha256": "0a7c942f2b745aabd5d687ee7fedf2ece3e21b583a645bc7077a689bd3969658",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv5/darwin-arm64/php-8.4.22-pv5-darwin-arm64.tar.gz",
+              "sha256": "4ad326940e2a788ab8d99d442c01d651ed53e9e6aecef33a3d17415ef613055b",
               "size": 204,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -483,12 +483,12 @@ expression: manifest_json
           "name": "8.5",
           "artifacts": [
             {
-              "artifact_version": "8.5.7-pv4",
+              "artifact_version": "8.5.7-pv5",
               "upstream_version": "8.5.7",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv4/darwin-amd64/php-8.5.7-pv4-darwin-amd64.tar.gz",
-              "sha256": "96953e4170c04dcf02bd52ca6db75a9ba5515ca06bdffd363c1d6d6541de9a70",
+              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv5/darwin-amd64/php-8.5.7-pv5-darwin-amd64.tar.gz",
+              "sha256": "75f18f31cb9d6fc4621523977208f5a8c7fc912d60f81970cfd24b9129ae57a1",
               "size": 203,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -500,12 +500,12 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "8.5.7-pv4",
+              "artifact_version": "8.5.7-pv5",
               "upstream_version": "8.5.7",
-              "pv_build_revision": "pv4",
+              "pv_build_revision": "pv5",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv4/darwin-arm64/php-8.5.7-pv4-darwin-arm64.tar.gz",
-              "sha256": "1c1b1f91d5ff68fa56bc78fb4cf74be91ea7eacef542aa3108c2f12d1bf5e450",
+              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv5/darwin-arm64/php-8.5.7-pv5-darwin-arm64.tar.gz",
+              "sha256": "972bd269f86d73cbcfa984f7aefcadd304fbe9c9c22c9c74c7db2fbde5be830c",
               "size": 203,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
