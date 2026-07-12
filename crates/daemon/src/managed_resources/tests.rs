@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Error, Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
@@ -18,11 +18,14 @@ use state::{
     ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
     StateError,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
     reconciliation::{ReconciliationQueue, ReconciliationScope},
+    wait_for_readiness,
 };
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
@@ -2554,6 +2557,86 @@ fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> 
 }
 
 #[tokio::test]
+async fn redis_fixture_stops_gracefully_with_active_client_connection() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
+    let redis_listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let redis_port = redis_listener.local_addr()?.port();
+    drop(redis_listener);
+
+    let adapter = super::redis::RedisRuntimeAdapter::new();
+    let context = ManagedResourceRuntimeContext {
+        resource_name: "redis".to_string(),
+        track: REDIS_TRACK.to_string(),
+        artifact_path: paths
+            .resources()
+            .join("redis")
+            .join(REDIS_TRACK)
+            .join(format!("releases/{REDIS_ARTIFACT_VERSION}")),
+        data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
+        ports: BTreeMap::from([("redis".to_string(), redis_port)]),
+        env: BTreeMap::new(),
+    };
+    let spec = adapter.build_process_spec(&paths, &context)?;
+    let process = ProcessSupervisor::new(paths.clone()).start(spec).await?;
+
+    let redis_client_result = async {
+        wait_for_readiness(
+            ReadinessCheck::RedisPing {
+                host: "127.0.0.1".to_string(),
+                port: redis_port,
+            },
+            Duration::from_secs(3),
+        )
+        .await?;
+
+        match tokio::time::timeout(Duration::from_secs(3), async {
+            let mut redis_client = TcpStream::connect(("127.0.0.1", redis_port)).await?;
+            redis_client.write_all(b"*1\r\n$4\r\nPING\r\n").await?;
+            let mut response = [0_u8; 7];
+            redis_client.read_exact(&mut response).await?;
+            if &response != b"+PONG\r\n" {
+                bail!("Redis fixture returned unexpected PING response: {response:?}");
+            }
+
+            Ok::<_, Error>(redis_client)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(Error::msg(format!(
+                "Redis fixture PING handshake timed out after 3 seconds: {error}"
+            ))),
+        }
+    }
+    .await;
+    let redis_client = match redis_client_result {
+        Ok(redis_client) => redis_client,
+        Err(error) => {
+            return match process.stop(Duration::ZERO).await {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => {
+                    bail!("{error}; Redis fixture cleanup also failed: {cleanup_error}");
+                }
+            };
+        }
+    };
+
+    let stop_started_at = tokio::time::Instant::now();
+    let stop_result = process.stop(Duration::from_secs(10)).await;
+    let stop_elapsed = stop_started_at.elapsed();
+    drop(redis_client);
+    stop_result?;
+
+    if stop_elapsed >= Duration::from_secs(3) {
+        bail!("Redis fixture took {stop_elapsed:?} to stop gracefully");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn redis_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4912,6 +4995,7 @@ class RedisPingHandler(socketserver.BaseRequestHandler):
 
 class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
 shutdown_requested = threading.Event()
 
