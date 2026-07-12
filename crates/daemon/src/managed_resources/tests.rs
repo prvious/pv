@@ -4870,6 +4870,7 @@ import signal
 import shlex
 import socketserver
 import sys
+import threading
 
 def redis_config(argv):
     port = None
@@ -4912,8 +4913,14 @@ class RedisPingHandler(socketserver.BaseRequestHandler):
 class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
+shutdown_requested = threading.Event()
+
+
 def stop(_signum, _frame):
-    server.shutdown()
+    if shutdown_requested.is_set():
+        return
+    shutdown_requested.set()
+    threading.Thread(target=server.shutdown, daemon=True).start()
 
 port, data_dir = redis_config(sys.argv[1:])
 if data_dir:
@@ -5079,16 +5086,21 @@ class Server(http.server.ThreadingHTTPServer):
 api = Server(split_address(api_address), RustfsHandler)
 console = Server(split_address(console_address), ConsoleHandler)
 
+shutdown_requested = threading.Event()
+
+
 def stop(_signum, _frame):
-    api.shutdown()
-    console.shutdown()
-    sys.exit(0)
+    if shutdown_requested.is_set():
+        return
+    shutdown_requested.set()
+    threading.Thread(target=api.shutdown, daemon=True).start()
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 
 threading.Thread(target=console.serve_forever, daemon=True).start()
 api.serve_forever()
+console.shutdown()
 PY
 "#
     .replace("__PV_REJECT_S3__", reject_s3)
