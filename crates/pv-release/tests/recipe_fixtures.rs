@@ -1,4 +1,6 @@
-use anyhow::{Result, bail};
+use std::process::Output;
+
+use anyhow::{Context, Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use flate2::read::GzDecoder;
@@ -10,6 +12,12 @@ use pv_release::recipe::{BackingRecipe, BackingRecipeKind};
 use pv_release::record::{ReleaseRecord, load_release_records};
 use resources::ArtifactManifest;
 use tar::Archive;
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling CLI tests execute the pv-release binary"
+)]
+type StdCommand = std::process::Command;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ArchiveRoot {
@@ -39,7 +47,7 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let tempdir = tempdir()?;
     let archives = tempdir.path().join("archives");
     let records = tempdir.path().join("records");
-    let revocations = tempdir.path().join("revocations");
+    let revocations = workspace_root.join("release/artifacts/revocations");
     let manifest = tempdir.path().join("manifest.json");
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
@@ -50,27 +58,37 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
 
-    create_dir_all(&revocations)?;
     let redis_recipe = BackingRecipe::load(&redis, BackingRecipeKind::Redis)?;
     let Some(redis_track) = redis_recipe.tracks().first() else {
         bail!("committed Redis recipe should define a track");
     };
     let redis_upstream_version = redis_track.upstream_version().to_string();
-    generate_recipe_fixtures_with_backing(
-        &php,
-        &composer,
-        &[
-            (BackingRecipeKind::Redis, redis.clone()),
-            (BackingRecipeKind::Mysql, mysql),
-            (BackingRecipeKind::Postgres, postgres),
-            (BackingRecipeKind::Mailpit, mailpit),
-            (BackingRecipeKind::Rustfs, rustfs),
-        ],
-        &archives,
-        &records,
+    let fixture_output = run_pv_release(&[
+        "generate-recipe-fixtures",
+        "--php",
+        php.as_str(),
+        "--composer",
+        composer.as_str(),
+        "--redis",
+        redis.as_str(),
+        "--mysql",
+        mysql.as_str(),
+        "--postgres",
+        postgres.as_str(),
+        "--mailpit",
+        mailpit.as_str(),
+        "--rustfs",
+        rustfs.as_str(),
+        "--archives",
+        archives.as_str(),
+        "--records",
+        records.as_str(),
+        "--pv-commit",
         "0123456789abcdef0123456789abcdef01234567",
+        "--build-run-id",
         "local-test",
-    )?;
+    ])?;
+    assert_command_success(&fixture_output, "generate-recipe-fixtures")?;
     let archive_roots = generated_archive_roots(&archives, &records)?;
     assert_eq!(
         archive_roots,
@@ -216,13 +234,20 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
             ),
         ],
     );
-    generate_manifest_file_with_defaults(
-        &records,
-        &revocations,
-        Some(&defaults),
-        &manifest,
+    let manifest_output = run_pv_release(&[
+        "generate-manifest",
+        "--records",
+        records.as_str(),
+        "--revocations",
+        revocations.as_str(),
+        "--defaults",
+        defaults.as_str(),
+        "--output",
+        manifest.as_str(),
+        "--base-url",
         "https://artifacts.example.test",
-    )?;
+    ])?;
+    assert_command_success(&manifest_output, "generate-manifest")?;
 
     let manifest_json = read_to_string(&manifest)?;
     ArtifactManifest::parse(&manifest_json)?;
@@ -426,6 +451,26 @@ fn archive_entries(path: &Utf8Path) -> Result<Vec<String>> {
     }
     entries.sort();
     Ok(entries)
+}
+
+fn run_pv_release(args: &[&str]) -> Result<Output> {
+    StdCommand::new(env!("CARGO_BIN_EXE_pv-release"))
+        .args(args)
+        .output()
+        .context("failed to execute pv-release")
+}
+
+fn assert_command_success(output: &Output, label: &str) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    bail!(
+        "{label} failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[expect(
