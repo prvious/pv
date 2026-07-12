@@ -4585,15 +4585,11 @@ done
 }
 
 fn fast_exit_fake_mailpit_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-dashboard_port="$2"
-
-python3 - "$dashboard_port" <<'PY'
+    r#"#!/usr/bin/env python3
 import http.server
 import os
 import sys
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -4606,9 +4602,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), Handler)
 server.serve_forever()
-PY
 "#
 }
 

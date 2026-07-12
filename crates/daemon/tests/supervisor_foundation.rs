@@ -470,6 +470,61 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn supervisor_verifies_owned_python_shebang_script() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let runtime = paths.run().join("owned-python-runtime");
+    state::fs::write_sensitive_file(
+        &runtime,
+        r#"#!/usr/bin/env python3
+import signal
+import sys
+
+
+def stop(_signum, _frame):
+    sys.exit(0)
+
+
+if sys.argv[1:] != ["1025", "8025"]:
+    sys.exit(2)
+
+signal.signal(signal.SIGTERM, stop)
+signal.pause()
+"#,
+    )?;
+    set_executable(&runtime)?;
+
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let spec = process_spec(
+        &paths,
+        "owned-python-runtime",
+        runtime,
+        vec!["1025".to_string(), "8025".to_string()],
+    );
+    let process = supervisor.start(spec.clone()).await?;
+    let pid = process.pid();
+    let ownership = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(owned) = supervisor.verify_ownership(&spec)? {
+                return Ok::<_, daemon::DaemonError>(owned);
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    process.stop(Duration::from_secs(1)).await?;
+    let owned = ownership??;
+
+    assert_eq!(owned.pid(), pid);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> Result<()> {
     let tempdir = tempdir()?;
