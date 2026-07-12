@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io;
 
 use crate::DaemonError;
 use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
@@ -17,7 +18,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
-const FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
 
 #[derive(Debug)]
@@ -29,6 +30,12 @@ enum ForegroundJobEvent {
         downloaded_bytes: u64,
         total_bytes: u64,
     },
+}
+
+#[derive(Debug)]
+struct StreamedJobCompletion {
+    result: Result<String, DaemonError>,
+    transport_is_open: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -321,10 +328,10 @@ where
         Ok(())
     };
 
-    let update_result = if stream_is_open && started_stream_result.is_ok() {
+    let (update_result, transport_is_open) = if stream_is_open && started_stream_result.is_ok() {
         let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
         let progress = DaemonDownloadProgress::new(event_sender);
-        complete_streamed_job_with_heartbeat_and_events(
+        let completion = complete_streamed_job_with_heartbeat_and_events(
             &mut transport,
             job_id,
             "Managed Resource update still running",
@@ -332,19 +339,24 @@ where
             complete_update_job_with_progress(&paths, job_id, runtime_catalog, progress),
             event_receiver,
         )
-        .await
+        .await;
+
+        (completion.result, completion.transport_is_open)
     } else {
-        complete_update_job(&paths, job_id, runtime_catalog).await
+        (
+            complete_update_job(&paths, job_id, runtime_catalog).await,
+            false,
+        )
     };
     started_stream_result?;
 
-    if !stream_is_open {
+    if !stream_is_open || !transport_is_open {
         return update_result.map(|_summary| ());
     }
 
     match update_result {
         Ok(summary) => {
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::Progress {
                     job_id,
@@ -352,7 +364,7 @@ where
                 },
             )
             .await?;
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
                     job_id,
@@ -363,7 +375,7 @@ where
         }
         Err(error) => {
             let error_message = error.to_string();
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobFailed {
                     job_id,
@@ -418,37 +430,43 @@ where
         Ok(())
     };
 
-    let reconciliation_result = if stream_is_open && started_stream_result.is_ok() {
-        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
-        let progress = DaemonDownloadProgress::new(event_sender);
-        complete_streamed_job_with_heartbeat_and_events(
-            &mut transport,
-            job_id,
-            "Reconciliation still running",
-            FOREGROUND_JOB_HEARTBEAT_INTERVAL,
-            complete_reconciliation_job_with_progress(
-                &paths,
+    let (reconciliation_result, transport_is_open) =
+        if stream_is_open && started_stream_result.is_ok() {
+            let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+            let progress = DaemonDownloadProgress::new(event_sender);
+            let completion = complete_streamed_job_with_heartbeat_and_events(
+                &mut transport,
                 job_id,
-                &scope,
-                runtime_catalog,
-                progress,
-            ),
-            event_receiver,
-        )
-        .await
-    } else {
-        complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await
-    };
+                "Reconciliation still running",
+                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+                complete_reconciliation_job_with_progress(
+                    &paths,
+                    job_id,
+                    &scope,
+                    runtime_catalog,
+                    progress,
+                ),
+                event_receiver,
+            )
+            .await;
+
+            (completion.result, completion.transport_is_open)
+        } else {
+            (
+                complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await,
+                false,
+            )
+        };
     started_stream_result?;
 
-    if !stream_is_open {
+    if !stream_is_open || !transport_is_open {
         return reconciliation_result.map(|_summary| ());
     }
 
     match reconciliation_result {
         Ok(summary) => {
             let progress = reconciliation_progress_message(&scope, &summary);
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::Progress {
                     job_id,
@@ -456,7 +474,7 @@ where
                 },
             )
             .await?;
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
                     job_id,
@@ -467,7 +485,7 @@ where
         }
         Err(error) => {
             let error_message = error.to_string();
-            write_line(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobFailed {
                     job_id,
@@ -508,7 +526,7 @@ where
                 let heartbeat_result = write_line(transport, &heartbeat_event);
                 tokio::select! {
                     result = &mut completion => return result,
-                    _ = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, heartbeat_result) => {}
+                    _ = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {}
                 }
             }
         }
@@ -522,7 +540,7 @@ async fn complete_streamed_job_with_heartbeat_and_events<Stream, Completion>(
     heartbeat_interval: Duration,
     completion: Completion,
     mut events: Receiver<ForegroundJobEvent>,
-) -> Result<String, DaemonError>
+) -> StreamedJobCompletion
 where
     Stream: AsyncWrite + Unpin,
     Completion: Future<Output = Result<String, DaemonError>>,
@@ -534,13 +552,30 @@ where
 
     loop {
         tokio::select! {
-            result = &mut completion => return result,
+            result = &mut completion => {
+                return StreamedJobCompletion {
+                    result,
+                    transport_is_open: true,
+                };
+            }
             event = events.recv(), if events_open => {
                 if let Some(event) = event {
                     let write_result = write_foreground_job_event(transport, job_id, event);
                     tokio::select! {
-                        result = &mut completion => return result,
-                        _ = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, write_result) => {}
+                        result = &mut completion => {
+                            return StreamedJobCompletion {
+                                result,
+                                transport_is_open: true,
+                            };
+                        }
+                        write_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, write_result) => {
+                            if !matches!(write_result, Ok(Ok(()))) {
+                                return StreamedJobCompletion {
+                                    result: completion.await,
+                                    transport_is_open: false,
+                                };
+                            }
+                        }
                     }
                 } else {
                     events_open = false;
@@ -553,11 +588,44 @@ where
                 };
                 let heartbeat_result = write_line(transport, &heartbeat_event);
                 tokio::select! {
-                    result = &mut completion => return result,
-                    _ = timeout(FOREGROUND_JOB_HEARTBEAT_WRITE_TIMEOUT, heartbeat_result) => {}
+                    result = &mut completion => {
+                        return StreamedJobCompletion {
+                            result,
+                            transport_is_open: true,
+                        };
+                    }
+                    heartbeat_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {
+                        if !matches!(heartbeat_result, Ok(Ok(()))) {
+                            return StreamedJobCompletion {
+                                result: completion.await,
+                                transport_is_open: false,
+                            };
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+async fn write_foreground_terminal_event<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+    event: &impl serde::Serialize,
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncWrite + Unpin,
+{
+    match timeout(
+        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+        write_line(transport, event),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(DaemonError::from),
+        Err(_error) => Err(DaemonError::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "foreground job terminal event write timed out",
+        ))),
     }
 }
 
@@ -674,8 +742,13 @@ async fn complete_update_job_inner(
 ) -> Result<String, DaemonError> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
+        let update_progress = progress.clone();
         tokio::task::spawn_blocking(move || {
-            crate::managed_resources::update_installed_with_progress(update_paths, None, &progress)
+            crate::managed_resources::update_installed_with_progress(
+                update_paths,
+                None,
+                &update_progress,
+            )
         })
         .await?
     } else {
@@ -689,7 +762,9 @@ async fn complete_update_job_inner(
         return Ok(unchanged_update_summary(&report));
     }
 
-    let project_report = reconcile_system_projects_and_resources(paths, runtime_catalog).await?;
+    let project_report =
+        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
+            .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
 
@@ -957,6 +1032,7 @@ async fn reconcile_system_projects_with_progress(
     Ok(report)
 }
 
+#[cfg(test)]
 async fn reconcile_system_projects_and_resources(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -1291,6 +1367,7 @@ async fn run_started_job(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
@@ -1313,8 +1390,9 @@ mod tests {
         complete_streamed_job_with_heartbeat_and_events, enqueue_reconciliation_job,
         foreground_reconciliation_result, reconcile_project_env_and_missing_resources,
         reconcile_system_projects_and_resources, record_background_reconciliation_error,
-        run_background_reconciliation_job, start_reconciliation_job,
-        stream_started_reconciliation_job, write_coalesced_update_response,
+        run_background_reconciliation_job, start_reconciliation_job, start_update_job,
+        stream_started_reconciliation_job, stream_started_update_job,
+        write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -1451,6 +1529,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_reconciliation_returns_after_progress_write_times_out() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let (client, _total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "composer",
+            COMPOSER_TEST_TRACK,
+            COMPOSER_TEST_ARTIFACT_VERSION,
+            COMPOSER_TEST_ARCHIVE_FILE_NAME,
+            "composer.phar",
+        )?;
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_desired(
+            "composer",
+            COMPOSER_TEST_TRACK,
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let job_id = start_reconciliation_job(&paths, "system")?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            DelayedScriptedArtifactClient::new(client, Duration::from_millis(200)),
+        );
+
+        let result = timeout(
+            Duration::from_millis(500),
+            stream_started_reconciliation_job(
+                paths.clone(),
+                protocol::transport(InitiallyWritableStream::new(2)),
+                true,
+                &job_id,
+                ReconciliationScope::System,
+                Some(&catalog),
+            ),
+        )
+        .await;
+
+        let result =
+            result.map_err(|_error| anyhow::anyhow!("streamed reconciliation timed out"))?;
+        assert!(
+            result.is_ok(),
+            "streamed reconciliation returned {result:#?}"
+        );
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
+        assert_eq!(job.status, JobStatus::Succeeded);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn foreground_system_reconciliation_streams_setup_download_progress() -> anyhow::Result<()>
     {
         let tempdir = tempdir()?;
@@ -1550,6 +1684,112 @@ mod tests {
                 "total_bytes": total_bytes,
             }))
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn foreground_update_streams_progress_for_follow_up_reconciliation_downloads()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mailpit_archive_path = tempdir.path().join("mailpit-1.0.1-pv1-any.tar.gz");
+        let composer_archive_path = tempdir.path().join("composer-2.8.1-pv1-any.tar.gz");
+
+        seed_artifact_archive(
+            tempdir.path(),
+            &mailpit_archive_path,
+            "mailpit",
+            "1.0.1-pv1",
+            "bin/pv-fake-mailpit",
+        )?;
+        seed_artifact_archive(
+            tempdir.path(),
+            &composer_archive_path,
+            "composer",
+            "2.8.1-pv1",
+            "composer.phar",
+        )?;
+
+        let mailpit_archive = read_file(&mailpit_archive_path)?;
+        let composer_archive = read_file(&composer_archive_path)?;
+        let mailpit_size = mailpit_archive.len() as u64;
+        let composer_size = composer_archive.len() as u64;
+        let mailpit_url = "https://artifacts.example.test/mailpit-1.0.1-pv1-any.tar.gz";
+        let composer_url = "https://artifacts.example.test/composer-2.8.1-pv1-any.tar.gz";
+        let manifest = serde_json::to_string(&json!({
+            "schema_version": 1,
+            "minimum_pv_version": "0.1.0",
+            "resources": [
+                {
+                    "name": "mailpit",
+                    "default_track": "1.0",
+                    "tracks": [{
+                        "name": "1.0",
+                        "artifacts": [manifest_artifact(
+                            "1.0.1-pv1",
+                            "1.0.1",
+                            mailpit_url,
+                            &sha256_file(&mailpit_archive_path)?,
+                            mailpit_size,
+                        )],
+                    }],
+                },
+                {
+                    "name": "composer",
+                    "default_track": "2",
+                    "tracks": [{
+                        "name": "2",
+                        "artifacts": [manifest_artifact(
+                            "2.8.1-pv1",
+                            "2.8.1",
+                            composer_url,
+                            &sha256_file(&composer_archive_path)?,
+                            composer_size,
+                        )],
+                    }],
+                },
+            ],
+        }))?;
+        let client = MultiArtifactClient {
+            manifest,
+            archives: BTreeMap::from([
+                (mailpit_url.to_string(), mailpit_archive),
+                (composer_url.to_string(), composer_archive),
+            ]),
+        };
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed(
+            "mailpit",
+            "1.0",
+            "1.0.0-pv1",
+            &paths.resources().join("mailpit/1.0/current"),
+        )?;
+        database.record_managed_resource_track_desired(
+            "composer",
+            COMPOSER_TEST_TRACK,
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let job_id = start_update_job(&paths)?;
+        let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            client,
+        )?;
+        let download_progress = update_download_progress_events(paths, &job_id, &catalog).await?;
+
+        assert!(download_progress.iter().any(|progress| {
+            progress
+                == &json!({
+                    "type": "download_progress",
+                    "job_id": job_id,
+                    "resource": "composer",
+                    "track": COMPOSER_TEST_TRACK,
+                    "artifact_version": "2.8.1-pv1",
+                    "downloaded_bytes": 0,
+                    "total_bytes": composer_size,
+                })
+        }));
 
         Ok(())
     }
@@ -1657,7 +1897,7 @@ mod tests {
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        assert_eq!(task.await??, "job done");
+        assert_eq!(task.await?.result?, "job done");
 
         Ok(())
     }
@@ -1738,7 +1978,7 @@ mod tests {
         if outcome.is_err() {
             task.abort();
         }
-        assert_eq!(outcome???, "job done");
+        assert_eq!((outcome??).result?, "job done");
 
         Ok(())
     }
@@ -1784,7 +2024,7 @@ mod tests {
         if outcome.is_err() {
             task.abort();
         }
-        assert_eq!(outcome???, "job done");
+        assert_eq!((outcome??).result?, "job done");
 
         Ok(())
     }
@@ -1808,6 +2048,49 @@ mod tests {
             _buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
             Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct InitiallyWritableStream {
+        remaining_writes: usize,
+    }
+
+    impl InitiallyWritableStream {
+        fn new(remaining_writes: usize) -> Self {
+            Self { remaining_writes }
+        }
+    }
+
+    impl AsyncRead for InitiallyWritableStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for InitiallyWritableStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.remaining_writes == 0 {
+                return Poll::Pending;
+            }
+
+            self.remaining_writes -= 1;
+            Poll::Ready(Ok(buffer.len()))
         }
 
         fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -2192,6 +2475,34 @@ mod tests {
         Ok(download_progress)
     }
 
+    async fn update_download_progress_events(
+        paths: PvPaths,
+        job_id: &str,
+        catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let (client, daemon) = duplex(64 * 1024);
+
+        stream_started_update_job(
+            paths,
+            protocol::transport(daemon),
+            true,
+            job_id,
+            Some(catalog),
+        )
+        .await?;
+
+        let mut reader = protocol::transport(client);
+        let mut download_progress = Vec::new();
+        while let Some(line) = reader.next().await {
+            let event = serde_json::from_str::<serde_json::Value>(&line?)?;
+            if event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress") {
+                download_progress.push(event);
+            }
+        }
+
+        Ok(download_progress)
+    }
+
     fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
         let php = CachedArtifact::new(
             "php",
@@ -2377,6 +2688,76 @@ mod tests {
                 }
             })
         }
+    }
+
+    #[derive(Debug)]
+    struct DelayedScriptedArtifactClient {
+        inner: ScriptedArtifactClient,
+        delay: Duration,
+    }
+
+    impl DelayedScriptedArtifactClient {
+        fn new(inner: ScriptedArtifactClient, delay: Duration) -> Self {
+            Self { inner, delay }
+        }
+    }
+
+    impl resources::ResourceHttpClient for DelayedScriptedArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            std::thread::sleep(self.delay);
+            self.inner.download(url, writer)
+        }
+    }
+
+    #[derive(Debug)]
+    struct MultiArtifactClient {
+        manifest: String,
+        archives: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl resources::ResourceHttpClient for MultiArtifactClient {
+        fn get_text(&self, _url: &str) -> resources::Result<String> {
+            Ok(self.manifest.clone())
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            let archive = self.archives.get(url).ok_or_else(|| {
+                resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: "missing scripted archive".to_string(),
+                }
+            })?;
+
+            writer.write_all(archive).map_err(|error| {
+                resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: error.to_string(),
+                }
+            })
+        }
+    }
+
+    fn manifest_artifact(
+        artifact_version: &str,
+        upstream_version: &str,
+        url: &str,
+        sha256: &str,
+        size: u64,
+    ) -> serde_json::Value {
+        json!({
+            "artifact_version": artifact_version,
+            "upstream_version": upstream_version,
+            "pv_build_revision": "1",
+            "platform": "any",
+            "url": url,
+            "sha256": sha256,
+            "size": size,
+            "published_at": "2026-06-08T00:00:00Z",
+        })
     }
 
     fn php_pair_manifest(artifacts: &[CachedManifestArtifact]) -> String {

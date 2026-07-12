@@ -162,6 +162,7 @@ fn progress_label(resource: &str, track: &str, artifact_version: &str) -> String
 
 fn display_resource(resource: &str) -> String {
     match resource {
+        "composer" => "Composer".to_string(),
         "frankenphp" => "FrankenPHP".to_string(),
         "mailpit" => "Mailpit".to_string(),
         "mysql" => "MySQL".to_string(),

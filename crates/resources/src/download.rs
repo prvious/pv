@@ -39,6 +39,10 @@ pub enum DownloadProgressEvent<'artifact> {
 }
 
 pub trait DownloadProgress {
+    /// Receives synchronous download updates on the calling thread.
+    ///
+    /// Cache hits emit no events. Retried downloads emit a new [`DownloadProgressEvent::Started`]
+    /// event for each attempt.
     fn report(&self, event: DownloadProgressEvent<'_>);
 }
 
