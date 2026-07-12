@@ -96,6 +96,8 @@ case "${1:-}" in
     if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
       printf '%s\n' 'php-cli -r version' >>"$PV_FRANKENPHP_LOG"
       printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'exit(function_exists("mb_split") ? 0 : 1);' ]; then
+      printf '%s\n' 'php-cli -r mbregex' >>"$PV_FRANKENPHP_LOG"
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'php-cli -r extensions' >>"$PV_FRANKENPHP_LOG"
       printf '%s\n' 'json'
@@ -165,10 +167,9 @@ exit 28
 
     assert!(status.success(), "smoke hook exited with {status}");
     let frankenphp_log = read_file(&frankenphp_log)?;
-    assert!(
-        frankenphp_log
-            .starts_with("php-cli -r version\nphp-cli -r extensions\nphp-server 127.0.0.1:")
-    );
+    assert!(frankenphp_log.starts_with(
+        "php-cli -r version\nphp-cli -r extensions\nphp-cli -r mbregex\nphp-server 127.0.0.1:"
+    ));
     assert!(
         frankenphp_log.contains(" phpinfo\n"),
         "smoke hook should serve phpinfo(INFO_CONFIGURATION): {frankenphp_log}"
@@ -218,6 +219,8 @@ case "${1:-}" in
     code=${3:-}
     if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
       printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'exit(function_exists("mb_split") ? 0 : 1);' ]; then
+      exit 0
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'json'
     else
@@ -299,6 +302,7 @@ case "$1" in
       'json' \
       '[Zend Modules]'
     ;;
+  -r) exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
@@ -322,6 +326,50 @@ esac
 }
 
 #[test]
+fn php_smoke_requires_mb_split() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+
+    create_dir_all(&artifact_bin)?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
+  -m) printf '%s\n' 'json' ;;
+  -r) exit 1 ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require mb_split(): {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(47));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("missing mbstring regex function: mb_split"),
+        "smoke hook should identify the missing mbstring regex function: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_allows_extra_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -336,6 +384,7 @@ case "$1" in
   -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
   --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
   -m) printf '%s\n' 'json' 'xdebug' ;;
+  -r) exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
@@ -412,6 +461,7 @@ case "$1" in
       printf '%s\n' 'json'
     fi
     ;;
+  -r) exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
@@ -472,6 +522,7 @@ case "$1" in
   -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
   --ini) printf '%s\n' 'Configuration File (php.ini) Path: /var/empty/com.prvious.pv/php' ;;
   -m) printf '%s\n' 'json' ;;
+  -r) exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
@@ -514,6 +565,7 @@ case "$1" in
   -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
   -m) printf '%s\n' 'json' ;;
   --ini) printf '%s\n' 'Configuration File (php.ini) Path: /usr/local/etc/php' ;;
+  -r) exit 0 ;;
   *) exit 99 ;;
 esac
 "#,
@@ -556,6 +608,8 @@ case "${1:-}" in
     code=${3:-}
     if [ "$code" = 'printf("PHP %s\n", PHP_VERSION);' ]; then
       printf '%s\n' 'PHP 8.4.20'
+    elif [ "$code" = 'exit(function_exists("mb_split") ? 0 : 1);' ]; then
+      exit 0
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'json'
     else
@@ -682,7 +736,7 @@ spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
-argv=[build:php][json][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 

@@ -114,7 +114,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
     assert_eq!(php.default_track().as_str(), "8.5");
-    assert_eq!(php.pv_build_revision(), "pv4");
+    assert_eq!(php.pv_build_revision(), "pv5");
     assert_eq!(php.tracks().len(), 3);
     assert_eq!(
         php.tracks()

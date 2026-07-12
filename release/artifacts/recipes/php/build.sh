@@ -349,8 +349,9 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
     export CFLAGS CXXFLAGS
   fi
+  # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().
   # shellcheck disable=SC2086
-  spc build:php "$PHP_BUILD_EXTENSIONS" \
+  spc build:php "$PHP_BUILD_EXTENSIONS,mbregex" \
     $optional_shared_args \
     --build-cli \
     --build-frankenphp \
