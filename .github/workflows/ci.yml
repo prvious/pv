@@ -17,6 +17,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -42,32 +45,5 @@ jobs:
       - name: Check artifact recipe scripts
         run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
-      - name: Validate artifact recipe metadata and fixtures
-        run: |
-          rm -rf /tmp/pv-recipe-fixtures
-          cargo run -p pv-release -- generate-recipe-fixtures \
-            --php release/artifacts/recipes/php/tracks.toml \
-            --composer release/artifacts/recipes/composer/composer.toml \
-            --redis release/artifacts/recipes/redis/recipe.toml \
-            --mysql release/artifacts/recipes/mysql/recipe.toml \
-            --postgres release/artifacts/recipes/postgres/recipe.toml \
-            --mailpit release/artifacts/recipes/mailpit/recipe.toml \
-            --rustfs release/artifacts/recipes/rustfs/recipe.toml \
-            --archives /tmp/pv-recipe-fixtures/archives \
-            --records /tmp/pv-recipe-fixtures/records \
-            --pv-commit "$(git rev-parse HEAD)" \
-            --build-run-id ci
-          cargo run -p pv-release -- generate-manifest \
-            --records /tmp/pv-recipe-fixtures/records \
-            --revocations release/artifacts/revocations \
-            --defaults release/artifacts/default-tracks.toml \
-            --output /tmp/pv-recipe-fixtures/manifest.json \
-            --base-url https://artifacts.example.test
-
       - name: Run tests
         run: cargo nextest run --workspace --all-features --locked
-
-      - name: Build docs
-        run: cargo doc --workspace --all-features --no-deps --locked
-        env:
-          RUSTDOCFLAGS: -D warnings

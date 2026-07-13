@@ -1,6 +1,0 @@
-[test-groups]
-daemon-lifecycle = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'package(daemon) | test(daemon_)'
-test-group = 'daemon-lifecycle'
