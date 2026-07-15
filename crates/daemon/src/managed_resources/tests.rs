@@ -84,6 +84,15 @@ const POSTGRES_UNREADY_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
+const REDIS_SERVER_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/redis-server.py"
+));
+const RUSTFS_SCRIPT_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/rustfs.py.in"
+));
+const RUSTFS_REJECT_S3_SENTINEL: &str = "__PV_REJECT_S3__";
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
 {
   "schema_version": 1,
@@ -3504,7 +3513,7 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join(format!("releases/{REDIS_ARTIFACT_VERSION}"));
     let executable = release_path.join("bin/redis-server");
 
-    state::fs::write_sensitive_file(&executable, redis_server_script())?;
+    state::fs::write_sensitive_file(&executable, REDIS_SERVER_SCRIPT)?;
     set_executable(&executable)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
@@ -3518,11 +3527,13 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
 }
 
 fn seed_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_rustfs_fixture_artifact_with_script(paths, track, &rustfs_script())
+    let script = rustfs_script()?;
+    seed_rustfs_fixture_artifact_with_script(paths, track, &script)
 }
 
 fn seed_auth_rejecting_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_rustfs_fixture_artifact_with_script(paths, track, &auth_rejecting_rustfs_script())
+    let script = auth_rejecting_rustfs_script()?;
+    seed_rustfs_fixture_artifact_with_script(paths, track, &script)
 }
 
 fn seed_rustfs_fixture_artifact_with_script(
@@ -3736,7 +3747,7 @@ fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/redis-server");
 
-    state::fs::write_sensitive_file(&executable, redis_server_script())?;
+    state::fs::write_sensitive_file(&executable, REDIS_SERVER_SCRIPT)?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -3758,7 +3769,8 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/rustfs");
 
-    state::fs::write_sensitive_file(&executable, &rustfs_script())?;
+    let script = rustfs_script()?;
+    state::fs::write_sensitive_file(&executable, &script)?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -4350,251 +4362,31 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
     }
 }
 
-fn redis_server_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-python3 - "$@" <<'PY'
-import os
-import signal
-import shlex
-import socketserver
-import sys
-import threading
-
-def redis_config(argv):
-    port = None
-    data_dir = None
-    args = list(argv)
-    while args:
-        arg = args.pop(0)
-        if arg == "--port" and args:
-            port = int(args.pop(0))
-        elif arg == "--dir" and args:
-            data_dir = args.pop(0)
-        elif os.path.isfile(arg):
-            with open(arg, "r", encoding="utf-8") as config:
-                for line in config:
-                    parts = shlex.split(line)
-                    if len(parts) == 2 and parts[0] == "port":
-                        port = int(parts[1])
-                    elif len(parts) == 2 and parts[0] == "dir":
-                        data_dir = parts[1]
-    if port is None:
-        raise RuntimeError("missing Redis port")
-    return port, data_dir
-
-class RedisPingHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        while True:
-            data = self.request.recv(4096)
-            if not data:
-                return
-            upper = data.upper()
-            responses = []
-            for _ in range(upper.count(b"CLIENT")):
-                responses.append(b"+OK\r\n")
-            for _ in range(upper.count(b"PING")):
-                responses.append(b"+PONG\r\n")
-            if not responses:
-                responses.append(b"+OK\r\n")
-            self.request.sendall(b"".join(responses))
-
-class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-
-shutdown_requested = threading.Event()
-
-
-def stop(_signum, _frame):
-    if shutdown_requested.is_set():
-        return
-    shutdown_requested.set()
-    threading.Thread(target=server.shutdown, daemon=True).start()
-
-port, data_dir = redis_config(sys.argv[1:])
-if data_dir:
-    os.makedirs(data_dir, exist_ok=True)
-
-server = RedisServer(("127.0.0.1", port), RedisPingHandler)
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-server.serve_forever()
-PY
-"#
+fn rustfs_script() -> Result<String> {
+    rustfs_script_source(false)
 }
 
-fn rustfs_script() -> String {
-    rustfs_script_source("False")
+fn auth_rejecting_rustfs_script() -> Result<String> {
+    rustfs_script_source(true)
 }
 
-fn auth_rejecting_rustfs_script() -> String {
-    rustfs_script_source("True")
-}
+fn rustfs_script_source(reject_s3: bool) -> Result<String> {
+    let occurrence_count = RUSTFS_SCRIPT_TEMPLATE
+        .matches(RUSTFS_REJECT_S3_SENTINEL)
+        .count();
+    if occurrence_count != 1 {
+        bail!(
+            "RustFS fixture must contain exactly one {RUSTFS_REJECT_S3_SENTINEL} sentinel; found {occurrence_count}"
+        );
+    }
 
-fn rustfs_script_source(reject_s3: &str) -> String {
-    r#"#!/bin/sh
-set -eu
+    let replacement = if reject_s3 { "True" } else { "False" };
+    let script = RUSTFS_SCRIPT_TEMPLATE.replacen(RUSTFS_REJECT_S3_SENTINEL, replacement, 1);
+    if script.contains(RUSTFS_REJECT_S3_SENTINEL) {
+        bail!("RustFS fixture still contains {RUSTFS_REJECT_S3_SENTINEL} after rendering");
+    }
 
-address=""
-console_address=""
-data_dir=""
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --address)
-      address="$2"
-      shift 2
-      ;;
-    --console-address)
-      console_address="$2"
-      shift 2
-      ;;
-    *)
-      data_dir="$1"
-      shift
-      ;;
-  esac
-done
-
-python3 - "$address" "$console_address" "$data_dir" <<'PY'
-import hashlib
-import http.server
-import os
-import posixpath
-import signal
-import sys
-import threading
-import urllib.parse
-
-api_address = sys.argv[1]
-console_address = sys.argv[2]
-data_dir = sys.argv[3]
-reject_s3 = __PV_REJECT_S3__
-buckets_dir = os.path.join(data_dir, "buckets")
-os.makedirs(buckets_dir, exist_ok=True)
-with open(os.path.join(data_dir, "process-env"), "w", encoding="utf-8") as file:
-    file.write(f"RUSTFS_ACCESS_KEY={os.environ.get('RUSTFS_ACCESS_KEY', '')}\n")
-    file.write(f"RUSTFS_SECRET_KEY={os.environ.get('RUSTFS_SECRET_KEY', '')}\n")
-
-def split_address(value):
-    host, port = value.rsplit(":", 1)
-    return host, int(port)
-
-def bucket_path(bucket):
-    return os.path.join(buckets_dir, bucket)
-
-def object_path(bucket, key):
-    clean_key = posixpath.normpath("/" + key).lstrip("/")
-    return os.path.join(bucket_path(bucket), clean_key)
-
-class RustfsHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
-        if path in {"/", "/health"}:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"rustfs")
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def do_PUT(self):
-        if reject_s3:
-            self.send_response(403)
-            self.end_headers()
-            return
-
-        path = urllib.parse.urlparse(self.path).path.strip("/")
-        parts = path.split("/", 1)
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length)
-        if not parts or not parts[0]:
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        bucket = parts[0]
-        if len(parts) == 1:
-            os.makedirs(bucket_path(bucket), exist_ok=True)
-            self.send_response(200)
-            self.end_headers()
-            return
-
-        target = object_path(bucket, parts[1])
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as file:
-            file.write(body)
-        self.send_response(200)
-        self.send_header("ETag", hashlib.md5(body).hexdigest())
-        self.end_headers()
-
-    def do_HEAD(self):
-        if reject_s3:
-            self.send_response(403)
-            self.end_headers()
-            return
-
-        path = urllib.parse.urlparse(self.path).path.strip("/")
-        parts = path.split("/", 1)
-        if len(parts) != 2:
-            exists = bool(parts and parts[0] and os.path.isdir(bucket_path(parts[0])))
-            self.send_response(200 if exists else 404)
-            self.end_headers()
-            return
-
-        target = object_path(parts[0], parts[1])
-        if not os.path.exists(target):
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        size = os.path.getsize(target)
-        with open(target, "rb") as file:
-            digest = hashlib.md5(file.read()).hexdigest()
-        self.send_response(200)
-        self.send_header("Content-Length", str(size))
-        self.send_header("ETag", digest)
-        self.end_headers()
-
-    def log_message(self, _format, *_args):
-        return
-
-class ConsoleHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"rustfs console")
-
-    def log_message(self, _format, *_args):
-        return
-
-class Server(http.server.ThreadingHTTPServer):
-    allow_reuse_address = True
-
-api = Server(split_address(api_address), RustfsHandler)
-console = Server(split_address(console_address), ConsoleHandler)
-
-shutdown_requested = threading.Event()
-
-
-def stop(_signum, _frame):
-    if shutdown_requested.is_set():
-        return
-    shutdown_requested.set()
-    threading.Thread(target=api.shutdown, daemon=True).start()
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-
-threading.Thread(target=console.serve_forever, daemon=True).start()
-api.serve_forever()
-console.shutdown()
-PY
-"#
-    .replace("__PV_REJECT_S3__", reject_s3)
+    Ok(script)
 }
 
 fn assert_with_normalized_postgres_runtime(
