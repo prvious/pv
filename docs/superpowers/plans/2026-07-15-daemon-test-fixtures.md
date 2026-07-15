@@ -2154,10 +2154,11 @@ Expected: formatting and Clippy exit 0, and every non-skipped workspace test pas
 Run:
 
 ```shell
-git diff HEAD~5 --check
-git diff --stat HEAD~5
-git diff --name-only HEAD~5
-git diff --name-status HEAD~5 -- 'crates/daemon/**/snapshots/*.snap'
+merge_base="$(git merge-base main HEAD)"
+git diff "$merge_base" --check
+git diff --stat "$merge_base"
+git diff --name-only "$merge_base"
+git diff --name-status "$merge_base" -- 'crates/daemon/**/snapshots/*.snap'
 find crates/daemon/test-fixtures -type f -exec stat -f '%Sp %N' {} \; | sort
 rg -n "__PV_REJECT_S3__|__PV_BLOCKED_PORT__" crates/daemon/test-fixtures crates/daemon/src crates/daemon/tests
 git status --short
@@ -2166,7 +2167,7 @@ git status --short
 Expected:
 
 - `git diff --check` is clean.
-- Changed paths are limited to `crates/daemon/test-fixtures/`, the four named daemon test files, the new fixture-contract target/snapshots, and `CONTRIBUTING.md`.
+- Changed paths are limited to the approved design/plan documents, `crates/daemon/test-fixtures/`, the four named daemon test files, the new fixture-contract target/snapshots, and `CONTRIBUTING.md`.
 - Snapshot status lists exactly five added fixture-contract snapshots and no modified existing snapshot.
 - Every checked-in fixture is non-executable (`-rw-r--r--`, mode `100644`).
 - Each sentinel appears once in its template and only in the corresponding Rust renderer/contract test where expected.
