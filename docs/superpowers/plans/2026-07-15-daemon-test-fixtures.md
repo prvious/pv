@@ -90,7 +90,11 @@
 Create `crates/daemon/tests/fixture_contracts.rs` with this complete test harness:
 
 ```rust
+use std::io::ErrorKind;
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use camino::Utf8Path;
@@ -136,11 +140,26 @@ struct FixtureOutput {
 fn mysql_fixture_cli_preserves_shell_contract() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("mysqld");
+    let probe_dir = tempdir.path().join("probe");
+    let probe_path = tempdir.path().join("mkdir-target");
     let rejected_data_dir = tempdir.path().join("rejected-data");
     let first_data_dir = tempdir.path().join("first-data");
     let selected_data_dir = tempdir.path().join("selected-data");
 
     materialize_fixture(&fixture, MYSQL_FIXTURE)?;
+    state::fs::write_sensitive_file(
+        &probe_dir.join("sitecustomize.py"),
+        r#"import os
+
+
+def record_makedirs(path, mode=0o777, exist_ok=False):
+    with open(os.environ["PV_MYSQL_MKDIR_PROBE"], "w", encoding="utf-8") as probe:
+        probe.write(os.fspath(path))
+
+
+os.makedirs = record_makedirs
+"#,
+    )?;
 
     let first_argument_failure = run_fixture(
         &fixture,
@@ -168,6 +187,18 @@ fn mysql_fixture_cli_preserves_shell_contract() -> Result<()> {
         ],
         tempdir.path(),
     )?;
+    let empty_data_dir_initialization = FixtureCommand::new(fixture.as_std_path())
+        .args(["--no-defaults", "--initialize-insecure"])
+        .current_dir(tempdir.path())
+        .env("PYTHONPATH", &probe_dir)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PV_MYSQL_MKDIR_PROBE", &probe_path)
+        .output()?;
+    let empty_data_dir_initialization = FixtureOutput {
+        code: empty_data_dir_initialization.status.code(),
+        stdout: String::from_utf8(empty_data_dir_initialization.stdout)?,
+        stderr: String::from_utf8(empty_data_dir_initialization.stderr)?,
+    };
 
     assert_fixture_snapshot(
         tempdir.path(),
@@ -178,6 +209,8 @@ fn mysql_fixture_cli_preserves_shell_contract() -> Result<()> {
             path_exists(&rejected_data_dir.join("mysql"))?,
             path_exists(&first_data_dir.join("mysql"))?,
             path_exists(&selected_data_dir.join("mysql"))?,
+            empty_data_dir_initialization,
+            state::fs::read_to_string(&probe_path)?,
         ),
     )
 }
@@ -186,23 +219,45 @@ fn mysql_fixture_cli_preserves_shell_contract() -> Result<()> {
 fn fake_mailpit_fixture_cli_ignores_extra_arguments() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("fake-mailpit");
+    let smtp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let smtp_port = smtp_listener.local_addr()?.port();
+    let dashboard_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let dashboard_port = dashboard_listener.local_addr()?.port();
 
     materialize_fixture(&fixture, FAKE_MAILPIT_FIXTURE)?;
-    let output = run_fixture(
-        &fixture,
-        &["not-a-port", "also-not-a-port", "ignored-extra"],
-        tempdir.path(),
-    )?;
+    drop(smtp_listener);
+    drop(dashboard_listener);
+
+    let mut child = FixtureCommand::new(fixture.as_std_path())
+        .args([
+            smtp_port.to_string(),
+            dashboard_port.to_string(),
+            "ignored-extra".to_owned(),
+        ])
+        .current_dir(tempdir.path())
+        .spawn()?;
+    let lifecycle = (|| {
+        let readiness =
+            wait_for_loopback_ports([smtp_port, dashboard_port], Duration::from_secs(3))?;
+        let running_after_readiness = child.try_wait()?.is_none();
+
+        Ok::<_, anyhow::Error>((readiness, running_after_readiness))
+    })();
+    let kill_result = child.kill();
+    let wait_result = child.wait();
+
+    let lifecycle = lifecycle?;
+    if let Err(error) = kill_result
+        && error.kind() != ErrorKind::InvalidInput
+    {
+        return Err(error.into());
+    }
+    wait_result?;
 
     assert_fixture_snapshot(
         tempdir.path(),
         "fake_mailpit_fixture_cli_ignores_extra_arguments",
-        (
-            output.code,
-            output.stdout,
-            output.stderr.contains("ValueError"),
-            output.stderr.contains("ignored-extra"),
-        ),
+        lifecycle,
     )
 }
 
@@ -501,7 +556,7 @@ if initialize:
     if first_argument != "--no-defaults":
         print("mysqld initialization must start with --no-defaults", file=sys.stderr)
         sys.exit(64)
-    os.makedirs(os.path.join(data_dir, "mysql"), exist_ok=True)
+    os.makedirs(f"{data_dir}/mysql", exist_ok=True)
     sys.exit(0)
 
 
@@ -566,7 +621,7 @@ threading.Thread(target=smtp.serve_forever, daemon=True).start()
 dashboard.serve_forever()
 ```
 
-These parsers intentionally ignore unknown/extra arguments exactly as their shell wrappers do. Do not add `else` rejection to MySQL and do not validate `sys.argv[3:]` in fake Mailpit.
+These parsers intentionally ignore unknown/extra arguments exactly as their shell wrappers do. Do not add `else` rejection to MySQL and do not validate `sys.argv[3:]` in fake Mailpit. The MySQL empty-datadir probe must record `/mysql` without creating it, and fake Mailpit must bind both reserved loopback ports, remain alive after readiness, and be cleaned up after the probe.
 
 - [ ] **Step 4: Add the direct Postgres fixture implementation**
 
@@ -1126,8 +1181,8 @@ INSTA_UPDATE=always cargo nextest run -p daemon --test fixture_contracts --locke
 Expected: all five tests pass and create five `.snap` files. Inspect them before continuing. The stable outcomes must show:
 
 ```text
-MySQL: rejected code 64 with "mysqld initialization must start with --no-defaults"; accepted code 0; only selected-data/mysql exists.
-Fake Mailpit: code 1 from invalid integer conversion; ValueError=true; ignored-extra is absent from stderr.
+MySQL: rejected code 64 with "mysqld initialization must start with --no-defaults"; accepted code 0; only selected-data/mysql exists; the empty-datadir initialization is code 0 and the sitecustomize probe records `/mysql` without creating it.
+Fake Mailpit: both reserved loopback ports become ready and the child remains alive after readiness before cleanup.
 Postgres: both cases code 64; one "unexpected postgres argument" and one "postgres data dir is not initialized".
 Mailpit: all six cases code 2 with the five explicit validation messages; the duplicate-database case repeats the missing-directory result to prove last-wins parsing, and the path is normalized to <tempdir>.
 RustFS: code 1 after invalid address parsing; ValueError=true; only selected-rustfs-data contains buckets and process-env; neither consumed address value becomes a directory; sentinel-present=false.
