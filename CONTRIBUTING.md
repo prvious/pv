@@ -20,6 +20,8 @@ Avoid `panic!`, `unreachable!`, `.unwrap()`, and `.expect()` in production code.
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
+Daemon tests that exercise Managed Resource, gateway, and supervisor fixtures require `python3` on `PATH`. These fixtures use only Python's standard library; no Python packages or virtual environment is required.
+
 To run a specific test by name:
 
 ```shell

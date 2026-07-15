@@ -26,6 +26,12 @@ use tokio_rustls::TlsAcceptor;
 )]
 type TestProcessCommand = std::process::Command;
 
+#[cfg(target_os = "macos")]
+const OWNED_PYTHON_RUNTIME_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/supervisor/owned-python-runtime.py"
+));
+
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -477,24 +483,7 @@ async fn supervisor_verifies_owned_python_shebang_script() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     let runtime = paths.run().join("owned-python-runtime");
-    state::fs::write_sensitive_file(
-        &runtime,
-        r#"#!/usr/bin/env python3
-import signal
-import sys
-
-
-def stop(_signum, _frame):
-    sys.exit(0)
-
-
-if sys.argv[1:] != ["1025", "8025"]:
-    sys.exit(2)
-
-signal.signal(signal.SIGTERM, stop)
-signal.pause()
-"#,
-    )?;
+    state::fs::write_sensitive_file(&runtime, OWNED_PYTHON_RUNTIME_SCRIPT)?;
     set_executable(&runtime)?;
 
     let supervisor = ProcessSupervisor::new(paths.clone());
