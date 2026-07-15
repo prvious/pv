@@ -1,5 +1,5 @@
-use anyhow::Result;
-use camino::Utf8Path;
+use anyhow::{Result, bail};
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::DaemonError;
 use daemon::gateway::{
@@ -23,6 +23,23 @@ use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
+const FAKE_FRANKENPHP_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-frankenphp.sh"
+));
+const FAKE_FRANKENPHP_SERVER_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-frankenphp-server.py"
+));
+const FAKE_FRANKENPHP_HANGS_ON_PORT_SCRIPT_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-frankenphp-hangs-on-port.sh.in"
+));
+const FAKE_FRANKENPHP_HANGS_ON_PORT_SERVER_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-frankenphp-hangs-on-port-server.py"
+));
+const FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL: &str = "__PV_BLOCKED_PORT__";
 
 #[expect(
     clippy::disallowed_types,
@@ -1757,131 +1774,50 @@ exit 2
 }
 
 fn write_fake_frankenphp(path: &Utf8Path) -> Result<()> {
-    fs::write_sensitive_file(
-        path,
-        r#"#!/bin/sh
-set -eu
+    write_fake_frankenphp_fixture(path, FAKE_FRANKENPHP_SCRIPT, FAKE_FRANKENPHP_SERVER_SCRIPT)
+}
 
-if [ "$1" = "validate" ]; then
-  test -f "$3"
-  exit 0
-fi
+fn write_fake_frankenphp_that_hangs_on_port(path: &Utf8Path, blocked_port: u16) -> Result<()> {
+    let script = render_fake_frankenphp_hangs_on_port_script(blocked_port)?;
 
-if [ "$1" = "run" ]; then
-  python3 - "$3" <<'PY' &
-import http.server
-import re
-import signal
-import ssl
-import sys
-import threading
+    write_fake_frankenphp_fixture(path, &script, FAKE_FRANKENPHP_HANGS_ON_PORT_SERVER_SCRIPT)
+}
 
-signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+fn write_fake_frankenphp_fixture(
+    path: &Utf8Path,
+    shell_script: &str,
+    server_script: &str,
+) -> Result<()> {
+    let server_path = Utf8PathBuf::from(format!("{path}.server.py"));
 
-config = open(sys.argv[1], encoding="utf-8").read()
-
-def required(pattern):
-    match = re.search(pattern, config, re.MULTILINE)
-    if not match:
-        raise SystemExit(f"missing fake runtime setting: {pattern}")
-    return match.group(1)
-
-def optional(pattern):
-    match = re.search(pattern, config, re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1)
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-http_port = int(required(r"^# PV_FAKE_PORT (\d+)$"))
-https_port = optional(r"^\s*https_port (\d+)$")
-cert_path = optional(r'^\s*cert "([^"]+)"$')
-key_path = optional(r'^\s*key "([^"]+)"$')
-servers = [http.server.ThreadingHTTPServer(("127.0.0.1", http_port), Handler)]
-
-if https_port is not None and cert_path is not None and key_path is not None:
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certfile=cert_path, keyfile=key_path)
-    https_server = http.server.ThreadingHTTPServer(("127.0.0.1", int(https_port)), Handler)
-    https_server.socket = context.wrap_socket(https_server.socket, server_side=True)
-    servers.append(https_server)
-
-for server in servers[1:]:
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-with servers[0] as server:
-    server.serve_forever()
-PY
-  child="$!"
-  trap ':' USR1
-  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
-  while true; do
-    wait "$child" && exit 0
-    status="$?"
-    if kill -0 "$child" 2>/dev/null; then
-      continue
-    fi
-    exit "$status"
-  done
-fi
-
-exit 2
-"#,
-    )?;
+    fs::write_sensitive_file(&server_path, server_script)?;
+    fs::write_sensitive_file(path, shell_script)?;
     set_executable(path)?;
 
     Ok(())
 }
 
-fn write_fake_frankenphp_that_hangs_on_port(path: &Utf8Path, blocked_port: u16) -> Result<()> {
-    fs::write_sensitive_file(
-        path,
-        &format!(
-            r#"#!/bin/sh
-set -eu
+fn render_fake_frankenphp_hangs_on_port_script(blocked_port: u16) -> Result<String> {
+    let occurrence_count = FAKE_FRANKENPHP_HANGS_ON_PORT_SCRIPT_TEMPLATE
+        .matches(FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL)
+        .count();
+    if occurrence_count != 1 {
+        bail!(
+            "fake FrankenPHP blocked-port template must contain exactly one {FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL} sentinel; found {occurrence_count}"
+        );
+    }
 
-if [ "$1" = "validate" ]; then
-  test -f "$3"
-  exit 0
-fi
+    let replacement = blocked_port.to_string();
+    let script = FAKE_FRANKENPHP_HANGS_ON_PORT_SCRIPT_TEMPLATE.replacen(
+        FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL,
+        &replacement,
+        1,
+    );
+    if script.contains(FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL) {
+        bail!("fake FrankenPHP blocked-port sentinel remained after rendering");
+    }
 
-if [ "$1" = "run" ]; then
-  port="$(awk '/^# PV_FAKE_PORT / {{ print $3; exit }}' "$3")"
-  if [ "$port" = "{}" ]; then
-    sleep 30
-    exit 0
-  fi
-  python3 -c 'import http.server, signal, sys
-signal.signal(signal.SIGUSR1, signal.SIG_IGN)
-port = int(sys.argv[1])
-with http.server.ThreadingHTTPServer(("127.0.0.1", port), http.server.SimpleHTTPRequestHandler) as server:
-    server.serve_forever()
-' "$port" &
-  child="$!"
-  trap ':' USR1
-  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
-  while true; do
-    wait "$child" && exit 0
-    status="$?"
-    if kill -0 "$child" 2>/dev/null; then
-      continue
-    fi
-    exit "$status"
-  done
-fi
-
-exit 2
-"#,
-            blocked_port
-        ),
-    )?;
-    set_executable(path)?;
-
-    Ok(())
+    Ok(script)
 }
 
 fn shell_single_quoted(value: &str) -> String {
