@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "PV update\n",
-    stderr: "error: PV app download checksum mismatch for `https://downloads.example.test/pv/0.2.0/pv-darwin-arm64`: expected <sha256>, got <sha256>\n",
+    stderr: "error: PV app download checksum mismatch for `https://downloads.example.test/pv/0.3.0/pv-darwin-arm64`: expected <sha256>, got <sha256>\n",
 }

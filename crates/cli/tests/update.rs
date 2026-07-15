@@ -22,10 +22,10 @@ mod update_tests {
     use state::{AppReleaseLayout, PvPaths};
 
     const APP_MANIFEST_URL: &str = "https://updates.example.test/pv-app-manifest.json";
-    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/0.2.0/pv-darwin-arm64";
-    const APP_BINARY: &[u8] = b"pv 0.2.0\n";
+    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64";
+    const APP_BINARY: &[u8] = b"pv 0.3.0\n";
     const APP_BINARY_SHA256: &str =
-        "d79d79fc4d676e364eb78445b69d2053de1d3c54b22a9dd664e00ce175103a69";
+        "daa36b28494155c914f2745dcb1908b9e97f07f718313751c5c0be96f9c28b74";
     const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     struct TestEnvironment {
@@ -513,7 +513,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -534,10 +534,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
-            state::fs::read_to_string(&paths.app_release_binary("0.2.0"))?,
-            "pv 0.2.0\n"
+            state::fs::read_to_string(&paths.app_release_binary("0.3.0"))?,
+            "pv 0.3.0\n"
         );
         assert_eq!(
             daemon_requests,
@@ -622,7 +622,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -634,7 +634,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
             daemon_requests,
             vec![json!({
@@ -670,7 +670,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -681,7 +681,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -707,7 +707,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -720,7 +720,7 @@ mod update_tests {
         let reacquired = state::UpdateLock::acquire(&paths);
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -874,7 +874,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -894,7 +894,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert!(temporary_downloads.is_empty());
         assert_update_snapshot(
@@ -917,7 +917,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -937,7 +937,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert!(temporary_downloads.is_empty());
 
@@ -956,7 +956,7 @@ mod update_tests {
             &home,
             ReadOnlyDownloadsClient {
                 manifest: app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     u64::try_from(APP_BINARY.len())?,
                 ),
@@ -1046,7 +1046,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1073,7 +1073,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert_eq!(
             environment.operations(),
@@ -1123,7 +1123,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1134,7 +1134,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![format!("kickstart {LAUNCH_AGENT_LABEL}")]
@@ -1177,7 +1177,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1226,7 +1226,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1238,7 +1238,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_update_snapshot("update_reports_rollback_symlink_restore_failure", output);
 
         Ok(())
@@ -1263,7 +1263,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1279,7 +1279,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert_update_snapshot(
             "update_reports_rollback_daemon_restart_failure_after_restore",
@@ -1308,7 +1308,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1328,7 +1328,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert_update_snapshot(
             "update_reports_migration_failure_marker_after_health_failure",
@@ -1361,7 +1361,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1391,14 +1391,14 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.2.0", b"pv 0.2.0\n")?;
+        let layout = install_active_release(&paths, "0.3.0", b"pv 0.3.0\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(&home, PanickingClient);
 
         let output = run_pv(&["update"], &environment)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_update_snapshot(
             "update_fails_before_network_when_active_release_version_differs",
             output,
@@ -1467,7 +1467,7 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
-                .with_text(&app_manifest("0.2.0", APP_BINARY_SHA256, 999))
+                .with_text(&app_manifest("0.3.0", APP_BINARY_SHA256, 999))
                 .with_download(APP_BINARY),
         );
 
@@ -1480,7 +1480,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.2.0")
+            &paths.app_release_binary("0.3.0")
         )?);
         assert_update_snapshot(
             "update_size_mismatch_leaves_active_release_untouched",
@@ -1505,7 +1505,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1521,8 +1521,8 @@ mod update_tests {
         releases.sort();
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
-        assert_eq!(releases, vec![CURRENT_APP_VERSION, "0.2.0"]);
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(releases, vec![CURRENT_APP_VERSION, "0.3.0"]);
 
         Ok(())
     }
@@ -1541,7 +1541,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.2.0",
+                    "0.3.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1552,7 +1552,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.2.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert!(state::fs::path_entry_exists(
             &paths.app_releases_dir().join("0.0.8")
         )?);
@@ -2015,19 +2015,19 @@ mod update_tests {
 {
   "schema_version": 1,
   "channel": "stable",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimum_pv_version": "0.1.0",
   "published_at": "2026-06-11T12:00:00Z",
   "assets": [
     {
       "platform": "darwin-arm64",
-      "url": "https://downloads.example.test/pv/0.2.0/pv-darwin-arm64",
+      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "size": 12345678
     },
     {
       "platform": "darwin-amd64",
-      "url": "https://downloads.example.test/pv/0.2.0/pv-darwin-amd64",
+      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 12345678
     }

@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV update\nPV application: updated 0.1.5 -> 0.2.0\nDaemon restarted and healthy\n",
+    stdout: "PV update\nPV application: updated 0.2.0 -> 0.3.0\nDaemon restarted and healthy\n",
     stderr: "",
 }
