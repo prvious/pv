@@ -20,4 +20,12 @@ expression: snapshot
     false,
     false,
     true,
+    FixtureOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "",
+        stderr: "",
+    },
+    "/mysql",
 )

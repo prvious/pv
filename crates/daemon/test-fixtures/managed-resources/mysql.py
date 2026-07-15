@@ -30,7 +30,7 @@ if initialize:
     if first_argument != "--no-defaults":
         print("mysqld initialization must start with --no-defaults", file=sys.stderr)
         sys.exit(64)
-    os.makedirs(os.path.join(data_dir, "mysql"), exist_ok=True)
+    os.makedirs(f"{data_dir}/mysql", exist_ok=True)
     sys.exit(0)
 
 

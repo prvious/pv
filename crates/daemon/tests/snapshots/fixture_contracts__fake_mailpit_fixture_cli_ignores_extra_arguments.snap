@@ -3,10 +3,9 @@ source: crates/daemon/tests/fixture_contracts.rs
 expression: snapshot
 ---
 (
-    Some(
-        1,
-    ),
-    "",
+    [
+        true,
+        true,
+    ],
     true,
-    false,
 )
