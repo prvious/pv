@@ -14,6 +14,10 @@ const MYSQL_TRACK: &str = "8.0";
 const MYSQL_ARTIFACT_VERSION: &str = "8.0.35-pv1";
 const MYSQL_ARCHIVE_FILE_NAME: &str = "mysql-8.0.35-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+const MYSQL_FIXTURE_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/mysql.py"
+));
 
 #[test]
 fn mysql_runtime_port_prefers_3306() -> Result<()> {
@@ -307,7 +311,7 @@ fn seed_mysql_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join(format!("releases/{MYSQL_ARTIFACT_VERSION}"));
     let executable = release_path.join("bin/mysqld");
 
-    state::fs::write_sensitive_file(&executable, mysql_fixture_script())?;
+    state::fs::write_sensitive_file(&executable, MYSQL_FIXTURE_SCRIPT)?;
     set_executable(&executable)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
@@ -344,7 +348,7 @@ fn create_mysql_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/mysqld");
 
-    state::fs::write_sensitive_file(&executable, mysql_fixture_script())?;
+    state::fs::write_sensitive_file(&executable, MYSQL_FIXTURE_SCRIPT)?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -435,76 +439,6 @@ fn mysql_manifest(sha256: &str, size: u64) -> String {
 }}
 "#
     )
-}
-
-fn mysql_fixture_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-datadir=""
-port=""
-first_arg="${1:-}"
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --initialize-insecure)
-      initialize=1
-      shift
-      ;;
-    --datadir)
-      datadir="$2"
-      shift 2
-      ;;
-    --basedir)
-      shift 2
-      ;;
-    --port)
-      port="$2"
-      shift 2
-      ;;
-    --bind-address|--socket)
-      shift 2
-      ;;
-    --no-defaults)
-      shift
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-
-if [ "${initialize:-0}" = "1" ]; then
-  if [ "${first_arg:-}" != "--no-defaults" ]; then
-    echo "mysqld initialization must start with --no-defaults" >&2
-    exit 64
-  fi
-  mkdir -p "$datadir/mysql"
-  exit 0
-fi
-
-python3 - "$port" <<'PY'
-import signal
-import socketserver
-import sys
-
-class Handler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.request.recv(1024)
-
-class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-
-def stop(_signum, _frame):
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-
-server = TcpServer(("127.0.0.1", int(sys.argv[1])), Handler)
-server.serve_forever()
-PY
-"#
 }
 
 fn assert_mysql_snapshot(

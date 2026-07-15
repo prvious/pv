@@ -56,6 +56,34 @@ const SETUP_DEFAULT_RUSTFS_TRACK: &str = "1";
 const SETUP_DEFAULT_RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+const FAKE_MAILPIT_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/fake-mailpit.py"
+));
+const MAILPIT_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/mailpit.py"
+));
+const MAILPIT_FAST_EXIT_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/mailpit-fast-exit.py"
+));
+const MAILPIT_UNREADY_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/mailpit-unready.sh"
+));
+const POSTGRES_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/postgres.py"
+));
+const POSTGRES_INITDB_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/postgres-initdb.sh"
+));
+const POSTGRES_UNREADY_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/postgres-unready.sh"
+));
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
 {
   "schema_version": 1,
@@ -3152,7 +3180,7 @@ fn delete_optional_file(path: &Utf8Path) -> Result<()> {
 }
 
 fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, fake_mailpit_script())
+    seed_fake_mailpit_artifact_with_script(paths, track, FAKE_MAILPIT_SCRIPT)
 }
 
 fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
@@ -3163,7 +3191,7 @@ fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}"));
     let executable = release_path.join("bin/mailpit");
 
-    state::fs::write_sensitive_file(&executable, mailpit_script())?;
+    state::fs::write_sensitive_file(&executable, MAILPIT_SCRIPT)?;
     set_executable(&executable)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
@@ -3354,11 +3382,11 @@ fn seed_fake_mailpit_artifact_with_script(
 }
 
 fn seed_unready_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, unready_fake_mailpit_script())
+    seed_fake_mailpit_artifact_with_script(paths, track, MAILPIT_UNREADY_SCRIPT)
 }
 
 fn seed_fast_exit_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, fast_exit_fake_mailpit_script())
+    seed_fake_mailpit_artifact_with_script(paths, track, MAILPIT_FAST_EXIT_SCRIPT)
 }
 
 fn seed_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[TcpListener; 2]> {
@@ -3403,11 +3431,11 @@ fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Resul
 }
 
 fn seed_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_postgres_fixture_artifact_with_script(paths, track, fake_postgres_script())
+    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_SCRIPT)
 }
 
 fn seed_unready_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_postgres_fixture_artifact_with_script(paths, track, unready_fake_postgres_script())
+    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_UNREADY_SCRIPT)
 }
 
 fn seed_postgres_fixture_artifact_with_script(
@@ -3664,7 +3692,7 @@ fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> R
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/pv-fake-mailpit");
 
-    state::fs::write_sensitive_file(&executable, fake_mailpit_script())?;
+    state::fs::write_sensitive_file(&executable, FAKE_MAILPIT_SCRIPT)?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -3686,7 +3714,7 @@ fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result
     let root = archive_parent.join(&root_name);
     let executable = root.join("bin/mailpit");
 
-    state::fs::write_sensitive_file(&executable, mailpit_script())?;
+    state::fs::write_sensitive_file(&executable, MAILPIT_SCRIPT)?;
     set_executable(&executable)?;
     run_fixture_command(
         "/usr/bin/tar",
@@ -3747,7 +3775,7 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
 }
 
 fn write_postgres_fixture_binaries(release_path: &Utf8Path) -> Result<()> {
-    write_postgres_fixture_binaries_with_script(release_path, fake_postgres_script())
+    write_postgres_fixture_binaries_with_script(release_path, POSTGRES_SCRIPT)
 }
 
 fn write_postgres_fixture_binaries_with_script(
@@ -3766,8 +3794,8 @@ fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path
     let initdb = release_path.join("bin/initdb");
     let postgres = release_path.join("bin/postgres");
 
-    state::fs::write_sensitive_file(&initdb, fake_postgres_initdb_script())?;
-    state::fs::write_sensitive_file(&postgres, fake_postgres_script())?;
+    state::fs::write_sensitive_file(&initdb, POSTGRES_INITDB_SCRIPT)?;
+    state::fs::write_sensitive_file(&postgres, POSTGRES_SCRIPT)?;
     set_executable(&initdb)?;
     set_executable(&postgres)?;
 
@@ -4165,448 +4193,6 @@ fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
     )
 }
 
-fn fake_mailpit_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-smtp_port="$1"
-dashboard_port="$2"
-
-python3 - "$smtp_port" "$dashboard_port" <<'PY'
-import http.server
-import signal
-import socketserver
-import sys
-import threading
-
-class SmtpHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.request.sendall(b"220 fake mailpit\r\n")
-
-class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-
-smtp = TcpServer(("127.0.0.1", int(sys.argv[1])), SmtpHandler)
-dashboard = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), http.server.SimpleHTTPRequestHandler)
-
-def stop(_signum, _frame):
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-
-threading.Thread(target=smtp.serve_forever, daemon=True).start()
-dashboard.serve_forever()
-PY
-"#
-}
-
-fn fake_postgres_initdb_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-data_dir=""
-username=""
-password_file=""
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -D)
-      data_dir="$2"
-      shift 2
-      ;;
-    -U)
-      username="$2"
-      shift 2
-      ;;
-    --username)
-      username="$2"
-      shift 2
-      ;;
-    --pwfile)
-      password_file="$2"
-      shift 2
-      ;;
-    --auth-host|--auth-local)
-      shift 2
-      ;;
-    *)
-      echo "unexpected initdb argument: $1" >&2
-      exit 64
-      ;;
-  esac
-done
-
-if [ -z "$data_dir" ] || [ -z "$username" ] || [ -z "$password_file" ]; then
-  echo "missing initdb inputs" >&2
-  exit 64
-fi
-
-if [ -d "$data_dir" ] && [ "$(find "$data_dir" -mindepth 1 -maxdepth 1 | wc -l)" -gt 0 ]; then
-  echo "PGDATA is not empty before initdb" >&2
-  exit 65
-fi
-
-mkdir -p "$data_dir/databases"
-printf '16\n' > "$data_dir/PG_VERSION"
-printf '%s\n' "$username" > "$data_dir/initdb.username"
-cat "$password_file" > "$data_dir/initdb.password"
-"#
-}
-
-fn fake_postgres_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-data_dir=""
-argument_host=""
-argument_port=""
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -D)
-      data_dir="$2"
-      shift 2
-      ;;
-    -h)
-      argument_host="$2"
-      shift 2
-      ;;
-    -p)
-      argument_port="$2"
-      shift 2
-      ;;
-    *)
-      echo "unexpected postgres argument: $1" >&2
-      exit 64
-      ;;
-  esac
-done
-
-if [ -z "$data_dir" ] || [ -z "$argument_host" ] || [ -z "$argument_port" ] || [ ! -f "$data_dir/PG_VERSION" ]; then
-  echo "postgres data dir is not initialized" >&2
-  exit 64
-fi
-
-python3 - "$data_dir" "$argument_host" "$argument_port" <<'PY'
-import os
-import signal
-import socketserver
-import struct
-import sys
-import threading
-
-data_dir = sys.argv[1]
-argument_host = sys.argv[2]
-argument_port = int(sys.argv[3])
-config_path = os.path.join(data_dir, "postgresql.conf")
-database_dir = os.path.join(data_dir, "databases")
-
-host = "127.0.0.1"
-port = None
-
-with open(config_path, "r", encoding="utf-8") as config:
-    for line in config:
-        line = line.strip()
-        if line.startswith("listen_addresses"):
-            host = line.split("=", 1)[1].strip().strip("'\"")
-        if line.startswith("port"):
-            port = int(line.split("=", 1)[1].strip())
-
-if host != "127.0.0.1" or port is None:
-    raise SystemExit("postgresql.conf did not set loopback host and port")
-if argument_host != host or argument_port != port:
-    raise SystemExit("postgres arguments did not match generated config")
-
-os.makedirs(database_dir, exist_ok=True)
-with open(os.path.join(data_dir, "postgres.started"), "w", encoding="utf-8") as started:
-    started.write(f"{host}:{port}\n")
-
-def packet(message_type, payload=b""):
-    return message_type + struct.pack("!I", len(payload) + 4) + payload
-
-def auth_ok():
-    return packet(b"R", struct.pack("!I", 0))
-
-def parameter_status(key, value):
-    return packet(b"S", key.encode() + b"\0" + value.encode() + b"\0")
-
-def backend_key_data():
-    return packet(b"K", struct.pack("!II", os.getpid() & 0x7fffffff, 1))
-
-def ready():
-    return packet(b"Z", b"I")
-
-def parameter_description(query):
-    if "$1" in query:
-        return packet(b"t", struct.pack("!H", 1) + struct.pack("!I", 25))
-    return packet(b"t", struct.pack("!H", 0))
-
-def command_complete(tag):
-    return packet(b"C", tag.encode() + b"\0")
-
-def parse_complete():
-    return packet(b"1")
-
-def bind_complete():
-    return packet(b"2")
-
-def close_complete():
-    return packet(b"3")
-
-def no_data():
-    return packet(b"n")
-
-def row_description():
-    field = b"?column?\0" + struct.pack("!IhIhih", 0, 0, 23, 4, -1, 0)
-    return packet(b"T", struct.pack("!H", 1) + field)
-
-def data_row(value):
-    data = str(value).encode()
-    return packet(b"D", struct.pack("!H", 1) + struct.pack("!I", len(data)) + data)
-
-def error_response(message):
-    return packet(b"E", b"SERROR\0CXX000\0M" + message.encode() + b"\0\0")
-
-def cstring(payload, start):
-    end = payload.index(b"\0", start)
-    return payload[start:end].decode(), end + 1
-
-def read_exact(stream, length):
-    data = b""
-    while len(data) < length:
-        chunk = stream.recv(length - len(data))
-        if not chunk:
-            raise EOFError
-        data += chunk
-    return data
-
-def read_startup(stream):
-    length = struct.unpack("!I", read_exact(stream, 4))[0]
-    payload = read_exact(stream, length - 4)
-    code = struct.unpack("!I", payload[:4])[0]
-    if code == 80877103:
-        stream.sendall(b"N")
-        return read_startup(stream)
-    return payload
-
-def startup_response():
-    return b"".join([
-        auth_ok(),
-        parameter_status("server_version", "16.0"),
-        parameter_status("server_encoding", "UTF8"),
-        parameter_status("client_encoding", "UTF8"),
-        parameter_status("DateStyle", "ISO, MDY"),
-        parameter_status("integer_datetimes", "on"),
-        parameter_status("standard_conforming_strings", "on"),
-        backend_key_data(),
-        ready(),
-    ])
-
-def database_file(database):
-    safe = "".join(ch for ch in database if ch.isalnum() or ch == "_")
-    if safe != database:
-        raise ValueError("unsafe database name")
-    return os.path.join(database_dir, database)
-
-def database_exists(database):
-    return os.path.exists(database_file(database))
-
-def create_database(database):
-    with open(database_file(database), "w", encoding="utf-8") as marker:
-        marker.write(database + "\n")
-
-def database_from_create(query):
-    quoted = query.split("CREATE DATABASE", 1)[1].strip()
-    if quoted.startswith('"') and quoted.endswith('"'):
-        return quoted[1:-1]
-    return quoted
-
-def query_response(query, params):
-    normalized = " ".join(query.strip().split())
-    if normalized.upper() in {"SELECT 1", "SELECT $1"}:
-        return row_description() + data_row(1) + command_complete("SELECT 1")
-    if "FROM pg_database WHERE datname" in normalized:
-        database = params[0] if params else ""
-        if database_exists(database):
-            return row_description() + data_row(1) + command_complete("SELECT 1")
-        return row_description() + command_complete("SELECT 0")
-    if normalized.upper().startswith("CREATE DATABASE"):
-        create_database(database_from_create(normalized))
-        return command_complete("CREATE DATABASE")
-    if normalized.upper().startswith("SET "):
-        return command_complete("SET")
-    return error_response("unsupported fixture query: " + normalized)
-
-class Handler(socketserver.BaseRequestHandler):
-    def handle(self):
-        statements = {}
-        portals = {}
-        try:
-            read_startup(self.request)
-            self.request.sendall(startup_response())
-            while True:
-                message_type = read_exact(self.request, 1)
-                length = struct.unpack("!I", read_exact(self.request, 4))[0]
-                payload = read_exact(self.request, length - 4)
-                if message_type == b"X":
-                    return
-                if message_type == b"Q":
-                    query = payload[:-1].decode()
-                    self.request.sendall(query_response(query, []) + ready())
-                    continue
-                if message_type == b"P":
-                    statement, offset = cstring(payload, 0)
-                    query, _offset = cstring(payload, offset)
-                    statements[statement] = query
-                    self.request.sendall(parse_complete())
-                    continue
-                if message_type == b"B":
-                    portal, offset = cstring(payload, 0)
-                    statement, offset = cstring(payload, offset)
-                    format_count = struct.unpack("!H", payload[offset:offset + 2])[0]
-                    offset += 2 + (format_count * 2)
-                    param_count = struct.unpack("!H", payload[offset:offset + 2])[0]
-                    offset += 2
-                    params = []
-                    for _index in range(param_count):
-                        size = struct.unpack("!i", payload[offset:offset + 4])[0]
-                        offset += 4
-                        if size == -1:
-                            params.append(None)
-                        else:
-                            params.append(payload[offset:offset + size].decode())
-                            offset += size
-                    portals[portal] = (statements.get(statement, ""), params)
-                    self.request.sendall(bind_complete())
-                    continue
-                if message_type == b"D":
-                    describe_kind = payload[:1]
-                    name = payload[1:-1].decode()
-                    query, _params = portals.get(name, (statements.get(name, ""), []))
-                    response = b""
-                    if describe_kind == b"S":
-                        response += parameter_description(query)
-                    if query.strip().upper().startswith("CREATE DATABASE"):
-                        response += no_data()
-                    else:
-                        response += row_description()
-                    self.request.sendall(response)
-                    continue
-                if message_type == b"E":
-                    portal, offset = cstring(payload, 0)
-                    _max_rows = struct.unpack("!I", payload[offset:offset + 4])[0]
-                    query, params = portals.get(portal, ("", []))
-                    self.request.sendall(query_response(query, params))
-                    continue
-                if message_type == b"S":
-                    self.request.sendall(ready())
-                    continue
-                if message_type == b"H":
-                    continue
-                if message_type == b"C":
-                    self.request.sendall(close_complete())
-                    continue
-                self.request.sendall(error_response("unsupported message type"))
-        except (EOFError, ConnectionResetError, BrokenPipeError):
-            return
-
-class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-
-server = Server((host, port), Handler)
-
-def stop(_signum, _frame):
-    server.shutdown()
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-
-threading.Thread(target=server.serve_forever, daemon=True).start()
-signal.pause()
-PY
-"#
-}
-
-fn unready_fake_postgres_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-data_dir=""
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -D)
-      data_dir="$2"
-      shift 2
-      ;;
-    -h|-p)
-      shift 2
-      ;;
-    *)
-      echo "unexpected postgres argument: $1" >&2
-      exit 64
-      ;;
-  esac
-done
-
-if [ -z "$data_dir" ] || [ ! -f "$data_dir/PG_VERSION" ]; then
-  echo "postgres data dir is not initialized" >&2
-  exit 64
-fi
-
-stop() {
-  exit 0
-}
-
-trap stop TERM INT
-
-while true; do
-  sleep 1
-done
-"#
-}
-
-fn unready_fake_mailpit_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-stop() {
-  exit 0
-}
-
-trap stop TERM INT
-
-while true; do
-  sleep 1
-done
-"#
-}
-
-fn fast_exit_fake_mailpit_script() -> &'static str {
-    r#"#!/usr/bin/env python3
-import http.server
-import os
-import sys
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ready")
-        self.wfile.flush()
-        os._exit(0)
-
-    def log_message(self, _format, *_args):
-        pass
-
-
-server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), Handler)
-server.serve_forever()
-"#
-}
-
 fn fake_sql_script() -> &'static str {
     r#"#!/bin/sh
 set -eu
@@ -4762,101 +4348,6 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             Ok(())
         })
     }
-}
-
-fn mailpit_script() -> &'static str {
-    r#"#!/bin/sh
-set -eu
-
-smtp=""
-listen=""
-database=""
-disable_version_check=false
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --smtp)
-      smtp="$2"
-      shift 2
-      ;;
-    --listen)
-      listen="$2"
-      shift 2
-      ;;
-    --database)
-      database="$2"
-      shift 2
-      ;;
-    --disable-version-check)
-      disable_version_check=true
-      shift
-      ;;
-    *)
-      echo "unexpected argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
-
-if [ -z "$smtp" ] || [ -z "$listen" ] || [ -z "$database" ]; then
-  echo "missing required mailpit argument" >&2
-  exit 2
-fi
-
-if [ "$disable_version_check" != true ]; then
-  echo "missing --disable-version-check" >&2
-  exit 2
-fi
-
-case "$database" in
-  */mailpit.db)
-    ;;
-  *)
-    echo "unexpected database path: $database" >&2
-    exit 2
-    ;;
-esac
-
-database_dir="$(dirname "$database")"
-if [ ! -d "$database_dir" ]; then
-  echo "database directory does not exist: $database_dir" >&2
-  exit 2
-fi
-
-python3 - "$smtp" "$listen" <<'PY'
-import http.server
-import signal
-import socketserver
-import sys
-import threading
-
-def host_port(value):
-    host, port = value.rsplit(":", 1)
-    return host, int(port)
-
-class SmtpHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.request.sendall(b"220 mailpit fixture\r\n")
-
-class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-
-smtp = TcpServer(host_port(sys.argv[1]), SmtpHandler)
-dashboard = http.server.ThreadingHTTPServer(
-    host_port(sys.argv[2]),
-    http.server.SimpleHTTPRequestHandler,
-)
-
-def stop(_signum, _frame):
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-
-threading.Thread(target=smtp.serve_forever, daemon=True).start()
-dashboard.serve_forever()
-PY
-"#
 }
 
 fn redis_server_script() -> &'static str {
