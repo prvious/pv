@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+import hashlib
+import http.server
+import os
+import posixpath
+import signal
+import sys
+import threading
+import urllib.parse
+
+
+arguments = list(sys.argv[1:])
+api_address = ""
+console_address = ""
+data_dir = ""
+
+while arguments:
+    argument = arguments.pop(0)
+    if argument == "--address":
+        api_address = arguments.pop(0)
+    elif argument == "--console-address":
+        console_address = arguments.pop(0)
+    else:
+        data_dir = argument
+
+reject_s3 = __PV_REJECT_S3__
+buckets_dir = os.path.join(data_dir, "buckets")
+os.makedirs(buckets_dir, exist_ok=True)
+with open(os.path.join(data_dir, "process-env"), "w", encoding="utf-8") as file:
+    file.write(f"RUSTFS_ACCESS_KEY={os.environ.get('RUSTFS_ACCESS_KEY', '')}\n")
+    file.write(f"RUSTFS_SECRET_KEY={os.environ.get('RUSTFS_SECRET_KEY', '')}\n")
+
+
+def split_address(value):
+    host, port = value.rsplit(":", 1)
+    return host, int(port)
+
+
+def bucket_path(bucket):
+    return os.path.join(buckets_dir, bucket)
+
+
+def object_path(bucket, key):
+    clean_key = posixpath.normpath("/" + key).lstrip("/")
+    return os.path.join(bucket_path(bucket), clean_key)
+
+
+class RustfsHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path in {"/", "/health"}:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"rustfs")
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_PUT(self):
+        if reject_s3:
+            self.send_response(403)
+            self.end_headers()
+            return
+
+        path = urllib.parse.urlparse(self.path).path.strip("/")
+        parts = path.split("/", 1)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        if not parts or not parts[0]:
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        bucket = parts[0]
+        if len(parts) == 1:
+            os.makedirs(bucket_path(bucket), exist_ok=True)
+            self.send_response(200)
+            self.end_headers()
+            return
+
+        target = object_path(bucket, parts[1])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as file:
+            file.write(body)
+        self.send_response(200)
+        self.send_header("ETag", hashlib.md5(body).hexdigest())
+        self.end_headers()
+
+    def do_HEAD(self):
+        if reject_s3:
+            self.send_response(403)
+            self.end_headers()
+            return
+
+        path = urllib.parse.urlparse(self.path).path.strip("/")
+        parts = path.split("/", 1)
+        if len(parts) != 2:
+            exists = bool(parts and parts[0] and os.path.isdir(bucket_path(parts[0])))
+            self.send_response(200 if exists else 404)
+            self.end_headers()
+            return
+
+        target = object_path(parts[0], parts[1])
+        if not os.path.exists(target):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        size = os.path.getsize(target)
+        with open(target, "rb") as file:
+            digest = hashlib.md5(file.read()).hexdigest()
+        self.send_response(200)
+        self.send_header("Content-Length", str(size))
+        self.send_header("ETag", digest)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        return
+
+
+class ConsoleHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"rustfs console")
+
+    def log_message(self, _format, *_args):
+        return
+
+
+class Server(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+api = Server(split_address(api_address), RustfsHandler)
+console = Server(split_address(console_address), ConsoleHandler)
+
+shutdown_requested = threading.Event()
+
+
+def stop(_signum, _frame):
+    if shutdown_requested.is_set():
+        return
+    shutdown_requested.set()
+    threading.Thread(target=api.shutdown, daemon=True).start()
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+threading.Thread(target=console.serve_forever, daemon=True).start()
+api.serve_forever()
+console.shutdown()

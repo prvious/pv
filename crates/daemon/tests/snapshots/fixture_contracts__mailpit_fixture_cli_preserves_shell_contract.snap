@@ -1,0 +1,48 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+(
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "unexpected argument: --unexpected\n",
+    },
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "missing required mailpit argument\n",
+    },
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "missing --disable-version-check\n",
+    },
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "unexpected database path: mailpit.db\n",
+    },
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "database directory does not exist: <tempdir>/missing\n",
+    },
+    FixtureOutput {
+        code: Some(
+            2,
+        ),
+        stdout: "",
+        stderr: "database directory does not exist: <tempdir>/missing\n",
+    },
+)
