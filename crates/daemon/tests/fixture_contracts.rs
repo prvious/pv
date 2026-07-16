@@ -1,13 +1,13 @@
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read, Seek};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
-use camino_tempfile::tempdir;
+use camino_tempfile::{tempdir, tempfile};
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, Signal, kill_process, test_kill_process};
 use state::StateError;
@@ -49,6 +49,16 @@ with open(sys.argv[1], "w", encoding="utf-8") as pid_file:
     pid_file.write(f"{os.getpid()}\n")
 
 signal.pause()
+"#;
+const VERBOSE_FIXTURE: &str = r#"#!/usr/bin/env python3
+import sys
+
+
+contents = "v" * (2 * 1024 * 1024)
+sys.stdout.write(contents)
+sys.stdout.flush()
+sys.stderr.write(contents)
+sys.stderr.flush()
 "#;
 
 #[expect(
@@ -103,6 +113,25 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     assert!(test_kill_process(pid).is_err());
 
     Ok(())
+}
+
+#[test]
+fn fixture_command_captures_verbose_output_without_pipe_backpressure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = tempdir.path().join("verbose-fixture");
+
+    materialize_fixture(&fixture, VERBOSE_FIXTURE)?;
+    let mut command = FixtureCommand::new(fixture.as_std_path());
+    command.current_dir(tempdir.path());
+
+    let output = run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT)?;
+    assert_eq!(output.stdout.len(), 2 * 1024 * 1024);
+    assert_eq!(output.stderr.len(), 2 * 1024 * 1024);
+    assert_fixture_snapshot(
+        tempdir.path(),
+        "fixture_command_captures_verbose_output_without_pipe_backpressure",
+        (output.code, output.stdout.len(), output.stderr.len()),
+    )
 }
 
 #[test]
@@ -519,16 +548,18 @@ fn run_fixture(
 }
 
 fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Result<FixtureOutput> {
+    let mut stdout = tempfile()?;
+    let mut stderr = tempfile()?;
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
     let mut child = command.spawn()?;
     let deadline = Instant::now() + timeout;
 
     let error = loop {
         match child.try_wait() {
-            Ok(Some(_)) => return fixture_output(child.wait_with_output()?),
+            Ok(Some(status)) => return fixture_output(status, &mut stdout, &mut stderr),
             Ok(None) => {}
             Err(error) => break error.into(),
         }
@@ -547,12 +578,24 @@ fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Resul
     Err(error)
 }
 
-fn fixture_output(output: Output) -> Result<FixtureOutput> {
+fn fixture_output(
+    status: ExitStatus,
+    stdout: &mut (impl Read + Seek),
+    stderr: &mut (impl Read + Seek),
+) -> Result<FixtureOutput> {
     Ok(FixtureOutput {
-        code: output.status.code(),
-        stdout: String::from_utf8(output.stdout)?,
-        stderr: String::from_utf8(output.stderr)?,
+        code: status.code(),
+        stdout: String::from_utf8(read_fixture_output(stdout)?)?,
+        stderr: String::from_utf8(read_fixture_output(stderr)?)?,
     })
+}
+
+fn read_fixture_output(file: &mut (impl Read + Seek)) -> Result<Vec<u8>> {
+    file.rewind()?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+
+    Ok(contents)
 }
 
 fn process_pid(pid: u32) -> Result<Pid> {

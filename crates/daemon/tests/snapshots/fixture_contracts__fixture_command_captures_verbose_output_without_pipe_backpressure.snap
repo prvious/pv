@@ -1,0 +1,11 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+(
+    Some(
+        0,
+    ),
+    2097152,
+    2097152,
+)
