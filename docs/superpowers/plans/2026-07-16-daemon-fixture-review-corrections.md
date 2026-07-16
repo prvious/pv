@@ -2,41 +2,46 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
-**Goal:** Preserve the accepted historical fixture-contract corrections and specify the final timeout-budget, complete-marker, and backpressure-safe output-capture follow-ups.
+**Goal:** Preserve the accepted historical fixture-contract corrections and specify the final timeout-budget, complete-marker, backpressure-safe output-capture, deterministic PostgreSQL shutdown, and historical TERM/INT signal-status preservation follow-ups in Tasks 5–10.
 
-**Architecture:** Tasks 1–4 are an immutable historical sequence: a private synchronous fixture-command runner owns deadline polling and bounded cleanup, and MySQL/PostgreSQL lifecycle tests coordinate through a handler marker. Tasks 5–7 supersede the accepted final details by adding scheduling slack to the test-only timeout budget, requiring the complete marker contents, and redirecting child output to anonymous temporary files before reading it after confirmed exit.
+**Architecture:** Tasks 1–4 are an immutable historical sequence: a private synchronous fixture-command runner owns deadline polling and bounded cleanup, and MySQL/PostgreSQL lifecycle tests coordinate through a handler marker. Tasks 5–7 supersede the accepted final details by adding scheduling slack to the test-only timeout budget, requiring the complete marker contents, and redirecting child output to anonymous temporary files before reading it after confirmed exit. Tasks 8–10 add deterministic PostgreSQL shutdown and preserve the historical TERM/INT signal-derived status for all six fixture producers while retaining their normal lifecycle and protocol behavior.
 
 **Tech Stack:** Rust 2024, anyhow, camino, rustix, Python 3 standard library, cargo-nextest, Clippy.
 
 ## Global Constraints
 
 - Work only in the existing refactor/daemon-test-fixtures worktree and preserve unrelated user changes.
-- Do not change production daemon or supervisor behavior, process ownership matching, nextest configuration, CI scheduling, fixture process-group topology, Cargo.toml, Cargo.lock, dependencies, manifests, or Python fixture producers.
-- Python fixtures remain standard-library-only. Preserve normal exit status, stdout, stderr, custom MySQL environment variables, CLI behavior, and protocol behavior.
+- Do not change production daemon or supervisor behavior, process ownership matching, nextest configuration, CI scheduling, fixture process-group topology, Cargo.toml, Cargo.lock, dependencies, or manifests. Only Tasks 8–10 may change the six listed Python fixture producers and their lifecycle implementation.
+- Python fixtures remain standard-library-only. Preserve non-signal normal exits, stdout, stderr, custom MySQL environment variables, CLI behavior, and protocol behavior. Explicitly preserve the historical signal-derived status for TERM and INT exits.
 - Tasks 1–4 are historical implementations, including their commits and code blocks. Do not amend them beyond correcting the PostgreSQL marker prose: the marker is written at handler entry before the first blocking `read_startup`, and `statements`/`portals` initialize after the marker.
 - Tasks 5–7 supersede the accepted final details. Final behavior uses a 3-second command deadline, 10-millisecond poll interval, 1-second bounded cleanup deadline, and a 100-millisecond test-only scheduling margin. Every post-spawn timeout or `try_wait` error routes through bounded cleanup.
-- Final lifecycle tests use a per-test `PV_FIXTURE_HANDLER_STARTED` marker rather than a fixed delay. MySQL and PostgreSQL Python producers remain unchanged; Rust accepts only the exact UTF-8 contents `"started\n"` before signalling the fixture.
+- Tasks 5–7 use a per-test `PV_FIXTURE_HANDLER_STARTED` marker rather than a fixed delay. MySQL and PostgreSQL Python producers remain unchanged for Tasks 5–7; Tasks 8–10 intentionally change fixture lifecycle and shutdown behavior. Rust accepts only the exact UTF-8 contents `"started\n"` before signalling the fixture.
 - The final runner captures stdout and stderr in two anonymous `camino_tempfile::tempfile` files, reads each only after confirmed exit, and preserves `String::from_utf8` conversion and `ExitStatus::code`. Do not use threads, pipes, new dependencies, manifest/lockfile changes, unsafe code, `panic!`, `unwrap()`, or Clippy ignores.
 - Set daemon_threads = True on custom ThreadingMixIn servers for MySQL, PostgreSQL, fake Mailpit, and Mailpit. Redis retains its existing setting. Do not add Mailpit implementation-detail lifecycle tests because its handlers already return promptly.
 - Preserve the positive HANGING_FIXTURE extraction-plan correction in docs/superpowers/plans/2026-07-15-daemon-test-fixtures.md; this plan does not alter it.
-- The four historical commit boundaries map one-to-one to Tasks 1–4. Their blocking reap and fixed 100-millisecond settle sleep are historical interim behavior. Tasks 5–7 have three additional, separate commit boundaries and define the final accepted details.
+- The four historical commit boundaries map one-to-one to Tasks 1–4. Their blocking reap and fixed 100-millisecond settle sleep are historical interim behavior. Tasks 5–10 have six additional, separate commit boundaries and define the final accepted details.
 
 ## File Map
 
 - Modify: crates/daemon/tests/fixture_contracts.rs
-  - Final state: bounded command cleanup with a scheduling-margin test budget, complete-marker synchronization, backpressure-safe temporary-file output capture, and MySQL/PostgreSQL idle-client shutdown coverage.
+  - Final state: bounded command cleanup with a scheduling-margin test budget, complete-marker synchronization, backpressure-safe temporary-file output capture, deterministic PostgreSQL race coverage, and TERM/INT signal-status coverage for all six fixtures.
 - Create: crates/daemon/tests/snapshots/fixture_contracts__fixture_handler_marker_requires_complete_contents.snap
   - Captures the complete-marker regression's timeout result.
 - Create: crates/daemon/tests/snapshots/fixture_contracts__fixture_command_captures_verbose_output_without_pipe_backpressure.snap
   - Captures the successful verbose fixture exit code and exact stdout/stderr lengths.
 - Modify: crates/daemon/test-fixtures/managed-resources/mysql.py
-  - Final state: daemon request threads and optional handler marker before recv.
+  - Final state: daemon request threads, optional handler marker before recv, and historical TERM/INT signal-derived status after orderly shutdown.
 - Modify: crates/daemon/test-fixtures/managed-resources/postgres.py
-  - Historical state: daemon request threads and an optional marker at handler entry, before `statements`/`portals` initialization and the first blocking `read_startup`.
+  - Final state: daemon request threads, the optional marker at handler entry before `statements`/`portals` initialization and the first blocking `read_startup`, deterministic main-thread serving, and historical TERM/INT signal-derived status.
 - Modify: crates/daemon/test-fixtures/managed-resources/fake-mailpit.py
-  - Final state: daemon SMTP request threads.
+  - Final state: daemon SMTP request threads and historical TERM/INT signal-derived status after all listeners close.
 - Modify: crates/daemon/test-fixtures/managed-resources/mailpit.py
-  - Final state: daemon SMTP request threads.
+  - Final state: daemon SMTP request threads and historical TERM/INT signal-derived status after all listeners close.
+- Modify: crates/daemon/test-fixtures/managed-resources/redis-server.py
+  - Final state: preserved process-group TERM/INT signal exit status.
+- Modify: crates/daemon/test-fixtures/managed-resources/rustfs.py.in
+  - Final state: preserved process-group TERM/INT signal exit status.
+- The six producer final states are: MySQL and PostgreSQL request-thread lifecycle support (with PostgreSQL deterministic main-thread serving), fake Mailpit and Mailpit request-thread lifecycle support, and preserved process-group TERM/INT signal status for Redis and RustFS.
 
 ### Task 1: Bound Fixture-Contract Subprocesses
 
@@ -897,9 +902,127 @@ git add crates/daemon/tests/snapshots/fixture_contracts__fixture_command_capture
 git commit -m "fix(daemon): capture fixture output without pipe backpressure"
 ~~~
 
+### Task 8: Make PostgreSQL Signal Shutdown Deterministic
+
+**Files:**
+- Modify: crates/daemon/test-fixtures/managed-resources/postgres.py
+- Modify: crates/daemon/tests/fixture_contracts.rs
+
+**Interfaces:**
+- Consumes the existing PostgreSQL idle-client lifecycle test and the Redis/RustFS signal-shutdown pattern.
+- Produces deterministic PostgreSQL shutdown without `signal.pause()` or a background-only `serve_forever`.
+
+- [ ] **Step 1: Add a no-sleep regression that exposes the current race**
+
+Use a per-test `sitecustomize.py` that patches `signal.pause` so old code writes `injected\n`, then calls `os.kill(os.getpid(), signal.SIGTERM)` immediately before the original pause. Patch `socketserver.BaseServer.serve_forever` so fixed code writes the same marker, then self-sends SIGTERM immediately before a main-thread `serve_forever`; make `inject()` idempotent. The `BaseServer.serve_forever` injection MUST run only when `threading.current_thread() is threading.main_thread()`; old background `serve_forever` must never call `inject()`, while old `signal.pause` does. Wait for the exact marker, require exit within `FIXTURE_SHUTDOWN_TIMEOUT`, accept clean exit for Task 8 and SIGTERM after Task 9, and always boundedly kill/reap on failure. The old background-server-plus-`signal.pause()` code shuts down its background server, then enters the original pause and times out; the fixed code starts a shutdown helper, enters main-thread `serve_forever` with shutdown already requested, and exits.
+
+- [ ] **Step 2: Move PostgreSQL serving to the main thread**
+
+Replace the background `serve_forever` thread and `signal.pause()` with this shape:
+
+~~~python
+shutdown_requested = threading.Event()
+shutdown_thread = None
+
+
+def stop(signum, frame):
+    global shutdown_thread
+    if not shutdown_requested.is_set():
+        shutdown_requested.set()
+        shutdown_thread = threading.Thread(
+            target=server.shutdown,
+            daemon=True,
+        )
+        shutdown_thread.start()
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+server.serve_forever()
+if shutdown_thread is not None:
+    shutdown_thread.join()
+server.server_close()
+~~~
+
+The idempotent handler sets the Event and starts the optional helper thread; `server.serve_forever()` remains on the main thread. Never call `shutdown()` synchronously from the serving-thread signal handler. Preserve the existing handler marker ordering and PostgreSQL protocol behavior.
+
+- [ ] **Step 3: Verify and commit**
+
+Run the focused PostgreSQL regression, the full fixture-contract test, formatting, locked Clippy, and `git diff --check`. Repeat the PostgreSQL lifecycle regression 20 times and confirm no sleep is used to establish handler readiness. Commit:
+
+~~~shell
+git add crates/daemon/tests/fixture_contracts.rs
+git add crates/daemon/test-fixtures/managed-resources/postgres.py
+git commit -m "fix(daemon): make postgres fixture shutdown deterministic"
+~~~
+
+### Task 9: Preserve Single-Server Signal Status
+
+**Files:**
+- Modify: crates/daemon/test-fixtures/managed-resources/mysql.py
+- Modify: crates/daemon/test-fixtures/managed-resources/postgres.py
+- Modify: crates/daemon/test-fixtures/managed-resources/redis-server.py
+- Modify: crates/daemon/tests/fixture_contracts.rs
+
+**Interfaces:**
+- Consumes each single-server fixture's orderly shutdown helper and the existing process-group fixture launcher.
+- Produces bounded Rust helpers that materialize direct fixture executables, launch them in their own process groups, signal the group, and assert direct-child signal status. The expected status is historical from the removed shell wrappers; Task 10 reuses these helpers.
+
+- [ ] **Step 1: Add bounded TERM/INT coverage for the single-server fixtures**
+
+Add cases covering MySQL, PostgreSQL, and Redis with both SIGTERM and SIGINT. Materialize each direct fixture executable (rendering is not needed for these three), call `CommandExt::process_group(0)`, use `kill_process_group`, wait for the direct child/group leader `ExitStatus`, and assert `ExitStatusExt::signal() == Some(signal.as_raw())`. Do not invoke a shell or interpose a shell wrapper. Use bounded readiness and cleanup; on failure, kill and reap the process group.
+
+- [ ] **Step 2: Restore the default disposition after each orderly shutdown**
+
+In mysql.py, postgres.py, and redis-server.py, record the received signum and use one idempotent `threading.Event` plus one helper thread to stop all servers. The main thread joins the helper and closes every listener, then restores `SIG_DFL` and calls `os.kill(os.getpid(), signum)` only after orderly shutdown. Add `threading` where MySQL needs it; do not add a shared abstraction or dependency.
+
+- [ ] **Step 3: Verify and commit the single-server slice**
+
+Run the focused single-server TERM/INT status tests, the full fixture-contract suite, Python parsing, formatting, locked workspace Clippy, the locked workspace suite, and `git diff --check`. Verify only the three listed fixtures plus `fixture_contracts.rs` changed for this commit. Commit:
+
+~~~shell
+git add crates/daemon/tests/fixture_contracts.rs
+git add crates/daemon/test-fixtures/managed-resources/mysql.py
+git add crates/daemon/test-fixtures/managed-resources/postgres.py
+git add crates/daemon/test-fixtures/managed-resources/redis-server.py
+git commit -m "fix(daemon): preserve single-server fixture signal status"
+~~~
+
+### Task 10: Preserve Multi-Server Signal Status
+
+**Files:**
+- Modify: crates/daemon/test-fixtures/managed-resources/fake-mailpit.py
+- Modify: crates/daemon/test-fixtures/managed-resources/mailpit.py
+- Modify: crates/daemon/test-fixtures/managed-resources/rustfs.py.in
+- Modify: crates/daemon/tests/fixture_contracts.rs
+
+**Interfaces:**
+- Consumes the safe materialization, process-group launch, bounded readiness/cleanup, `kill_process_group`, and `ExitStatus` signal-status helpers from Task 9.
+- Produces TERM/INT process-group status coverage and orderly multi-server shutdown for the remaining fixtures. The expected status is historical from the removed shell wrappers.
+
+- [ ] **Step 1: Add bounded TERM/INT coverage for the multi-server fixtures**
+
+Add cases covering fake Mailpit, Mailpit, and rendered RustFS with both SIGTERM and SIGINT. Materialize each direct executable, render `rustfs.py.in` for the required variants, launch with `CommandExt::process_group(0)`, signal with `kill_process_group`, wait for the direct child/group leader `ExitStatus`, and assert `ExitStatusExt::signal() == Some(signal.as_raw())`. Use no shell interposition, and always perform bounded group kill/reap cleanup on failure.
+
+- [ ] **Step 2: Restore the default disposition after all listeners close**
+
+In fake-mailpit.py, mailpit.py, and rustfs.py.in, record the received signum and use one idempotent `threading.Event` plus one helper thread to stop all servers. The main thread joins the helper and closes every listener before restoring `SIG_DFL` and calling `os.kill(os.getpid(), signum)`. Add `threading` where needed and `os` to fake-mailpit.py; do not add a shared abstraction or dependency.
+
+- [ ] **Step 3: Verify and commit the multi-server slice**
+
+Run the focused multi-server TERM/INT status tests, the full fixture-contract suite, Python parsing including both RustFS renderings, formatting, locked workspace Clippy, the locked workspace suite, and `git diff --check`. Verify this commit adds only the three listed fixtures and the additional Rust cases. Commit:
+
+~~~shell
+git add crates/daemon/tests/fixture_contracts.rs
+git add crates/daemon/test-fixtures/managed-resources/fake-mailpit.py
+git add crates/daemon/test-fixtures/managed-resources/mailpit.py
+git add crates/daemon/test-fixtures/managed-resources/rustfs.py.in
+git commit -m "fix(daemon): preserve multi-server fixture signal status"
+~~~
+
 ## Final Verification
 
-Run final verification only after Task 7 and its commit. Tasks 1–4 are historical; Tasks 5–7 define the accepted final details.
+Run final verification only after Tasks 8–10 and their commits. Tasks 1–4 are historical; Tasks 5–10 define the accepted final details.
 
 ~~~shell
 cargo nextest run -p daemon --test fixture_contracts -E 'test(fixture_command_timeout_kills_and_reaps_child) | test(fixture_handler_marker_requires_complete_contents) | test(fixture_command_captures_verbose_output_without_pipe_backpressure)'
@@ -908,12 +1031,18 @@ for iteration in {1..20}; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(mysql_fixture_exits_after_sigterm_with_idle_client)'
 done
 for iteration in {1..20}; do
+  cargo nextest run -p daemon --test fixture_contracts -E 'test(single_server_fixture_exits_after_signal_status)'
+done
+for iteration in {1..20}; do
+  cargo nextest run -p daemon --test fixture_contracts -E 'test(multi_server_fixture_exits_after_signal_status)'
+done
+for iteration in {1..20}; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(postgres_fixture_exits_after_sigterm_with_idle_client)'
 done
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --all-features --locked
-python3 -c 'import ast, pathlib; paths = [pathlib.Path(path) for path in ["crates/daemon/test-fixtures/managed-resources/mysql.py", "crates/daemon/test-fixtures/managed-resources/postgres.py", "crates/daemon/test-fixtures/managed-resources/fake-mailpit.py", "crates/daemon/test-fixtures/managed-resources/mailpit.py"]]; [ast.parse(path.read_text(), filename=str(path)) for path in paths]; print(f"parsed {len(paths)} Python fixtures")'
+python3 -c 'import ast, pathlib; root = pathlib.Path("crates/daemon/test-fixtures"); paths = sorted(root.rglob("*.py")); [ast.parse(path.read_text(), filename=str(path)) for path in paths]; template = root / "managed-resources/rustfs.py.in"; source = template.read_text(); sentinel = "__PV_REJECT_S3__"; assert source.count(sentinel) == 1; rendered = [source.replace(sentinel, value) for value in ("False", "True")]; assert all(sentinel not in value for value in rendered); [ast.parse(value, filename=f"{template}:{index}") for index, value in enumerate(rendered)]; print(f"parsed {len(paths)} checked-in Python fixtures and rendered rustfs.py.in twice")'
 git diff --check c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
 git diff --name-only c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
 ! rg --files crates/daemon/tests/snapshots -g '*.snap.new' -g '*.snap.tmp'
@@ -921,4 +1050,4 @@ git ls-files --others --exclude-standard
 git status --short
 ~~~
 
-Expected: the focused new regressions and full fixture-contract suite pass; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; all four Python fixtures parse; the follow-up artifact diff contains only this correction plan, `fixture_contracts.rs`, and the two new snapshots with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status checks are empty. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, and captures 2 MiB of UTF-8 output from each stream without pipe backpressure.
+Expected: the focused new regressions and full fixture-contract suite pass; PostgreSQL and all six fixture TERM/INT process-group signal-status paths are deterministic; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; every checked-in `*.py` under `crates/daemon/test-fixtures` parses, and `rustfs.py.in` parses after rendering with both `False` and `True` after asserting exactly one sentinel and none after replacement; the follow-up artifact diff contains only this correction plan, `fixture_contracts.rs`, the six listed fixtures, and the two new snapshots with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status checks are empty. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, captures 2 MiB of UTF-8 output from each stream without pipe backpressure, and preserves the historical SIGTERM/SIGINT process-group exit outcomes.
