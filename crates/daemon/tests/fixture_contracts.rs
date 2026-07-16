@@ -67,6 +67,7 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("hanging-fixture");
     let pid_path = tempdir.path().join("hanging-fixture.pid");
+    let timeout = Duration::from_secs(1);
 
     materialize_fixture(&fixture, HANGING_FIXTURE)?;
     let mut command = FixtureCommand::new(fixture.as_std_path());
@@ -74,7 +75,8 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
         .arg(pid_path.as_std_path())
         .current_dir(tempdir.path());
 
-    let error = match run_fixture_command(&mut command, Duration::from_secs(1)) {
+    let started_at = Instant::now();
+    let error = match run_fixture_command(&mut command, timeout) {
         Ok(output) => bail!("hanging fixture unexpectedly exited: {output:?}"),
         Err(error) => error,
     };
@@ -82,6 +84,10 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
         .downcast_ref::<std::io::Error>()
         .ok_or_else(|| anyhow!("fixture timeout did not return an I/O error: {error}"))?;
     assert_eq!(io_error.kind(), ErrorKind::TimedOut);
+    assert!(
+        started_at.elapsed() < timeout + FIXTURE_SHUTDOWN_TIMEOUT + FIXTURE_COMMAND_POLL_INTERVAL,
+        "fixture command timeout exceeded its cleanup deadline"
+    );
 
     let raw_pid = state::fs::read_to_string(&pid_path)?
         .trim()
@@ -277,16 +283,16 @@ fn fake_mailpit_fixture_cli_ignores_extra_arguments() -> Result<()> {
 
         Ok::<_, anyhow::Error>((readiness, running_after_readiness))
     })();
-    let kill_result = child.kill();
-    let wait_result = child.wait();
+    let cleanup = kill_and_reap_child(&mut child);
 
-    let lifecycle = lifecycle?;
-    if let Err(error) = kill_result
-        && error.kind() != ErrorKind::InvalidInput
-    {
-        return Err(error.into());
-    }
-    wait_result?;
+    let lifecycle = match lifecycle {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => {
+            cleanup?;
+            return Err(error);
+        }
+    };
+    cleanup?;
 
     assert_fixture_snapshot(
         tempdir.path(),
@@ -490,31 +496,25 @@ fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Resul
     let mut child = command.spawn()?;
     let deadline = Instant::now() + timeout;
 
-    loop {
-        if child.try_wait()?.is_some() {
-            return fixture_output(child.wait_with_output()?);
+    let error = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return fixture_output(child.wait_with_output()?),
+            Ok(None) => {}
+            Err(error) => break error.into(),
         }
         if Instant::now() >= deadline {
-            let kill_result = child.kill();
-            let wait_result = child.wait_with_output();
-            if let Err(error) = wait_result {
-                return Err(error.into());
-            }
-            if let Err(error) = kill_result
-                && error.kind() != ErrorKind::InvalidInput
-            {
-                return Err(error.into());
-            }
-
-            return Err(Error::new(
+            break Error::new(
                 ErrorKind::TimedOut,
                 format!("fixture command timed out after {} ms", timeout.as_millis()),
             )
-            .into());
+            .into();
         }
 
         thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
+    };
+
+    kill_and_reap_child(&mut child)?;
+    Err(error)
 }
 
 fn fixture_output(output: Output) -> Result<FixtureOutput> {
@@ -583,15 +583,25 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool> {
 }
 
 fn kill_and_reap_child(child: &mut Child) -> Result<()> {
-    let kill_result = child.kill();
-    let wait_result = child.wait();
-    if let Err(error) = wait_result {
+    let kill_error = match child.kill() {
+        Ok(()) => None,
+        Err(error) if error.kind() == ErrorKind::InvalidInput => None,
+        Err(error) => Some(error),
+    };
+    let reap_result = wait_for_child_exit(child, FIXTURE_SHUTDOWN_TIMEOUT);
+
+    if let Some(error) = kill_error {
         return Err(error.into());
     }
-    if let Err(error) = kill_result
-        && error.kind() != ErrorKind::InvalidInput
-    {
-        return Err(error.into());
+    if !reap_result? {
+        return Err(Error::new(
+            ErrorKind::TimedOut,
+            format!(
+                "timed out reaping fixture child after {} ms",
+                FIXTURE_SHUTDOWN_TIMEOUT.as_millis()
+            ),
+        )
+        .into());
     }
 
     Ok(())
