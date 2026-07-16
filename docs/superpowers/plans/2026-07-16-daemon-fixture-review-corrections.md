@@ -148,43 +148,114 @@ fn process_pid(pid: u32) -> Result<Pid> {
 }
 ~~~
 
-- [ ] **Step 3: Run the regression under a bounded outer process group and verify RED**
+- [ ] **Step 3: Run the regression directly and verify RED cleanup**
 
 Run:
 
 ~~~shell
 python3 - <<'PY'
+import json
 import os
 import signal
 import subprocess
 import sys
 
-command = [
-    "cargo",
-    "nextest",
-    "run",
-    "-p",
-    "daemon",
-    "--test",
-    "fixture_contracts",
-    "-E",
-    "test(fixture_command_timeout_kills_and_reaps_child)",
-]
-process = subprocess.Popen(command, start_new_session=True)
+try:
+    build = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "daemon",
+            "--test",
+            "fixture_contracts",
+            "--no-run",
+            "--message-format=json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+except subprocess.CalledProcessError as error:
+    print(f"unexpected error: fixture-contract build failed: {error}")
+    if error.stderr:
+        print(error.stderr, end="")
+    sys.exit(2)
+except OSError as error:
+    print(f"unexpected error: fixture-contract build launch failed: {error}")
+    sys.exit(2)
+test_binary = None
+for line in build.stdout.splitlines():
+    try:
+        message = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if (
+        message.get("reason") == "compiler-artifact"
+        and message.get("target", {}).get("name") == "fixture_contracts"
+        and message.get("executable")
+    ):
+        test_binary = message["executable"]
+        break
+if test_binary is None:
+    print("unexpected error: Cargo JSON did not identify the fixture_contracts test binary")
+    sys.exit(2)
+
+try:
+    process = subprocess.Popen(
+        [
+            test_binary,
+            "--exact",
+            "fixture_command_timeout_kills_and_reaps_child",
+            "--nocapture",
+        ],
+        start_new_session=True,
+    )
+except OSError as error:
+    print(f"unexpected error: fixture-contract test binary launch failed: {error}")
+    sys.exit(2)
 try:
     return_code = process.wait(timeout=3)
 except subprocess.TimeoutExpired:
-    os.killpg(process.pid, signal.SIGKILL)
-    process.wait()
-    print("RED: unbounded fixture command exceeded the outer deadline")
-    sys.exit(1)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError as error:
+        print(f"unexpected error: failed to kill direct test process group: {error}")
+        sys.exit(2)
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        print("unexpected error: direct test process did not exit after process-group cleanup")
+        sys.exit(2)
+    except OSError as error:
+        print(f"unexpected error: failed to reap direct test process: {error}")
+        sys.exit(2)
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        print("RED: unbounded fixture command exceeded the direct test deadline; process group was cleaned up")
+        sys.exit(1)
+    except OSError as error:
+        print(f"unexpected error: failed to probe direct test process group: {error}")
+        sys.exit(2)
+    print("unexpected error: direct test process group survived cleanup")
+    sys.exit(2)
+except OSError as error:
+    print(f"unexpected error: initial direct test wait failed: {error}")
+    sys.exit(2)
 
 print(f"unexpected early exit from RED test: {return_code}")
 sys.exit(2)
 PY
 ~~~
 
-Expected: the harness prints RED, kills the whole temporary test process group, reaps it, and exits 1. Confirm no hanging-fixture or fixture_contracts process remains before continuing.
+Expected: Cargo JSON identifies the `fixture_contracts` executable, the direct test binary hangs in the old scaffold, and after three seconds the harness kills and reaps its process group. The harness then verifies `os.killpg(process.pid, 0)` raises `ProcessLookupError`, prints:
+
+~~~text
+RED: unbounded fixture command exceeded the direct test deadline; process group was cleaned up
+~~~
+
+and exits 1 only after timeout, successful kill/wait cleanup, and cleanup verification. An early test exit, build launch or nonzero-build failure, build/JSON failure, test-binary launch failure, initial wait failure, kill/wait failure, or non-`ProcessLookupError` process-group probe failure is an unexpected error and exits 2.
 
 - [ ] **Step 4: Implement the bounded runner**
 
