@@ -26,6 +26,10 @@
 - Prefer integration coverage and nearby `insta` patterns. Avoid `panic!`, `unreachable!`, `.unwrap()`, `.expect()`, unsafe code, Clippy ignores, and shortened variable names.
 - Use Conventional Commit messages exactly as listed in each task.
 
+### Post-Review Amendment
+
+The approved [post-review corrections](../specs/2026-07-15-daemon-test-fixtures-design.md#post-review-corrections) supersede this plan only where it previously prohibited fixture timing and shutdown corrections. Follow the [review-corrections implementation plan](2026-07-16-daemon-fixture-review-corrections.md) for the bounded fixture-contract runner, custom `ThreadingMixIn` normalization, their regression tests, and their separate commits. Every other constraint and completed task in this plan remains unchanged.
+
 ## File Map
 
 **Create managed-resource fixtures:**
