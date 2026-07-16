@@ -57,6 +57,7 @@ class SmtpHandler(socketserver.BaseRequestHandler):
 
 class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
 
 smtp_server = TcpServer(host_port(smtp), SmtpHandler)

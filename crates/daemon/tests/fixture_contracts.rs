@@ -1,7 +1,7 @@
 use std::io::{Error, ErrorKind};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,10 +9,12 @@ use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use rustix::process::{Pid, test_kill_process};
+use rustix::process::{Pid, Signal, kill_process, test_kill_process};
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const FIXTURE_HANDLER_SETTLE_TIME: Duration = Duration::from_millis(100);
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -88,6 +90,87 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     assert!(test_kill_process(pid).is_err());
 
     Ok(())
+}
+
+#[test]
+fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = tempdir.path().join("mysqld");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = listener.local_addr()?.port();
+    let port_argument = port.to_string();
+
+    materialize_fixture(&fixture, MYSQL_FIXTURE)?;
+    drop(listener);
+
+    let mut child = FixtureCommand::new(fixture.as_std_path())
+        .args(["--port", port_argument.as_str()])
+        .current_dir(tempdir.path())
+        .spawn()?;
+    let lifecycle = (|| {
+        let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
+        thread::sleep(FIXTURE_HANDLER_SETTLE_TIME);
+        kill_process(process_pid(child.id())?, Signal::TERM)?;
+        if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
+            bail!("MySQL fixture did not exit after SIGTERM with an idle client");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })();
+    let cleanup = kill_and_reap_child(&mut child);
+
+    if let Err(error) = lifecycle {
+        cleanup?;
+        return Err(error);
+    }
+    cleanup
+}
+
+#[test]
+fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = tempdir.path().join("postgres");
+    let data_dir = tempdir.path().join("postgres-data");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = listener.local_addr()?.port();
+    let port_argument = port.to_string();
+
+    materialize_fixture(&fixture, POSTGRES_FIXTURE)?;
+    state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
+    state::fs::write_sensitive_file(
+        &data_dir.join("postgresql.conf"),
+        &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
+    )?;
+    drop(listener);
+
+    let mut child = FixtureCommand::new(fixture.as_std_path())
+        .args([
+            "-D",
+            data_dir.as_str(),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            port_argument.as_str(),
+        ])
+        .current_dir(tempdir.path())
+        .spawn()?;
+    let lifecycle = (|| {
+        let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
+        thread::sleep(FIXTURE_HANDLER_SETTLE_TIME);
+        kill_process(process_pid(child.id())?, Signal::TERM)?;
+        if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
+            bail!("PostgreSQL fixture did not exit after SIGTERM with an idle client");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })();
+    let cleanup = kill_and_reap_child(&mut child);
+
+    if let Err(error) = lifecycle {
+        cleanup?;
+        return Err(error);
+    }
+    cleanup
 }
 
 #[test]
@@ -467,6 +550,51 @@ fn wait_for_loopback_ports(ports: [u16; 2], timeout: Duration) -> Result<[bool; 
 
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn connect_to_loopback(port: u16, timeout: Duration) -> Result<TcpStream> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Ok(stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
+            return Ok(stream);
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out connecting to fixture port {port}");
+        }
+
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn kill_and_reap_child(child: &mut Child) -> Result<()> {
+    let kill_result = child.kill();
+    let wait_result = child.wait();
+    if let Err(error) = wait_result {
+        return Err(error.into());
+    }
+    if let Err(error) = kill_result
+        && error.kind() != ErrorKind::InvalidInput
+    {
+        return Err(error.into());
+    }
+
+    Ok(())
 }
 
 fn assert_fixture_snapshot(

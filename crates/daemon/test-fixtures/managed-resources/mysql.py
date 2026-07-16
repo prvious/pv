@@ -41,6 +41,7 @@ class Handler(socketserver.BaseRequestHandler):
 
 class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
 
 def stop(_signum, _frame):

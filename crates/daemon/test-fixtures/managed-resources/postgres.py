@@ -277,6 +277,7 @@ class Handler(socketserver.BaseRequestHandler):
 
 class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+    daemon_threads = True
 
 
 server = Server((host, port), Handler)
