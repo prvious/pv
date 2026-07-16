@@ -8,7 +8,7 @@ Python remains an appropriate implementation language for the fake network servi
 
 Shell remains appropriate where the fixture's behavior is fundamentally shell process behavior, such as signal traps, waiting for a child, or intentionally staying alive without becoming ready. Shell wrappers that only parse or forward arguments before starting Python will be replaced by directly executable Python fixtures. Short, scenario-specific scripts will remain inline when extracting them would only move a few obvious lines away from the test that explains them.
 
-This is a daemon-only structural refactor. It does not include `pv-release` scripts and does not include CI scheduling, test parallelism, fixture timing, or shutdown-behavior changes.
+This is a daemon-only structural refactor. It does not include `pv-release` scripts, CI scheduling, test parallelism, or production lifecycle changes. Post-review corrections may harden the test-only subprocess runner and normalize request-thread shutdown for the extracted fixtures as described below.
 
 ## Goals
 
@@ -26,7 +26,7 @@ This is a daemon-only structural refactor. It does not include `pv-release` scri
 - Do not extract every inline shell snippet in the repository.
 - Do not change scripts in `crates/pv-release`, release recipes, or release workflows.
 - Do not change production daemon or supervisor behavior.
-- Do not change fixture readiness, shutdown, retry, timeout, or failure behavior.
+- Do not otherwise change fixture readiness, shutdown, retry, timeout, or failure behavior beyond the post-review corrections described below.
 - Do not change nextest configuration, CI job structure, test scheduling, or suite performance policy.
 - Do not introduce third-party Python dependencies.
 - Do not add a generic fixture loader, templating engine, process harness, or cross-crate abstraction.
@@ -161,7 +161,20 @@ Porting shell parsing into Python must not relax validation. These small CLIs us
 
 The extraction also preserves the current lifecycle fixes exactly: Redis and RustFS use an idempotent `threading.Event` plus a helper thread to request server shutdown, while the fast-exit Mailpit handler sends and flushes its successful response before calling `os._exit(0)`.
 
-No opportunistic cleanup or behavioral correction belongs in this change. If extraction reveals a fixture defect, that defect should be reported and handled separately unless leaving it unchanged makes the extraction impossible.
+No opportunistic cleanup or behavioral correction belongs in this change beyond the explicitly approved post-review corrections below.
+
+## Post-Review Corrections
+
+Review identified two narrow test-only hardening opportunities that are included in this branch:
+
+- Every custom `socketserver.ThreadingMixIn` fixture server daemonizes its request threads. MySQL, PostgreSQL, fake Mailpit, and Mailpit set `daemon_threads = True`; Redis retains its existing setting. Python's `ThreadingHTTPServer` fixtures need no corresponding change because that class already daemonizes request threads.
+- Every fixture-contract subprocess expected to exit uses one private standard-library runner with a 3-second deadline and a 10-millisecond poll interval. On timeout, the runner kills and reaps the direct child before returning `ErrorKind::TimedOut`. The MySQL environment probe uses the same runner while retaining its custom environment.
+
+The subprocess runner preserves the current exit status, stdout, and stderr on normal completion. It closes stdin, captures stdout and stderr, and polls the direct child. At the deadline it requests a kill, tolerates the normal already-exited race, and always attempts to reap the child. A kill or reap failure is reported as the cleanup error; otherwise the runner returns the typed timeout error and does not present partial killed-process output as a normal fixture result. These fixture-contract commands do not intentionally create descendants, so test-only process-group management is unnecessary.
+
+The lifecycle regression coverage holds an accepted idle client open against MySQL and PostgreSQL, sends `SIGTERM`, and requires prompt exit with bounded cleanup. These are the two fixtures whose handlers can remain blocked indefinitely. Fake Mailpit and Mailpit receive the same server configuration for consistency, but their current greeting handlers already return promptly and therefore have no distinct failing lifecycle case to protect.
+
+These corrections do not change fixture command-line contracts, protocol responses, readiness behavior, process-group topology, production supervisor behavior, nextest configuration, or CI scheduling. They do not broaden ownership matching for non-`exec` interpreter wrappers, add metric-driven Python docstrings, or include unrelated fixture cleanup.
 
 ## Documentation And Dependencies
 
@@ -238,7 +251,9 @@ The extraction is complete when:
 - all substantial daemon fake executable bodies listed above live under `crates/daemon/test-fixtures/`,
 - the intentionally small or scenario-generated scripts remain inline,
 - no Python heredoc remains inside an extracted daemon shell fixture,
-- existing observable fixture contracts, assertions, snapshots, timeouts, and production code remain unchanged apart from the documented inert-wrapper and blocked-port child-argument changes,
+- existing observable fixture contracts, assertions, snapshots, and production code remain unchanged apart from the documented inert-wrapper, blocked-port child-argument, and post-review test-lifecycle corrections,
+- fixture-contract subprocesses that should exit are bounded, killed, and reaped on timeout,
+- every custom `ThreadingMixIn` fixture server daemonizes request threads, with active-client shutdown regressions for MySQL and PostgreSQL,
 - focused fixture-contract snapshots cover shell parsing that is reimplemented in Python,
 - Python 3 is documented as a test prerequisite,
 - extracted Python and shell sources pass their syntax and lint checks, and
