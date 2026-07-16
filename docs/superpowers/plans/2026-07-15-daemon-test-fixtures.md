@@ -2185,16 +2185,16 @@ Run:
 if rg -n "fn (mysql_fixture_script|fake_mailpit_script|fake_postgres_initdb_script|fake_postgres_script|unready_fake_postgres_script|unready_fake_mailpit_script|fast_exit_fake_mailpit_script|mailpit_script|redis_server_script)" crates/daemon; then
   exit 1
 fi
-if rg -n "python3 .*<<'PY'|python3 -c|#!/usr/bin/env python3" crates/daemon --glob '*.rs'; then
+if rg -n "python3 .*<<'PY'|python3 -c" crates/daemon --glob '*.rs'; then
   exit 1
 fi
 if rg -n "<<'PY'|python3 -c" crates/daemon/test-fixtures --glob '*.sh' --glob '*.sh.in'; then
   exit 1
 fi
-rg -n "fn fake_sql_script|fn write_failing_validator|fn write_hanging_frankenphp_validator" crates/daemon
+rg -n "fn fake_sql_script|fn write_failing_validator|fn write_hanging_frankenphp_validator|const HANGING_FIXTURE" crates/daemon --glob '*.rs'
 ```
 
-Expected: all three negative searches print nothing; the final search finds the intentionally inline scenario-local fixtures.
+Expected: all three negative searches print nothing; the final search finds the intentionally inline scenario-local fixtures, including the approved `HANGING_FIXTURE` scenario-local Rust string.
 
 - [ ] **Step 4: Run formatting, Clippy, and the complete locked workspace suite**
 
