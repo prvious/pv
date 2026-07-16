@@ -1,6 +1,7 @@
 use std::io::{Error, ErrorKind, Read, Seek};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +18,7 @@ const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN: Duration = Duration::from_millis(100);
 const FIXTURE_HANDLER_MARKER_CONTENTS: &str = "started\n";
+const POSTGRES_SHUTDOWN_INJECTION_MARKER_CONTENTS: &str = "injected\n";
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -59,6 +61,46 @@ sys.stdout.write(contents)
 sys.stdout.flush()
 sys.stderr.write(contents)
 sys.stderr.flush()
+"#;
+const POSTGRES_SHUTDOWN_SITECUSTOMIZE: &str = r#"import os
+import signal
+import socketserver
+import threading
+
+
+injected = False
+
+
+def inject():
+    global injected
+    if injected:
+        return
+    injected = True
+    with open(os.environ["PV_POSTGRES_SHUTDOWN_MARKER"], "w", encoding="utf-8") as marker:
+        marker.write("injected\n")
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+original_pause = signal.pause
+
+
+def pause():
+    inject()
+    return original_pause()
+
+
+signal.pause = pause
+
+original_serve_forever = socketserver.BaseServer.serve_forever
+
+
+def serve_forever(self, *args, **kwargs):
+    if threading.current_thread() is threading.main_thread():
+        inject()
+    return original_serve_forever(self, *args, **kwargs)
+
+
+socketserver.BaseServer.serve_forever = serve_forever
 "#;
 
 #[expect(
@@ -206,6 +248,86 @@ fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
         kill_process(process_pid(child.id())?, Signal::TERM)?;
         if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
             bail!("PostgreSQL fixture did not exit after SIGTERM with an idle client");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })();
+    let cleanup = kill_and_reap_child(&mut child);
+
+    if let Err(error) = lifecycle {
+        cleanup?;
+        return Err(error);
+    }
+    cleanup
+}
+
+#[test]
+fn postgres_fixture_shutdown_is_deterministic_after_sigterm() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = tempdir.path().join("postgres");
+    let data_dir = tempdir.path().join("postgres-data");
+    let probe_dir = tempdir.path().join("probe");
+    let shutdown_marker = tempdir.path().join("postgres-shutdown-injected");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = listener.local_addr()?.port();
+    let port_argument = port.to_string();
+
+    materialize_fixture(&fixture, POSTGRES_FIXTURE)?;
+    state::fs::write_sensitive_file(
+        &probe_dir.join("sitecustomize.py"),
+        POSTGRES_SHUTDOWN_SITECUSTOMIZE,
+    )?;
+    state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
+    state::fs::write_sensitive_file(
+        &data_dir.join("postgresql.conf"),
+        &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
+    )?;
+    drop(listener);
+
+    let mut child = FixtureCommand::new(fixture.as_std_path())
+        .args([
+            "-D",
+            data_dir.as_str(),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            port_argument.as_str(),
+        ])
+        .current_dir(tempdir.path())
+        .env("PYTHONPATH", probe_dir.as_std_path())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PV_POSTGRES_SHUTDOWN_MARKER", shutdown_marker.as_std_path())
+        .spawn()?;
+    let lifecycle = (|| {
+        let deadline = Instant::now() + FIXTURE_COMMAND_TIMEOUT;
+        loop {
+            match state::fs::read_to_string(&shutdown_marker) {
+                Ok(contents) if contents == POSTGRES_SHUTDOWN_INJECTION_MARKER_CONTENTS => break,
+                Ok(_) => {}
+                Err(StateError::Filesystem { source, .. })
+                    if source.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for PostgreSQL shutdown injection marker");
+            }
+
+            thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+        }
+
+        let deadline = Instant::now() + FIXTURE_SHUTDOWN_TIMEOUT;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                bail!("PostgreSQL fixture did not exit after injected SIGTERM");
+            }
+
+            thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+        };
+        if !status.success() && status.signal() != Some(Signal::TERM.as_raw()) {
+            bail!("PostgreSQL fixture exited unexpectedly after injected SIGTERM: {status}");
         }
 
         Ok::<(), anyhow::Error>(())

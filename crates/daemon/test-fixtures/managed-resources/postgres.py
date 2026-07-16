@@ -285,14 +285,22 @@ class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 
 server = Server((host, port), Handler)
+shutdown_requested = threading.Event()
+shutdown_thread = None
 
 
 def stop(_signum, _frame):
-    server.shutdown()
+    global shutdown_thread
+    if not shutdown_requested.is_set():
+        shutdown_requested.set()
+        shutdown_thread = threading.Thread(target=server.shutdown, daemon=True)
+        shutdown_thread.start()
 
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 
-threading.Thread(target=server.serve_forever, daemon=True).start()
-signal.pause()
+server.serve_forever()
+if shutdown_thread is not None:
+    shutdown_thread.join()
+server.server_close()
