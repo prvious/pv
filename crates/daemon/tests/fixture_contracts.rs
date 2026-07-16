@@ -10,11 +10,13 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+use state::StateError;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN: Duration = Duration::from_millis(100);
+const FIXTURE_HANDLER_MARKER_CONTENTS: &str = "started\n";
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -122,7 +124,7 @@ fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
         .spawn()?;
     let lifecycle = (|| {
         let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        wait_for_path(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
+        wait_for_handler_marker(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
         kill_process(process_pid(child.id())?, Signal::TERM)?;
         if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
             bail!("MySQL fixture did not exit after SIGTERM with an idle client");
@@ -171,7 +173,7 @@ fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
         .spawn()?;
     let lifecycle = (|| {
         let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        wait_for_path(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
+        wait_for_handler_marker(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
         kill_process(process_pid(child.id())?, Signal::TERM)?;
         if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
             bail!("PostgreSQL fixture did not exit after SIGTERM with an idle client");
@@ -186,6 +188,25 @@ fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
         return Err(error);
     }
     cleanup
+}
+
+#[test]
+fn fixture_handler_marker_requires_complete_contents() -> Result<()> {
+    let tempdir = tempdir()?;
+    let handler_marker = tempdir.path().join("handler-started");
+
+    state::fs::write_sensitive_file(&handler_marker, "started")?;
+
+    let error = match wait_for_handler_marker(&handler_marker, Duration::ZERO) {
+        Ok(()) => bail!("incomplete fixture handler marker unexpectedly satisfied waiter"),
+        Err(error) => error,
+    };
+
+    assert_fixture_snapshot(
+        tempdir.path(),
+        "fixture_handler_marker_requires_complete_contents",
+        error.to_string(),
+    )
 }
 
 #[test]
@@ -576,12 +597,15 @@ fn connect_to_loopback(port: u16, timeout: Duration) -> Result<TcpStream> {
     }
 }
 
-fn wait_for_path(path: &Utf8Path, timeout: Duration) -> Result<()> {
+fn wait_for_handler_marker(path: &Utf8Path, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
 
     loop {
-        if path_exists(path)? {
-            return Ok(());
+        match state::fs::read_to_string(path) {
+            Ok(contents) if contents == FIXTURE_HANDLER_MARKER_CONTENTS => return Ok(()),
+            Ok(_) => {}
+            Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         if Instant::now() >= deadline {
             bail!("timed out waiting for fixture handler marker at {path}");
