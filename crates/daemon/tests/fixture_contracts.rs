@@ -14,7 +14,6 @@ use rustix::process::{Pid, Signal, kill_process, test_kill_process};
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
-const FIXTURE_HANDLER_SETTLE_TIME: Duration = Duration::from_millis(100);
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -102,6 +101,7 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
 fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("mysqld");
+    let handler_marker = tempdir.path().join("mysql-handler-started");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
     let port_argument = port.to_string();
@@ -112,10 +112,11 @@ fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
     let mut child = FixtureCommand::new(fixture.as_std_path())
         .args(["--port", port_argument.as_str()])
         .current_dir(tempdir.path())
+        .env("PV_FIXTURE_HANDLER_STARTED", handler_marker.as_std_path())
         .spawn()?;
     let lifecycle = (|| {
         let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        thread::sleep(FIXTURE_HANDLER_SETTLE_TIME);
+        wait_for_path(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
         kill_process(process_pid(child.id())?, Signal::TERM)?;
         if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
             bail!("MySQL fixture did not exit after SIGTERM with an idle client");
@@ -137,6 +138,7 @@ fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("postgres");
     let data_dir = tempdir.path().join("postgres-data");
+    let handler_marker = tempdir.path().join("postgres-handler-started");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
     let port_argument = port.to_string();
@@ -159,10 +161,11 @@ fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
             port_argument.as_str(),
         ])
         .current_dir(tempdir.path())
+        .env("PV_FIXTURE_HANDLER_STARTED", handler_marker.as_std_path())
         .spawn()?;
     let lifecycle = (|| {
         let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        thread::sleep(FIXTURE_HANDLER_SETTLE_TIME);
+        wait_for_path(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
         kill_process(process_pid(child.id())?, Signal::TERM)?;
         if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
             bail!("PostgreSQL fixture did not exit after SIGTERM with an idle client");
@@ -561,6 +564,21 @@ fn connect_to_loopback(port: u16, timeout: Duration) -> Result<TcpStream> {
         }
         if Instant::now() >= deadline {
             bail!("timed out connecting to fixture port {port}");
+        }
+
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_path(path: &Utf8Path, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if path_exists(path)? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for fixture handler marker at {path}");
         }
 
         thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);

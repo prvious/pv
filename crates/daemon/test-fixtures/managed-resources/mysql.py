@@ -36,6 +36,10 @@ if initialize:
 
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
+        handler_marker = os.environ.get("PV_FIXTURE_HANDLER_STARTED")
+        if handler_marker:
+            with open(handler_marker, "w", encoding="utf-8") as marker:
+                marker.write("started\n")
         self.request.recv(1024)
 
 
