@@ -711,7 +711,7 @@ Do not edit `mysql.py` or `postgres.py`: their existing write-and-close `"starte
 Run:
 
 ~~~shell
-cargo insta test --accept --test-runner nextest -- fixture_handler_marker_requires_complete_contents
+cargo insta test --accept --test-runner nextest -p daemon --test fixture_contracts -- fixture_handler_marker_requires_complete_contents
 cargo nextest run -p daemon --test fixture_contracts -E 'test(fixture_handler_marker_requires_complete_contents) | test(mysql_fixture_exits_after_sigterm_with_idle_client) | test(postgres_fixture_exits_after_sigterm_with_idle_client)'
 cargo fmt --all --check
 cargo clippy -p daemon --test fixture_contracts --locked -- -D warnings
@@ -866,7 +866,7 @@ fn read_fixture_output(file: &mut (impl Read + Seek)) -> Result<Vec<u8>> {
 Run:
 
 ~~~shell
-cargo insta test --accept --test-runner nextest -- fixture_command_captures_verbose_output_without_pipe_backpressure
+cargo insta test --accept --test-runner nextest -p daemon --test fixture_contracts -- fixture_command_captures_verbose_output_without_pipe_backpressure
 cargo nextest run -p daemon --test fixture_contracts -E 'test(fixture_command_captures_verbose_output_without_pipe_backpressure) | test(fixture_command_timeout_kills_and_reaps_child)'
 cargo fmt --all --check
 cargo clippy -p daemon --test fixture_contracts --locked -- -D warnings
@@ -914,11 +914,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --all-features --locked
 python3 -c 'import ast, pathlib; paths = [pathlib.Path(path) for path in ["crates/daemon/test-fixtures/managed-resources/mysql.py", "crates/daemon/test-fixtures/managed-resources/postgres.py", "crates/daemon/test-fixtures/managed-resources/fake-mailpit.py", "crates/daemon/test-fixtures/managed-resources/mailpit.py"]]; [ast.parse(path.read_text(), filename=str(path)) for path in paths]; print(f"parsed {len(paths)} Python fixtures")'
-git diff --check HEAD~3..HEAD
-git diff --name-only HEAD~3..HEAD
+git diff --check c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
+git diff --name-only c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
 ! rg --files crates/daemon/tests/snapshots -g '*.snap.new' -g '*.snap.tmp'
 git ls-files --others --exclude-standard
 git status --short
 ~~~
 
-Expected: the focused new regressions and full fixture-contract suite pass; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; all four Python fixtures parse; the three-task artifact diff contains only `fixture_contracts.rs` and the two new snapshots with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status checks are empty. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, and captures 2 MiB of UTF-8 output from each stream without pipe backpressure.
+Expected: the focused new regressions and full fixture-contract suite pass; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; all four Python fixtures parse; the follow-up artifact diff contains only this correction plan, `fixture_contracts.rs`, and the two new snapshots with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status checks are empty. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, and captures 2 MiB of UTF-8 output from each stream without pipe backpressure.
