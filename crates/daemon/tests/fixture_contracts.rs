@@ -1,13 +1,18 @@
-use std::io::ErrorKind;
+use std::io::{Error, ErrorKind};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::process::{Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use rustix::process::{Pid, test_kill_process};
+
+const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -30,6 +35,17 @@ const RUSTFS_FIXTURE_TEMPLATE: &str = include_str!(concat!(
     "/test-fixtures/managed-resources/rustfs.py.in"
 ));
 const RUSTFS_REJECT_S3_SENTINEL: &str = "__PV_REJECT_S3__";
+const HANGING_FIXTURE: &str = r#"#!/usr/bin/env python3
+import os
+import signal
+import sys
+
+
+with open(sys.argv[1], "w", encoding="utf-8") as pid_file:
+    pid_file.write(f"{os.getpid()}\n")
+
+signal.pause()
+"#;
 
 #[expect(
     clippy::disallowed_types,
@@ -42,6 +58,36 @@ struct FixtureOutput {
     code: Option<i32>,
     stdout: String,
     stderr: String,
+}
+
+#[test]
+fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = tempdir.path().join("hanging-fixture");
+    let pid_path = tempdir.path().join("hanging-fixture.pid");
+
+    materialize_fixture(&fixture, HANGING_FIXTURE)?;
+    let mut command = FixtureCommand::new(fixture.as_std_path());
+    command
+        .arg(pid_path.as_std_path())
+        .current_dir(tempdir.path());
+
+    let error = match run_fixture_command(&mut command, Duration::from_secs(1)) {
+        Ok(output) => bail!("hanging fixture unexpectedly exited: {output:?}"),
+        Err(error) => error,
+    };
+    let io_error = error
+        .downcast_ref::<std::io::Error>()
+        .ok_or_else(|| anyhow!("fixture timeout did not return an I/O error: {error}"))?;
+    assert_eq!(io_error.kind(), ErrorKind::TimedOut);
+
+    let raw_pid = state::fs::read_to_string(&pid_path)?
+        .trim()
+        .parse::<u32>()?;
+    let pid = process_pid(raw_pid)?;
+    assert!(test_kill_process(pid).is_err());
+
+    Ok(())
 }
 
 #[test]
@@ -95,18 +141,15 @@ os.makedirs = record_makedirs
         ],
         tempdir.path(),
     )?;
-    let empty_data_dir_initialization = FixtureCommand::new(fixture.as_std_path())
+    let mut empty_data_dir_command = FixtureCommand::new(fixture.as_std_path());
+    empty_data_dir_command
         .args(["--no-defaults", "--initialize-insecure"])
         .current_dir(tempdir.path())
         .env("PYTHONPATH", &probe_dir)
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("PV_MYSQL_MKDIR_PROBE", &probe_path)
-        .output()?;
-    let empty_data_dir_initialization = FixtureOutput {
-        code: empty_data_dir_initialization.status.code(),
-        stdout: String::from_utf8(empty_data_dir_initialization.stdout)?,
-        stderr: String::from_utf8(empty_data_dir_initialization.stderr)?,
-    };
+        .env("PV_MYSQL_MKDIR_PROBE", &probe_path);
+    let empty_data_dir_initialization =
+        run_fixture_command(&mut empty_data_dir_command, FIXTURE_COMMAND_TIMEOUT)?;
 
     assert_fixture_snapshot(
         tempdir.path(),
@@ -350,16 +393,58 @@ fn run_fixture(
     arguments: &[&str],
     current_dir: &Utf8Path,
 ) -> Result<FixtureOutput> {
-    let output = FixtureCommand::new(path.as_std_path())
-        .args(arguments)
-        .current_dir(current_dir)
-        .output()?;
+    let mut command = FixtureCommand::new(path.as_std_path());
+    command.args(arguments).current_dir(current_dir);
 
+    run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT)
+}
+
+fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Result<FixtureOutput> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return fixture_output(child.wait_with_output()?);
+        }
+        if Instant::now() >= deadline {
+            let kill_result = child.kill();
+            let wait_result = child.wait_with_output();
+            if let Err(error) = wait_result {
+                return Err(error.into());
+            }
+            if let Err(error) = kill_result
+                && error.kind() != ErrorKind::InvalidInput
+            {
+                return Err(error.into());
+            }
+
+            return Err(Error::new(
+                ErrorKind::TimedOut,
+                format!("fixture command timed out after {} ms", timeout.as_millis()),
+            )
+            .into());
+        }
+
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn fixture_output(output: Output) -> Result<FixtureOutput> {
     Ok(FixtureOutput {
         code: output.status.code(),
         stdout: String::from_utf8(output.stdout)?,
         stderr: String::from_utf8(output.stderr)?,
     })
+}
+
+fn process_pid(pid: u32) -> Result<Pid> {
+    let raw_pid = i32::try_from(pid)?;
+    Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))
 }
 
 fn wait_for_loopback_ports(ports: [u16; 2], timeout: Duration) -> Result<[bool; 2]> {
