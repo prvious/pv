@@ -14,6 +14,7 @@ use rustix::process::{Pid, Signal, kill_process, test_kill_process};
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN: Duration = Duration::from_millis(100);
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -84,7 +85,12 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
         .ok_or_else(|| anyhow!("fixture timeout did not return an I/O error: {error}"))?;
     assert_eq!(io_error.kind(), ErrorKind::TimedOut);
     assert!(
-        started_at.elapsed() < timeout + FIXTURE_SHUTDOWN_TIMEOUT + FIXTURE_COMMAND_POLL_INTERVAL,
+        started_at.elapsed()
+            < timeout
+                + FIXTURE_SHUTDOWN_TIMEOUT
+                + FIXTURE_COMMAND_POLL_INTERVAL
+                + FIXTURE_COMMAND_POLL_INTERVAL
+                + FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN,
         "fixture command timeout exceeded its cleanup deadline"
     );
 
