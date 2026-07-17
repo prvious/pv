@@ -554,11 +554,15 @@ python3 -c 'import ast, pathlib; paths = [pathlib.Path(path) for path in ["crate
 cargo fmt --all --check
 cargo clippy -p daemon --test fixture_contracts --locked -- -D warnings
 git diff --check
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(mysql_fixture_exits_after_sigterm_with_idle_client)'
+  iteration=$((iteration + 1))
 done
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(postgres_fixture_exits_after_sigterm_with_idle_client)'
+  iteration=$((iteration + 1))
 done
 ~~~
 
@@ -1027,27 +1031,68 @@ Run final verification only after Tasks 8–10 and their commits. Tasks 1–4 ar
 ~~~shell
 cargo nextest run -p daemon --test fixture_contracts -E 'test(fixture_command_timeout_kills_and_reaps_child) | test(fixture_handler_marker_requires_complete_contents) | test(fixture_command_captures_verbose_output_without_pipe_backpressure)'
 cargo nextest run -p daemon --test fixture_contracts
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(mysql_fixture_exits_after_sigterm_with_idle_client)'
+  iteration=$((iteration + 1))
 done
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(single_server_fixture_exits_after_signal_status)'
+  iteration=$((iteration + 1))
 done
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(multi_server_fixture_exits_after_signal_status)'
+  iteration=$((iteration + 1))
 done
-for iteration in {1..20}; do
+iteration=1
+while [ "$iteration" -le 20 ]; do
   cargo nextest run -p daemon --test fixture_contracts -E 'test(postgres_fixture_exits_after_sigterm_with_idle_client)'
+  iteration=$((iteration + 1))
 done
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --all-features --locked
 python3 -c 'import ast, pathlib; root = pathlib.Path("crates/daemon/test-fixtures"); paths = sorted(root.rglob("*.py")); [ast.parse(path.read_text(), filename=str(path)) for path in paths]; template = root / "managed-resources/rustfs.py.in"; source = template.read_text(); sentinel = "__PV_REJECT_S3__"; assert source.count(sentinel) == 1; rendered = [source.replace(sentinel, value) for value in ("False", "True")]; assert all(sentinel not in value for value in rendered); [ast.parse(value, filename=f"{template}:{index}") for index, value in enumerate(rendered)]; print(f"parsed {len(paths)} checked-in Python fixtures and rendered rustfs.py.in twice")'
+find crates/daemon/test-fixtures \
+  -type f \( -name '*.sh' -o -name '*.sh.in' \) \
+  -exec shellcheck -s sh {} +
+sed 's/__PV_BLOCKED_PORT__/12345/' \
+  crates/daemon/test-fixtures/gateway/fake-frankenphp-hangs-on-port.sh.in \
+  | shellcheck -s sh -
 git diff --check c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
-git diff --name-only c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD
 ! rg --files crates/daemon/tests/snapshots -g '*.snap.new' -g '*.snap.tmp'
-git ls-files --others --exclude-standard
-git status --short
+expected_files=$(cat <<'EOF'
+crates/daemon/src/managed_resources/tests.rs
+crates/daemon/test-fixtures/gateway/fake-frankenphp-server.py
+crates/daemon/test-fixtures/managed-resources/fake-mailpit.py
+crates/daemon/test-fixtures/managed-resources/mailpit.py
+crates/daemon/test-fixtures/managed-resources/mysql.py
+crates/daemon/test-fixtures/managed-resources/postgres.py
+crates/daemon/test-fixtures/managed-resources/redis-server.py
+crates/daemon/test-fixtures/managed-resources/rustfs.py.in
+crates/daemon/tests/fixture_contracts.rs
+crates/daemon/tests/snapshots/fixture_contracts__fixture_command_captures_verbose_output_without_pipe_backpressure.snap
+crates/daemon/tests/snapshots/fixture_contracts__fixture_handler_marker_requires_complete_contents.snap
+docs/superpowers/plans/2026-07-16-daemon-fixture-review-corrections.md
+EOF
+)
+actual_files=$(git diff --name-only c36e9763ad3120c98b9c9df4d141b3052c348806..HEAD)
+if [ "$actual_files" != "$expected_files" ]; then
+  printf 'unexpected diff file set:\n%s\n' "$actual_files" >&2
+  exit 1
+fi
+untracked_files=$(git ls-files --others --exclude-standard)
+if [ -n "$untracked_files" ]; then
+  printf 'unexpected untracked files:\n%s\n' "$untracked_files" >&2
+  exit 1
+fi
+worktree_status=$(git status --short)
+if [ -n "$worktree_status" ]; then
+  printf 'working tree is dirty:\n%s\n' "$worktree_status" >&2
+  exit 1
+fi
 ~~~
 
-Expected: the focused new regressions and full fixture-contract suite pass; PostgreSQL and all six fixture TERM/INT process-group signal-status paths are deterministic; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; every checked-in `*.py` under `crates/daemon/test-fixtures` parses, and `rustfs.py.in` parses after rendering with both `False` and `True` after asserting exactly one sentinel and none after replacement; the follow-up artifact diff contains only this correction plan, `fixture_contracts.rs`, the six listed fixtures, and the two new snapshots with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status checks are empty. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, captures 2 MiB of UTF-8 output from each stream without pipe backpressure, and preserves the historical SIGTERM/SIGINT process-group exit outcomes.
+Expected: the focused new regressions and full fixture-contract suite pass; PostgreSQL and all six fixture TERM/INT process-group signal-status paths are deterministic; each lifecycle test passes 20 times; formatting, locked workspace Clippy, and the locked workspace suite pass; every checked-in `*.py` under `crates/daemon/test-fixtures` parses, and `rustfs.py.in` parses after rendering with both `False` and `True` after asserting exactly one sentinel and none after replacement; ShellCheck passes for every checked-in `.sh` and `.sh.in` fixture and for the rendered blocked-port template; the follow-up artifact diff is exactly these 12 paths: `crates/daemon/src/managed_resources/tests.rs`, `crates/daemon/test-fixtures/gateway/fake-frankenphp-server.py`, `crates/daemon/test-fixtures/managed-resources/fake-mailpit.py`, `crates/daemon/test-fixtures/managed-resources/mailpit.py`, `crates/daemon/test-fixtures/managed-resources/mysql.py`, `crates/daemon/test-fixtures/managed-resources/postgres.py`, `crates/daemon/test-fixtures/managed-resources/redis-server.py`, `crates/daemon/test-fixtures/managed-resources/rustfs.py.in`, `crates/daemon/tests/fixture_contracts.rs`, `crates/daemon/tests/snapshots/fixture_contracts__fixture_command_captures_verbose_output_without_pipe_backpressure.snap`, `crates/daemon/tests/snapshots/fixture_contracts__fixture_handler_marker_requires_complete_contents.snap`, and this correction plan; this includes the gateway fixture/config-file-close correction and the `managed_resources/tests.rs` RustFS cleanup correction, with no whitespace errors or temporary snapshot artifacts; and both untracked-file and status assertions pass. The final behavior retains bounded cleanup, includes the test-only scheduling margin, accepts only complete handler markers, captures 2 MiB of UTF-8 output from each stream without pipe backpressure, and preserves the historical SIGTERM/SIGINT process-group exit outcomes.
