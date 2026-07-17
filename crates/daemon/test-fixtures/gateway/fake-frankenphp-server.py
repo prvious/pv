@@ -9,7 +9,8 @@ import threading
 
 signal.signal(signal.SIGUSR1, signal.SIG_IGN)
 
-config = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[1], encoding="utf-8") as config_file:
+    config = config_file.read()
 
 
 def required(pattern):
