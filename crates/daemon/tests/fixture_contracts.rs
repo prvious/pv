@@ -1,7 +1,7 @@
 use std::io::{Error, ErrorKind, Read, Seek};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,7 +10,8 @@ use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::{tempdir, tempfile};
 use insta::{Settings, assert_debug_snapshot};
-use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+use rustix::io::Errno;
+use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 use state::StateError;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
@@ -31,6 +32,10 @@ const FAKE_MAILPIT_FIXTURE: &str = include_str!(concat!(
 const POSTGRES_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres.py"
+));
+const REDIS_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/redis-server.py"
 ));
 const MAILPIT_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -114,6 +119,39 @@ struct FixtureOutput {
     code: Option<i32>,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Clone, Copy)]
+enum SingleServerFixture {
+    Mysql,
+    Postgres,
+    Redis,
+}
+
+impl SingleServerFixture {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mysql => "MySQL",
+            Self::Postgres => "PostgreSQL",
+            Self::Redis => "Redis",
+        }
+    }
+
+    fn executable_name(self) -> &'static str {
+        match self {
+            Self::Mysql => "mysqld",
+            Self::Postgres => "postgres",
+            Self::Redis => "redis-server",
+        }
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            Self::Mysql => MYSQL_FIXTURE,
+            Self::Postgres => POSTGRES_FIXTURE,
+            Self::Redis => REDIS_FIXTURE,
+        }
+    }
 }
 
 #[test]
@@ -339,6 +377,21 @@ fn postgres_fixture_shutdown_is_deterministic_after_sigterm() -> Result<()> {
         return Err(error);
     }
     cleanup
+}
+
+#[test]
+fn single_server_fixture_exits_after_signal_status() -> Result<()> {
+    for fixture in [
+        SingleServerFixture::Mysql,
+        SingleServerFixture::Postgres,
+        SingleServerFixture::Redis,
+    ] {
+        for signal in [Signal::TERM, Signal::INT] {
+            assert_single_server_fixture_exits_after_signal(fixture, signal)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[test]
@@ -653,6 +706,111 @@ fn render_rustfs_fixture(reject_s3: bool) -> Result<String> {
     Ok(rendered)
 }
 
+fn assert_single_server_fixture_exits_after_signal(
+    fixture: SingleServerFixture,
+    signal: Signal,
+) -> Result<()> {
+    let tempdir = tempdir()?;
+    let executable = tempdir.path().join(fixture.executable_name());
+    let port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let port = port_reservation.local_addr()?.port();
+    let port_argument = port.to_string();
+
+    materialize_fixture(&executable, fixture.source())?;
+    let mut command = FixtureCommand::new(executable.as_std_path());
+    command.current_dir(tempdir.path());
+    match fixture {
+        SingleServerFixture::Mysql => {
+            let data_dir = tempdir.path().join("mysql-data");
+            let socket_path = tempdir.path().join("mysql.sock");
+            let init_file = tempdir.path().join("mysql-init.sql");
+            state::fs::write_sensitive_file(&init_file, "")?;
+            command.args([
+                "--no-defaults",
+                "--datadir",
+                data_dir.as_str(),
+                "--bind-address=127.0.0.1",
+                "--port",
+                port_argument.as_str(),
+                "--mysqlx=0",
+                "--socket",
+                socket_path.as_str(),
+                "--init-file",
+                init_file.as_str(),
+            ]);
+        }
+        SingleServerFixture::Postgres => {
+            let data_dir = tempdir.path().join("postgres-data");
+            state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
+            state::fs::write_sensitive_file(
+                &data_dir.join("postgresql.conf"),
+                &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
+            )?;
+            command.args([
+                "-D",
+                data_dir.as_str(),
+                "-h",
+                "127.0.0.1",
+                "-p",
+                port_argument.as_str(),
+            ]);
+        }
+        SingleServerFixture::Redis => {
+            let data_dir = tempdir.path().join("redis-data");
+            let config_path = tempdir.path().join("redis.conf");
+            state::fs::write_sensitive_file(
+                &config_path,
+                &format!(
+                    "bind 127.0.0.1\nport {port}\ndir {}\nsave \"\"\nappendonly no\n",
+                    data_dir.as_str()
+                ),
+            )?;
+            command.arg(config_path.as_std_path());
+        }
+    }
+    drop(port_reservation);
+
+    command.process_group(0);
+    let mut child = command.spawn()?;
+    let process_group = process_pid(child.id())?;
+    let lifecycle = (|| {
+        let readiness = wait_for_loopback_ports([port], FIXTURE_COMMAND_TIMEOUT)?;
+        if readiness != [true] {
+            bail!(
+                "{} fixture did not become ready on port {port}",
+                fixture.name()
+            );
+        }
+
+        kill_process_group(process_group, signal)?;
+        let status =
+            wait_for_child_status(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)?.ok_or_else(|| {
+                anyhow!(
+                    "{} fixture did not exit after signal {}",
+                    fixture.name(),
+                    signal.as_raw()
+                )
+            })?;
+        if status.signal() != Some(signal.as_raw()) {
+            bail!(
+                "{} fixture exited with {status} after signal {}; expected signal status {}",
+                fixture.name(),
+                signal.as_raw(),
+                signal.as_raw()
+            );
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })();
+    let cleanup = kill_process_group_and_reap_child(&mut child, process_group);
+
+    if let Err(error) = lifecycle {
+        cleanup?;
+        return Err(error);
+    }
+    cleanup
+}
+
 fn materialize_fixture(path: &Utf8Path, source: &str) -> Result<()> {
     state::fs::write_sensitive_file(path, source)?;
     set_executable(path)
@@ -725,9 +883,12 @@ fn process_pid(pid: u32) -> Result<Pid> {
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))
 }
 
-fn wait_for_loopback_ports(ports: [u16; 2], timeout: Duration) -> Result<[bool; 2]> {
+fn wait_for_loopback_ports<const PORT_COUNT: usize>(
+    ports: [u16; PORT_COUNT],
+    timeout: Duration,
+) -> Result<[bool; PORT_COUNT]> {
     let deadline = Instant::now() + timeout;
-    let mut readiness = [false; 2];
+    let mut readiness = [false; PORT_COUNT];
 
     loop {
         for (index, port) in ports.into_iter().enumerate() {
@@ -740,7 +901,7 @@ fn wait_for_loopback_ports(ports: [u16; 2], timeout: Duration) -> Result<[bool; 
             return Ok(readiness);
         }
         if Instant::now() >= deadline {
-            bail!("timed out waiting for fake Mailpit ports {ports:?}; readiness: {readiness:?}");
+            bail!("timed out waiting for fixture ports {ports:?}; readiness: {readiness:?}");
         }
 
         thread::sleep(Duration::from_millis(10));
@@ -781,18 +942,46 @@ fn wait_for_handler_marker(path: &Utf8Path, timeout: Duration) -> Result<()> {
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Result<bool> {
+    Ok(wait_for_child_status(child, timeout)?.is_some())
+}
+
+fn wait_for_child_status(child: &mut Child, timeout: Duration) -> Result<Option<ExitStatus>> {
     let deadline = Instant::now() + timeout;
 
     loop {
-        if child.try_wait()?.is_some() {
-            return Ok(true);
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
         }
         if Instant::now() >= deadline {
-            return Ok(false);
+            return Ok(None);
         }
 
         thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
     }
+}
+
+fn kill_process_group_and_reap_child(child: &mut Child, process_group: Pid) -> Result<()> {
+    let kill_error = match kill_process_group(process_group, Signal::KILL) {
+        Ok(()) | Err(Errno::SRCH) => None,
+        Err(error) => Some(error),
+    };
+    let reap_result = wait_for_child_status(child, FIXTURE_SHUTDOWN_TIMEOUT);
+
+    if let Some(error) = kill_error {
+        return Err(error.into());
+    }
+    if reap_result?.is_none() {
+        return Err(Error::new(
+            ErrorKind::TimedOut,
+            format!(
+                "timed out reaping fixture process-group leader after {} ms",
+                FIXTURE_SHUTDOWN_TIMEOUT.as_millis()
+            ),
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 fn kill_and_reap_child(child: &mut Child) -> Result<()> {

@@ -53,13 +53,18 @@ class RedisServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 
 shutdown_requested = threading.Event()
+shutdown_thread = None
+received_signal = None
 
 
-def stop(_signum, _frame):
+def stop(signum, _frame):
+    global received_signal, shutdown_thread
     if shutdown_requested.is_set():
         return
+    received_signal = signum
     shutdown_requested.set()
-    threading.Thread(target=server.shutdown, daemon=True).start()
+    shutdown_thread = threading.Thread(target=server.shutdown, daemon=True)
+    shutdown_thread.start()
 
 
 port, data_dir = redis_config(sys.argv[1:])
@@ -70,3 +75,9 @@ server = RedisServer(("127.0.0.1", port), RedisPingHandler)
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 server.serve_forever()
+if shutdown_thread is not None:
+    shutdown_thread.join()
+server.server_close()
+if received_signal is not None:
+    signal.signal(received_signal, signal.SIG_DFL)
+    os.kill(os.getpid(), received_signal)

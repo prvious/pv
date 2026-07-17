@@ -287,11 +287,13 @@ class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
 server = Server((host, port), Handler)
 shutdown_requested = threading.Event()
 shutdown_thread = None
+received_signal = None
 
 
-def stop(_signum, _frame):
-    global shutdown_thread
+def stop(signum, _frame):
+    global received_signal, shutdown_thread
     if not shutdown_requested.is_set():
+        received_signal = signum
         shutdown_requested.set()
         shutdown_thread = threading.Thread(target=server.shutdown, daemon=True)
         shutdown_thread.start()
@@ -304,3 +306,6 @@ server.serve_forever()
 if shutdown_thread is not None:
     shutdown_thread.join()
 server.server_close()
+if received_signal is not None:
+    signal.signal(received_signal, signal.SIG_DFL)
+    os.kill(os.getpid(), received_signal)
