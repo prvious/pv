@@ -48,13 +48,7 @@ const RUSTFS_FIXTURE_TEMPLATE: &str = include_str!(concat!(
 ));
 const RUSTFS_REJECT_S3_SENTINEL: &str = "__PV_REJECT_S3__";
 const HANGING_FIXTURE: &str = r#"#!/usr/bin/env python3
-import os
 import signal
-import sys
-
-
-with open(sys.argv[1], "w", encoding="utf-8") as pid_file:
-    pid_file.write(f"{os.getpid()}\n")
 
 signal.pause()
 "#;
@@ -200,17 +194,15 @@ impl MultiServerFixture {
 fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("hanging-fixture");
-    let pid_path = tempdir.path().join("hanging-fixture.pid");
     let timeout = Duration::from_secs(1);
 
     materialize_fixture(&fixture, HANGING_FIXTURE)?;
     let mut command = FixtureCommand::new(fixture.as_std_path());
-    command
-        .arg(pid_path.as_std_path())
-        .current_dir(tempdir.path());
+    command.current_dir(tempdir.path());
 
     let started_at = Instant::now();
-    let error = match run_fixture_command(&mut command, timeout) {
+    let mut raw_child_pid = None;
+    let error = match run_fixture_command(&mut command, timeout, Some(&mut raw_child_pid)) {
         Ok(output) => bail!("hanging fixture unexpectedly exited: {output:?}"),
         Err(error) => error,
     };
@@ -228,11 +220,10 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
         "fixture command timeout exceeded its cleanup deadline"
     );
 
-    let raw_pid = state::fs::read_to_string(&pid_path)?
-        .trim()
-        .parse::<u32>()?;
-    let pid = process_pid(raw_pid)?;
-    assert!(test_kill_process(pid).is_err());
+    let raw_child_pid =
+        raw_child_pid.ok_or_else(|| anyhow!("fixture command did not report its child PID"))?;
+    let child_pid = process_pid(raw_child_pid)?;
+    assert!(test_kill_process(child_pid).is_err());
 
     Ok(())
 }
@@ -246,7 +237,7 @@ fn fixture_command_captures_verbose_output_without_pipe_backpressure() -> Result
     let mut command = FixtureCommand::new(fixture.as_std_path());
     command.current_dir(tempdir.path());
 
-    let output = run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT)?;
+    let output = run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT, None)?;
     assert_eq!(output.stdout.len(), 2 * 1024 * 1024);
     assert_eq!(output.stderr.len(), 2 * 1024 * 1024);
     assert_fixture_snapshot(
@@ -582,7 +573,7 @@ os.makedirs = record_makedirs
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PV_MYSQL_MKDIR_PROBE", &probe_path);
     let empty_data_dir_initialization =
-        run_fixture_command(&mut empty_data_dir_command, FIXTURE_COMMAND_TIMEOUT)?;
+        run_fixture_command(&mut empty_data_dir_command, FIXTURE_COMMAND_TIMEOUT, None)?;
 
     assert_fixture_snapshot(
         tempdir.path(),
@@ -1030,10 +1021,14 @@ fn run_fixture(
     let mut command = FixtureCommand::new(path.as_std_path());
     command.args(arguments).current_dir(current_dir);
 
-    run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT)
+    run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT, None)
 }
 
-fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Result<FixtureOutput> {
+fn run_fixture_command(
+    command: &mut FixtureCommand,
+    timeout: Duration,
+    child_pid: Option<&mut Option<u32>>,
+) -> Result<FixtureOutput> {
     let mut stdout = tempfile()?;
     let mut stderr = tempfile()?;
     command
@@ -1041,6 +1036,9 @@ fn run_fixture_command(command: &mut FixtureCommand, timeout: Duration) -> Resul
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
     let mut child = command.spawn()?;
+    if let Some(child_pid) = child_pid {
+        *child_pid = Some(child.id());
+    }
     let deadline = Instant::now() + timeout;
 
     let error = loop {
