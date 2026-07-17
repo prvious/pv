@@ -1726,6 +1726,7 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
             database.project_env_observed_state(&project.id)?,
         )
     };
+    stop_recorded_rustfs_runtime(&paths).await?;
 
     assert!(
         result.is_err(),
