@@ -67,6 +67,22 @@ sys.stdout.flush()
 sys.stderr.write(contents)
 sys.stderr.flush()
 "#;
+const EXITED_FIXTURE: &str = r#"#!/usr/bin/env python3
+import sys
+
+
+sys.exit(0)
+"#;
+const LIVE_PROCESS_GROUP_FIXTURE: &str = r#"#!/usr/bin/env python3
+import signal
+import sys
+
+
+with open(sys.argv[1], "w", encoding="utf-8") as marker:
+    marker.write("started\n")
+
+signal.pause()
+"#;
 const POSTGRES_SHUTDOWN_SITECUSTOMIZE: &str = r#"import os
 import signal
 import socketserver
@@ -392,6 +408,59 @@ fn single_server_fixture_exits_after_signal_status() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[test]
+fn process_group_cleanup_does_not_kill_recycled_group_after_child_reaped() -> Result<()> {
+    let tempdir = tempdir()?;
+    let exited_fixture = tempdir.path().join("exited-fixture");
+    let live_fixture = tempdir.path().join("live-fixture");
+    let live_marker = tempdir.path().join("live-fixture-started");
+
+    materialize_fixture(&exited_fixture, EXITED_FIXTURE)?;
+    materialize_fixture(&live_fixture, LIVE_PROCESS_GROUP_FIXTURE)?;
+
+    let mut exited_command = FixtureCommand::new(exited_fixture.as_std_path());
+    exited_command.current_dir(tempdir.path()).process_group(0);
+    let mut exited_child = exited_command.spawn()?;
+    let exited_status = wait_for_child_status(&mut exited_child, FIXTURE_COMMAND_TIMEOUT)?
+        .ok_or_else(|| anyhow!("exited fixture did not exit before the test setup completed"))?;
+    if !exited_status.success() {
+        bail!("exited fixture returned unexpected status {exited_status}");
+    }
+
+    let mut live_command = FixtureCommand::new(live_fixture.as_std_path());
+    live_command
+        .arg(live_marker.as_std_path())
+        .current_dir(tempdir.path())
+        .process_group(0);
+    let mut live_child = live_command.spawn()?;
+    let simulated_recycled_process_group = process_pid(live_child.id())?;
+    let lifecycle = (|| {
+        wait_for_handler_marker(&live_marker, FIXTURE_COMMAND_TIMEOUT)?;
+        let cleanup_result =
+            kill_process_group_and_reap_child(&mut exited_child, simulated_recycled_process_group);
+        let live_group_was_alive =
+            wait_for_child_status(&mut live_child, FIXTURE_SHUTDOWN_TIMEOUT)?.is_none();
+
+        Ok::<_, anyhow::Error>((cleanup_result, live_group_was_alive))
+    })();
+    let cleanup =
+        kill_process_group_and_reap_child(&mut live_child, simulated_recycled_process_group);
+
+    let (cleanup_result, live_group_was_alive) = match lifecycle {
+        Ok(result) => result,
+        Err(error) => {
+            cleanup?;
+            return Err(error);
+        }
+    };
+    cleanup?;
+    assert!(
+        live_group_was_alive,
+        "cleanup killed the live process group through a recycled PGID"
+    );
+    cleanup_result
 }
 
 #[test]
@@ -961,6 +1030,10 @@ fn wait_for_child_status(child: &mut Child, timeout: Duration) -> Result<Option<
 }
 
 fn kill_process_group_and_reap_child(child: &mut Child, process_group: Pid) -> Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+
     let kill_error = match kill_process_group(process_group, Signal::KILL) {
         Ok(()) | Err(Errno::SRCH) => None,
         Err(error) => Some(error),
