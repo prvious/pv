@@ -397,7 +397,7 @@ fn postgres_fixture_shutdown_is_deterministic_after_sigterm() -> Result<()> {
 
             thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
         };
-        if !status.success() && status.signal() != Some(Signal::TERM.as_raw()) {
+        if status.signal() != Some(Signal::TERM.as_raw()) {
             bail!("PostgreSQL fixture exited unexpectedly after injected SIGTERM: {status}");
         }
 
