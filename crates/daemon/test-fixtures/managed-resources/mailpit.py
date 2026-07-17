@@ -65,14 +65,39 @@ dashboard = http.server.ThreadingHTTPServer(
     host_port(listen),
     http.server.SimpleHTTPRequestHandler,
 )
+shutdown_requested = threading.Event()
+shutdown_thread = None
+received_signal = None
 
 
-def stop(_signum, _frame):
-    sys.exit(0)
+def shutdown_servers():
+    smtp_server.shutdown()
+    dashboard.shutdown()
+
+
+def stop(signum, _frame):
+    global received_signal, shutdown_thread
+    if shutdown_requested.is_set():
+        return
+    received_signal = signum
+    shutdown_requested.set()
+    shutdown_thread = threading.Thread(target=shutdown_servers, daemon=True)
+    shutdown_thread.start()
 
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 
-threading.Thread(target=smtp_server.serve_forever, daemon=True).start()
-dashboard.serve_forever()
+threading.Thread(
+    target=smtp_server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+).start()
+dashboard.serve_forever(poll_interval=0.1)
+if shutdown_thread is not None:
+    shutdown_thread.join()
+else:
+    smtp_server.shutdown()
+smtp_server.server_close()
+dashboard.server_close()
+if received_signal is not None:
+    signal.signal(received_signal, signal.SIG_DFL)
+    os.kill(os.getpid(), received_signal)

@@ -137,18 +137,38 @@ api = Server(split_address(api_address), RustfsHandler)
 console = Server(split_address(console_address), ConsoleHandler)
 
 shutdown_requested = threading.Event()
+shutdown_thread = None
+received_signal = None
 
 
-def stop(_signum, _frame):
+def shutdown_servers():
+    console.shutdown()
+    api.shutdown()
+
+
+def stop(signum, _frame):
+    global received_signal, shutdown_thread
     if shutdown_requested.is_set():
         return
+    received_signal = signum
     shutdown_requested.set()
-    threading.Thread(target=api.shutdown, daemon=True).start()
+    shutdown_thread = threading.Thread(target=shutdown_servers, daemon=True)
+    shutdown_thread.start()
 
 
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 
-threading.Thread(target=console.serve_forever, daemon=True).start()
-api.serve_forever()
-console.shutdown()
+threading.Thread(
+    target=console.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+).start()
+api.serve_forever(poll_interval=0.1)
+if shutdown_thread is not None:
+    shutdown_thread.join()
+else:
+    console.shutdown()
+api.server_close()
+console.server_close()
+if received_signal is not None:
+    signal.signal(received_signal, signal.SIG_DFL)
+    os.kill(os.getpid(), received_signal)

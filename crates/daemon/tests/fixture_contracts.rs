@@ -13,6 +13,7 @@ use insta::{Settings, assert_debug_snapshot};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 use state::StateError;
+use state::fs::ensure_user_dir;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -166,6 +167,31 @@ impl SingleServerFixture {
             Self::Mysql => MYSQL_FIXTURE,
             Self::Postgres => POSTGRES_FIXTURE,
             Self::Redis => REDIS_FIXTURE,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MultiServerFixture {
+    FakeMailpit,
+    Mailpit,
+    Rustfs,
+}
+
+impl MultiServerFixture {
+    fn name(self) -> &'static str {
+        match self {
+            Self::FakeMailpit => "fake Mailpit",
+            Self::Mailpit => "Mailpit",
+            Self::Rustfs => "RustFS",
+        }
+    }
+
+    fn executable_name(self) -> &'static str {
+        match self {
+            Self::FakeMailpit => "fake-mailpit",
+            Self::Mailpit => "mailpit",
+            Self::Rustfs => "rustfs",
         }
     }
 }
@@ -404,6 +430,21 @@ fn single_server_fixture_exits_after_signal_status() -> Result<()> {
     ] {
         for signal in [Signal::TERM, Signal::INT] {
             assert_single_server_fixture_exits_after_signal(fixture, signal)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn multi_server_fixture_exits_after_signal_status() -> Result<()> {
+    for fixture in [
+        MultiServerFixture::FakeMailpit,
+        MultiServerFixture::Mailpit,
+        MultiServerFixture::Rustfs,
+    ] {
+        for signal in [Signal::TERM, Signal::INT] {
+            assert_multi_server_fixture_exits_after_signal(fixture, signal)?;
         }
     }
 
@@ -847,6 +888,102 @@ fn assert_single_server_fixture_exits_after_signal(
         if readiness != [true] {
             bail!(
                 "{} fixture did not become ready on port {port}",
+                fixture.name()
+            );
+        }
+
+        kill_process_group(process_group, signal)?;
+        let status =
+            wait_for_child_status(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)?.ok_or_else(|| {
+                anyhow!(
+                    "{} fixture did not exit after signal {}",
+                    fixture.name(),
+                    signal.as_raw()
+                )
+            })?;
+        if status.signal() != Some(signal.as_raw()) {
+            bail!(
+                "{} fixture exited with {status} after signal {}; expected signal status {}",
+                fixture.name(),
+                signal.as_raw(),
+                signal.as_raw()
+            );
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })();
+    let cleanup = kill_process_group_and_reap_child(&mut child, process_group);
+
+    if let Err(error) = lifecycle {
+        cleanup?;
+        return Err(error);
+    }
+    cleanup
+}
+
+fn assert_multi_server_fixture_exits_after_signal(
+    fixture: MultiServerFixture,
+    signal: Signal,
+) -> Result<()> {
+    let tempdir = tempdir()?;
+    let executable = tempdir.path().join(fixture.executable_name());
+    let first_port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let first_port = first_port_reservation.local_addr()?.port();
+    let second_port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let second_port = second_port_reservation.local_addr()?.port();
+    let first_address = format!("127.0.0.1:{first_port}");
+    let second_address = format!("127.0.0.1:{second_port}");
+    let source = match fixture {
+        MultiServerFixture::FakeMailpit => FAKE_MAILPIT_FIXTURE.to_owned(),
+        MultiServerFixture::Mailpit => MAILPIT_FIXTURE.to_owned(),
+        MultiServerFixture::Rustfs => render_rustfs_fixture(false)?,
+    };
+
+    materialize_fixture(&executable, &source)?;
+    let mut command = FixtureCommand::new(executable.as_std_path());
+    command.current_dir(tempdir.path());
+    match fixture {
+        MultiServerFixture::FakeMailpit => {
+            command.args([first_port.to_string(), second_port.to_string()]);
+        }
+        MultiServerFixture::Mailpit => {
+            let data_dir = tempdir.path().join("mailpit-data");
+            ensure_user_dir(&data_dir)?;
+            let database = data_dir.join("mailpit.db");
+            command.args([
+                "--smtp",
+                first_address.as_str(),
+                "--listen",
+                second_address.as_str(),
+                "--database",
+                database.as_str(),
+                "--disable-version-check",
+            ]);
+        }
+        MultiServerFixture::Rustfs => {
+            let data_dir = tempdir.path().join("rustfs-data");
+            ensure_user_dir(&data_dir)?;
+            command.args([
+                "--address",
+                first_address.as_str(),
+                "--console-address",
+                second_address.as_str(),
+                data_dir.as_str(),
+            ]);
+        }
+    }
+    drop(first_port_reservation);
+    drop(second_port_reservation);
+
+    command.process_group(0);
+    let mut child = command.spawn()?;
+    let process_group = process_pid(child.id())?;
+    let lifecycle = (|| {
+        let readiness =
+            wait_for_loopback_ports([first_port, second_port], FIXTURE_COMMAND_TIMEOUT)?;
+        if readiness != [true, true] {
+            bail!(
+                "{} fixture did not become ready on ports {first_port} and {second_port}",
                 fixture.name()
             );
         }
