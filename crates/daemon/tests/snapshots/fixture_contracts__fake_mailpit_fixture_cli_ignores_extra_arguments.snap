@@ -1,0 +1,11 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+(
+    [
+        true,
+        true,
+    ],
+    true,
+)

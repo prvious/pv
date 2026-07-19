@@ -1,0 +1,31 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+(
+    FixtureOutput {
+        code: Some(
+            64,
+        ),
+        stdout: "",
+        stderr: "mysqld initialization must start with --no-defaults\n",
+    },
+    FixtureOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "",
+        stderr: "",
+    },
+    false,
+    false,
+    true,
+    FixtureOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "",
+        stderr: "",
+    },
+    "/mysql",
+)

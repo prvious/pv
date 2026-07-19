@@ -1,0 +1,20 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+(
+    FixtureOutput {
+        code: Some(
+            64,
+        ),
+        stdout: "",
+        stderr: "unexpected postgres argument: --unexpected\n",
+    },
+    FixtureOutput {
+        code: Some(
+            64,
+        ),
+        stdout: "",
+        stderr: "postgres data dir is not initialized\n",
+    },
+)

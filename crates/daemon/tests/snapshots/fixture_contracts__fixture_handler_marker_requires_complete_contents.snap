@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/fixture_contracts.rs
+expression: snapshot
+---
+"timed out waiting for fixture handler marker at <tempdir>/handler-started"

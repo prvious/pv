@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  test -f "$3"
+  exit 0
+fi
+
+if [ "$1" = "run" ]; then
+  port="$(awk '/^# PV_FAKE_PORT / { print $3; exit }' "$3")"
+  if [ "$port" = "__PV_BLOCKED_PORT__" ]; then
+    sleep 30
+    exit 0
+  fi
+  python3 "$0.server.py" "$port" &
+  child="$!"
+  trap ':' USR1
+  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
+  while true; do
+    wait "$child" && exit 0
+    status="$?"
+    if kill -0 "$child" 2>/dev/null; then
+      continue
+    fi
+    exit "$status"
+  done
+fi
+
+exit 2
