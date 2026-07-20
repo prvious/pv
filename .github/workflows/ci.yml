@@ -47,3 +47,76 @@ jobs:
 
       - name: Run tests
         run: cargo nextest run --workspace --all-features --locked
+
+  runtime-portability:
+    name: Runtime (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux
+          - runner: windows-latest
+            target: windows
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Compile installed runtime
+        run: >-
+          cargo check --locked
+          -p pv -p cli -p config -p daemon -p platform
+          -p protocol -p resources -p self-update -p state
+
+      - name: Build PV
+        run: cargo build --locked -p pv
+
+      - name: Test portable domain boundaries
+        run: |
+          cargo test --locked -p state -p config -p resources -p platform --lib unsupported
+          cargo test --locked -p resources --lib target_platform_for
+
+      - name: Smoke portable commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          pv_binary=target/debug/pv
+          if [[ -x target/debug/pv.exe ]]; then
+            pv_binary=target/debug/pv.exe
+          fi
+          pv_smoke_home=$(mktemp -d)
+          export HOME="$pv_smoke_home"
+          export USERPROFILE="$pv_smoke_home"
+          "$pv_binary" --help >/dev/null
+          "$pv_binary" --version >/dev/null
+          "$pv_binary" completions bash >/dev/null
+          test ! -e "$pv_smoke_home/.pv"
+
+      - name: Smoke unsupported host capability
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          pv_binary=target/debug/pv
+          if [[ -x target/debug/pv.exe ]]; then
+            pv_binary=target/debug/pv.exe
+          fi
+          pv_smoke_home=$(mktemp -d)
+          export HOME="$pv_smoke_home"
+          export USERPROFILE="$pv_smoke_home"
+          if output=$("$pv_binary" daemon:enable 2>&1); then
+            printf '%s\n' "daemon:enable unexpectedly succeeded" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -F \
+            "daemon registration is unsupported on ${EXPECTED_TARGET}"
+          test ! -e "$pv_smoke_home/.pv"
