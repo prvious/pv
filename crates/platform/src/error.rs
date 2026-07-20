@@ -3,7 +3,7 @@ use std::io;
 use camino::Utf8PathBuf;
 use thiserror::Error;
 
-use crate::ca::CaRepairReason;
+use crate::{CaRepairReason, PlatformCapability, PlatformTarget};
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
@@ -28,8 +28,14 @@ pub enum PlatformError {
     #[error("local CA certificate and private key do not match")]
     KeyMismatch,
 
-    #[error("{feature} is unsupported on this platform")]
-    UnsupportedPlatform { feature: &'static str },
+    #[error("{capability} is unsupported on {target}")]
+    Unsupported {
+        capability: PlatformCapability,
+        target: PlatformTarget,
+    },
+
+    #[error("{target} is an unsupported platform target")]
+    UnsupportedTarget { target: &'static str },
 
     #[error("could not open URL in the browser: {0}")]
     BrowserOpen(#[source] io::Error),

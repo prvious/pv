@@ -392,7 +392,8 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LocalCaPostWriteMissing
         | PlatformError::LocalCaPostWriteRepairRequired { .. }
         | PlatformError::LocalCaPostWriteUnreadable { .. }
-        | PlatformError::UnsupportedPlatform { .. }
+        | PlatformError::Unsupported { .. }
+        | PlatformError::UnsupportedTarget { .. }
         | PlatformError::BrowserOpen(_)
         | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
