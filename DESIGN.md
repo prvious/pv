@@ -23,13 +23,15 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 is macOS-only. Linux and Windows support are deferred and not guaranteed.
+PV v1 targets macOS 13 and newer. Stabilizing the macOS application remains the immediate product priority.
 
-PV v1 targets macOS 13 and newer.
+Linux and Windows are committed subsequent platforms. During macOS stabilization, the installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
+
+Native compile support and explicit unsupported behavior do not make Linux or Windows supported distributions, add them to v1, or authorize publishing Linux or Windows binaries.
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
-PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only, but app-facing code should call the `platform` crate for host integration concerns.
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns.
 
 ## Implementation Language
 
