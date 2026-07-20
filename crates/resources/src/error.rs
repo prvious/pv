@@ -1,5 +1,20 @@
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceHostCapability {
+    OwnerOnlyFilesystem,
+    SymbolicLinks,
+}
+
+impl std::fmt::Display for ResourceHostCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OwnerOnlyFilesystem => formatter.write_str("owner-only filesystem"),
+            Self::SymbolicLinks => formatter.write_str("symbolic links"),
+        }
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ResourcesError {
     #[error("unknown Managed Resource `{name}`")]
@@ -120,6 +135,12 @@ pub enum ResourcesError {
 
     #[error("filesystem error at `{path}`: {reason}")]
     Filesystem { path: String, reason: String },
+
+    #[error("unsupported host capability `{capability}` on `{target}`")]
+    UnsupportedHostCapability {
+        capability: ResourceHostCapability,
+        target: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, ResourcesError>;

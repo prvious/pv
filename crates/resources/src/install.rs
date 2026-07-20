@@ -8,6 +8,9 @@ use tar::{Archive, EntryType};
 use crate::fs;
 use crate::{ArtifactVersion, ManifestArtifact, ResourceName, ResourcesError, Result, TrackName};
 
+#[cfg(not(unix))]
+use crate::ResourceHostCapability;
+
 static INSTALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub trait ResourceAdapter {
@@ -414,6 +417,7 @@ fn staging_dir(track_dir: &Utf8Path, artifact_version: &ArtifactVersion) -> Utf8
 }
 
 fn update_current_pointer(track_dir: &Utf8Path, artifact_version: &ArtifactVersion) -> Result<()> {
+    require_symbolic_links()?;
     let current_path = track_dir.join("current");
     let temporary_path = track_dir.join(format!(
         "current.{}.{}.tmp",
@@ -595,9 +599,72 @@ fn symlink_dir(target: &Utf8Path, link: &Utf8Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn symlink_dir(_target: &Utf8Path, link: &Utf8Path) -> Result<()> {
-    Err(ResourcesError::Filesystem {
-        path: link.to_string(),
-        reason: "PV artifact installs require Unix symlinks".to_string(),
+fn symlink_dir(_target: &Utf8Path, _link: &Utf8Path) -> Result<()> {
+    require_symbolic_links()
+}
+
+#[cfg(unix)]
+const fn require_symbolic_links() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_symbolic_links() -> Result<()> {
+    Err(ResourcesError::UnsupportedHostCapability {
+        capability: ResourceHostCapability::SymbolicLinks,
+        target: std::env::consts::OS.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    use std::sync::atomic::Ordering;
+
+    #[cfg(windows)]
+    use anyhow::Result;
+    #[cfg(windows)]
+    use camino_tempfile::tempdir;
+
+    #[cfg(windows)]
+    use super::{INSTALL_COUNTER, update_current_pointer};
+    #[cfg(windows)]
+    use crate::{ArtifactVersion, ResourceHostCapability, ResourcesError};
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "resource installer test creates and inspects current-pointer fixtures directly"
+    )]
+    fn unsupported_current_pointer_update_does_not_modify_pointer_paths() -> Result<()> {
+        let tempdir = tempdir()?;
+        let track_dir = tempdir.path().join("redis/7.2");
+        std::fs::create_dir_all(&track_dir)?;
+
+        let counter = INSTALL_COUNTER.load(Ordering::Relaxed);
+        let current_path = track_dir.join("current");
+        let temporary_path =
+            track_dir.join(format!("current.{}.{}.tmp", std::process::id(), counter));
+        std::fs::write(&current_path, "current release")?;
+        std::fs::write(&temporary_path, "temporary release")?;
+
+        let artifact_version = ArtifactVersion::new("7.2.5-pv1")?;
+        let result = update_current_pointer(&track_dir, &artifact_version);
+
+        assert_eq!(
+            result,
+            Err(ResourcesError::UnsupportedHostCapability {
+                capability: ResourceHostCapability::SymbolicLinks,
+                target: "windows".to_string(),
+            })
+        );
+        assert_eq!(std::fs::read_to_string(&current_path)?, "current release");
+        assert_eq!(
+            std::fs::read_to_string(&temporary_path)?,
+            "temporary release"
+        );
+
+        Ok(())
+    }
 }

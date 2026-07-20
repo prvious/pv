@@ -5,6 +5,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::{ResourcesError, Result};
 
+#[cfg(not(unix))]
+use crate::ResourceHostCapability;
+
 const USER_ONLY_DIR_MODE: u32 = 0o700;
 const CACHE_FILE_MODE: u32 = 0o600;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -29,6 +32,7 @@ pub(crate) fn write_atomically_with<T>(
     path: &Utf8Path,
     operation: impl FnOnce(&mut dyn Write) -> Result<T>,
 ) -> Result<T> {
+    ensure_owner_only_filesystem()?;
     ensure_parent_dir(path)?;
     let temporary_path = temporary_path_for(path);
     let result = write_temporary_file(&temporary_path, operation);
@@ -241,18 +245,38 @@ fn set_dir_mode(path: &Utf8Path, mode: u32) -> Result<()> {
 
 #[cfg(not(unix))]
 fn set_file_mode(path: &Utf8Path, _mode: u32) -> Result<()> {
-    Err(ResourcesError::Filesystem {
-        path: path.to_string(),
-        reason: "PV resources filesystem cache requires Unix permissions".to_string(),
-    })
+    let _ = path;
+    Err(unsupported_host_capability(
+        ResourceHostCapability::OwnerOnlyFilesystem,
+    ))
 }
 
 #[cfg(not(unix))]
 fn set_dir_mode(path: &Utf8Path, _mode: u32) -> Result<()> {
-    Err(ResourcesError::Filesystem {
-        path: path.to_string(),
-        reason: "PV resources filesystem cache requires Unix permissions".to_string(),
-    })
+    let _ = path;
+    Err(unsupported_host_capability(
+        ResourceHostCapability::OwnerOnlyFilesystem,
+    ))
+}
+
+#[cfg(unix)]
+fn ensure_owner_only_filesystem() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only_filesystem() -> Result<()> {
+    Err(unsupported_host_capability(
+        ResourceHostCapability::OwnerOnlyFilesystem,
+    ))
+}
+
+#[cfg(not(unix))]
+fn unsupported_host_capability(capability: ResourceHostCapability) -> ResourcesError {
+    ResourcesError::UnsupportedHostCapability {
+        capability,
+        target: std::env::consts::OS.to_string(),
+    }
 }
 
 fn filesystem_error(path: &Utf8Path, source: std::io::Error) -> ResourcesError {
