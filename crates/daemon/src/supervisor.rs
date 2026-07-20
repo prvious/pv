@@ -5,6 +5,8 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use platform::PlatformCapability;
+#[cfg(target_os = "macos")]
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
 };
@@ -25,6 +27,13 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessSignal {
+    Reload,
+    Terminate,
+    Kill,
+}
 
 #[expect(
     clippy::disallowed_types,
@@ -158,6 +167,7 @@ impl ProcessSupervisor {
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
+        require_process_containment()?;
         state::fs::ensure_layout(&self.paths)?;
 
         let stdout = fs::open_append_file(&spec.log_path)?;
@@ -190,6 +200,7 @@ impl ProcessSupervisor {
         &self,
         spec: &ProcessSpec,
     ) -> Result<Option<OwnedRuntime>, DaemonError> {
+        require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
             return Ok(None);
         };
@@ -210,6 +221,7 @@ impl ProcessSupervisor {
     }
 
     pub fn adopt(&self, spec: &ProcessSpec) -> Result<Option<AdoptedProcess>, DaemonError> {
+        require_process_containment()?;
         Ok(self
             .verify_ownership(spec)?
             .map(|owned| AdoptedProcess { owned }))
@@ -220,6 +232,7 @@ impl ProcessSupervisor {
         pid_path: &Utf8Path,
         metadata_path: &Utf8Path,
     ) -> Result<Option<AdoptedProcess>, DaemonError> {
+        require_process_containment()?;
         let Some(pid) = read_pid_file(pid_path)? else {
             return Ok(None);
         };
@@ -243,11 +256,11 @@ impl ProcessSupervisor {
     }
 
     pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        require_process_containment()?;
         let Some(owned) = self.verify_ownership(spec)? else {
             return Ok(false);
         };
-        let process_group = process_group_pid(owned.pid)?;
-        signal_process_group(process_group, Signal::USR1)?;
+        signal_process_group(owned.pid, ProcessSignal::Reload)?;
 
         Ok(true)
     }
@@ -275,12 +288,12 @@ impl ManagedProcess {
     }
 
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
+        require_process_containment()?;
         if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
             return Ok(());
         }
 
-        let process_group = process_group_pid(self.pid)?;
-        signal_process_group(process_group, Signal::TERM)?;
+        signal_process_group(self.pid, ProcessSignal::Terminate)?;
 
         match timeout(
             grace_period,
@@ -290,7 +303,7 @@ impl ManagedProcess {
         {
             Ok(result) => return result,
             Err(_elapsed) => {
-                signal_process_group(process_group, Signal::KILL)?;
+                signal_process_group(self.pid, ProcessSignal::Kill)?;
             }
         }
 
@@ -303,7 +316,7 @@ impl ManagedProcess {
             Ok(result) => result,
             Err(_elapsed) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("process group {process_group:?} did not exit after signal"),
+                format!("process group {} did not exit after signal", self.pid),
             )
             .into()),
         }
@@ -322,6 +335,7 @@ impl AdoptedProcess {
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        require_process_containment()?;
         stop_process_group_by_pid(self.owned.pid, grace_period).await
     }
 }
@@ -519,6 +533,13 @@ fn tls_client_config(
     ))
 }
 
+fn require_process_containment() -> Result<(), DaemonError> {
+    platform::require_capability(PlatformCapability::ProcessContainment)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     let raw_pid =
         i32::try_from(pid).map_err(|source| io::Error::new(io::ErrorKind::InvalidInput, source))?;
@@ -531,7 +552,15 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     })
 }
 
-fn signal_process_group(process_group: Pid, signal: Signal) -> Result<(), DaemonError> {
+#[cfg(target_os = "macos")]
+fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
+    let process_group = process_group_pid(pid)?;
+    let signal = match signal {
+        ProcessSignal::Reload => Signal::USR1,
+        ProcessSignal::Terminate => Signal::TERM,
+        ProcessSignal::Kill => Signal::KILL,
+    };
+
     match kill_process_group(process_group, signal) {
         Ok(()) => Ok(()),
         Err(source) => {
@@ -545,23 +574,25 @@ fn signal_process_group(process_group: Pid, signal: Signal) -> Result<(), Daemon
     }
 }
 
-async fn terminate_spawned_child(pid: u32, child: &mut Child) {
-    if let Ok(process_group) = process_group_pid(pid) {
-        let _result = signal_process_group(process_group, Signal::KILL);
-    }
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonError> {
+    require_process_containment()
+}
+
+async fn terminate_spawned_child(_pid: u32, child: &mut Child) {
+    let _result = child.kill().await;
 
     let _result = child.wait().await;
 }
 
 async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(), DaemonError> {
-    let process_group = process_group_pid(pid)?;
-    signal_process_group(process_group, Signal::TERM)?;
+    signal_process_group(pid, ProcessSignal::Terminate)?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
-    signal_process_group(process_group, Signal::KILL)?;
+    signal_process_group(pid, ProcessSignal::Kill)?;
 
     if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
         return Ok(());
@@ -615,7 +646,7 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
         command.env_remove(key);
     }
     command.envs(&spec.private_environment);
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     command.process_group(0);
 
     command
@@ -677,6 +708,7 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     let pid = process_group_pid(pid)?;
 
@@ -693,6 +725,14 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
 fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
     let process_group = process_group_pid(pid)?;
 
@@ -707,6 +747,13 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
             Err(error.into())
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
 }
 
 fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, DaemonError> {
@@ -813,6 +860,7 @@ fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
     Ok(Some(command_line))
 }
 
+#[cfg(target_os = "macos")]
 fn process_not_found(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }

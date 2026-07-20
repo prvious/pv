@@ -1,10 +1,9 @@
 use futures_util::StreamExt;
 use serde_json::Value;
 use state::PvPaths;
-use tokio::net::UnixStream;
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use crate::DaemonError;
+use crate::{DaemonError, ipc};
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, ManagedResourceUpdateCheck, PROTOCOL_VERSION,
     ResponseStatus, write_line,
@@ -231,21 +230,18 @@ async fn managed_resource_update_check(
 
 async fn connect_transport(
     paths: &PvPaths,
-) -> Result<protocol::DaemonTransport<UnixStream>, DaemonError> {
-    let stream = timeout(
-        DAEMON_CONNECT_TIMEOUT,
-        UnixStream::connect(paths.daemon_socket()),
-    )
-    .await
-    .map_err(|_| DaemonError::ProtocolTimedOut {
-        phase: "connection",
-    })??;
+) -> Result<protocol::DaemonTransport<ipc::LocalStream>, DaemonError> {
+    let stream = timeout(DAEMON_CONNECT_TIMEOUT, ipc::connect(paths))
+        .await
+        .map_err(|_| DaemonError::ProtocolTimedOut {
+            phase: "connection",
+        })??;
 
     Ok(protocol::transport(stream))
 }
 
 async fn write_health_request(
-    transport: &mut protocol::DaemonTransport<UnixStream>,
+    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
 ) -> Result<(), DaemonError> {
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,
@@ -259,7 +255,7 @@ async fn write_health_request(
 }
 
 async fn write_job_request(
-    transport: &mut protocol::DaemonTransport<UnixStream>,
+    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
     kind: &str,
     scope: &str,
 ) -> Result<(), DaemonError> {
@@ -278,7 +274,7 @@ async fn write_job_request(
 }
 
 async fn write_managed_resource_update_check_request(
-    transport: &mut protocol::DaemonTransport<UnixStream>,
+    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
 ) -> Result<(), DaemonError> {
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,
@@ -312,7 +308,7 @@ fn health_error_is_retryable(error: &DaemonError, started_at: Instant) -> bool {
 }
 
 async fn read_response(
-    transport: &mut protocol::DaemonTransport<UnixStream>,
+    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
 ) -> Result<DaemonResponse, DaemonError> {
     let Some(line) = timeout(DAEMON_RESPONSE_TIMEOUT, transport.next())
         .await
@@ -327,7 +323,7 @@ async fn read_response(
 }
 
 async fn read_job_completion(
-    transport: &mut protocol::DaemonTransport<UnixStream>,
+    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
     expected_job_id: &str,
     events: &mut impl JobEventHandler,
 ) -> Result<String, DaemonError> {

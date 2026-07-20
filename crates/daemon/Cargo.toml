@@ -25,7 +25,6 @@ sha2 = { workspace = true }
 resources = { path = "../resources" }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
-rustix = { workspace = true }
 sqlx = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
@@ -33,6 +32,9 @@ time = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

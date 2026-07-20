@@ -19,9 +19,7 @@ use super::{
     ManagedResourceRuntimeContext, RESOURCE_HOST, sql,
 };
 #[cfg(test)]
-use super::{
-    ManagedResourceInstallOptions, ManagedResourceRuntimeCatalog, current_target_platform,
-};
+use super::{ManagedResourceInstallOptions, ManagedResourceRuntimeCatalog};
 use crate::{DaemonError, ProcessSpec};
 
 pub(crate) const RESOURCE_NAME: &str = "mysql";
@@ -300,7 +298,7 @@ pub(crate) fn mysql_runtime_catalog_with_recording_admin(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         MysqlRuntimeAdapter::with_recording_admin(admin)?,
     ))

@@ -154,23 +154,27 @@ struct SetupDefaultFixture {
 }
 
 #[test]
-fn production_catalog_uses_compiled_artifact_manifest_endpoint() {
-    let catalog = super::ManagedResourceRuntimeCatalog::production();
+fn production_catalog_uses_compiled_artifact_manifest_endpoint() -> Result<()> {
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
 
     assert_eq!(
         catalog.install_options.manifest_url,
         resources::default_artifact_manifest_url()
     );
+
+    Ok(())
 }
 
 #[test]
-fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() {
-    let catalog = super::ManagedResourceRuntimeCatalog::without_adapters();
+fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() -> Result<()> {
+    let catalog = super::ManagedResourceRuntimeCatalog::without_adapters()?;
 
     assert_eq!(
         catalog.install_options.manifest_url,
         resources::default_artifact_manifest_url()
     );
+
+    Ok(())
 }
 
 #[test]
@@ -182,7 +186,7 @@ fn update_check_refreshes_manifest_when_no_resources_are_installed() -> Result<(
         adapters: BTreeMap::new(),
         install_options: super::ManagedResourceInstallOptions {
             manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         http_client: Some(Arc::new(RecordingManifestClient {
             body: EMPTY_ARTIFACT_MANIFEST,
@@ -937,7 +941,7 @@ async fn system_reconciliation_installs_desired_setup_defaults_without_starting_
     let mut database = Database::open(&paths)?;
     let setup_default_tracks = setup_default_tracks();
     record_desired_setup_tracks(&mut database, &setup_default_tracks)?;
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
     super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
@@ -1023,7 +1027,7 @@ async fn system_reconciliation_rejects_incomplete_php_default_pair_without_parti
             ("php", SETUP_DEFAULT_PHP_TRACK),
         ],
     )?;
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
     let result =
@@ -1074,7 +1078,7 @@ async fn system_reconciliation_rejects_unsupported_composer_default_track_withou
     let unsupported_track = "1";
 
     record_desired_setup_tracks(&mut database, &[("composer", unsupported_track)])?;
-    let catalog = super::ManagedResourceRuntimeCatalog::production();
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
 
     let result =
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
@@ -1115,7 +1119,7 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
     record_desired_setup_tracks(&mut database, &[("mysql", unsupported_track)])?;
     drop(database);
 
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
     let result = crate::jobs::run_background_reconciliation_job(
         paths.clone(),
@@ -1186,7 +1190,7 @@ async fn system_reconciliation_continues_independent_setup_defaults_after_failur
             ("unsupported", unsupported_track),
         ],
     )?;
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production();
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
     let result =
@@ -2051,7 +2055,7 @@ async fn production_demanded_resource_without_adapter_fails_before_env_rendering
 "#,
     )?;
 
-    let catalog = empty_runtime_catalog();
+    let catalog = empty_runtime_catalog()?;
     let mut database = Database::open(&paths)?;
     let result = crate::project_env::reconcile_project_env_with_catalog(
         &paths,
@@ -2194,7 +2198,7 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
     );
@@ -2258,7 +2262,7 @@ async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
     );
@@ -2305,7 +2309,7 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
     );
@@ -2702,7 +2706,7 @@ async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         super::fake::FakeMailpitRuntimeAdapter::exits_after_readiness()?,
     );
@@ -2742,7 +2746,7 @@ fn invalid_default_port_runtime_catalog() -> Result<super::ManagedResourceRuntim
     Ok(super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         InvalidDefaultPortRuntimeAdapter {
             artifact_adapter: RuntimeArtifactAdapter::new(
@@ -3522,15 +3526,15 @@ fn seed_rustfs_fixture_artifact_with_script(
     Ok(())
 }
 
-fn empty_runtime_catalog() -> super::ManagedResourceRuntimeCatalog {
-    super::ManagedResourceRuntimeCatalog {
+fn empty_runtime_catalog() -> Result<super::ManagedResourceRuntimeCatalog> {
+    Ok(super::ManagedResourceRuntimeCatalog {
         adapters: BTreeMap::new(),
         install_options: super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_string(),
-            target_platform: super::current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         http_client: None,
-    }
+    })
 }
 
 fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {

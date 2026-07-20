@@ -61,7 +61,7 @@ impl RunningDaemon {
     ) -> Result<Self, DaemonError> {
         Self::start_with_runtime_catalog(
             paths,
-            Some(ManagedResourceRuntimeCatalog::without_adapters()),
+            Some(ManagedResourceRuntimeCatalog::without_adapters()?),
         )
         .await
     }
@@ -78,7 +78,7 @@ impl RunningDaemon {
                 ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
                     manifest_url,
                     client,
-                ),
+                )?,
             ),
         )
         .await
