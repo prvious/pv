@@ -4,6 +4,8 @@ use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+#[cfg(not(unix))]
+use crate::StateCapability;
 use crate::{PvPaths, StateError, backup};
 
 const USER_ONLY_DIR_MODE: u32 = 0o700;
@@ -36,6 +38,7 @@ pub fn ensure_layout(paths: &PvPaths) -> Result<(), StateError> {
 }
 
 pub fn inspect_layout(paths: &PvPaths) -> Result<Vec<LayoutInspection>, StateError> {
+    require_owner_only_filesystem()?;
     let mut entries = Vec::new();
 
     for (name, directory) in paths.layout_directories() {
@@ -132,6 +135,7 @@ pub fn modified_at(path: &Utf8Path) -> Result<Option<SystemTime>, StateError> {
 }
 
 pub fn inspect_database_files(paths: &PvPaths) -> Result<Vec<DatabaseFileInspection>, StateError> {
+    require_owner_only_filesystem()?;
     let mut entries = Vec::new();
 
     for (name, path) in database_files(paths) {
@@ -168,12 +172,14 @@ pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
 }
 
 pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
+    require_owner_only_filesystem()?;
     set_file_mode(path, SENSITIVE_FILE_MODE)?;
     validate_mode(path, SENSITIVE_FILE_MODE)?;
     validate_owner(path)
 }
 
 pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
+    require_owner_only_filesystem()?;
     set_file_mode(path, EXECUTABLE_FILE_MODE)?;
     validate_mode(path, EXECUTABLE_FILE_MODE)?;
     validate_owner(path)
@@ -188,6 +194,7 @@ fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
 }
 
 pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
+    require_owner_only_filesystem()?;
     create_dir_all(path)?;
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
     validate_mode(path, USER_ONLY_DIR_MODE)?;
@@ -195,6 +202,8 @@ pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
 }
 
 fn ensure_parent_dir(path: &Utf8Path) -> Result<(), StateError> {
+    require_owner_only_filesystem()?;
+
     if let Some(parent) = path.parent() {
         ensure_user_dir(parent)?;
     }
@@ -328,6 +337,7 @@ pub fn delete_dir_all(path: &Utf8Path) -> Result<(), StateError> {
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
@@ -338,6 +348,12 @@ fn set_dir_mode(path: &Utf8Path, mode: u32) -> Result<(), StateError> {
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
+#[cfg(not(unix))]
+fn set_dir_mode(_path: &Utf8Path, _mode: u32) -> Result<(), StateError> {
+    require_owner_only_filesystem()
+}
+
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
@@ -346,6 +362,11 @@ fn set_file_mode(path: &Utf8Path, mode: u32) -> Result<(), StateError> {
     let permissions = std::fs::Permissions::from_mode(mode);
     std::fs::set_permissions(path, permissions)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Utf8Path, _mode: u32) -> Result<(), StateError> {
+    require_owner_only_filesystem()
 }
 
 fn validate_mode(path: &Utf8Path, expected: u32) -> Result<(), StateError> {
@@ -363,7 +384,7 @@ fn validate_mode(path: &Utf8Path, expected: u32) -> Result<(), StateError> {
 }
 
 fn validate_owner(path: &Utf8Path) -> Result<(), StateError> {
-    let expected = current_uid();
+    let expected = current_uid()?;
     let actual = owner_uid(path)?;
 
     if actual == expected {
@@ -378,9 +399,10 @@ fn validate_owner(path: &Utf8Path) -> Result<(), StateError> {
 }
 
 fn is_owned_by_current_user(path: &Utf8Path) -> Result<bool, StateError> {
-    Ok(owner_uid(path)? == current_uid())
+    Ok(owner_uid(path)? == current_uid()?)
 }
 
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
@@ -392,6 +414,14 @@ fn mode(path: &Utf8Path) -> Result<u32, StateError> {
     Ok(metadata.permissions().mode() & 0o777)
 }
 
+#[cfg(not(unix))]
+fn mode(_path: &Utf8Path) -> Result<u32, StateError> {
+    Err(crate::error::unsupported_current_target(
+        StateCapability::OwnerOnlyFilesystem,
+    ))
+}
+
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
@@ -401,6 +431,13 @@ fn owner_uid(path: &Utf8Path) -> Result<u32, StateError> {
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
 
     Ok(metadata.uid())
+}
+
+#[cfg(not(unix))]
+fn owner_uid(_path: &Utf8Path) -> Result<u32, StateError> {
+    Err(crate::error::unsupported_current_target(
+        StateCapability::OwnerOnlyFilesystem,
+    ))
 }
 
 pub fn path_exists(path: &Utf8Path) -> bool {
@@ -473,10 +510,9 @@ pub fn symlink_file(target: &Utf8Path, link: &Utf8Path) -> Result<(), StateError
 }
 
 #[cfg(not(unix))]
-pub fn symlink_file(_target: &Utf8Path, link: &Utf8Path) -> Result<(), StateError> {
-    Err(StateError::filesystem(
-        link.to_path_buf(),
-        io::Error::new(io::ErrorKind::Unsupported, "PV requires Unix symlinks"),
+pub fn symlink_file(_target: &Utf8Path, _link: &Utf8Path) -> Result<(), StateError> {
+    Err(crate::error::unsupported_current_target(
+        StateCapability::SymbolicLinks,
     ))
 }
 
@@ -542,18 +578,40 @@ fn display_path(paths: &PvPaths, path: &Utf8Path) -> String {
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 #[cfg(unix)]
-fn current_uid() -> u32 {
-    rustix::process::getuid().as_raw()
+fn current_uid() -> Result<u32, StateError> {
+    Ok(rustix::process::getuid().as_raw())
 }
 
 #[cfg(not(unix))]
-compile_error!("PV v1 targets macOS and requires Unix filesystem permissions");
+fn current_uid() -> Result<u32, StateError> {
+    Err(crate::error::unsupported_current_target(
+        StateCapability::OwnerOnlyFilesystem,
+    ))
+}
+
+#[cfg(unix)]
+const fn require_owner_only_filesystem() -> Result<(), StateError> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_owner_only_filesystem() -> Result<(), StateError> {
+    Err(crate::error::unsupported_current_target(
+        StateCapability::OwnerOnlyFilesystem,
+    ))
+}
 
 #[cfg(test)]
 mod tests {
     use camino::Utf8Path;
+    #[cfg(windows)]
+    use camino_tempfile::tempdir;
 
     use super::temporary_path_for;
+    #[cfg(windows)]
+    use super::{ensure_user_dir, path_exists};
+    #[cfg(windows)]
+    use crate::{StateCapability, StateError};
 
     #[test]
     fn temporary_paths_keep_the_target_extension_in_the_derived_name() {
@@ -571,5 +629,26 @@ mod tests {
                 .file_name()
                 .is_some_and(|name| name.starts_with("runtime.json."))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_owner_only_directory_does_not_create_path() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let requested_path = tempdir.path().join("owner-only");
+
+        assert!(!path_exists(&requested_path));
+        let result = ensure_user_dir(&requested_path);
+
+        assert!(matches!(
+            result,
+            Err(StateError::UnsupportedPlatform {
+                capability: StateCapability::OwnerOnlyFilesystem,
+                target: "windows",
+            })
+        ));
+        assert!(!path_exists(&requested_path));
+
+        Ok(())
     }
 }

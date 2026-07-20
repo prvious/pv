@@ -15,7 +15,7 @@ pub use env::{
     transform_managed_env_block, validate_managed_env_block, validate_project_env_shape,
     write_project_env_file,
 };
-pub use error::ConfigError;
+pub use error::{ConfigCapability, ConfigError};
 pub use hostname::{
     hostname_from_project_path, normalize_additional_hostname, normalize_primary_hostname,
 };

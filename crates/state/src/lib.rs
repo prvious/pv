@@ -22,7 +22,7 @@ pub use database::{
     ResourceAllocationStatus, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject,
     php_runtime_key,
 };
-pub use error::StateError;
+pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};
 pub use update_lock::UpdateLock;
 

@@ -1,5 +1,30 @@
+use std::fmt;
+
 use camino::Utf8PathBuf;
 use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateCapability {
+    OwnerOnlyFilesystem,
+    FileLocking,
+    SymbolicLinks,
+}
+
+impl StateCapability {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerOnlyFilesystem => "owner-only filesystem",
+            Self::FileLocking => "file locking",
+            Self::SymbolicLinks => "symbolic link",
+        }
+    }
+}
+
+impl fmt::Display for StateCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -14,6 +39,12 @@ pub enum StateError {
         path: Utf8PathBuf,
         #[source]
         source: std::io::Error,
+    },
+
+    #[error("{capability} is unsupported on {target}")]
+    UnsupportedPlatform {
+        capability: StateCapability,
+        target: &'static str,
     },
 
     #[error("invalid PV app release version `{version}`")]
@@ -188,5 +219,57 @@ impl StateError {
             path: path.into(),
             source,
         }
+    }
+}
+
+#[cfg(any(test, not(unix)))]
+pub(crate) const fn unsupported_target_name(
+    capability: StateCapability,
+    target: &'static str,
+) -> StateError {
+    StateError::UnsupportedPlatform { capability, target }
+}
+
+#[cfg(not(unix))]
+pub(crate) const fn unsupported_current_target(capability: StateCapability) -> StateError {
+    unsupported_target_name(capability, std::env::consts::OS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StateCapability, StateError, unsupported_target_name};
+
+    #[test]
+    fn unsupported_error_names_capability_and_target() {
+        let error = StateError::UnsupportedPlatform {
+            capability: StateCapability::OwnerOnlyFilesystem,
+            target: "windows",
+        };
+
+        assert!(matches!(
+            &error,
+            StateError::UnsupportedPlatform {
+                capability: StateCapability::OwnerOnlyFilesystem,
+                target: "windows",
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "owner-only filesystem is unsupported on windows"
+        );
+    }
+
+    #[test]
+    fn unsupported_target_name_uses_injected_target() {
+        let error = unsupported_target_name(StateCapability::SymbolicLinks, "windows");
+
+        assert!(matches!(
+            &error,
+            StateError::UnsupportedPlatform {
+                capability: StateCapability::SymbolicLinks,
+                target: "windows",
+            }
+        ));
+        assert_eq!(error.to_string(), "symbolic link is unsupported on windows");
     }
 }

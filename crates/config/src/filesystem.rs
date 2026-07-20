@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+#[cfg(not(unix))]
+use crate::ConfigCapability;
 use crate::ConfigError;
 
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +81,7 @@ pub(crate) fn write_string_atomically_with_mode(
     content: &str,
     mode: u32,
 ) -> Result<(), ConfigError> {
+    require_permission_preserving_write()?;
     let temporary_path = temporary_path_for(path);
     let result = write_temporary_file(&temporary_path, content, mode);
 
@@ -112,6 +115,13 @@ pub(crate) fn file_mode(path: &Utf8Path) -> Result<u32, ConfigError> {
     })?;
 
     Ok(metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_mode(_path: &Utf8Path) -> Result<u32, ConfigError> {
+    Err(crate::error::unsupported_current_target(
+        ConfigCapability::PermissionPreservingWrite,
+    ))
 }
 
 fn temporary_path_for(path: &Utf8Path) -> Utf8PathBuf {
@@ -165,6 +175,17 @@ fn create_file_with_mode(path: &Utf8Path, mode: u32) -> Result<std::fs::File, Co
             path: path.to_path_buf(),
             source,
         })
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::disallowed_types,
+    reason = "Project env writer owns direct temporary file handles"
+)]
+fn create_file_with_mode(_path: &Utf8Path, _mode: u32) -> Result<std::fs::File, ConfigError> {
+    Err(crate::error::unsupported_current_target(
+        ConfigCapability::PermissionPreservingWrite,
+    ))
 }
 
 #[expect(
@@ -221,8 +242,69 @@ fn set_file_mode(path: &Utf8Path, mode: u32) -> Result<(), ConfigError> {
     })
 }
 
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Utf8Path, _mode: u32) -> Result<(), ConfigError> {
+    require_permission_preserving_write()
+}
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+#[cfg(unix)]
+const fn require_permission_preserving_write() -> Result<(), ConfigError> {
+    Ok(())
+}
+
 #[cfg(not(unix))]
-compile_error!("PV v1 targets macOS and requires Unix filesystem permissions");
+fn require_permission_preserving_write() -> Result<(), ConfigError> {
+    Err(crate::error::unsupported_current_target(
+        ConfigCapability::PermissionPreservingWrite,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    use camino::Utf8Path;
+    #[cfg(windows)]
+    use camino_tempfile::tempdir;
+
+    #[cfg(windows)]
+    use super::{path_present, write_string_atomically_with_mode};
+    #[cfg(windows)]
+    use crate::{ConfigCapability, ConfigError};
+
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_permission_write_does_not_create_temporary_file() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let target_path = tempdir.path().join("pv.yml");
+
+        assert!(!path_present(&target_path)?);
+        assert!(directory_is_empty(tempdir.path())?);
+        let result = write_string_atomically_with_mode(&target_path, "php: 8.4\n", 0o600);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::UnsupportedPlatform {
+                capability: ConfigCapability::PermissionPreservingWrite,
+                target: "windows",
+            })
+        ));
+        assert!(!path_present(&target_path)?);
+        assert!(directory_is_empty(tempdir.path())?);
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Windows filesystem policy test inspects its isolated temporary directory"
+    )]
+    fn directory_is_empty(path: &Utf8Path) -> anyhow::Result<bool> {
+        let mut entries = std::fs::read_dir(path)?;
+
+        Ok(entries.next().transpose()?.is_none())
+    }
+}
