@@ -169,6 +169,7 @@ pub fn trust_system_ca(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = certificate_path;
+        let _ = privilege_mode;
         Err(unsupported(PlatformCapability::TrustStore)?)
     }
 }
@@ -230,6 +231,7 @@ pub fn untrust_system_ca(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = fingerprint;
+        let _ = privilege_mode;
         Err(unsupported(PlatformCapability::TrustStore)?)
     }
 }

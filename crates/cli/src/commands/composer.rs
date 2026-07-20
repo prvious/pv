@@ -26,7 +26,7 @@ pub(crate) fn install(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let database = Database::open(&paths)?;
     let selector = php_selector(&database)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
@@ -57,7 +57,7 @@ pub(crate) fn update(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_composer_with_progress(client, &progress)
@@ -81,7 +81,7 @@ pub(crate) fn uninstall(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);
@@ -201,26 +201,23 @@ fn join_paths(entries: Vec<PathBuf>) -> Result<OsString, ExecuteError> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error).into())
 }
 
-fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
-    ManagedResourceCommands::new(
+fn resource_commands(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<ManagedResourceCommands, ExecuteError> {
+    Ok(ManagedResourceCommands::new(
         paths.clone(),
         artifact_manifest_url(environment),
-        target_platform(environment),
-    )
+        target_platform(environment)?,
+    ))
 }
 
-fn target_platform(environment: &impl Environment) -> TargetPlatform {
-    environment
-        .target_platform()
-        .unwrap_or_else(current_target_platform)
-}
-
-fn current_target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
+fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
+    if let Some(target_platform) = environment.target_platform() {
+        return Ok(target_platform);
     }
+
+    Ok(TargetPlatform::current()?)
 }
 
 fn with_resource_http_client<T>(

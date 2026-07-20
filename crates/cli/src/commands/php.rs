@@ -30,7 +30,7 @@ pub(crate) fn use_track(
     let paths = pv_paths(environment)?;
     let requested_track = args.track;
     let selector = TrackSelector::parse(requested_track.as_str())?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
 
     if args.global {
@@ -83,7 +83,7 @@ pub(crate) fn install(
         Some(track) => TrackSelector::parse(track)?,
         None => TrackSelector::Latest,
     };
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
@@ -102,7 +102,7 @@ pub(crate) fn update(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_php_pairs_with_progress(client, &progress)
@@ -144,7 +144,7 @@ pub(crate) fn uninstall(
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let removal = commands.uninstall_php_pair(&track, options)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -169,7 +169,7 @@ pub(crate) fn list(
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let php = ResourceName::new("php")?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let tracks = commands.list(Some(&php))?;
 
     if tracks.is_empty() {
@@ -574,26 +574,23 @@ fn resolve_current_project(
         .ok_or_else(|| CliError::ProjectNotResolved.into())
 }
 
-fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
-    ManagedResourceCommands::new(
+fn resource_commands(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<ManagedResourceCommands, ExecuteError> {
+    Ok(ManagedResourceCommands::new(
         paths.clone(),
         artifact_manifest_url(environment),
-        target_platform(environment),
-    )
+        target_platform(environment)?,
+    ))
 }
 
-fn target_platform(environment: &impl Environment) -> TargetPlatform {
-    environment
-        .target_platform()
-        .unwrap_or_else(current_target_platform)
-}
-
-fn current_target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
+fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
+    if let Some(target_platform) = environment.target_platform() {
+        return Ok(target_platform);
     }
+
+    Ok(TargetPlatform::current()?)
 }
 
 fn active_php_selection_usage_count(

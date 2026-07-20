@@ -2,6 +2,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
+use platform::PlatformCapability;
 use state::{PvPaths, StateError};
 
 use crate::args::{Cli, Command};
@@ -38,6 +39,7 @@ pub(crate) fn execute(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
+    require_command_capability(&cli.command)?;
     require_no_update_in_progress(&cli.command, environment)?;
 
     match cli.command {
@@ -122,6 +124,43 @@ pub(crate) fn execute(
         Command::PostgresList(args) | Command::PgList(args) => {
             postgres::list(args, environment, stdout)
         }
+    }
+}
+
+fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {
+    if let Some(capability) = required_capability(command) {
+        platform::require_capability(capability)?;
+    }
+
+    Ok(())
+}
+
+fn required_capability(command: &Command) -> Option<PlatformCapability> {
+    match command {
+        Command::Setup(_)
+        | Command::Uninstall(_)
+        | Command::DnsStatus
+        | Command::DnsInstall
+        | Command::DnsUninstall => Some(PlatformCapability::ResolverIntegration),
+        Command::DaemonEnable
+        | Command::DaemonDisable
+        | Command::DaemonRestart
+        | Command::Status(_)
+        | Command::Doctor(_)
+        | Command::Update(_) => Some(PlatformCapability::DaemonRegistration),
+        Command::DaemonRun => Some(PlatformCapability::DaemonIpc),
+        Command::PortsStatus | Command::PortsInstall | Command::PortsUninstall => {
+            Some(PlatformCapability::LowPortFrontend)
+        }
+        Command::CaStatus | Command::CaTrust | Command::CaUntrust => {
+            Some(PlatformCapability::TrustStore)
+        }
+        Command::Open(_)
+        | Command::MailpitOpen
+        | Command::MailOpen
+        | Command::RustfsOpen
+        | Command::S3Open => Some(PlatformCapability::BrowserHandoff),
+        _ => None,
     }
 }
 
@@ -237,4 +276,108 @@ fn write_revoked_latest_warning(
     ))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use platform::PlatformCapability;
+
+    use super::required_capability;
+    use crate::args::{
+        Command, CompletionsArgs, DoctorArgs, OpenArgs, SetupArgs, StatusArgs, UninstallArgs,
+        UpdateArgs,
+    };
+    use crate::shell::Shell;
+
+    #[test]
+    fn required_capability_maps_resolver_integration_commands() {
+        assert_required_capability(
+            &[
+                Command::Setup(SetupArgs {
+                    yes: false,
+                    non_interactive: false,
+                    no_path: false,
+                }),
+                Command::Uninstall(UninstallArgs {
+                    prune: false,
+                    force: false,
+                }),
+                Command::DnsStatus,
+                Command::DnsInstall,
+                Command::DnsUninstall,
+            ],
+            Some(PlatformCapability::ResolverIntegration),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_daemon_registration_commands() {
+        assert_required_capability(
+            &[
+                Command::DaemonEnable,
+                Command::DaemonDisable,
+                Command::DaemonRestart,
+                Command::Status(StatusArgs { json: false }),
+                Command::Doctor(DoctorArgs {}),
+                Command::Update(UpdateArgs {
+                    check: false,
+                    json: false,
+                }),
+            ],
+            Some(PlatformCapability::DaemonRegistration),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_daemon_ipc_command() {
+        assert_required_capability(&[Command::DaemonRun], Some(PlatformCapability::DaemonIpc));
+    }
+
+    #[test]
+    fn required_capability_maps_low_port_frontend_commands() {
+        assert_required_capability(
+            &[
+                Command::PortsStatus,
+                Command::PortsInstall,
+                Command::PortsUninstall,
+            ],
+            Some(PlatformCapability::LowPortFrontend),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_trust_store_commands() {
+        assert_required_capability(
+            &[Command::CaStatus, Command::CaTrust, Command::CaUntrust],
+            Some(PlatformCapability::TrustStore),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_browser_handoff_commands() {
+        assert_required_capability(
+            &[
+                Command::Open(OpenArgs { hostname: None }),
+                Command::MailpitOpen,
+                Command::MailOpen,
+                Command::RustfsOpen,
+                Command::S3Open,
+            ],
+            Some(PlatformCapability::BrowserHandoff),
+        );
+    }
+
+    #[test]
+    fn required_capability_leaves_completions_portable() {
+        assert_required_capability(
+            &[Command::Completions(CompletionsArgs { shell: Shell::Bash })],
+            None,
+        );
+    }
+
+    fn assert_required_capability(commands: &[Command], expected: Option<PlatformCapability>) {
+        for command in commands {
+            assert_eq!(required_capability(command), expected);
+        }
+    }
 }

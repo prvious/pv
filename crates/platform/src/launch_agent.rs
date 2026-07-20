@@ -1,10 +1,15 @@
 use std::io;
+#[cfg(target_os = "macos")]
 use std::process::Output;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_os = "macos"))]
+use crate::PlatformCapability;
 use crate::PlatformError;
+#[cfg(not(target_os = "macos"))]
+use crate::capability::unsupported;
 
 pub const LAUNCH_AGENT_LABEL: &str = "com.prvious.pv.daemon";
 pub const LAUNCH_AGENT_FILE_NAME: &str = "com.prvious.pv.daemon.plist";
@@ -203,32 +208,60 @@ pub fn remove_launch_agent_file(path: &Utf8Path) -> Result<(), PlatformError> {
 }
 
 pub fn bootstrap_launch_agent(plist_path: &Utf8Path) -> Result<(), PlatformError> {
-    let target = launchctl_gui_target();
-    let plist_path = plist_path.to_string();
+    #[cfg(target_os = "macos")]
+    {
+        let target = launchctl_gui_target();
+        let plist_path = plist_path.to_string();
 
-    run_launchctl(&["bootstrap", &target, &plist_path])
+        run_launchctl(&["bootstrap", &target, &plist_path])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = plist_path;
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
 pub fn bootout_launch_agent() -> Result<(), PlatformError> {
-    let service = launchctl_service_target();
+    #[cfg(target_os = "macos")]
+    {
+        let service = launchctl_service_target();
 
-    run_launchctl(&["bootout", &service])
+        run_launchctl(&["bootout", &service])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
 pub fn kickstart_launch_agent() -> Result<(), PlatformError> {
-    let service = launchctl_service_target();
+    #[cfg(target_os = "macos")]
+    {
+        let service = launchctl_service_target();
 
-    run_launchctl(&["kickstart", "-k", &service])
+        run_launchctl(&["kickstart", "-k", &service])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
+#[cfg(target_os = "macos")]
 fn launchctl_gui_target() -> String {
     format!("gui/{}", rustix::process::getuid().as_raw())
 }
 
+#[cfg(target_os = "macos")]
 fn launchctl_service_target() -> String {
     format!("{}/{}", launchctl_gui_target(), LAUNCH_AGENT_LABEL)
 }
 
+#[cfg(target_os = "macos")]
 fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
     let command = format!("/bin/launchctl {}", args.join(" "));
     let output = launchctl_output(args).map_err(|source| PlatformError::LaunchAgentCommand {
@@ -253,12 +286,14 @@ fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_types,
     reason = "platform LaunchAgent helper owns launchctl process execution"
 )]
 type StdCommand = std::process::Command;
 
+#[cfg(target_os = "macos")]
 fn launchctl_output(args: &[&str]) -> io::Result<Output> {
     StdCommand::new("/bin/launchctl").args(args).output()
 }
