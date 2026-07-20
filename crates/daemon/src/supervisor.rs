@@ -167,6 +167,18 @@ impl ProcessSupervisor {
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
+        self.start_inner(spec, |_pid| async {}).await
+    }
+
+    async fn start_inner<PostSpawn, PostSpawnFuture>(
+        &self,
+        spec: ProcessSpec,
+        post_spawn: PostSpawn,
+    ) -> Result<ManagedProcess, DaemonError>
+    where
+        PostSpawn: FnOnce(u32) -> PostSpawnFuture,
+        PostSpawnFuture: Future<Output = ()>,
+    {
         require_process_containment()?;
         state::fs::ensure_layout(&self.paths)?;
 
@@ -180,6 +192,7 @@ impl ProcessSupervisor {
         let Some(pid) = child.id() else {
             return Err(DaemonError::MissingProcessId { name: spec.name });
         };
+        post_spawn(pid).await;
 
         if let Err(error) = persist_runtime_files(&spec, pid) {
             terminate_spawned_child(pid, &mut child).await;
@@ -579,7 +592,12 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
     require_process_containment()
 }
 
-async fn terminate_spawned_child(_pid: u32, child: &mut Child) {
+async fn terminate_spawned_child(pid: u32, child: &mut Child) {
+    #[cfg(target_os = "macos")]
+    let _group_kill_result = signal_process_group(pid, ProcessSignal::Kill);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let _pid = pid;
+
     let _result = child.kill().await;
 
     let _result = child.wait().await;
@@ -923,4 +941,105 @@ fn timestamp() -> Result<String, DaemonError> {
         time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
     Ok(time::OffsetDateTime::now_utc().format(format)?)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use camino_tempfile::tempdir;
+    use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+    use tokio::time::sleep;
+
+    use super::{ProcessSpec, ProcessSupervisor};
+    use state::PvPaths;
+
+    #[tokio::test]
+    async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let descendant_pid_path = paths.run().join("startup-descendant.pid");
+        let metadata_parent_blocker = paths.run().join("metadata-parent");
+        state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
+        let descendant_pid_path_for_command = descendant_pid_path.clone();
+        let descendant_pid_path_for_hook = descendant_pid_path.clone();
+        let result = ProcessSupervisor::new(paths.clone())
+            .start_inner(
+                ProcessSpec {
+                    name: "startup-descendant".to_string(),
+                    command: "/bin/sh".into(),
+                    arguments: vec![
+                        "-c".to_string(),
+                        format!(
+                            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path_for_command}\"; while true; do sleep 1; done"
+                        ),
+                    ],
+                    private_environment: Default::default(),
+                    config_path: paths.config().join("startup-descendant.json"),
+                    log_path: paths.logs().join("startup-descendant.log"),
+                    pid_path: paths.run().join("startup-descendant-leader.pid"),
+                    metadata_path: metadata_parent_blocker.join("metadata.json"),
+                    resource_name: "startup-descendant".to_string(),
+                    track: "test".to_string(),
+                },
+                move |_pid| async move {
+                    wait_for_test_path(&descendant_pid_path_for_hook).await;
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
+        if !descendant_exited {
+            kill_test_process(descendant_pid)?;
+            let _cleanup_complete = wait_for_test_process_exit(descendant_pid).await?;
+        }
+
+        assert!(
+            descendant_exited,
+            "startup persistence failure left descendant process {descendant_pid} alive"
+        );
+
+        Ok(())
+    }
+
+    async fn wait_for_test_path(path: &camino::Utf8Path) {
+        for _attempt in 0..50 {
+            if path.exists() {
+                return;
+            }
+
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
+        let pid = test_pid(pid)?;
+        for _attempt in 0..50 {
+            if test_kill_process(pid).is_err() {
+                return Ok(true);
+            }
+
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        Ok(false)
+    }
+
+    fn kill_test_process(pid: u32) -> Result<()> {
+        kill_process(test_pid(pid)?, Signal::KILL)?;
+
+        Ok(())
+    }
+
+    fn test_pid(pid: u32) -> Result<Pid> {
+        let raw_pid = i32::try_from(pid)?;
+
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))
+    }
 }
