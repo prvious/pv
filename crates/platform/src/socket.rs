@@ -1,10 +1,16 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+#[cfg(target_os = "macos")]
 use netstat::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState, get_sockets_info};
 
+#[cfg(not(target_os = "macos"))]
+use crate::PlatformCapability;
+#[cfg(not(target_os = "macos"))]
+use crate::capability::unsupported;
 use crate::error::PlatformError;
 
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_types,
     reason = "macOS socket inspection owns read-only netstat invocation"
@@ -12,18 +18,27 @@ use crate::error::PlatformError;
 type StdCommand = std::process::Command;
 
 pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, PlatformError> {
-    let mut ports = loopback_tcp_listener_ports_from_socket_table()?;
-    ports.extend(parse_netstat_tcp_listener_ports(
-        &netstat_tcp_socket_table()?
-    ));
+    #[cfg(target_os = "macos")]
+    {
+        let mut ports = loopback_tcp_listener_ports_from_socket_table()?;
+        ports.extend(parse_netstat_tcp_listener_ports(
+            &netstat_tcp_socket_table()?
+        ));
 
-    Ok(ports)
+        Ok(ports)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(unsupported(PlatformCapability::ListenerInspection)?)
+    }
 }
 
 pub fn loopback_tcp_port_has_listener(port: u16) -> Result<bool, PlatformError> {
     Ok(loopback_tcp_listener_ports()?.contains(&port))
 }
 
+#[cfg(target_os = "macos")]
 fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, PlatformError> {
     let sockets = get_sockets_info(
         AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
@@ -44,6 +59,7 @@ fn loopback_tcp_listener_ports_from_socket_table() -> Result<BTreeSet<u16>, Plat
     Ok(ports)
 }
 
+#[cfg(target_os = "macos")]
 fn netstat_tcp_socket_table() -> Result<String, PlatformError> {
     let output = StdCommand::new("/usr/sbin/netstat")
         .args(["-anv", "-p", "tcp"])

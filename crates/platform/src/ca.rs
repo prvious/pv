@@ -402,8 +402,9 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LaunchAgentCommandStatus { .. }
         | PlatformError::SystemIntegration(_)
         | PlatformError::SystemIntegrationCommand { .. }
-        | PlatformError::SystemIntegrationCommandStatus { .. }
-        | PlatformError::SocketTable(_)
+        | PlatformError::SystemIntegrationCommandStatus { .. } => CaRepairReason::InvalidCaShape,
+        #[cfg(target_os = "macos")]
+        PlatformError::SocketTable(_)
         | PlatformError::SocketTableCommand(_)
         | PlatformError::SocketTableCommandStatus { .. }
         | PlatformError::SocketTableCommandUtf8(_) => CaRepairReason::InvalidCaShape,

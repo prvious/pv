@@ -85,6 +85,7 @@ jobs:
           cargo test --locked -p state --lib update_lock
           cargo test --locked -p resources --lib target_platform_for
           cargo test --locked -p platform --test unsupported_launch_agent
+          cargo test --locked -p platform --test unsupported_listener
           cargo test --locked -p daemon --test platform_preflight
 
       - name: Smoke portable commands
