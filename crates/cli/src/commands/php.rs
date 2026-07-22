@@ -127,6 +127,7 @@ pub(crate) fn uninstall(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let track = TrackName::new(args.track)?;
+    let commands = resource_commands(&paths, environment)?;
     if !args.force {
         let database = Database::open(&paths)?;
         let default_track = effective_global_php_default_track(&paths, &database)?;
@@ -144,7 +145,6 @@ pub(crate) fn uninstall(
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);
-    let commands = resource_commands(&paths, environment)?;
     let removal = commands.uninstall_php_pair(&track, options)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -167,9 +167,9 @@ pub(crate) fn list(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
     let php = ResourceName::new("php")?;
     let commands = resource_commands(&paths, environment)?;
+    let database = Database::open(&paths)?;
     let tracks = commands.list(Some(&php))?;
 
     if tracks.is_empty() {
@@ -586,11 +586,7 @@ fn resource_commands(
 }
 
 fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
-    if let Some(target_platform) = environment.target_platform() {
-        return Ok(target_platform);
-    }
-
-    Ok(TargetPlatform::current()?)
+    Ok(environment.resolve_target_platform()?)
 }
 
 fn active_php_selection_usage_count(
@@ -695,4 +691,66 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::io;
+    use std::path::PathBuf;
+
+    use resources::{ResourcesError, TargetPlatform};
+
+    use super::target_platform;
+    use crate::environment::Environment;
+    use crate::error::ExecuteError;
+
+    struct UnsupportedPlatformEnvironment;
+
+    impl Environment for UnsupportedPlatformEnvironment {
+        fn var_os(&self, _key: &str) -> Option<OsString> {
+            None
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            false
+        }
+
+        fn read_line(&self) -> io::Result<String> {
+            Ok(String::new())
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn resolve_target_platform(&self) -> resources::Result<TargetPlatform> {
+            Err(ResourcesError::UnsupportedPlatform {
+                platform: "linux-aarch64".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn target_platform_preserves_unsupported_platform_error() {
+        let result = target_platform(&UnsupportedPlatformEnvironment);
+
+        assert!(matches!(
+            result,
+            Err(ExecuteError::Resources(ResourcesError::UnsupportedPlatform { platform }))
+                if platform == "linux-aarch64"
+        ));
+    }
 }

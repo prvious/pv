@@ -177,6 +177,11 @@ pub trait Environment {
     fn target_platform(&self) -> Option<resources::TargetPlatform> {
         None
     }
+
+    fn resolve_target_platform(&self) -> resources::Result<resources::TargetPlatform> {
+        self.target_platform()
+            .map_or_else(resources::TargetPlatform::current, Ok)
+    }
 }
 
 pub(crate) fn artifact_manifest_url(environment: &impl Environment) -> String {

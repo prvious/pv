@@ -18,6 +18,7 @@ use std::io;
 use std::sync::Arc;
 
 use managed_resources::ManagedResourceRuntimeCatalog;
+use platform::PlatformTarget;
 use serde::Serialize;
 use state::{Database, PvPaths, StateError};
 use tokio::runtime::Runtime;
@@ -52,6 +53,11 @@ pub struct RunningDaemon {
 
 impl RunningDaemon {
     pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
+        Self::start_for_target(paths, PlatformTarget::current()?).await
+    }
+
+    async fn start_for_target(paths: PvPaths, target: PlatformTarget) -> Result<Self, DaemonError> {
+        ipc::require_ipc_for(target)?;
         Self::start_with_runtime_catalog(paths, None).await
     }
 
@@ -59,6 +65,7 @@ impl RunningDaemon {
     pub async fn start_without_managed_resource_adapters(
         paths: PvPaths,
     ) -> Result<Self, DaemonError> {
+        ipc::require_ipc_for(PlatformTarget::current()?)?;
         Self::start_with_runtime_catalog(
             paths,
             Some(ManagedResourceRuntimeCatalog::without_adapters()?),
@@ -72,6 +79,7 @@ impl RunningDaemon {
         manifest_url: impl Into<String>,
         client: impl resources::ResourceHttpClient + Send + Sync + 'static,
     ) -> Result<Self, DaemonError> {
+        ipc::require_ipc_for(PlatformTarget::current()?)?;
         Self::start_with_runtime_catalog(
             paths,
             Some(
@@ -206,10 +214,15 @@ fn startup_error_after_endpoint_cleanup(
 }
 
 pub fn run_blocking(paths: PvPaths) -> Result<(), DaemonError> {
+    run_blocking_for_target(paths, PlatformTarget::current()?)
+}
+
+fn run_blocking_for_target(paths: PvPaths, target: PlatformTarget) -> Result<(), DaemonError> {
+    ipc::require_ipc_for(target)?;
     let runtime = build_runtime()?;
 
     runtime.block_on(async {
-        let daemon = RunningDaemon::start(paths).await?;
+        let daemon = RunningDaemon::start_with_runtime_catalog(paths, None).await?;
         wait_for_shutdown(daemon, termination_signal()).await
     })
 }
@@ -300,14 +313,53 @@ mod tests {
     use std::{future, io, time::Duration};
 
     use camino_tempfile::tempdir;
+    use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
     use super::{
-        DaemonError, RunningDaemon, build_runtime, startup_error_after_endpoint_cleanup,
-        wait_for_shutdown,
+        DaemonError, RunningDaemon, build_runtime, run_blocking_for_target,
+        startup_error_after_endpoint_cleanup, wait_for_shutdown,
     };
+
+    #[tokio::test]
+    async fn unsupported_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        let result = RunningDaemon::start_for_target(paths.clone(), PlatformTarget::Linux).await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::Platform(PlatformError::Unsupported {
+                capability: PlatformCapability::DaemonIpc,
+                target: PlatformTarget::Linux,
+            }))
+        ));
+        assert!(!paths.home().exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_blocking_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        let result = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::Platform(PlatformError::Unsupported {
+                capability: PlatformCapability::DaemonIpc,
+                target: PlatformTarget::Linux,
+            }))
+        ));
+        assert!(!paths.home().exists());
+
+        Ok(())
+    }
 
     #[test]
     fn daemon_runtime_enables_tokio_timers() -> anyhow::Result<()> {

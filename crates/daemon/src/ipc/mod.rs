@@ -3,7 +3,6 @@ mod unix;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod unsupported;
 
-#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 use platform::{PlatformCapability, PlatformError, PlatformTarget};
 
 #[cfg(target_os = "macos")]
@@ -15,7 +14,6 @@ pub(crate) use self::unsupported::{
     LocalListener, LocalStream, bind, connect, prepare_endpoint, remove_endpoint,
 };
 
-#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 pub(crate) fn require_ipc_for(target: PlatformTarget) -> Result<(), crate::DaemonError> {
     match target {
         PlatformTarget::Macos => Ok(()),
