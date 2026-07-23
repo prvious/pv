@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+#[cfg(any(target_os = "macos", test))]
 use std::net::IpAddr;
 
 #[cfg(target_os = "macos")]
@@ -75,6 +76,7 @@ fn netstat_tcp_socket_table() -> Result<String, PlatformError> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn parse_netstat_tcp_listener_ports(output: &str) -> BTreeSet<u16> {
     let mut ports = BTreeSet::new();
 
@@ -105,6 +107,7 @@ pub(crate) fn parse_netstat_tcp_listener_ports(output: &str) -> BTreeSet<u16> {
     ports
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn loopback_port_from_netstat_local_address(local_address: &str) -> Option<u16> {
     let (address, port) = local_address.rsplit_once('.')?;
     let port = port.parse::<u16>().ok()?;
@@ -122,6 +125,7 @@ fn loopback_port_from_netstat_local_address(local_address: &str) -> Option<u16> 
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn tcp_listener_address_occupies_loopback(address: IpAddr) -> bool {
     address.is_loopback() || address.is_unspecified()
 }

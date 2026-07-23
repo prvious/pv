@@ -399,6 +399,9 @@ where
 }
 
 async fn terminate_validation_process(pid: u32, child: &mut tokio::process::Child) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = pid;
+
     #[cfg(target_os = "macos")]
     {
         if let Some(process_group) = validation_process_group(pid) {

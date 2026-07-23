@@ -5,6 +5,9 @@ on:
     branches: ["main"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,10 +64,14 @@ jobs:
           - runner: windows-latest
             target: windows
     runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: "-D warnings"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +89,9 @@ jobs:
         run: cargo build --locked -p pv
 
       - name: Test portable domain boundaries
+        shell: bash
         run: |
+          set -euo pipefail
           cargo test --locked -p state -p config -p resources -p platform --lib unsupported
           cargo test --locked -p state --lib update_lock
           cargo test --locked -p resources --lib target_platform_for
