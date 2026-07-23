@@ -2563,7 +2563,7 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
 }
 
 #[test]
-fn redis_process_spec_disables_snapshots_and_process_title() -> Result<()> {
+fn redis_process_spec_disables_rdb_enables_aof_and_preserves_process_title() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let adapter = super::redis::RedisRuntimeAdapter::new();
@@ -2586,12 +2586,24 @@ fn redis_process_spec_disables_snapshots_and_process_title() -> Result<()> {
     );
     let config = state::fs::read_to_string(&spec.config_path)?;
     assert!(
+        config.lines().any(|line| line == "save \"\""),
+        "Redis config must disable RDB snapshots: {config}"
+    );
+    assert!(
+        config.lines().any(|line| line == "appendonly yes"),
+        "Redis config must enable AOF persistence: {config}"
+    );
+    assert!(
+        config.lines().any(|line| line == "appendfsync everysec"),
+        "Redis config must use the explicit AOF fsync policy: {config}"
+    );
+    assert!(
         config.lines().any(|line| line == "set-proc-title no"),
         "Redis config must preserve the original process command for PV ownership checks: {config}"
     );
     assert_with_normalized_runtime(
         tempdir.path(),
-        "redis_process_arguments_disable_snapshots_without_empty_argv",
+        "redis_process_spec_disables_rdb_enables_aof_and_preserves_process_title",
         (spec.arguments, config),
     )?;
 

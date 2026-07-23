@@ -52,7 +52,8 @@ bind {RESOURCE_HOST}
 port {port}
 dir {data_dir}
 save \"\"
-appendonly no
+appendonly yes
+appendfsync everysec
 set-proc-title no
 "
         );
