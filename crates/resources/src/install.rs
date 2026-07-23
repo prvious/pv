@@ -8,6 +8,9 @@ use tar::{Archive, EntryType};
 use crate::fs;
 use crate::{ArtifactVersion, ManifestArtifact, ResourceName, ResourcesError, Result, TrackName};
 
+#[cfg(not(unix))]
+use crate::ResourceHostCapability;
+
 static INSTALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub trait ResourceAdapter {
@@ -45,6 +48,7 @@ impl ArtifactInstaller {
         artifact: &ManifestArtifact,
         archive_path: &Utf8Path,
     ) -> Result<ArtifactInstall> {
+        require_symbolic_links()?;
         validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
 
         if let Some(existing_install) = self.install_existing_release(adapter, track, artifact)? {
@@ -101,6 +105,7 @@ impl ArtifactInstaller {
         track: &TrackName,
         artifact: &ManifestArtifact,
     ) -> Result<Option<ArtifactInstall>> {
+        require_symbolic_links()?;
         validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
 
         let track_dir = self
@@ -145,6 +150,7 @@ impl ArtifactInstaller {
     }
 
     pub fn rollback(&self, install: &ArtifactInstall) -> Result<()> {
+        require_symbolic_links()?;
         let track_dir =
             install
                 .current_path
@@ -414,6 +420,7 @@ fn staging_dir(track_dir: &Utf8Path, artifact_version: &ArtifactVersion) -> Utf8
 }
 
 fn update_current_pointer(track_dir: &Utf8Path, artifact_version: &ArtifactVersion) -> Result<()> {
+    require_symbolic_links()?;
     let current_path = track_dir.join("current");
     let temporary_path = track_dir.join(format!(
         "current.{}.{}.tmp",
@@ -595,9 +602,252 @@ fn symlink_dir(target: &Utf8Path, link: &Utf8Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn symlink_dir(_target: &Utf8Path, link: &Utf8Path) -> Result<()> {
-    Err(ResourcesError::Filesystem {
-        path: link.to_string(),
-        reason: "PV artifact installs require Unix symlinks".to_string(),
+fn symlink_dir(_target: &Utf8Path, _link: &Utf8Path) -> Result<()> {
+    require_symbolic_links()
+}
+
+#[cfg(unix)]
+const fn require_symbolic_links() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_symbolic_links() -> Result<()> {
+    Err(ResourcesError::UnsupportedHostCapability {
+        capability: ResourceHostCapability::SymbolicLinks,
+        target: std::env::consts::OS.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    use std::sync::atomic::Ordering;
+
+    #[cfg(windows)]
+    use anyhow::Result;
+    #[cfg(windows)]
+    use camino::Utf8Path;
+    #[cfg(windows)]
+    use camino_tempfile::tempdir;
+
+    #[cfg(windows)]
+    use super::{
+        ArtifactInstall, ArtifactInstaller, INSTALL_COUNTER, ResourceAdapter,
+        update_current_pointer,
+    };
+    #[cfg(windows)]
+    use crate::{
+        ArtifactManifest, ArtifactVersion, ManifestArtifact, ResourceHostCapability, ResourceName,
+        ResourcesError, TargetPlatform, TrackName,
+    };
+
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_install_does_not_create_resource_paths() -> Result<()> {
+        let tempdir = tempdir()?;
+        let resources_dir = tempdir.path().join("resources");
+        let installer = ArtifactInstaller::new(&resources_dir);
+        let adapter = TestAdapter::new()?;
+        let track = TrackName::new("7.2")?;
+        let artifact = redis_artifact()?;
+        let archive_path = tempdir.path().join("missing.tar.gz");
+
+        let result = installer.install(&adapter, &track, &artifact, &archive_path);
+
+        assert_eq!(result, Err(unsupported_symbolic_links_error()));
+        assert!(!resources_dir.exists());
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_install_existing_release_does_not_prune_releases() -> Result<()> {
+        let tempdir = tempdir()?;
+        let resources_dir = tempdir.path().join("resources");
+        let releases_dir = resources_dir.join("redis/7.2/releases");
+        let release_file = releases_dir.join("7.2.5-pv1/bin/redis-server");
+        let stale_release_file = releases_dir.join("7.2.4-pv1/bin/redis-server");
+        write_fixture_file(&release_file, "current release")?;
+        write_fixture_file(&stale_release_file, "stale release")?;
+        let installer = ArtifactInstaller::new(&resources_dir);
+        let adapter = TestAdapter::new()?;
+        let track = TrackName::new("7.2")?;
+        let artifact = redis_artifact()?;
+
+        let result = installer.install_existing_release(&adapter, &track, &artifact);
+
+        assert_eq!(result, Err(unsupported_symbolic_links_error()));
+        assert_eq!(read_fixture_file(&release_file)?, "current release");
+        assert_eq!(read_fixture_file(&stale_release_file)?, "stale release");
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unsupported_rollback_does_not_remove_install_paths() -> Result<()> {
+        let tempdir = tempdir()?;
+        let release_path = tempdir
+            .path()
+            .join("resources/redis/7.2/releases/7.2.5-pv1");
+        let release_file = release_path.join("bin/redis-server");
+        let current_path = tempdir.path().join("resources/redis/7.2/current");
+        write_fixture_file(&release_file, "installed release")?;
+        write_fixture_file(&current_path, "current pointer")?;
+        let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+        let install = ArtifactInstall::new(
+            ResourceName::new("redis")?,
+            TrackName::new("7.2")?,
+            ArtifactVersion::new("7.2.5-pv1")?,
+            release_path,
+            current_path.clone(),
+            None,
+            false,
+        );
+
+        let result = installer.rollback(&install);
+
+        assert_eq!(result, Err(unsupported_symbolic_links_error()));
+        assert_eq!(read_fixture_file(&current_path)?, "current pointer");
+        assert_eq!(read_fixture_file(&release_file)?, "installed release");
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "resource installer test creates and inspects current-pointer fixtures directly"
+    )]
+    fn unsupported_current_pointer_update_does_not_modify_pointer_paths() -> Result<()> {
+        let tempdir = tempdir()?;
+        let track_dir = tempdir.path().join("redis/7.2");
+        std::fs::create_dir_all(&track_dir)?;
+
+        let counter = INSTALL_COUNTER.load(Ordering::Relaxed);
+        let current_path = track_dir.join("current");
+        let temporary_path =
+            track_dir.join(format!("current.{}.{}.tmp", std::process::id(), counter));
+        std::fs::write(&current_path, "current release")?;
+        std::fs::write(&temporary_path, "temporary release")?;
+
+        let artifact_version = ArtifactVersion::new("7.2.5-pv1")?;
+        let result = update_current_pointer(&track_dir, &artifact_version);
+
+        assert_eq!(
+            result,
+            Err(ResourcesError::UnsupportedHostCapability {
+                capability: ResourceHostCapability::SymbolicLinks,
+                target: "windows".to_string(),
+            })
+        );
+        assert_eq!(std::fs::read_to_string(&current_path)?, "current release");
+        assert_eq!(
+            std::fs::read_to_string(&temporary_path)?,
+            "temporary release"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    struct TestAdapter {
+        resource_name: ResourceName,
+    }
+
+    #[cfg(windows)]
+    impl TestAdapter {
+        fn new() -> Result<Self> {
+            Ok(Self {
+                resource_name: ResourceName::new("redis")?,
+            })
+        }
+    }
+
+    #[cfg(windows)]
+    impl ResourceAdapter for TestAdapter {
+        fn resource_name(&self) -> &ResourceName {
+            &self.resource_name
+        }
+
+        fn validate_installation(&self, _root: &Utf8Path) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    fn redis_artifact() -> Result<ManifestArtifact> {
+        let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
+        let resource_name = ResourceName::new("redis")?;
+        let track = TrackName::new("7.2")?;
+        let selection =
+            manifest.select_latest(&resource_name, &track, TargetPlatform::new("darwin-arm64")?)?;
+
+        Ok(selection.artifact().clone())
+    }
+
+    #[cfg(windows)]
+    fn unsupported_symbolic_links_error() -> ResourcesError {
+        ResourcesError::UnsupportedHostCapability {
+            capability: ResourceHostCapability::SymbolicLinks,
+            target: "windows".to_string(),
+        }
+    }
+
+    #[cfg(windows)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "resource installer tests create fixture paths directly"
+    )]
+    fn write_fixture_file(path: &Utf8Path, content: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "resource installer tests inspect fixture paths directly"
+    )]
+    fn read_fixture_file(path: &Utf8Path) -> Result<String> {
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    #[cfg(windows)]
+    const VALID_MANIFEST: &str = r#"
+{
+  "schema_version": 1,
+  "minimum_pv_version": "0.1.0",
+  "resources": [
+    {
+      "name": "redis",
+      "default_track": "7.2",
+      "tracks": [
+        {
+          "name": "7.2",
+          "artifacts": [
+            {
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9",
+              "size": 22,
+              "published_at": "2026-05-26T14:30:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+"#;
 }

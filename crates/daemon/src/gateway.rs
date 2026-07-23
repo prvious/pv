@@ -8,6 +8,7 @@ use std::time::Duration;
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
 use resources::{ResourceAdapter, frankenphp_adapter};
+#[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
@@ -352,7 +353,7 @@ async fn run_validation_command(
         command_process.env_remove(key);
     }
     command_process.envs(private_environment);
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     command_process.process_group(0);
 
     let mut child = command_process.spawn()?;
@@ -398,7 +399,10 @@ where
 }
 
 async fn terminate_validation_process(pid: u32, child: &mut tokio::process::Child) {
-    #[cfg(unix)]
+    #[cfg(not(target_os = "macos"))]
+    let _ = pid;
+
+    #[cfg(target_os = "macos")]
     {
         if let Some(process_group) = validation_process_group(pid) {
             let _result = kill_process_group(process_group, Signal::KILL);
@@ -409,7 +413,7 @@ async fn terminate_validation_process(pid: u32, child: &mut tokio::process::Chil
     let _result = child.wait().await;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn validation_process_group(pid: u32) -> Option<Pid> {
     i32::try_from(pid).ok().and_then(Pid::from_raw)
 }

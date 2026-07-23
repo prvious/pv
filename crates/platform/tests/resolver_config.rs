@@ -1,16 +1,18 @@
 use std::fmt::Debug;
+#[cfg(target_os = "macos")]
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+#[cfg(target_os = "macos")]
+use platform::loopback_tcp_listener_ports;
 use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
     TrustDomainState, generate_local_ca, generate_project_certificate, inspect_local_ca_files,
     inspect_pf_anchor_file, inspect_pf_conf_reference, inspect_resolver_file,
-    inspect_system_ca_trust, loopback_tcp_listener_ports, project_certificate_matches,
-    trusted_pv_ca_fingerprints,
+    inspect_system_ca_trust, project_certificate_matches, trusted_pv_ca_fingerprints,
 };
 use state::fs;
 
@@ -253,6 +255,7 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn pf_loopback_tcp_listener_ports_include_ipv4_wildcard_listener() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     let port = listener.local_addr()?.port();
@@ -265,6 +268,7 @@ fn pf_loopback_tcp_listener_ports_include_ipv4_wildcard_listener() -> Result<()>
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn pf_loopback_tcp_listener_ports_include_ipv6_loopback_and_wildcard_listeners() -> Result<()> {
     let loopback_listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))?;
     let wildcard_listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0))?;

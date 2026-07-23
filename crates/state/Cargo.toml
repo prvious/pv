@@ -12,10 +12,12 @@ camino = { workspace = true }
 fastrand = { workspace = true }
 home = { workspace = true }
 rusqlite = { workspace = true }
-rustix = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

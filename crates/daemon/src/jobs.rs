@@ -1434,7 +1434,7 @@ mod tests {
         let catalog =
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
                 OFFLINE_TEST_MANIFEST_URL,
-            );
+            )?;
 
         reconcile_system_projects_and_resources(&paths, Some(&catalog)).await?;
 
@@ -1479,7 +1479,7 @@ mod tests {
         let catalog =
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
                 OFFLINE_TEST_MANIFEST_URL,
-            );
+            )?;
 
         reconcile_project_env_and_missing_resources(&paths, &linked.project.id, Some(&catalog))
             .await?;
@@ -1552,7 +1552,7 @@ mod tests {
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
             OFFLINE_TEST_MANIFEST_URL,
             DelayedScriptedArtifactClient::new(client, Duration::from_millis(200)),
-        );
+        )?;
 
         let result = timeout(
             Duration::from_millis(500),
@@ -1609,7 +1609,7 @@ mod tests {
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
             OFFLINE_TEST_MANIFEST_URL,
             resource_client,
-        );
+        )?;
         let download_progress = reconciliation_download_progress_events(
             paths,
             &job_id,

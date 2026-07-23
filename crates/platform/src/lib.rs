@@ -1,5 +1,6 @@
 mod browser;
 mod ca;
+mod capability;
 mod command;
 mod error;
 mod launch_agent;
@@ -7,6 +8,7 @@ mod pf;
 mod process;
 mod resolver;
 mod socket;
+mod target;
 mod trust;
 
 pub use browser::open_url;
@@ -15,6 +17,7 @@ pub use ca::{
     generate_local_ca, generate_project_certificate, inspect_local_ca_files,
     project_certificate_matches,
 };
+pub use capability::{PlatformCapability, require_capability};
 pub use error::PlatformError;
 pub use launch_agent::{
     LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
@@ -32,6 +35,7 @@ pub use resolver::{
     install_resolver_config, remove_resolver_config,
 };
 pub use socket::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
+pub use target::PlatformTarget;
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, PrivilegeMode,
     SystemTrustInspector, TrustDomainState, inspect_system_ca_trust, trust_system_ca,
@@ -42,8 +46,10 @@ pub use trust::{
 mod tests {
     use insta::assert_debug_snapshot;
 
+    use crate::capability::require_capability_for;
     use crate::error::PlatformError;
     use crate::socket::parse_netstat_tcp_listener_ports;
+    use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
     fn browser_open_helper_reports_failed_status() {
@@ -57,15 +63,39 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_platform_error_names_feature() {
-        let error = PlatformError::UnsupportedPlatform {
-            feature: "System keychain trust inspection",
+    fn unsupported_error_names_capability_and_target() {
+        let error = PlatformError::Unsupported {
+            capability: PlatformCapability::DaemonRegistration,
+            target: PlatformTarget::Linux,
         };
 
+        assert!(matches!(
+            &error,
+            PlatformError::Unsupported {
+                capability: PlatformCapability::DaemonRegistration,
+                target: PlatformTarget::Linux,
+            }
+        ));
         assert_eq!(
             error.to_string(),
-            "System keychain trust inspection is unsupported on this platform"
+            "daemon registration is unsupported on linux"
         );
+    }
+
+    #[test]
+    fn capability_check_accepts_macos_and_rejects_windows() {
+        assert!(
+            require_capability_for(PlatformTarget::Macos, PlatformCapability::TrustStore,).is_ok()
+        );
+
+        let error = require_capability_for(PlatformTarget::Windows, PlatformCapability::TrustStore);
+        assert!(matches!(
+            error,
+            Err(PlatformError::Unsupported {
+                capability: PlatformCapability::TrustStore,
+                target: PlatformTarget::Windows,
+            })
+        ));
     }
 
     #[test]

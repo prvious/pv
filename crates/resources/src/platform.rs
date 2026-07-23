@@ -48,6 +48,10 @@ impl ArtifactPlatform {
 }
 
 impl TargetPlatform {
+    pub fn current() -> Result<Self> {
+        target_platform_for(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
     pub fn new(value: &str) -> Result<Self> {
         match value {
             "darwin-arm64" => Ok(Self::DarwinArm64),
@@ -66,6 +70,16 @@ impl TargetPlatform {
     }
 }
 
+fn target_platform_for(operating_system: &str, architecture: &str) -> Result<TargetPlatform> {
+    match (operating_system, architecture) {
+        ("macos", "aarch64") => Ok(TargetPlatform::DarwinArm64),
+        ("macos", "x86_64") => Ok(TargetPlatform::DarwinAmd64),
+        _ => Err(ResourcesError::UnsupportedPlatform {
+            platform: format!("{operating_system}-{architecture}"),
+        }),
+    }
+}
+
 impl fmt::Display for ArtifactPlatform {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
@@ -75,5 +89,40 @@ impl fmt::Display for ArtifactPlatform {
 impl fmt::Display for TargetPlatform {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TargetPlatform, target_platform_for};
+    use crate::ResourcesError;
+
+    #[test]
+    fn target_platform_for_selects_only_supported_darwin_targets() {
+        let cases = [
+            ("macos", "aarch64", Ok(TargetPlatform::DarwinArm64)),
+            ("macos", "x86_64", Ok(TargetPlatform::DarwinAmd64)),
+            (
+                "linux",
+                "x86_64",
+                Err(ResourcesError::UnsupportedPlatform {
+                    platform: "linux-x86_64".to_string(),
+                }),
+            ),
+            (
+                "windows",
+                "x86_64",
+                Err(ResourcesError::UnsupportedPlatform {
+                    platform: "windows-x86_64".to_string(),
+                }),
+            ),
+        ];
+
+        for (operating_system, architecture, expected) in cases {
+            assert_eq!(
+                target_platform_for(operating_system, architecture),
+                expected
+            );
+        }
     }
 }

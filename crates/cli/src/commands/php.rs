@@ -30,7 +30,7 @@ pub(crate) fn use_track(
     let paths = pv_paths(environment)?;
     let requested_track = args.track;
     let selector = TrackSelector::parse(requested_track.as_str())?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
 
     if args.global {
@@ -83,7 +83,7 @@ pub(crate) fn install(
         Some(track) => TrackSelector::parse(track)?,
         None => TrackSelector::Latest,
     };
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
@@ -102,7 +102,7 @@ pub(crate) fn update(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_php_pairs_with_progress(client, &progress)
@@ -127,6 +127,7 @@ pub(crate) fn uninstall(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let track = TrackName::new(args.track)?;
+    let commands = resource_commands(&paths, environment)?;
     if !args.force {
         let database = Database::open(&paths)?;
         let default_track = effective_global_php_default_track(&paths, &database)?;
@@ -144,7 +145,6 @@ pub(crate) fn uninstall(
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);
-    let commands = resource_commands(&paths, environment);
     let removal = commands.uninstall_php_pair(&track, options)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -167,9 +167,9 @@ pub(crate) fn list(
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
     let php = ResourceName::new("php")?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
+    let database = Database::open(&paths)?;
     let tracks = commands.list(Some(&php))?;
 
     if tracks.is_empty() {
@@ -574,26 +574,19 @@ fn resolve_current_project(
         .ok_or_else(|| CliError::ProjectNotResolved.into())
 }
 
-fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
-    ManagedResourceCommands::new(
+fn resource_commands(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<ManagedResourceCommands, ExecuteError> {
+    Ok(ManagedResourceCommands::new(
         paths.clone(),
         artifact_manifest_url(environment),
-        target_platform(environment),
-    )
+        target_platform(environment)?,
+    ))
 }
 
-fn target_platform(environment: &impl Environment) -> TargetPlatform {
-    environment
-        .target_platform()
-        .unwrap_or_else(current_target_platform)
-}
-
-fn current_target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
+fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
+    Ok(environment.resolve_target_platform()?)
 }
 
 fn active_php_selection_usage_count(
@@ -698,4 +691,66 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::io;
+    use std::path::PathBuf;
+
+    use resources::{ResourcesError, TargetPlatform};
+
+    use super::target_platform;
+    use crate::environment::Environment;
+    use crate::error::ExecuteError;
+
+    struct UnsupportedPlatformEnvironment;
+
+    impl Environment for UnsupportedPlatformEnvironment {
+        fn var_os(&self, _key: &str) -> Option<OsString> {
+            None
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            Ok(PathBuf::new())
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            false
+        }
+
+        fn read_line(&self) -> io::Result<String> {
+            Ok(String::new())
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn resolve_target_platform(&self) -> resources::Result<TargetPlatform> {
+            Err(ResourcesError::UnsupportedPlatform {
+                platform: "linux-aarch64".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn target_platform_preserves_unsupported_platform_error() {
+        let result = target_platform(&UnsupportedPlatformEnvironment);
+
+        assert!(matches!(
+            result,
+            Err(ExecuteError::Resources(ResourcesError::UnsupportedPlatform { platform }))
+                if platform == "linux-aarch64"
+        ));
+    }
 }

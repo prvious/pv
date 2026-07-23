@@ -28,6 +28,7 @@ pub(crate) struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     client: ScriptedClient,
+    pub(crate) target_platform_resolution_fails: bool,
 }
 
 impl TestEnvironment {
@@ -36,6 +37,7 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: current_dir.as_std_path().to_path_buf(),
             client,
+            target_platform_resolution_fails: false,
         }
     }
 
@@ -87,6 +89,16 @@ impl Environment for TestEnvironment {
 
     fn target_platform(&self) -> Option<TargetPlatform> {
         Some(TargetPlatform::DarwinArm64)
+    }
+
+    fn resolve_target_platform(&self) -> resources::Result<TargetPlatform> {
+        if self.target_platform_resolution_fails {
+            return Err(ResourcesError::UnsupportedPlatform {
+                platform: "linux-aarch64".to_string(),
+            });
+        }
+
+        Ok(TargetPlatform::DarwinArm64)
     }
 }
 

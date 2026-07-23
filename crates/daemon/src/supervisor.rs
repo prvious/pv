@@ -5,6 +5,8 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use platform::PlatformCapability;
+#[cfg(target_os = "macos")]
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
 };
@@ -25,6 +27,13 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessSignal {
+    Reload,
+    Terminate,
+    Kill,
+}
 
 #[expect(
     clippy::disallowed_types,
@@ -158,6 +167,19 @@ impl ProcessSupervisor {
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
+        self.start_inner(spec, |_pid| async {}).await
+    }
+
+    async fn start_inner<PostSpawn, PostSpawnFuture>(
+        &self,
+        spec: ProcessSpec,
+        post_spawn: PostSpawn,
+    ) -> Result<ManagedProcess, DaemonError>
+    where
+        PostSpawn: FnOnce(u32) -> PostSpawnFuture,
+        PostSpawnFuture: Future<Output = ()>,
+    {
+        require_process_containment()?;
         state::fs::ensure_layout(&self.paths)?;
 
         let stdout = fs::open_append_file(&spec.log_path)?;
@@ -170,6 +192,7 @@ impl ProcessSupervisor {
         let Some(pid) = child.id() else {
             return Err(DaemonError::MissingProcessId { name: spec.name });
         };
+        post_spawn(pid).await;
 
         if let Err(error) = persist_runtime_files(&spec, pid) {
             terminate_spawned_child(pid, &mut child).await;
@@ -190,6 +213,7 @@ impl ProcessSupervisor {
         &self,
         spec: &ProcessSpec,
     ) -> Result<Option<OwnedRuntime>, DaemonError> {
+        require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
             return Ok(None);
         };
@@ -210,6 +234,7 @@ impl ProcessSupervisor {
     }
 
     pub fn adopt(&self, spec: &ProcessSpec) -> Result<Option<AdoptedProcess>, DaemonError> {
+        require_process_containment()?;
         Ok(self
             .verify_ownership(spec)?
             .map(|owned| AdoptedProcess { owned }))
@@ -220,6 +245,7 @@ impl ProcessSupervisor {
         pid_path: &Utf8Path,
         metadata_path: &Utf8Path,
     ) -> Result<Option<AdoptedProcess>, DaemonError> {
+        require_process_containment()?;
         let Some(pid) = read_pid_file(pid_path)? else {
             return Ok(None);
         };
@@ -243,11 +269,11 @@ impl ProcessSupervisor {
     }
 
     pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        require_process_containment()?;
         let Some(owned) = self.verify_ownership(spec)? else {
             return Ok(false);
         };
-        let process_group = process_group_pid(owned.pid)?;
-        signal_process_group(process_group, Signal::USR1)?;
+        signal_process_group(owned.pid, ProcessSignal::Reload)?;
 
         Ok(true)
     }
@@ -275,12 +301,12 @@ impl ManagedProcess {
     }
 
     pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
+        require_process_containment()?;
         if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
             return Ok(());
         }
 
-        let process_group = process_group_pid(self.pid)?;
-        signal_process_group(process_group, Signal::TERM)?;
+        signal_process_group(self.pid, ProcessSignal::Terminate)?;
 
         match timeout(
             grace_period,
@@ -290,7 +316,7 @@ impl ManagedProcess {
         {
             Ok(result) => return result,
             Err(_elapsed) => {
-                signal_process_group(process_group, Signal::KILL)?;
+                signal_process_group(self.pid, ProcessSignal::Kill)?;
             }
         }
 
@@ -303,7 +329,7 @@ impl ManagedProcess {
             Ok(result) => result,
             Err(_elapsed) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("process group {process_group:?} did not exit after signal"),
+                format!("process group {} did not exit after signal", self.pid),
             )
             .into()),
         }
@@ -322,6 +348,7 @@ impl AdoptedProcess {
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        require_process_containment()?;
         stop_process_group_by_pid(self.owned.pid, grace_period).await
     }
 }
@@ -519,6 +546,13 @@ fn tls_client_config(
     ))
 }
 
+fn require_process_containment() -> Result<(), DaemonError> {
+    platform::require_capability(PlatformCapability::ProcessContainment)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     let raw_pid =
         i32::try_from(pid).map_err(|source| io::Error::new(io::ErrorKind::InvalidInput, source))?;
@@ -531,7 +565,15 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     })
 }
 
-fn signal_process_group(process_group: Pid, signal: Signal) -> Result<(), DaemonError> {
+#[cfg(target_os = "macos")]
+fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
+    let process_group = process_group_pid(pid)?;
+    let signal = match signal {
+        ProcessSignal::Reload => Signal::USR1,
+        ProcessSignal::Terminate => Signal::TERM,
+        ProcessSignal::Kill => Signal::KILL,
+    };
+
     match kill_process_group(process_group, signal) {
         Ok(()) => Ok(()),
         Err(source) => {
@@ -545,23 +587,30 @@ fn signal_process_group(process_group: Pid, signal: Signal) -> Result<(), Daemon
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonError> {
+    require_process_containment()
+}
+
 async fn terminate_spawned_child(pid: u32, child: &mut Child) {
-    if let Ok(process_group) = process_group_pid(pid) {
-        let _result = signal_process_group(process_group, Signal::KILL);
-    }
+    #[cfg(target_os = "macos")]
+    let _group_kill_result = signal_process_group(pid, ProcessSignal::Kill);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let _pid = pid;
+
+    let _result = child.kill().await;
 
     let _result = child.wait().await;
 }
 
 async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(), DaemonError> {
-    let process_group = process_group_pid(pid)?;
-    signal_process_group(process_group, Signal::TERM)?;
+    signal_process_group(pid, ProcessSignal::Terminate)?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
-    signal_process_group(process_group, Signal::KILL)?;
+    signal_process_group(pid, ProcessSignal::Kill)?;
 
     if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
         return Ok(());
@@ -615,7 +664,7 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
         command.env_remove(key);
     }
     command.envs(&spec.private_environment);
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     command.process_group(0);
 
     command
@@ -677,6 +726,7 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     let pid = process_group_pid(pid)?;
 
@@ -693,6 +743,14 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
 fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
     let process_group = process_group_pid(pid)?;
 
@@ -707,6 +765,13 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
             Err(error.into())
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
 }
 
 fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, DaemonError> {
@@ -813,6 +878,7 @@ fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
     Ok(Some(command_line))
 }
 
+#[cfg(target_os = "macos")]
 fn process_not_found(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }
@@ -875,4 +941,105 @@ fn timestamp() -> Result<String, DaemonError> {
         time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
     Ok(time::OffsetDateTime::now_utc().format(format)?)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use camino_tempfile::tempdir;
+    use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+    use tokio::time::sleep;
+
+    use super::{ProcessSpec, ProcessSupervisor};
+    use state::PvPaths;
+
+    #[tokio::test]
+    async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let descendant_pid_path = paths.run().join("startup-descendant.pid");
+        let metadata_parent_blocker = paths.run().join("metadata-parent");
+        state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
+        let descendant_pid_path_for_command = descendant_pid_path.clone();
+        let descendant_pid_path_for_hook = descendant_pid_path.clone();
+        let result = ProcessSupervisor::new(paths.clone())
+            .start_inner(
+                ProcessSpec {
+                    name: "startup-descendant".to_string(),
+                    command: "/bin/sh".into(),
+                    arguments: vec![
+                        "-c".to_string(),
+                        format!(
+                            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path_for_command}\"; while true; do sleep 1; done"
+                        ),
+                    ],
+                    private_environment: Default::default(),
+                    config_path: paths.config().join("startup-descendant.json"),
+                    log_path: paths.logs().join("startup-descendant.log"),
+                    pid_path: paths.run().join("startup-descendant-leader.pid"),
+                    metadata_path: metadata_parent_blocker.join("metadata.json"),
+                    resource_name: "startup-descendant".to_string(),
+                    track: "test".to_string(),
+                },
+                move |_pid| async move {
+                    wait_for_test_path(&descendant_pid_path_for_hook).await;
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
+        if !descendant_exited {
+            kill_test_process(descendant_pid)?;
+            let _cleanup_complete = wait_for_test_process_exit(descendant_pid).await?;
+        }
+
+        assert!(
+            descendant_exited,
+            "startup persistence failure left descendant process {descendant_pid} alive"
+        );
+
+        Ok(())
+    }
+
+    async fn wait_for_test_path(path: &camino::Utf8Path) {
+        for _attempt in 0..50 {
+            if path.exists() {
+                return;
+            }
+
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
+        let pid = test_pid(pid)?;
+        for _attempt in 0..50 {
+            if test_kill_process(pid).is_err() {
+                return Ok(true);
+            }
+
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        Ok(false)
+    }
+
+    fn kill_test_process(pid: u32) -> Result<()> {
+        kill_process(test_pid(pid)?, Signal::KILL)?;
+
+        Ok(())
+    }
+
+    fn test_pid(pid: u32) -> Result<Pid> {
+        let raw_pid = i32::try_from(pid)?;
+
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))
+    }
 }

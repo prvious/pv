@@ -161,7 +161,7 @@ pub(crate) struct ManagedResourceUpdateReport {
 }
 
 impl ManagedResourceRuntimeCatalog {
-    pub(crate) fn production() -> Self {
+    pub(crate) fn production() -> Result<Self, DaemonError> {
         let mut adapters: BTreeMap<&'static str, Box<dyn ManagedResourceRuntimeAdapter>> =
             BTreeMap::new();
         adapters.insert(
@@ -178,43 +178,45 @@ impl ManagedResourceRuntimeCatalog {
         let postgres = postgres::PostgresRuntimeAdapter::new();
         adapters.insert(postgres.resource_name(), Box::new(postgres));
 
-        Self {
+        Ok(Self {
             adapters,
             install_options: ManagedResourceInstallOptions {
                 manifest_url: resources::default_artifact_manifest_url().to_string(),
-                target_platform: current_target_platform(),
+                target_platform: resources::TargetPlatform::current()?,
             },
             http_client: None,
-        }
+        })
     }
 
-    pub(crate) fn without_adapters() -> Self {
+    pub(crate) fn without_adapters() -> Result<Self, DaemonError> {
         Self::without_adapters_with_manifest_url(resources::default_artifact_manifest_url())
     }
 
-    pub(crate) fn without_adapters_with_manifest_url(manifest_url: impl Into<String>) -> Self {
-        Self {
+    pub(crate) fn without_adapters_with_manifest_url(
+        manifest_url: impl Into<String>,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self {
             adapters: BTreeMap::new(),
             install_options: ManagedResourceInstallOptions {
                 manifest_url: manifest_url.into(),
-                target_platform: current_target_platform(),
+                target_platform: resources::TargetPlatform::current()?,
             },
             http_client: None,
-        }
+        })
     }
 
     pub(crate) fn without_adapters_with_manifest_client(
         manifest_url: impl Into<String>,
         client: impl resources::ResourceHttpClient + Send + Sync + 'static,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, DaemonError> {
+        Ok(Self {
             adapters: BTreeMap::new(),
             install_options: ManagedResourceInstallOptions {
                 manifest_url: manifest_url.into(),
-                target_platform: current_target_platform(),
+                target_platform: resources::TargetPlatform::current()?,
             },
             http_client: Some(Arc::new(client)),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -252,7 +254,7 @@ pub(crate) async fn reconcile_project_resources_with_progress(
     plan: &crate::project_env::ProjectResourcePlan,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
-    let catalog = ManagedResourceRuntimeCatalog::production();
+    let catalog = ManagedResourceRuntimeCatalog::production()?;
 
     reconcile_project_resources_with_catalog_and_progress(
         paths, database, project, plan, &catalog, progress,
@@ -294,7 +296,7 @@ pub(crate) async fn reconcile_system_resources_with_progress(
     paths: &PvPaths,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
-    let catalog = ManagedResourceRuntimeCatalog::production();
+    let catalog = ManagedResourceRuntimeCatalog::production()?;
     let mut database = Database::open(paths)?;
 
     reconcile_system_resources_with_catalog_and_progress(paths, &mut database, &catalog, progress)
@@ -310,7 +312,7 @@ pub(crate) fn update_check(
     match catalog {
         Some(catalog) => update_check_with_catalog(paths, catalog),
         None => {
-            let catalog = ManagedResourceRuntimeCatalog::production();
+            let catalog = ManagedResourceRuntimeCatalog::production()?;
 
             update_check_with_catalog(paths, &catalog)
         }
@@ -350,7 +352,7 @@ pub(crate) fn update_installed_with_progress(
     match catalog {
         Some(catalog) => update_installed_with_catalog(paths, catalog, progress),
         None => {
-            let catalog = ManagedResourceRuntimeCatalog::production();
+            let catalog = ManagedResourceRuntimeCatalog::production()?;
 
             update_installed_with_catalog(paths, &catalog, progress)
         }
@@ -1319,14 +1321,6 @@ fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind((RESOURCE_HOST, port)).is_ok()
 }
 
-fn current_target_platform() -> resources::TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        resources::TargetPlatform::DarwinArm64
-    } else {
-        resources::TargetPlatform::DarwinAmd64
-    }
-}
-
 #[cfg(test)]
 #[doc(hidden)]
 pub(crate) fn fake_runtime_catalog(
@@ -1335,7 +1329,7 @@ pub(crate) fn fake_runtime_catalog(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         fake::FakeMailpitRuntimeAdapter::new()?,
     ))
@@ -1361,7 +1355,7 @@ pub(crate) fn fake_unready_runtime_catalog(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         fake::FakeMailpitRuntimeAdapter::unready()?,
     ))
@@ -1375,7 +1369,7 @@ pub(crate) fn mailpit_runtime_catalog(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         mailpit::MailpitRuntimeAdapter::new(),
     ))
@@ -1389,7 +1383,7 @@ pub(crate) fn rustfs_runtime_catalog(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         rustfs::RustfsRuntimeAdapter,
     ))
@@ -1403,7 +1397,7 @@ pub(crate) fn postgres_runtime_catalog(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         postgres::PostgresRuntimeAdapter::new(),
     ))
@@ -1418,7 +1412,7 @@ pub(crate) fn postgres_runtime_catalog_with_readiness_timeout(
     Ok(ManagedResourceRuntimeCatalog::with_adapter(
         ManagedResourceInstallOptions {
             manifest_url: manifest_url.to_string(),
-            target_platform: current_target_platform(),
+            target_platform: resources::TargetPlatform::current()?,
         },
         postgres::PostgresRuntimeAdapter::with_readiness_timeout(readiness_timeout),
     ))

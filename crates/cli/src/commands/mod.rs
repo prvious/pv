@@ -2,6 +2,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
+use platform::PlatformCapability;
 use state::{PvPaths, StateError};
 
 use crate::args::{Cli, Command};
@@ -38,6 +39,20 @@ pub(crate) fn execute(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
+    execute_with_capability_check(cli, environment, stdout, stderr, require_command_capability)
+}
+
+fn execute_with_capability_check<CapabilityCheck>(
+    cli: Cli,
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    capability_check: CapabilityCheck,
+) -> Result<ExitCode, ExecuteError>
+where
+    CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
+{
+    capability_check(&cli.command)?;
     require_no_update_in_progress(&cli.command, environment)?;
 
     match cli.command {
@@ -122,6 +137,99 @@ pub(crate) fn execute(
         Command::PostgresList(args) | Command::PgList(args) => {
             postgres::list(args, environment, stdout)
         }
+    }
+}
+
+fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {
+    if let Some(capability) = required_capability(command) {
+        platform::require_capability(capability)?;
+    }
+
+    Ok(())
+}
+
+fn required_capability(command: &Command) -> Option<PlatformCapability> {
+    match command {
+        Command::Setup(_)
+        | Command::Uninstall(_)
+        | Command::DnsStatus
+        | Command::DnsInstall
+        | Command::DnsUninstall => Some(PlatformCapability::ResolverIntegration),
+        Command::DaemonEnable
+        | Command::DaemonDisable
+        | Command::DaemonRestart
+        | Command::Status(_)
+        | Command::Doctor(_)
+        | Command::Update(_)
+        | Command::InternalUpdateManagedResources => Some(PlatformCapability::DaemonRegistration),
+        Command::DaemonRun | Command::Link(_) | Command::Unlink(_) => {
+            Some(PlatformCapability::DaemonIpc)
+        }
+        Command::PortsStatus | Command::PortsInstall | Command::PortsUninstall => {
+            Some(PlatformCapability::LowPortFrontend)
+        }
+        Command::CaStatus | Command::CaTrust | Command::CaUntrust => {
+            Some(PlatformCapability::TrustStore)
+        }
+        Command::Open(_)
+        | Command::MailpitOpen
+        | Command::MailOpen
+        | Command::RustfsOpen
+        | Command::S3Open => Some(PlatformCapability::BrowserHandoff),
+        // These commands use portable CLI/state/config behavior or a lower crate's typed
+        // filesystem boundary. They do not require a host-integration capability here.
+        Command::Env(_)
+        | Command::Completions(_)
+        | Command::Init(_)
+        | Command::ProjectEnv(_)
+        | Command::Logs(_)
+        | Command::Jobs(_)
+        | Command::List(_) => None,
+        // Shims perform portable local process dispatch over already-installed state. The
+        // cross-platform launcher lifecycle remains an approved follow-up boundary.
+        Command::ShimPhp(_) | Command::ShimComposer(_) => None,
+        // Managed Resource handlers select a fallible artifact target before installation,
+        // update, or removal. Functional non-macOS artifacts remain deliberately deferred.
+        Command::PhpUse(_)
+        | Command::PhpInstall(_)
+        | Command::PhpUpdate
+        | Command::PhpUninstall(_)
+        | Command::PhpList(_)
+        | Command::ComposerInstall
+        | Command::ComposerUpdate
+        | Command::ComposerUninstall(_)
+        | Command::MailpitInstall(_)
+        | Command::MailInstall(_)
+        | Command::MailpitUpdate
+        | Command::MailUpdate
+        | Command::MailpitUninstall(_)
+        | Command::MailUninstall(_)
+        | Command::MailpitList(_)
+        | Command::MailList(_)
+        | Command::RedisInstall(_)
+        | Command::RedisUpdate
+        | Command::RedisUninstall(_)
+        | Command::RedisList(_)
+        | Command::RustfsInstall(_)
+        | Command::S3Install(_)
+        | Command::RustfsUpdate
+        | Command::S3Update
+        | Command::RustfsUninstall(_)
+        | Command::S3Uninstall(_)
+        | Command::RustfsList(_)
+        | Command::S3List(_)
+        | Command::MysqlInstall(_)
+        | Command::MysqlUpdate
+        | Command::MysqlUninstall(_)
+        | Command::MysqlList(_)
+        | Command::PostgresInstall(_)
+        | Command::PgInstall(_)
+        | Command::PostgresUpdate
+        | Command::PgUpdate
+        | Command::PostgresUninstall(_)
+        | Command::PgUninstall(_)
+        | Command::PostgresList(_)
+        | Command::PgList(_) => None,
     }
 }
 
@@ -237,4 +345,246 @@ fn write_revoked_latest_warning(
     ))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::ffi::OsString;
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::process::ExitCode;
+
+    use platform::{PlatformCapability, PlatformError, PlatformTarget};
+
+    use super::{execute_with_capability_check, required_capability};
+    use crate::args::{
+        Cli, Command, CompletionsArgs, DoctorArgs, LinkArgs, OpenArgs, SetupArgs, StatusArgs,
+        UninstallArgs, UnlinkArgs, UpdateArgs,
+    };
+    use crate::environment::Environment;
+    use crate::error::ExecuteError;
+    use crate::shell::Shell;
+
+    #[test]
+    fn required_capability_maps_resolver_integration_commands() {
+        assert_required_capability(
+            &[
+                Command::Setup(SetupArgs {
+                    yes: false,
+                    non_interactive: false,
+                    no_path: false,
+                }),
+                Command::Uninstall(UninstallArgs {
+                    prune: false,
+                    force: false,
+                }),
+                Command::DnsStatus,
+                Command::DnsInstall,
+                Command::DnsUninstall,
+            ],
+            Some(PlatformCapability::ResolverIntegration),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_daemon_registration_commands() {
+        assert_required_capability(
+            &[
+                Command::DaemonEnable,
+                Command::DaemonDisable,
+                Command::DaemonRestart,
+                Command::Status(StatusArgs { json: false }),
+                Command::Doctor(DoctorArgs {}),
+                Command::Update(UpdateArgs {
+                    check: false,
+                    json: false,
+                }),
+            ],
+            Some(PlatformCapability::DaemonRegistration),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_daemon_ipc_command() {
+        assert_required_capability(
+            &[
+                Command::DaemonRun,
+                Command::Link(LinkArgs {
+                    path: None,
+                    hostname: None,
+                }),
+                Command::Unlink(UnlinkArgs { hostname: None }),
+            ],
+            Some(PlatformCapability::DaemonIpc),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_internal_update_like_update() {
+        assert_required_capability(
+            &[Command::InternalUpdateManagedResources],
+            Some(PlatformCapability::DaemonRegistration),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_low_port_frontend_commands() {
+        assert_required_capability(
+            &[
+                Command::PortsStatus,
+                Command::PortsInstall,
+                Command::PortsUninstall,
+            ],
+            Some(PlatformCapability::LowPortFrontend),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_trust_store_commands() {
+        assert_required_capability(
+            &[Command::CaStatus, Command::CaTrust, Command::CaUntrust],
+            Some(PlatformCapability::TrustStore),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_browser_handoff_commands() {
+        assert_required_capability(
+            &[
+                Command::Open(OpenArgs { hostname: None }),
+                Command::MailpitOpen,
+                Command::MailOpen,
+                Command::RustfsOpen,
+                Command::S3Open,
+            ],
+            Some(PlatformCapability::BrowserHandoff),
+        );
+    }
+
+    #[test]
+    fn required_capability_leaves_completions_portable() {
+        assert_required_capability(
+            &[Command::Completions(CompletionsArgs { shell: Shell::Bash })],
+            None,
+        );
+    }
+
+    #[test]
+    fn daemon_dependent_mutations_preflight_before_update_lock_tls_and_release_state() {
+        assert_preflight_before_environment_access(
+            Command::Link(LinkArgs {
+                path: None,
+                hostname: None,
+            }),
+            PlatformCapability::DaemonIpc,
+        );
+        assert_preflight_before_environment_access(
+            Command::Unlink(UnlinkArgs { hostname: None }),
+            PlatformCapability::DaemonIpc,
+        );
+        assert_preflight_before_environment_access(
+            Command::InternalUpdateManagedResources,
+            PlatformCapability::DaemonRegistration,
+        );
+    }
+
+    fn assert_required_capability(commands: &[Command], expected: Option<PlatformCapability>) {
+        for command in commands {
+            assert_eq!(required_capability(command), expected);
+        }
+    }
+
+    fn assert_preflight_before_environment_access(
+        command: Command,
+        capability: PlatformCapability,
+    ) {
+        let environment = AccessTrackingEnvironment::default();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = execute_with_capability_check(
+            Cli {
+                no_color: false,
+                command,
+            },
+            &environment,
+            &mut stdout,
+            &mut stderr,
+            |command| {
+                if required_capability(command) != Some(capability) {
+                    return Ok(());
+                }
+
+                Err(PlatformError::Unsupported {
+                    capability,
+                    target: PlatformTarget::Linux,
+                }
+                .into())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(ExecuteError::Platform(PlatformError::Unsupported {
+                capability: actual_capability,
+                target: PlatformTarget::Linux,
+            })) if actual_capability == capability
+        ));
+        assert!(!environment.accessed.get());
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[derive(Default)]
+    struct AccessTrackingEnvironment {
+        accessed: Cell<bool>,
+    }
+
+    impl AccessTrackingEnvironment {
+        fn record_access(&self) {
+            self.accessed.set(true);
+        }
+    }
+
+    impl Environment for AccessTrackingEnvironment {
+        fn var_os(&self, _key: &str) -> Option<OsString> {
+            self.record_access();
+            None
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            self.record_access();
+            None
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            self.record_access();
+            Err(io::Error::other("unexpected current directory access"))
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            self.record_access();
+            Err(io::Error::other("unexpected executable access"))
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            self.record_access();
+            false
+        }
+
+        fn read_line(&self) -> io::Result<String> {
+            self.record_access();
+            Err(io::Error::other("unexpected input access"))
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            self.record_access();
+            Err(io::Error::other("unexpected browser access"))
+        }
+
+        fn exec(&self, _program: &Path, _args: &[String]) -> io::Result<ExitCode> {
+            self.record_access();
+            Err(io::Error::other("unexpected process access"))
+        }
+    }
 }

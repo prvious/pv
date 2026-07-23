@@ -12,6 +12,10 @@ pub(crate) fn bind(paths: &PvPaths) -> Result<LocalListener, DaemonError> {
     Ok(UnixListener::bind(paths.daemon_socket())?)
 }
 
+pub(crate) async fn connect(paths: &PvPaths) -> Result<LocalStream, DaemonError> {
+    Ok(UnixStream::connect(paths.daemon_socket()).await?)
+}
+
 pub(crate) async fn prepare_endpoint(paths: &PvPaths) -> Result<(), DaemonError> {
     match UnixStream::connect(paths.daemon_socket()).await {
         Ok(_stream) => Err(DaemonError::SocketInUse {

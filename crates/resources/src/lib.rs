@@ -35,7 +35,7 @@ pub use download::{
 pub use endpoint::{
     ARTIFACT_MANIFEST_URL_BUILD_ENV, STABLE_ARTIFACT_MANIFEST_URL, default_artifact_manifest_url,
 };
-pub use error::{ResourcesError, Result};
+pub use error::{ResourceHostCapability, ResourcesError, Result};
 pub use http::{ResourceHttpClient, UreqResourceHttpClient};
 pub use identity::{
     ArtifactVersion, ConcreteTrackName, PublishedAt, PvVersion, ResourceName, Sha256Digest,

@@ -323,6 +323,7 @@ pub(crate) fn is_pv_ca_metadata(metadata: &LocalCaMetadata) -> bool {
         && metadata.can_sign_certificates
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn pem_from_der(label: &str, der: &[u8]) -> String {
     let base64 = data_encoding::BASE64.encode(der);
     let mut pem = format!("-----BEGIN {label}-----\n");
@@ -392,7 +393,8 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LocalCaPostWriteMissing
         | PlatformError::LocalCaPostWriteRepairRequired { .. }
         | PlatformError::LocalCaPostWriteUnreadable { .. }
-        | PlatformError::UnsupportedPlatform { .. }
+        | PlatformError::Unsupported { .. }
+        | PlatformError::UnsupportedTarget { .. }
         | PlatformError::BrowserOpen(_)
         | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
@@ -401,8 +403,9 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LaunchAgentCommandStatus { .. }
         | PlatformError::SystemIntegration(_)
         | PlatformError::SystemIntegrationCommand { .. }
-        | PlatformError::SystemIntegrationCommandStatus { .. }
-        | PlatformError::SocketTable(_)
+        | PlatformError::SystemIntegrationCommandStatus { .. } => CaRepairReason::InvalidCaShape,
+        #[cfg(target_os = "macos")]
+        PlatformError::SocketTable(_)
         | PlatformError::SocketTableCommand(_)
         | PlatformError::SocketTableCommandStatus { .. }
         | PlatformError::SocketTableCommandUtf8(_) => CaRepairReason::InvalidCaShape,

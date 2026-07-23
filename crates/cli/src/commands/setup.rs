@@ -173,7 +173,7 @@ fn refresh_setup_artifact_manifest(
         ))?;
     }
 
-    resolve_default_resource_plan(refresh.manifest(), target_platform(environment))
+    resolve_default_resource_plan(refresh.manifest(), target_platform(environment)?)
 }
 
 fn resolve_default_resource_plan(
@@ -262,18 +262,12 @@ fn with_resource_http_client<T>(
     operation(&client)
 }
 
-fn target_platform(environment: &impl Environment) -> TargetPlatform {
-    environment
-        .target_platform()
-        .unwrap_or_else(current_target_platform)
-}
-
-fn current_target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
+fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
+    if let Some(target_platform) = environment.target_platform() {
+        return Ok(target_platform);
     }
+
+    Ok(TargetPlatform::current()?)
 }
 
 fn install_command_shims(

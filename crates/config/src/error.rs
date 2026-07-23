@@ -1,7 +1,26 @@
-use std::io;
+use std::{fmt, io};
 
 use camino::Utf8PathBuf;
 use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigCapability {
+    PermissionPreservingWrite,
+}
+
+impl ConfigCapability {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PermissionPreservingWrite => "permission-preserving config writes",
+        }
+    }
+}
+
+impl fmt::Display for ConfigCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -19,6 +38,12 @@ pub enum ConfigError {
         path: Utf8PathBuf,
         #[source]
         source: io::Error,
+    },
+
+    #[error("{capability} are unsupported on {target}")]
+    UnsupportedPlatform {
+        capability: ConfigCapability,
+        target: &'static str,
     },
 
     #[error("Project root must be an existing directory: {path}")]
@@ -152,4 +177,55 @@ pub enum ConfigError {
 
     #[error("malformed PV-managed .env block: {reason}")]
     MalformedManagedEnvBlock { reason: &'static str },
+}
+
+#[cfg(any(test, not(unix)))]
+pub(crate) const fn unsupported_target_name(
+    capability: ConfigCapability,
+    target: &'static str,
+) -> ConfigError {
+    ConfigError::UnsupportedPlatform { capability, target }
+}
+
+#[cfg(not(unix))]
+pub(crate) const fn unsupported_current_target(capability: ConfigCapability) -> ConfigError {
+    unsupported_target_name(capability, std::env::consts::OS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigCapability, ConfigError, unsupported_target_name};
+
+    #[test]
+    fn unsupported_error_names_capability_and_target() {
+        let error = ConfigError::UnsupportedPlatform {
+            capability: ConfigCapability::PermissionPreservingWrite,
+            target: "windows",
+        };
+
+        assert!(matches!(
+            &error,
+            ConfigError::UnsupportedPlatform {
+                capability: ConfigCapability::PermissionPreservingWrite,
+                target: "windows",
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "permission-preserving config writes are unsupported on windows"
+        );
+    }
+
+    #[test]
+    fn unsupported_target_name_uses_injected_target() {
+        let error = unsupported_target_name(ConfigCapability::PermissionPreservingWrite, "windows");
+
+        assert!(matches!(
+            error,
+            ConfigError::UnsupportedPlatform {
+                capability: ConfigCapability::PermissionPreservingWrite,
+                target: "windows",
+            }
+        ));
+    }
 }

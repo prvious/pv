@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use resources::{
     ManagedResourceCommands, ManagedResourceTrack, ManagedResourceUninstallOptions,
-    ResourceHttpClient, ResourceKind, ResourceName, TargetPlatform, TrackName, TrackSelector,
+    ResourceHttpClient, ResourceKind, ResourceName, TrackName, TrackSelector,
     UreqResourceHttpClient,
 };
 use serde::Serialize;
@@ -39,7 +39,7 @@ pub(crate) fn install(
         None => TrackSelector::Latest,
     };
     let adapter = (spec.adapter)()?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_with_progress(&adapter, selector, client, &progress)
@@ -65,7 +65,7 @@ pub(crate) fn update(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let adapter = (spec.adapter)()?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_with_progress(&adapter, client, &progress)
@@ -95,13 +95,13 @@ pub(crate) fn uninstall(
     let paths = pv_paths(environment)?;
     let resource_name = ResourceName::new(spec.resource_name)?;
     let track = TrackName::new(track)?;
+    let commands = resource_commands(&paths, environment)?;
     if prune && !force && !confirm_prune(&spec, track.as_str(), environment, stdout)? {
         return Ok(ExitCode::SUCCESS);
     }
     let options = ManagedResourceUninstallOptions::new()
         .prune(prune)
         .force(force);
-    let commands = resource_commands(&paths, environment);
     let removal = commands.uninstall(&resource_name, &track, options)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -123,7 +123,7 @@ pub(crate) fn list(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let resource_name = ResourceName::new(spec.resource_name)?;
-    let commands = resource_commands(&paths, environment);
+    let commands = resource_commands(&paths, environment)?;
     let tracks = commands.list(Some(&resource_name))?;
     let descriptor = resources::registry::resolve_canonical(spec.resource_name)?;
 
@@ -376,26 +376,15 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     Ok(PvPaths::for_home(home))
 }
 
-fn resource_commands(paths: &PvPaths, environment: &impl Environment) -> ManagedResourceCommands {
-    ManagedResourceCommands::new(
+fn resource_commands(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> Result<ManagedResourceCommands, ExecuteError> {
+    Ok(ManagedResourceCommands::new(
         paths.clone(),
         artifact_manifest_url(environment),
-        target_platform(environment),
-    )
-}
-
-fn target_platform(environment: &impl Environment) -> TargetPlatform {
-    environment
-        .target_platform()
-        .unwrap_or_else(current_target_platform)
-}
-
-fn current_target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
+        environment.resolve_target_platform()?,
+    ))
 }
 
 fn with_resource_http_client<T>(
@@ -504,6 +493,10 @@ mod tests {
 
         fn open_url(&self, _url: &str) -> io::Result<()> {
             Ok(())
+        }
+
+        fn target_platform(&self) -> Option<resources::TargetPlatform> {
+            Some(resources::TargetPlatform::DarwinArm64)
         }
     }
 

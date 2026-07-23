@@ -6,6 +6,11 @@ use crate::LocalCaMetadata;
 use crate::ca::is_pv_ca_metadata;
 use crate::error::PlatformError;
 
+#[cfg(not(target_os = "macos"))]
+use crate::PlatformCapability;
+#[cfg(not(target_os = "macos"))]
+use crate::capability::unsupported;
+
 #[cfg(target_os = "macos")]
 use crate::ca::pem_from_der;
 #[cfg(target_os = "macos")]
@@ -164,9 +169,8 @@ pub fn trust_system_ca(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = certificate_path;
-        Err(PlatformError::UnsupportedPlatform {
-            feature: "System keychain trust mutation",
-        })
+        let _ = privilege_mode;
+        Err(unsupported(PlatformCapability::TrustStore)?)
     }
 }
 
@@ -227,9 +231,8 @@ pub fn untrust_system_ca(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = fingerprint;
-        Err(PlatformError::UnsupportedPlatform {
-            feature: "System keychain trust mutation",
-        })
+        let _ = privilege_mode;
+        Err(unsupported(PlatformCapability::TrustStore)?)
     }
 }
 
@@ -303,9 +306,7 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
 
         #[cfg(not(target_os = "macos"))]
         {
-            Err(PlatformError::UnsupportedPlatform {
-                feature: "System keychain trust inspection",
-            })
+            Err(unsupported(PlatformCapability::TrustStore)?)
         }
     }
 }

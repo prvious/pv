@@ -25,6 +25,7 @@ struct TestEnvironment {
     current_dir: RefCell<PathBuf>,
     client: ScriptedClient,
     target_platform: Option<TargetPlatform>,
+    target_platform_resolution_fails: bool,
     exec_calls: RefCell<Vec<ExecCall>>,
 }
 
@@ -35,12 +36,18 @@ impl TestEnvironment {
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             client,
             target_platform: None,
+            target_platform_resolution_fails: false,
             exec_calls: RefCell::new(Vec::new()),
         }
     }
 
     fn with_target_platform(mut self, target_platform: TargetPlatform) -> Self {
         self.target_platform = Some(target_platform);
+        self
+    }
+
+    fn with_target_platform_resolution_failure(mut self) -> Self {
+        self.target_platform_resolution_fails = true;
         self
     }
 
@@ -145,6 +152,17 @@ impl Environment for TestEnvironment {
 
     fn target_platform(&self) -> Option<TargetPlatform> {
         self.target_platform
+    }
+
+    fn resolve_target_platform(&self) -> resources::Result<TargetPlatform> {
+        if self.target_platform_resolution_fails {
+            return Err(ResourcesError::UnsupportedPlatform {
+                platform: "linux-aarch64".to_string(),
+            });
+        }
+
+        self.target_platform
+            .map_or_else(TargetPlatform::current, Ok)
     }
 }
 
@@ -1261,6 +1279,49 @@ fn php_install_uses_injected_target_platform() -> anyhow::Result<()> {
         environment.text_request_count(),
         environment.byte_request_count(),
     ));
+
+    Ok(())
+}
+
+#[test]
+fn php_list_does_not_create_state_when_target_platform_resolution_fails() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let environment = TestEnvironment::new(&home, tempdir.path(), ScriptedClient::new())
+        .with_target_platform_resolution_failure();
+    let paths = pv_paths(&home);
+
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    let output = run_pv(&["php:list"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_without_force_does_not_create_state_when_target_platform_resolution_fails()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let environment = TestEnvironment::new(&home, tempdir.path(), ScriptedClient::new())
+        .with_target_platform_resolution_failure();
+    let paths = pv_paths(&home);
+
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    let output = run_pv(&["php:uninstall", "8.4"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    assert_debug_snapshot!(output);
 
     Ok(())
 }

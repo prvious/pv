@@ -1,10 +1,14 @@
 use std::io;
+#[cfg(target_os = "macos")]
 use std::process::Output;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
-use crate::PlatformError;
+use crate::capability::require_capability_for;
+#[cfg(not(target_os = "macos"))]
+use crate::capability::unsupported;
+use crate::{PlatformCapability, PlatformError, PlatformTarget};
 
 pub const LAUNCH_AGENT_LABEL: &str = "com.prvious.pv.daemon";
 pub const LAUNCH_AGENT_FILE_NAME: &str = "com.prvious.pv.daemon.plist";
@@ -186,11 +190,28 @@ pub fn write_launch_agent_file(
     path: &Utf8Path,
     config: &LaunchAgentConfig,
 ) -> Result<(), PlatformError> {
+    write_launch_agent_file_for(PlatformTarget::current()?, path, config)
+}
+
+fn write_launch_agent_file_for(
+    target: PlatformTarget,
+    path: &Utf8Path,
+    config: &LaunchAgentConfig,
+) -> Result<(), PlatformError> {
+    require_capability_for(target, PlatformCapability::DaemonRegistration)?;
     state::fs::write_sensitive_file(path, &config.render()?)
         .map_err(|error| PlatformError::LaunchAgent(error.to_string()))
 }
 
 pub fn remove_launch_agent_file(path: &Utf8Path) -> Result<(), PlatformError> {
+    remove_launch_agent_file_for(PlatformTarget::current()?, path)
+}
+
+fn remove_launch_agent_file_for(
+    target: PlatformTarget,
+    path: &Utf8Path,
+) -> Result<(), PlatformError> {
+    require_capability_for(target, PlatformCapability::DaemonRegistration)?;
     match state::fs::delete_file(path) {
         Ok(()) => Ok(()),
         Err(state::StateError::Filesystem { source, .. })
@@ -203,32 +224,60 @@ pub fn remove_launch_agent_file(path: &Utf8Path) -> Result<(), PlatformError> {
 }
 
 pub fn bootstrap_launch_agent(plist_path: &Utf8Path) -> Result<(), PlatformError> {
-    let target = launchctl_gui_target();
-    let plist_path = plist_path.to_string();
+    #[cfg(target_os = "macos")]
+    {
+        let target = launchctl_gui_target();
+        let plist_path = plist_path.to_string();
 
-    run_launchctl(&["bootstrap", &target, &plist_path])
+        run_launchctl(&["bootstrap", &target, &plist_path])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = plist_path;
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
 pub fn bootout_launch_agent() -> Result<(), PlatformError> {
-    let service = launchctl_service_target();
+    #[cfg(target_os = "macos")]
+    {
+        let service = launchctl_service_target();
 
-    run_launchctl(&["bootout", &service])
+        run_launchctl(&["bootout", &service])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
 pub fn kickstart_launch_agent() -> Result<(), PlatformError> {
-    let service = launchctl_service_target();
+    #[cfg(target_os = "macos")]
+    {
+        let service = launchctl_service_target();
 
-    run_launchctl(&["kickstart", "-k", &service])
+        run_launchctl(&["kickstart", "-k", &service])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(unsupported(PlatformCapability::DaemonRegistration)?)
+    }
 }
 
+#[cfg(target_os = "macos")]
 fn launchctl_gui_target() -> String {
     format!("gui/{}", rustix::process::getuid().as_raw())
 }
 
+#[cfg(target_os = "macos")]
 fn launchctl_service_target() -> String {
     format!("{}/{}", launchctl_gui_target(), LAUNCH_AGENT_LABEL)
 }
 
+#[cfg(target_os = "macos")]
 fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
     let command = format!("/bin/launchctl {}", args.join(" "));
     let output = launchctl_output(args).map_err(|source| PlatformError::LaunchAgentCommand {
@@ -253,12 +302,14 @@ fn run_launchctl(args: &[&str]) -> Result<(), PlatformError> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_types,
     reason = "platform LaunchAgent helper owns launchctl process execution"
 )]
 type StdCommand = std::process::Command;
 
+#[cfg(target_os = "macos")]
 fn launchctl_output(args: &[&str]) -> io::Result<Output> {
     StdCommand::new("/bin/launchctl").args(args).output()
 }
@@ -268,5 +319,70 @@ fn insert_pv_marker(content: &str) -> String {
         format!("{declaration}\n{PV_MARKER}\n{body}")
     } else {
         format!("{PV_MARKER}\n{content}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8Path;
+    use camino_tempfile::tempdir;
+
+    use super::{LaunchAgentConfig, remove_launch_agent_file_for, write_launch_agent_file_for};
+    use crate::{PlatformCapability, PlatformError, PlatformTarget};
+
+    #[test]
+    fn unsupported_launch_agent_write_leaves_home_untouched() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let path = home.join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+        let config = LaunchAgentConfig::new(
+            home.join(".pv/bin/pv"),
+            home.join(".pv/logs/launchd.out.log"),
+            home.join(".pv/logs/launchd.err.log"),
+        );
+
+        let result = write_launch_agent_file_for(PlatformTarget::Linux, &path, &config);
+
+        assert!(matches!(
+            result,
+            Err(PlatformError::Unsupported {
+                capability: PlatformCapability::DaemonRegistration,
+                target: PlatformTarget::Linux,
+            })
+        ));
+        assert!(!home.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_launch_agent_removal_preserves_existing_file() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let path = tempdir.path().join("com.prvious.pv.daemon.plist");
+        let original = "existing launch agent\n";
+        write_test_file(&path, original)?;
+
+        let result = remove_launch_agent_file_for(PlatformTarget::Linux, &path);
+
+        assert!(matches!(
+            result,
+            Err(PlatformError::Unsupported {
+                capability: PlatformCapability::DaemonRegistration,
+                target: PlatformTarget::Linux,
+            })
+        ));
+        assert_eq!(state::fs::read_to_string(&path)?, original);
+
+        Ok(())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "platform tests seed portable LaunchAgent fixtures directly"
+    )]
+    fn write_test_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
+        std::fs::write(path, content)?;
+
+        Ok(())
     }
 }
