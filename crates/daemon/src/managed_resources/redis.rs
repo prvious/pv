@@ -52,7 +52,9 @@ bind {RESOURCE_HOST}
 port {port}
 dir {data_dir}
 save \"\"
-appendonly no
+appendonly yes
+appendfsync everysec
+set-proc-title no
 "
         );
         let arguments = vec![config_path.as_str().to_string()];
@@ -109,14 +111,26 @@ appendonly no
 
             for allocation in allocations {
                 let env = redis_env(port, Some(&allocation.generated_name));
-                if allocation.status != ResourceAllocationStatus::Ready {
-                    database.mark_resource_allocation_ready(
-                        &allocation.project_id,
-                        &allocation.resource_name,
-                        &allocation.track,
-                        &allocation.allocation_name,
-                        &env,
-                    )?;
+                match allocation.status {
+                    ResourceAllocationStatus::Desired => {
+                        database.mark_resource_allocation_ready(
+                            &allocation.project_id,
+                            &allocation.resource_name,
+                            &allocation.track,
+                            &allocation.allocation_name,
+                            &env,
+                        )?;
+                    }
+                    ResourceAllocationStatus::Ready if allocation.env != env => {
+                        database.record_resource_allocation_env_context(
+                            &allocation.project_id,
+                            &allocation.resource_name,
+                            &allocation.track,
+                            &allocation.allocation_name,
+                            &env,
+                        )?;
+                    }
+                    _ => {}
                 }
             }
 
