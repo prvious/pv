@@ -2563,7 +2563,7 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
 }
 
 #[test]
-fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> {
+fn redis_process_spec_disables_snapshots_and_process_title() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let adapter = super::redis::RedisRuntimeAdapter::new();
@@ -2585,10 +2585,101 @@ fn redis_process_arguments_disable_snapshots_without_empty_argv() -> Result<()> 
         spec.arguments
     );
     let config = state::fs::read_to_string(&spec.config_path)?;
+    assert!(
+        config.lines().any(|line| line == "set-proc-title no"),
+        "Redis config must preserve the original process command for PV ownership checks: {config}"
+    );
     assert_with_normalized_runtime(
         tempdir.path(),
         "redis_process_arguments_disable_snapshots_without_empty_argv",
         (spec.arguments, config),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        redis_project_config(),
+    )?;
+    seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
+    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+
+    drop(redis_port_guard);
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let (prefix, initial_port) = {
+        let database = Database::open(&paths)?;
+        let track = database.managed_resource_track("redis", REDIS_TRACK)?;
+        let allocations = database.resource_allocations(&project.id, "redis")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("Redis reconciliation did not record an allocation");
+        };
+
+        (
+            allocation.generated_name.clone(),
+            required_env_value(&track.env, "port")?,
+        )
+    };
+    stop_recorded_redis_runtime(&paths).await?;
+    let redis_port_guard = bind_loopback_port_when_available(initial_port.parse()?).await?;
+
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let snapshot = {
+        let database = Database::open(&paths)?;
+        let track = database.managed_resource_track("redis", REDIS_TRACK)?;
+        let current_port = required_env_value(&track.env, "port")?;
+        let allocations = database.resource_allocations(&project.id, "redis")?;
+        let Some(allocation) = allocations.first() else {
+            bail!("Redis reconciliation did not preserve an allocation");
+        };
+        let dotenv = read_dotenv(&project)?;
+
+        assert_ne!(
+            initial_port, current_port,
+            "test setup should force Redis onto a new port"
+        );
+        assert_eq!(allocation.status, ResourceAllocationStatus::Ready);
+        assert_eq!(allocation.generated_name, prefix);
+        assert_eq!(required_env_value(&allocation.env, "prefix")?, prefix);
+        assert_eq!(required_env_value(&allocation.env, "port")?, current_port);
+        assert_eq!(
+            required_env_value(&allocation.env, "url")?,
+            format!("redis://127.0.0.1:{current_port}/0")
+        );
+        assert!(dotenv.contains(&format!("REDIS_PORT={current_port}")));
+        assert!(dotenv.contains(&format!("CACHE_REDIS_PORT={current_port}")));
+        assert!(dotenv.contains(&format!(
+            "CACHE_REDIS_URL=redis://127.0.0.1:{current_port}/0"
+        )));
+
+        (
+            dotenv,
+            track,
+            allocations,
+            database.assigned_ports()?,
+            database.runtime_observed_states()?,
+        )
+    };
+
+    drop(redis_port_guard);
+    write_project_config(
+        &project,
+        r#"env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "redis_port_reassignment_refreshes_ready_allocation_env",
+        snapshot,
     )?;
 
     Ok(())
@@ -3007,6 +3098,22 @@ async fn bind_loopback_ports_when_available(ports: [u16; 2]) -> Result<[TcpListe
     }
 }
 
+async fn bind_loopback_port_when_available(port: u16) -> Result<TcpListener> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+
+    loop {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => return Ok(listener),
+            Err(error) if tokio::time::Instant::now() >= deadline => {
+                bail!("timed out waiting for Redis port {port} to become available: {error}");
+            }
+            Err(_error) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+}
+
 fn bind_loopback_ports(ports: [u16; 2]) -> std::io::Result<[TcpListener; 2]> {
     let api_listener = TcpListener::bind(("127.0.0.1", ports[0]))?;
     let console_listener = TcpListener::bind(("127.0.0.1", ports[1]))?;
@@ -3033,6 +3140,17 @@ async fn stop_recorded_rustfs_runtime(paths: &PvPaths) -> Result<()> {
     if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
         &paths.resource_pid("rustfs", RUSTFS_TRACK),
         &paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK),
+    )? {
+        process.stop(Duration::from_secs(1)).await?;
+    }
+
+    Ok(())
+}
+
+async fn stop_recorded_redis_runtime(paths: &PvPaths) -> Result<()> {
+    if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
+        &paths.resource_pid("redis", REDIS_TRACK),
+        &paths.resource_runtime_metadata("redis", REDIS_TRACK),
     )? {
         process.stop(Duration::from_secs(1)).await?;
     }
