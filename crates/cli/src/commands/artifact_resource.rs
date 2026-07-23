@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use resources::{
     ManagedResourceCommands, ManagedResourceTrack, ManagedResourceUninstallOptions,
-    ResourceHttpClient, ResourceKind, ResourceName, TargetPlatform, TrackName, TrackSelector,
+    ResourceHttpClient, ResourceKind, ResourceName, TrackName, TrackSelector,
     UreqResourceHttpClient,
 };
 use serde::Serialize;
@@ -95,13 +95,13 @@ pub(crate) fn uninstall(
     let paths = pv_paths(environment)?;
     let resource_name = ResourceName::new(spec.resource_name)?;
     let track = TrackName::new(track)?;
+    let commands = resource_commands(&paths, environment)?;
     if prune && !force && !confirm_prune(&spec, track.as_str(), environment, stdout)? {
         return Ok(ExitCode::SUCCESS);
     }
     let options = ManagedResourceUninstallOptions::new()
         .prune(prune)
         .force(force);
-    let commands = resource_commands(&paths, environment)?;
     let removal = commands.uninstall(&resource_name, &track, options)?;
     let mut output = Output::new(stdout, OutputMode::plain());
 
@@ -383,16 +383,8 @@ fn resource_commands(
     Ok(ManagedResourceCommands::new(
         paths.clone(),
         artifact_manifest_url(environment),
-        target_platform(environment)?,
+        environment.resolve_target_platform()?,
     ))
-}
-
-fn target_platform(environment: &impl Environment) -> Result<TargetPlatform, ExecuteError> {
-    if let Some(target_platform) = environment.target_platform() {
-        return Ok(target_platform);
-    }
-
-    Ok(TargetPlatform::current()?)
 }
 
 fn with_resource_http_client<T>(
@@ -501,6 +493,10 @@ mod tests {
 
         fn open_url(&self, _url: &str) -> io::Result<()> {
             Ok(())
+        }
+
+        fn target_platform(&self) -> Option<resources::TargetPlatform> {
+            Some(resources::TargetPlatform::DarwinArm64)
         }
     }
 

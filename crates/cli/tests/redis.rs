@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use state::Database;
+use state::{Database, fs};
 use support::resource_cli::{
     ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
     managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
@@ -144,6 +144,30 @@ fn redis_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> {
         "redis_uninstall_force_prune_queues_removal_intent",
         tempdir.path(),
         &(output, resource_record_snapshots(&records, tempdir.path())?),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_uninstall_prune_reports_unsupported_target_before_confirmation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let mut environment = TestEnvironment::new(&home, tempdir.path(), ScriptedClient::new());
+    environment.target_platform_resolution_fails = true;
+    let paths = pv_paths(&home);
+
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    let output = run_pv(&["redis:uninstall", DEFAULT_TRACK, "--prune"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    assert_resource_snapshot(
+        "redis_uninstall_prune_reports_unsupported_target_before_confirmation",
+        tempdir.path(),
+        &output,
     );
 
     Ok(())
