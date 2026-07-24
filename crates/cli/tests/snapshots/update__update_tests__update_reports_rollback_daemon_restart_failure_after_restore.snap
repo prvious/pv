@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "PV update\nPV application: update failed; restored 0.2.0\n",
+    stdout: "PV update\nPV application: update failed; restored 0.2.1\n",
     stderr: "error: PV application update failed (daemon did not become healthy after update); previous release was restored, but daemon restart after rollback failed: daemon protocol error: rollback daemon boot failed. Run `pv daemon:restart` or `pv setup`.\n",
 }
