@@ -8,6 +8,10 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use platform::GeneratedLocalCa;
+use rcgen::{
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256,
+};
 use serde_json::{Value, json};
 use state::fs::write_sensitive_file;
 use state::{
@@ -15,6 +19,7 @@ use state::{
     ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, StateError,
 };
+use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -118,6 +123,131 @@ async fn tls_placeholders_generate_and_refresh_primary_hostname_certificate() ->
         "acme.test",
         &local_ca.certificate_pem
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    let ca_certificate_before = state::fs::read_to_string(&paths.ca_certificate())?;
+    let ca_private_key_before = state::fs::read_to_string(&paths.ca_private_key())?;
+    let certificate_path = paths.project_tls_certificate(&project.id);
+    let private_key_path = paths.project_tls_private_key(&project.id);
+
+    let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
+    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::days(1);
+    params.not_after = now + Duration::days(3650);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, &project.primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let stale_key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let stale_certificate = params.signed_by(&stale_key_pair, &issuer)?;
+    let stale_certificate_chain =
+        format!("{}{}", stale_certificate.pem(), local_ca.certificate_pem);
+    let stale_private_key = stale_key_pair.serialize_pem();
+
+    assert_eq!(certificate_pem_block_count(&stale_certificate_chain), 2);
+    assert!(!platform::project_certificate_matches(
+        &stale_certificate_chain,
+        &stale_private_key,
+        &project.primary_hostname,
+        &local_ca.certificate_pem
+    ));
+    write_sensitive_file(&certificate_path, &stale_certificate_chain)?;
+    write_sensitive_file(&private_key_path, &stale_private_key)?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    let (certificate_after_reconciliation, private_key_after_reconciliation) =
+        read_project_tls_files(&paths, &project)?;
+    let dotenv_after_reconciliation = read_dotenv(&project)?;
+
+    assert_ne!(
+        certificate_after_reconciliation, stale_certificate_chain,
+        "a ten-year Project certificate should be replaced"
+    );
+    assert_ne!(
+        private_key_after_reconciliation, stale_private_key,
+        "replacement should issue a new Project private key"
+    );
+    assert_eq!(
+        certificate_pem_block_count(&certificate_after_reconciliation),
+        2
+    );
+    assert_project_certificate_matches(
+        &certificate_after_reconciliation,
+        &private_key_after_reconciliation,
+        &project.primary_hostname,
+        &local_ca,
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_certificate())?,
+        ca_certificate_before,
+        "reconciliation should preserve the PV CA certificate"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_private_key())?,
+        ca_private_key_before,
+        "reconciliation should preserve the PV CA private key"
+    );
+    assert_eq!(
+        dotenv_after_reconciliation,
+        format!(
+            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
+            paths.ca_certificate(),
+            certificate_path,
+            private_key_path
+        )
+    );
+
+    run_project_reconciliation(&paths, &project).await?;
+    let (certificate_after_second_reconciliation, private_key_after_second_reconciliation) =
+        read_project_tls_files(&paths, &project)?;
+    let dotenv_after_second_reconciliation = read_dotenv(&project)?;
+
+    assert_eq!(
+        certificate_after_second_reconciliation, certificate_after_reconciliation,
+        "a valid short-lived Project certificate should be byte-idempotent"
+    );
+    assert_eq!(
+        private_key_after_second_reconciliation, private_key_after_reconciliation,
+        "a valid Project private key should be byte-idempotent"
+    );
+    assert_eq!(
+        dotenv_after_second_reconciliation,
+        format!(
+            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
+            paths.ca_certificate(),
+            certificate_path,
+            private_key_path
+        )
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_certificate())?,
+        ca_certificate_before
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_private_key())?,
+        ca_private_key_before
+    );
 
     Ok(())
 }
