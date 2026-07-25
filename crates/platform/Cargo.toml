@@ -19,6 +19,7 @@ sha1 = { workspace = true }
 sha2 = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
+time = { workspace = true }
 x509-parser = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -7,6 +7,7 @@ use rcgen::{
     Issuer, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKeyData, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
+use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::FromDer;
 use x509_parser::prelude::X509Certificate;
@@ -15,6 +16,8 @@ use crate::error::PlatformError;
 
 pub(crate) const PV_CA_COMMON_NAME: &str = "PV Local Development CA";
 pub(crate) const PV_CA_ORGANIZATION: &str = "PV";
+const PROJECT_CERTIFICATE_MAX_VALIDITY: Duration = Duration::days(366);
+const PROJECT_CERTIFICATE_MIN_REMAINING: Duration = Duration::days(30);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedLocalCa {
@@ -107,8 +110,9 @@ pub fn generate_project_certificate(
         .map_err(PlatformError::ProjectCertificateGeneration)?;
     let mut params = CertificateParams::new(vec![primary_hostname.to_string()])
         .map_err(PlatformError::ProjectCertificateGeneration)?;
-    params.not_before = date_time_ymd(2026, 1, 1);
-    params.not_after = date_time_ymd(2036, 1, 1);
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::days(1);
+    params.not_after = now + Duration::days(365);
     params
         .distinguished_name
         .push(DnType::CommonName, primary_hostname);
@@ -157,6 +161,21 @@ pub fn project_certificate_matches(
         .verify_signature(Some(&ca_certificate.tbs_certificate.subject_pki))
         .is_err()
     {
+        return false;
+    }
+
+    let now = OffsetDateTime::now_utc();
+    let validity = certificate.validity();
+    let not_before = validity.not_before.to_datetime();
+    let not_after = validity.not_after.to_datetime();
+
+    if not_before > now || not_after < now {
+        return false;
+    }
+    if not_after - not_before > PROJECT_CERTIFICATE_MAX_VALIDITY {
+        return false;
+    }
+    if not_after - now <= PROJECT_CERTIFICATE_MIN_REMAINING {
         return false;
     }
 
