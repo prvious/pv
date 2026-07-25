@@ -548,9 +548,13 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     link_wait_command=true
     serve_http_curl=true
     serve_http_follows_https_redirect=true
-    serve_https_curl=true
-    serve_https_uses_pv_ca=true
+    serve_https_uses_system_trust=true
+    post_restart_https_uses_system_trust=true
     post_restart_http_follows_https_redirect=true
+    project_tls_placeholders=true
+    project_tls_leaf_system_policy=true
+    project_tls_leaf_evidence=true
+    project_tls_lifetime_check=true
     serve_body_checked=true
     update_check_json=true
     doctor_command=true
@@ -657,7 +661,7 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
     format!(
-        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_curl={}\nserve_https_uses_pv_ca={}\npost_restart_http_follows_https_redirect={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
+        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_uses_system_trust={}\npost_restart_https_uses_system_trust={}\npost_restart_http_follows_https_redirect={}\nproject_tls_placeholders={}\nproject_tls_leaf_system_policy={}\nproject_tls_leaf_evidence={}\nproject_tls_lifetime_check={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
         workflow_contains_privileged_script(
             "curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
         ) && workflow_contains_privileged_script(
@@ -691,13 +695,29 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
         workflow_contains_privileged_script(
             "record_status serve-http required curl --fail --show-error --silent --location"
         ),
-        workflow_contains_privileged_script(
-            "record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" https://pv-rc-project.test/"
+        privileged_script_contains_exact_line(
+            "record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains serve-https pv-privileged-rc-ok"
         ),
-        workflow_contains_privileged_script("--cacert \"$HOME/.pv/certificates/ca.pem\""),
+        privileged_script_contains_exact_line(
+            "record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok"
+        ),
         workflow_contains_privileged_script(
             "record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
         ),
+        privileged_script_contains_exact_line("cat > \"$PV_RC_PROJECT/pv.yml\" <<'YAML'")
+            && workflow_contains_privileged_script("VITE_DEV_SERVER_CERT: \"${tls_cert}\"")
+            && workflow_contains_privileged_script("VITE_DEV_SERVER_KEY: \"${tls_key}\""),
+        privileged_script_contains_exact_line(
+            "record_status project-tls-system-policy required security verify-cert -c \"$PROJECT_TLS_CERT\" -p ssl -s pv-rc-project.test -L"
+        ),
+        workflow_contains_privileged_script("collect_file project-tls-leaf \"$PROJECT_TLS_CERT\"")
+            && workflow_contains_privileged_script(
+                "record_status project-tls-metadata evidence record_project_tls_metadata \"$PROJECT_TLS_CERT\""
+            ),
+        workflow_contains_privileged_script("if lifetime > datetime.timedelta(days=366):")
+            && workflow_contains_privileged_script(
+                "record_status project-tls-lifetime required assert_project_tls_lifetime \"$PROJECT_TLS_CERT\""
+            ),
         workflow_contains_privileged_script(
             "require_output_contains serve-http pv-privileged-rc-ok"
         ) && workflow_contains_privileged_script(
@@ -757,6 +777,12 @@ fn workflow_contains_privileged_script(needle: &str) -> bool {
 fn privileged_script_contains_ordered(needles: &[&str]) -> bool {
     privileged_script()
         .map(|script| ordered_substrings(&script, needles))
+        .unwrap_or(false)
+}
+
+fn privileged_script_contains_exact_line(expected: &str) -> bool {
+    privileged_script()
+        .map(|script| script.lines().any(|line| line == expected))
         .unwrap_or(false)
 }
 
