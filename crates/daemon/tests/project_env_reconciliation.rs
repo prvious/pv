@@ -967,6 +967,79 @@ redis:
 }
 
 #[tokio::test]
+async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let (certificate_before, private_key_before) = read_project_tls_files(&paths, &project)?;
+    assert!(!platform::project_certificate_matches(
+        &certificate_before,
+        &private_key_before,
+        &project.primary_hostname,
+        &local_ca.certificate_pem,
+    ));
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+    let dotenv_before = read_dotenv(&project)?;
+    let malformed_config = "env: [\n";
+    write_project_config(&project, malformed_config)?;
+    let config_before = read_project_config(&project)?;
+    let config_error = match config::ProjectConfigFile::read_from_root(&project.path) {
+        Ok(_) => return Err(anyhow!("malformed config should remain invalid")),
+        Err(error) => error.to_string(),
+    };
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let mut failed_job = None;
+    for _attempt in 0..50 {
+        let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
+        let renewed = platform::project_certificate_matches(
+            &certificate,
+            &private_key,
+            &project.primary_hostname,
+            &local_ca.certificate_pem,
+        );
+        let database = Database::open(&paths)?;
+        if renewed
+            && let Some(job) = database.recent_jobs()?.into_iter().find(|job| {
+                job.scope == format!("project:{}", project.id)
+                    && job.status == state::JobStatus::Failed
+            })
+        {
+            failed_job = Some(job);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+    let job = failed_job.ok_or_else(|| anyhow!("daemon health did not renew and fail Project"))?;
+    let observed = database
+        .project_env_observed_state(&project.id)?
+        .ok_or_else(|| anyhow!("missing Project env observation"))?;
+
+    assert_eq!(job.status, state::JobStatus::Failed);
+    let expected_error = format!("Project config error: {config_error}");
+    assert_eq!(job.error.as_deref(), Some(expected_error.as_str()));
+    assert_eq!(observed.status, ProjectEnvObservedStatus::Failed);
+    assert_eq!(read_dotenv(&project)?, dotenv_before);
+    assert_eq!(read_project_config(&project)?, config_before);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_url_placeholder_failure_preserves_last_valid_desired_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

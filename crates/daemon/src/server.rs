@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use state::{Database, PvPaths};
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{MissedTickBehavior, sleep, timeout};
 
 use crate::DaemonError;
@@ -15,8 +15,8 @@ use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
-use crate::project_env::project_tls_files_are_current;
-use crate::reconciliation::{ReconciliationDebouncer, ReconciliationQueue, ReconciliationScope};
+use crate::project_env::{project_tls_artifacts_exist, project_tls_files_are_current};
+use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
@@ -67,6 +67,8 @@ pub(crate) async fn serve(
         PROJECT_CONFIG_WATCH_INTERVAL,
     );
     let mut watcher_task = tokio::spawn(watcher.run());
+    let mut tls_health_task: Option<JoinHandle<Result<Vec<ReconciliationScope>, DaemonError>>> =
+        None;
     let mut tls_health_interval = tokio::time::interval(TLS_HEALTH_INTERVAL);
     tls_health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -75,6 +77,9 @@ pub(crate) async fn serve(
             _ = &mut shutdown => {
                 watcher_task.abort();
                 let _join_result = watcher_task.await;
+                if let Some(task) = tls_health_task.take() {
+                    task.abort();
+                }
                 connections.abort_all();
                 while connections.join_next().await.is_some() {}
 
@@ -88,8 +93,26 @@ pub(crate) async fn serve(
                     Err(_error) => return Ok(()),
                 }
             }
+            tls_health_result = async {
+                match tls_health_task.as_mut() {
+                    Some(task) => Some(task.await),
+                    None => None,
+                }
+            }, if tls_health_task.is_some() => {
+                tls_health_task = None;
+                if let Some(Ok(Ok(scopes))) = tls_health_result {
+                    for scope in scopes {
+                        debouncer.request(scope).await;
+                    }
+                }
+            }
             _ = tls_health_interval.tick() => {
-                poll_project_tls_health_once(&paths, &debouncer).await;
+                if tls_health_task.is_none() {
+                    let health_paths = paths.clone();
+                    tls_health_task = Some(tokio::task::spawn_blocking(move || {
+                        collect_project_tls_health_scopes(&health_paths)
+                    }));
+                }
             }
             accepted = listener.accept() => {
                 match accepted {
@@ -125,39 +148,36 @@ pub(crate) async fn serve(
     }
 }
 
-async fn poll_project_tls_health_once(paths: &PvPaths, debouncer: &ReconciliationDebouncer) {
-    let Ok(Some(database)) = Database::open_read_only(paths) else {
-        return;
+fn collect_project_tls_health_scopes(
+    paths: &PvPaths,
+) -> Result<Vec<ReconciliationScope>, DaemonError> {
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Ok(Vec::new());
     };
-    let Ok(ca_certificate_pem) = state::fs::read_to_string(&paths.ca_certificate()) else {
-        return;
-    };
-    let Ok(_ca_private_key_pem) = state::fs::read_to_string(&paths.ca_private_key()) else {
-        return;
-    };
-    let Ok(projects) = database.projects() else {
-        return;
-    };
+    let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
+    let _ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
+    let projects = database.projects()?;
+    let mut scopes = Vec::new();
 
     for project in projects {
-        let Ok(config_file) = ProjectConfigFile::read_from_root(&project.path) else {
-            continue;
+        let should_assess = match ProjectConfigFile::read_from_root(&project.path) {
+            Ok(config_file) => config_file.config.uses_tls_placeholders(),
+            Err(_error) => project_tls_artifacts_exist(paths, &project).unwrap_or(false),
         };
-        if !config_file.config.uses_tls_placeholders() {
+        if !should_assess {
             continue;
         }
         let Ok(is_current) = project_tls_files_are_current(paths, &project, &ca_certificate_pem)
         else {
             continue;
         };
-        if is_current {
-            continue;
+        if !is_current && let Ok(scope) = ReconciliationScope::project(project.id) {
+            scopes.push(scope);
         }
-        let Ok(scope) = ReconciliationScope::project(project.id) else {
-            continue;
-        };
-        debouncer.request(scope).await;
     }
+
+    scopes.sort();
+    Ok(scopes)
 }
 
 async fn handle_connection(
@@ -244,7 +264,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use rcgen::{
@@ -254,10 +274,9 @@ mod tests {
     use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
-    use tokio::sync::mpsc;
 
-    use super::{poll_project_tls_health_once, read_request_line};
-    use crate::reconciliation::{ReconciliationDebouncer, ReconciliationScope};
+    use super::{collect_project_tls_health_scopes, read_request_line};
+    use crate::reconciliation::ReconciliationScope;
     use protocol::transport;
 
     #[tokio::test]
@@ -272,8 +291,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn tls_health_poll_targets_only_expiring_tls_project() -> Result<()> {
+    #[test]
+    fn tls_health_poll_targets_only_expiring_tls_project() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let local_ca = platform::generate_local_ca()?;
@@ -307,27 +326,44 @@ mod tests {
         )?;
         write_project_certificate(&paths, &valid_project, &local_ca, 365)?;
         write_project_certificate(&paths, &expiring_project, &local_ca, 7)?;
+        write_project_certificate(&paths, &invalid_project, &local_ca, 7)?;
 
-        let (sender, mut receiver) = mpsc::unbounded_channel();
-        let debouncer = ReconciliationDebouncer::new(Duration::ZERO, move |scope| {
-            let _result = sender.send(scope);
-        });
+        let scopes = collect_project_tls_health_scopes(&paths)?;
+        let mut expected_scopes = vec![
+            ReconciliationScope::project(expiring_project.id.clone())?,
+            ReconciliationScope::project(invalid_project.id.clone())?,
+        ];
+        expected_scopes.sort();
 
-        poll_project_tls_health_once(&paths, &debouncer).await;
-
-        let scope = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
-            .await?
-            .ok_or_else(|| anyhow!("TLS health poll did not enqueue a project scope"))?;
-        assert_eq!(
-            scope,
-            ReconciliationScope::project(expiring_project.id.clone())?
-        );
-        assert!(receiver.try_recv().is_err());
+        assert_eq!(scopes, expected_scopes);
         assert!(state::fs::path_entry_exists(
             &paths.project_tls_certificate(&valid_project.id)
         )?);
         assert!(!state::fs::path_entry_exists(
             &paths.project_tls_certificate(&non_tls_project.id)
+        )?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn tls_health_collector_skips_malformed_project_without_existing_tls_artifacts() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let local_ca = platform::generate_local_ca()?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+        state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
+
+        let project = link_health_project(
+            &paths,
+            &tempdir.path().join("invalid"),
+            "invalid.test",
+            "env: [\n",
+        )?;
+
+        assert!(collect_project_tls_health_scopes(&paths)?.is_empty());
+        assert!(!state::fs::path_entry_exists(
+            &paths.project_tls_certificate(&project.id)
         )?);
 
         Ok(())

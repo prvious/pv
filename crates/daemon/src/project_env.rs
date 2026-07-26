@@ -148,7 +148,15 @@ async fn reconcile_loaded_project(
     catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+    let config_file = match ProjectConfigFile::read_from_root(&project.path) {
+        Ok(config_file) => config_file,
+        Err(error) => {
+            if let Ok(true) = project_tls_artifacts_exist(paths, project) {
+                let _maintenance_result = ensure_project_tls_files(paths, project);
+            }
+            return Err(error.into());
+        }
+    };
     let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
     let resolved_php_runtime = maybe_resolve_project_php_runtime(
         paths,
@@ -162,16 +170,22 @@ async fn reconcile_loaded_project(
         record_project_php_runtime_resource_requirements(database, runtime)?;
     }
     apply_project_resource_plan(database, &project.id, &plan)?;
-    if let Some(catalog) = catalog {
+    let resource_result = if let Some(catalog) = catalog {
         crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
             paths, database, project, &plan, catalog, progress,
         )
-        .await?;
+        .await
     } else {
         crate::managed_resources::reconcile_project_resources_with_progress(
             paths, database, project, &plan, progress,
         )
-        .await?;
+        .await
+    };
+    if let Err(error) = resource_result {
+        if config_file.config.uses_tls_placeholders() {
+            let _maintenance_result = ensure_project_tls_files(paths, project);
+        }
+        return Err(error);
     }
     if let Some(runtime) = &resolved_php_runtime {
         database.replace_project_php_runtime(
@@ -308,6 +322,16 @@ pub(crate) fn project_tls_files_are_current(
         ),
         _ => false,
     })
+}
+
+pub(crate) fn project_tls_artifacts_exist(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+) -> Result<bool, DaemonError> {
+    Ok(
+        state::fs::path_entry_exists(&paths.project_tls_certificate(&project.id))?
+            && state::fs::path_entry_exists(&paths.project_tls_private_key(&project.id))?,
+    )
 }
 
 fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError> {
