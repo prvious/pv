@@ -270,22 +270,13 @@ async fn reconcile_loaded_project(
 fn ensure_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<(), DaemonError> {
     let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
     let ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
-    let certificate_path = paths.project_tls_certificate(&project.id);
-    let private_key_path = paths.project_tls_private_key(&project.id);
-    let existing_certificate_pem = read_optional_file(&certificate_path)?;
-    let existing_private_key_pem = read_optional_file(&private_key_path)?;
 
-    if let (Some(certificate_pem), Some(private_key_pem)) =
-        (&existing_certificate_pem, &existing_private_key_pem)
-        && platform::project_certificate_matches(
-            certificate_pem,
-            private_key_pem,
-            &project.primary_hostname,
-            &ca_certificate_pem,
-        )
-    {
+    if project_tls_files_are_current(paths, project, &ca_certificate_pem)? {
         return Ok(());
     }
+
+    let certificate_path = paths.project_tls_certificate(&project.id);
+    let private_key_path = paths.project_tls_private_key(&project.id);
 
     let generated = platform::generate_project_certificate(
         &project.primary_hostname,
@@ -298,6 +289,25 @@ fn ensure_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<
     state::fs::write_sensitive_file(&private_key_path, &generated.private_key_pem)?;
 
     Ok(())
+}
+
+pub(crate) fn project_tls_files_are_current(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    ca_certificate_pem: &str,
+) -> Result<bool, DaemonError> {
+    let certificate_pem = read_optional_file(&paths.project_tls_certificate(&project.id))?;
+    let private_key_pem = read_optional_file(&paths.project_tls_private_key(&project.id))?;
+
+    Ok(match (certificate_pem, private_key_pem) {
+        (Some(certificate_pem), Some(private_key_pem)) => platform::project_certificate_matches(
+            &certificate_pem,
+            &private_key_pem,
+            &project.primary_hostname,
+            ca_certificate_pem,
+        ),
+        _ => false,
+    })
 }
 
 fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError> {

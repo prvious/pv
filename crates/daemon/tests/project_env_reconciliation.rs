@@ -40,6 +40,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 365)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -146,24 +147,9 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
     let ca_private_key_before = state::fs::read_to_string(&paths.ca_private_key())?;
     let certificate_path = paths.project_tls_certificate(&project.id);
     let private_key_path = paths.project_tls_private_key(&project.id);
-
-    let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
-    let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
-    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
-    let now = OffsetDateTime::now_utc();
-    params.not_before = now - Duration::days(1);
-    params.not_after = now + Duration::days(3650);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, &project.primary_hostname);
-    params.use_authority_key_identifier_extension = true;
-    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let stale_key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
-    let stale_certificate = params.signed_by(&stale_key_pair, &issuer)?;
-    let stale_certificate_chain =
-        format!("{}{}", stale_certificate.pem(), local_ca.certificate_pem);
-    let stale_private_key = stale_key_pair.serialize_pem();
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 3650)?;
+    let stale_certificate_chain = state::fs::read_to_string(&certificate_path)?;
+    let stale_private_key = state::fs::read_to_string(&private_key_path)?;
 
     assert_eq!(certificate_pem_block_count(&stale_certificate_chain), 2);
     assert!(!platform::project_certificate_matches(
@@ -172,9 +158,6 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
         &project.primary_hostname,
         &local_ca.certificate_pem
     ));
-    write_sensitive_file(&certificate_path, &stale_certificate_chain)?;
-    write_sensitive_file(&private_key_path, &stale_private_key)?;
-
     run_project_reconciliation(&paths, &project).await?;
     let (certificate_after_reconciliation, private_key_after_reconciliation) =
         read_project_tls_files(&paths, &project)?;
@@ -247,6 +230,57 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
     assert_eq!(
         state::fs::read_to_string(&paths.ca_private_key())?,
         ca_private_key_before
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_reconciliation()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let stale_certificate_pem =
+        state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
+    let config_modified_at = state::fs::modified_at(&project.config_path)?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let job = wait_for_succeeded_project_job(&paths, &project.id).await?;
+    let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
+    daemon.shutdown().await?;
+
+    assert_eq!(job.scope, format!("project:{}", project.id));
+    assert_ne!(certificate_pem, stale_certificate_pem);
+    assert_project_certificate_matches(
+        &certificate_pem,
+        &private_key_pem,
+        &project.primary_hostname,
+        &local_ca,
+    );
+    assert_eq!(
+        state::fs::modified_at(&project.config_path)?,
+        config_modified_at,
+        "TLS health discovery must not rewrite the Project config"
+    );
+
+    let database = Database::open(&paths)?;
+    assert!(
+        database
+            .recent_jobs()?
+            .into_iter()
+            .all(|job| job.scope != "system")
     );
 
     Ok(())
@@ -1411,6 +1445,26 @@ async fn run_project_reconciliation(
     Ok(lines)
 }
 
+async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Result<JobRecord> {
+    let scope = format!("project:{project_id}");
+    for _attempt in 0..50 {
+        let database = Database::open(paths)?;
+        if let Some(job) = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == scope && job.status == state::JobStatus::Succeeded)
+        {
+            return Ok(job);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    Err(anyhow!(
+        "succeeded job with scope {scope:?} was not recorded"
+    ))
+}
+
 fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
     let mut database = Database::open(paths)?;
     if database
@@ -1597,6 +1651,39 @@ fn seed_local_ca(paths: &PvPaths) -> Result<GeneratedLocalCa> {
     write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
 
     Ok(local_ca)
+}
+
+fn write_project_certificate_with_remaining_days(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    local_ca: &GeneratedLocalCa,
+    remaining_days: i64,
+) -> Result<()> {
+    let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
+    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::days(1);
+    params.not_after = now + Duration::days(remaining_days);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, &project.primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let certificate = params.signed_by(&key_pair, &issuer)?;
+
+    write_sensitive_file(
+        &paths.project_tls_certificate(&project.id),
+        &format!("{}{}", certificate.pem(), local_ca.certificate_pem),
+    )?;
+    write_sensitive_file(
+        &paths.project_tls_private_key(&project.id),
+        &key_pair.serialize_pem(),
+    )?;
+
+    Ok(())
 }
 
 fn test_manifest(default_track: &str) -> String {
