@@ -705,17 +705,20 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
             "record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
         ),
         privileged_script_contains_exact_line("cat > \"$PV_RC_PROJECT/pv.yml\" <<'YAML'")
-            && workflow_contains_privileged_script("VITE_DEV_SERVER_CERT: \"${tls_cert}\"")
-            && workflow_contains_privileged_script("VITE_DEV_SERVER_KEY: \"${tls_key}\""),
+            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_CERT: \"${tls_cert}\"")
+            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_KEY: \"${tls_key}\""),
         privileged_script_contains_exact_line(
             "record_status project-tls-system-policy required security verify-cert -c \"$PROJECT_TLS_CERT\" -p ssl -s pv-rc-project.test -L"
         ),
-        workflow_contains_privileged_script("collect_file project-tls-leaf \"$PROJECT_TLS_CERT\"")
-            && workflow_contains_privileged_script(
-                "record_status project-tls-metadata evidence record_project_tls_metadata \"$PROJECT_TLS_CERT\""
-            ),
-        workflow_contains_privileged_script("if lifetime > datetime.timedelta(days=366):")
-            && workflow_contains_privileged_script(
+        privileged_script_contains_exact_line(
+            "record_status project-tls-path required resolve_project_tls_cert"
+        ) && privileged_script_contains_exact_line(
+            "collect_file project-tls-leaf \"$PROJECT_TLS_CERT\""
+        ) && privileged_script_contains_exact_line(
+            "record_status project-tls-metadata evidence record_project_tls_metadata \"$PROJECT_TLS_CERT\""
+        ),
+        privileged_script_contains_exact_line("if lifetime > datetime.timedelta(days=366):")
+            && privileged_script_contains_exact_line(
                 "record_status project-tls-lifetime required assert_project_tls_lifetime \"$PROJECT_TLS_CERT\""
             ),
         workflow_contains_privileged_script(
