@@ -92,6 +92,17 @@ pub(crate) fn runtime_readiness_diagnostics(
     );
 }
 
+pub(crate) fn project_tls_maintenance_failed(paths: &PvPaths, project_id: &str, error: &str) {
+    append_best_effort(
+        paths,
+        "error",
+        "reconciliation",
+        "project_tls_maintenance_failed",
+        "Project TLS maintenance failed",
+        &[("project_id", project_id), ("error", error)],
+    );
+}
+
 fn append_best_effort(
     paths: &PvPaths,
     level: &str,

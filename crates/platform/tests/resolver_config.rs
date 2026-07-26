@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
@@ -14,7 +15,12 @@ use platform::{
     inspect_pf_anchor_file, inspect_pf_conf_reference, inspect_resolver_file,
     inspect_system_ca_trust, project_certificate_matches, trusted_pv_ca_fingerprints,
 };
+use rcgen::{
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256,
+};
 use state::fs;
+use time::{Duration, OffsetDateTime};
 
 #[test]
 fn resolver_config_renders_pv_owned_test_resolver_file() {
@@ -338,6 +344,150 @@ fn project_certificate_generation_signs_primary_hostname_with_local_ca() -> Resu
     ));
 
     Ok(())
+}
+
+#[test]
+fn project_certificate_generation_uses_current_366_day_validity_profile() -> Result<()> {
+    let local = generate_local_ca()?;
+    let before_generation = OffsetDateTime::now_utc();
+    let generated =
+        generate_project_certificate("acme.test", &local.certificate_pem, &local.private_key_pem)?;
+    let after_generation = OffsetDateTime::now_utc();
+    let certificate_der = first_certificate_der(&generated.certificate_pem)?;
+    let (_remaining, certificate) = x509_parser::parse_x509_certificate(&certificate_der)?;
+    let validity = certificate.validity();
+
+    assert_time_is_near(
+        validity.not_before.to_datetime(),
+        before_generation - Duration::days(1),
+    );
+    assert_time_is_near(
+        validity.not_after.to_datetime(),
+        after_generation + Duration::days(365),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_certificate_match_requires_more_than_30_days_remaining() -> Result<()> {
+    let local = generate_local_ca()?;
+    let now = OffsetDateTime::now_utc();
+    let certificate = project_certificate_with_validity(
+        "acme.test",
+        &local.certificate_pem,
+        &local.private_key_pem,
+        now - Duration::days(1),
+        now + Duration::days(30),
+    )?;
+    let certificate_chain = format!("{}{}", certificate.certificate_pem, local.certificate_pem);
+
+    assert!(!project_certificate_matches(
+        &certificate_chain,
+        &certificate.private_key_pem,
+        "acme.test",
+        &local.certificate_pem,
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn project_certificate_match_requires_current_validity_and_maximum_span() -> Result<()> {
+    let local = generate_local_ca()?;
+    let now = OffsetDateTime::now_utc();
+    let cases = [
+        (
+            "not yet valid",
+            now + Duration::hours(1),
+            now + Duration::days(365),
+            false,
+        ),
+        (
+            "expired",
+            now - Duration::days(365),
+            now - Duration::seconds(1),
+            false,
+        ),
+        (
+            "too long",
+            now - Duration::days(1),
+            now + Duration::days(366),
+            false,
+        ),
+        (
+            "current and within maximum span",
+            now - Duration::days(1),
+            now + Duration::days(365),
+            true,
+        ),
+    ];
+
+    for (_name, not_before, not_after, expected) in cases {
+        let certificate = project_certificate_with_validity(
+            "acme.test",
+            &local.certificate_pem,
+            &local.private_key_pem,
+            not_before,
+            not_after,
+        )?;
+        let certificate_chain = format!("{}{}", certificate.certificate_pem, local.certificate_pem);
+
+        assert_eq!(
+            project_certificate_matches(
+                &certificate_chain,
+                &certificate.private_key_pem,
+                "acme.test",
+                &local.certificate_pem,
+            ),
+            expected,
+            "{_name}",
+        );
+    }
+
+    Ok(())
+}
+
+fn first_certificate_der(certificate_pem: &str) -> Result<Vec<u8>> {
+    let mut reader = Cursor::new(certificate_pem.as_bytes());
+    let certificate = rustls_pemfile::certs(&mut reader)
+        .next()
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("missing certificate"))?;
+
+    Ok(certificate.as_ref().to_vec())
+}
+
+fn assert_time_is_near(actual: OffsetDateTime, expected: OffsetDateTime) {
+    assert!((actual - expected).abs() <= Duration::seconds(2));
+}
+
+fn project_certificate_with_validity(
+    primary_hostname: &str,
+    ca_certificate_pem: &str,
+    ca_private_key_pem: &str,
+    not_before: OffsetDateTime,
+    not_after: OffsetDateTime,
+) -> Result<platform::GeneratedProjectCertificate> {
+    let ca_key_pair = KeyPair::from_pem(ca_private_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(ca_certificate_pem, ca_key_pair)?;
+    let mut params = CertificateParams::new(vec![primary_hostname.to_string()])?;
+    params.not_before = not_before;
+    params.not_after = not_after;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let certificate = params.signed_by(&key_pair, &issuer)?;
+
+    Ok(platform::GeneratedProjectCertificate {
+        certificate_pem: certificate.pem(),
+        private_key_pem: key_pair.serialize_pem(),
+    })
 }
 
 #[test]

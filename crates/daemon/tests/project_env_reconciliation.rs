@@ -8,6 +8,10 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use platform::GeneratedLocalCa;
+use rcgen::{
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256,
+};
 use serde_json::{Value, json};
 use state::fs::write_sensitive_file;
 use state::{
@@ -15,6 +19,7 @@ use state::{
     ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, StateError,
 };
+use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -35,6 +40,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 365)?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -118,6 +124,164 @@ async fn tls_placeholders_generate_and_refresh_primary_hostname_certificate() ->
         "acme.test",
         &local_ca.certificate_pem
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    let ca_certificate_before = state::fs::read_to_string(&paths.ca_certificate())?;
+    let ca_private_key_before = state::fs::read_to_string(&paths.ca_private_key())?;
+    let certificate_path = paths.project_tls_certificate(&project.id);
+    let private_key_path = paths.project_tls_private_key(&project.id);
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 3650)?;
+    let stale_certificate_chain = state::fs::read_to_string(&certificate_path)?;
+    let stale_private_key = state::fs::read_to_string(&private_key_path)?;
+
+    assert_eq!(certificate_pem_block_count(&stale_certificate_chain), 2);
+    assert!(!platform::project_certificate_matches(
+        &stale_certificate_chain,
+        &stale_private_key,
+        &project.primary_hostname,
+        &local_ca.certificate_pem
+    ));
+    run_project_reconciliation(&paths, &project).await?;
+    let (certificate_after_reconciliation, private_key_after_reconciliation) =
+        read_project_tls_files(&paths, &project)?;
+    let dotenv_after_reconciliation = read_dotenv(&project)?;
+
+    assert_ne!(
+        certificate_after_reconciliation, stale_certificate_chain,
+        "a ten-year Project certificate should be replaced"
+    );
+    assert_ne!(
+        private_key_after_reconciliation, stale_private_key,
+        "replacement should issue a new Project private key"
+    );
+    assert_eq!(
+        certificate_pem_block_count(&certificate_after_reconciliation),
+        2
+    );
+    assert_project_certificate_matches(
+        &certificate_after_reconciliation,
+        &private_key_after_reconciliation,
+        &project.primary_hostname,
+        &local_ca,
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_certificate())?,
+        ca_certificate_before,
+        "reconciliation should preserve the PV CA certificate"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_private_key())?,
+        ca_private_key_before,
+        "reconciliation should preserve the PV CA private key"
+    );
+    assert_eq!(
+        dotenv_after_reconciliation,
+        format!(
+            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
+            paths.ca_certificate(),
+            certificate_path,
+            private_key_path
+        )
+    );
+
+    run_project_reconciliation(&paths, &project).await?;
+    let (certificate_after_second_reconciliation, private_key_after_second_reconciliation) =
+        read_project_tls_files(&paths, &project)?;
+    let dotenv_after_second_reconciliation = read_dotenv(&project)?;
+
+    assert_eq!(
+        certificate_after_second_reconciliation, certificate_after_reconciliation,
+        "a valid short-lived Project certificate should be byte-idempotent"
+    );
+    assert_eq!(
+        private_key_after_second_reconciliation, private_key_after_reconciliation,
+        "a valid Project private key should be byte-idempotent"
+    );
+    assert_eq!(
+        dotenv_after_second_reconciliation,
+        format!(
+            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
+            paths.ca_certificate(),
+            certificate_path,
+            private_key_path
+        )
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_certificate())?,
+        ca_certificate_before
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.ca_private_key())?,
+        ca_private_key_before
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_reconciliation()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let stale_certificate_pem =
+        state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
+    let config_modified_at = state::fs::modified_at(&project.config_path)?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let job = wait_for_succeeded_project_job(&paths, &project.id).await?;
+    let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
+    daemon.shutdown().await?;
+
+    assert_eq!(job.scope, format!("project:{}", project.id));
+    assert_ne!(certificate_pem, stale_certificate_pem);
+    assert_project_certificate_matches(
+        &certificate_pem,
+        &private_key_pem,
+        &project.primary_hostname,
+        &local_ca,
+    );
+    assert_eq!(
+        state::fs::modified_at(&project.config_path)?,
+        config_modified_at,
+        "TLS health discovery must not rewrite the Project config"
+    );
+
+    let database = Database::open(&paths)?;
+    assert!(
+        database
+            .recent_jobs()?
+            .into_iter()
+            .all(|job| job.scope != "system")
+    );
 
     Ok(())
 }
@@ -803,6 +967,86 @@ redis:
 }
 
 #[tokio::test]
+async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let (certificate_before, private_key_before) = read_project_tls_files(&paths, &project)?;
+    assert!(!platform::project_certificate_matches(
+        &certificate_before,
+        &private_key_before,
+        &project.primary_hostname,
+        &local_ca.certificate_pem,
+    ));
+    state::fs::remove_file(&paths.project_tls_private_key(&project.id))?;
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+    let dotenv_before = read_dotenv(&project)?;
+    let malformed_config = "env: [\n";
+    write_project_config(&project, malformed_config)?;
+    let config_before = read_project_config(&project)?;
+    let config_error = match config::ProjectConfigFile::read_from_root(&project.path) {
+        Ok(_) => return Err(anyhow!("malformed config should remain invalid")),
+        Err(error) => error.to_string(),
+    };
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let mut failed_job = None;
+    for _attempt in 0..50 {
+        let certificate_exists =
+            state::fs::path_entry_exists(&paths.project_tls_certificate(&project.id))?;
+        let private_key_exists =
+            state::fs::path_entry_exists(&paths.project_tls_private_key(&project.id))?;
+        if certificate_exists && private_key_exists {
+            let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
+            let renewed = platform::project_certificate_matches(
+                &certificate,
+                &private_key,
+                &project.primary_hostname,
+                &local_ca.certificate_pem,
+            );
+            let database = Database::open(&paths)?;
+            if renewed
+                && let Some(job) = database.recent_jobs()?.into_iter().find(|job| {
+                    job.scope == format!("project:{}", project.id)
+                        && job.status == state::JobStatus::Failed
+                })
+            {
+                failed_job = Some(job);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    daemon.shutdown().await?;
+
+    let database = Database::open(&paths)?;
+    let job = failed_job.ok_or_else(|| anyhow!("daemon health did not renew and fail Project"))?;
+    let observed = database
+        .project_env_observed_state(&project.id)?
+        .ok_or_else(|| anyhow!("missing Project env observation"))?;
+
+    assert_eq!(job.status, state::JobStatus::Failed);
+    let expected_error = format!("Project config error: {config_error}");
+    assert_eq!(job.error.as_deref(), Some(expected_error.as_str()));
+    assert_eq!(observed.status, ProjectEnvObservedStatus::Failed);
+    assert_eq!(read_dotenv(&project)?, dotenv_before);
+    assert_eq!(read_project_config(&project)?, config_before);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_url_placeholder_failure_preserves_last_valid_desired_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1019,6 +1263,108 @@ AFTER=1
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_renews_before_malformed_dotenv_validation_without_mutating_primary_error_or_state()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+postgres:
+  version: "8.0"
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let dotenv = "USER_VALUE=kept\n# >>> PV MANAGED\n";
+    write_sensitive_file(&project.path.join(".env"), dotenv)?;
+    let database = Database::open(&paths)?;
+    let project_before = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project"))?;
+    let resources_before = database.project_managed_resources(&project.id)?;
+    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
+    let expected_validation_error = match config::validate_managed_env_block(Some(dotenv)) {
+        Ok(()) => return Err(anyhow!("malformed managed .env should fail validation")),
+        Err(error) => error,
+    };
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
+    let database = Database::open(&paths)?;
+    let project_after = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project after reconciliation"))?;
+    let job = latest_job(&database, &format!("project:{}", project.id))?;
+
+    assert!(platform::project_certificate_matches(
+        &certificate,
+        &private_key,
+        &project.primary_hostname,
+        &local_ca.certificate_pem,
+    ));
+    assert_eq!(
+        job.error.as_deref(),
+        Some(format!("Project config error: {expected_validation_error}").as_str())
+    );
+    assert_eq!(read_dotenv(&project)?, dotenv);
+    assert_eq!(project_after, project_before);
+    assert_eq!(
+        database.project_managed_resources(&project.id)?,
+        resources_before
+    );
+    assert_eq!(
+        database.resource_allocations(&project.id, "postgres")?,
+        allocations_before
+    );
+    assert!(!lines.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn masked_tls_maintenance_failure_is_written_to_structured_log() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  CERT: \"${tls_cert}\"\n",
+    )?;
+    seed_local_ca(&paths)?;
+    write_sensitive_file(
+        &project.path.join(".env"),
+        "USER_VALUE=kept\n# >>> PV MANAGED\n",
+    )?;
+    state::fs::remove_file(&paths.ca_private_key())?;
+    let expected_tls_error = match state::fs::read_to_string(&paths.ca_private_key()) {
+        Ok(_) => return Err(anyhow!("missing CA private key should fail to read")),
+        Err(error) => daemon::DaemonError::from(error).to_string(),
+    };
+
+    run_project_reconciliation(&paths, &project).await?;
+
+    let content = state::fs::read_to_string(&paths.daemon_log())?;
+    let events = content
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(events.iter().any(|event| {
+        event["event"] == "project_tls_maintenance_failed"
+            && event["project_id"] == project.id
+            && event["error"] == expected_tls_error
+    }));
 
     Ok(())
 }
@@ -1281,6 +1627,26 @@ async fn run_project_reconciliation(
     Ok(lines)
 }
 
+async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Result<JobRecord> {
+    let scope = format!("project:{project_id}");
+    for _attempt in 0..50 {
+        let database = Database::open(paths)?;
+        if let Some(job) = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == scope && job.status == state::JobStatus::Succeeded)
+        {
+            return Ok(job);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    Err(anyhow!(
+        "succeeded job with scope {scope:?} was not recorded"
+    ))
+}
+
 fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
     let mut database = Database::open(paths)?;
     if database
@@ -1467,6 +1833,39 @@ fn seed_local_ca(paths: &PvPaths) -> Result<GeneratedLocalCa> {
     write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
 
     Ok(local_ca)
+}
+
+fn write_project_certificate_with_remaining_days(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    local_ca: &GeneratedLocalCa,
+    remaining_days: i64,
+) -> Result<()> {
+    let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
+    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - Duration::days(1);
+    params.not_after = now + Duration::days(remaining_days);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, &project.primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let certificate = params.signed_by(&key_pair, &issuer)?;
+
+    write_sensitive_file(
+        &paths.project_tls_certificate(&project.id),
+        &format!("{}{}", certificate.pem(), local_ca.certificate_pem),
+    )?;
+    write_sensitive_file(
+        &paths.project_tls_private_key(&project.id),
+        &key_pair.serialize_pem(),
+    )?;
+
+    Ok(())
 }
 
 fn test_manifest(default_track: &str) -> String {

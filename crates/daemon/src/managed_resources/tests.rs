@@ -13,16 +13,21 @@ use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use rcgen::{
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256,
+};
 use resources::{
     ManagedResourceCommandError, ResourceName, ResourcesError, RuntimeArtifactAdapter,
 };
 use serde::Deserialize;
 use state::{
     Database, EnvContextValues, JobStatus, LinkProjectInput, PortOwner, PortRequest,
-    ProjectManagedResourceInput, ProjectRecord, PvPaths, ResourceAllocationInput,
-    ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
+    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
+use time::{Duration as CertificateDuration, OffsetDateTime};
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
@@ -1892,6 +1897,59 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
 }
 
 #[tokio::test]
+async fn failed_demanded_resource_still_renews_existing_project_tls_before_returning_error()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  TLS_CERT: "${tls_cert}"
+  TLS_KEY: "${tls_key}"
+mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+"#,
+    )?;
+    let dotenv_before = "USER_VALUE=preserved\n";
+    state::fs::write_sensitive_file(&project.path.join(".env"), dotenv_before)?;
+    let config_before = state::fs::read_to_string(&project.config_path)?;
+    let local_ca = platform::generate_local_ca()?;
+    state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+    state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
+    write_expiring_project_certificate(&paths, &project, &local_ca)?;
+    seed_unready_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+
+    let result = reconcile_project_env_with_unready_fake_runtime_catalog(&paths, &project.id).await;
+    let database = Database::open(&paths)?;
+    let observed = database
+        .project_env_observed_state(&project.id)?
+        .ok_or_else(|| anyhow::anyhow!("expected failed Project env observation"))?;
+
+    let Err(DaemonError::ReadinessTimedOut { .. }) = result else {
+        bail!("expected resource readiness timeout, got {result:#?}");
+    };
+    assert_eq!(observed.status, ProjectEnvObservedStatus::Failed);
+    assert_eq!(read_dotenv(&project)?, dotenv_before);
+    assert_eq!(
+        state::fs::read_to_string(&project.config_path)?,
+        config_before
+    );
+    assert!(crate::project_env::project_tls_files_are_current(
+        &paths,
+        &project,
+        &local_ca.certificate_pem,
+    )?);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readiness() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2825,7 +2883,7 @@ async fn reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
 async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
-) -> Result<()> {
+) -> Result<(), DaemonError> {
     let catalog = super::fake_unready_runtime_catalog(resources::default_artifact_manifest_url())?;
     let mut database = Database::open(paths)?;
 
@@ -2998,6 +3056,38 @@ fn link_project_with_postgres_database_env(
 
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
     state::fs::write_sensitive_file(&project.config_path, config_source)?;
+
+    Ok(())
+}
+
+fn write_expiring_project_certificate(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    local_ca: &platform::GeneratedLocalCa,
+) -> Result<()> {
+    let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
+    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - CertificateDuration::days(1);
+    params.not_after = now + CertificateDuration::days(7);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, &project.primary_hostname);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)?;
+    let certificate = params.signed_by(&key_pair, &issuer)?;
+
+    state::fs::write_sensitive_file(
+        &paths.project_tls_certificate(&project.id),
+        &format!("{}{}", certificate.pem(), local_ca.certificate_pem),
+    )?;
+    state::fs::write_sensitive_file(
+        &paths.project_tls_private_key(&project.id),
+        &key_pair.serialize_pem(),
+    )?;
 
     Ok(())
 }

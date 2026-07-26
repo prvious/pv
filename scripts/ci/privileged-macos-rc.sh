@@ -98,6 +98,57 @@ preserve_rc_binary() {
   install -d "$(dirname "$PV_RC_BIN")" && install -m 755 "$HOME/.pv/bin/pv" "$PV_RC_BIN"
 }
 
+resolve_project_tls_cert() {
+  local project_tls_certificates=("$HOME"/.pv/certificates/projects/*/tls.crt)
+  if [ "${#project_tls_certificates[@]}" -ne 1 ] || [ ! -f "${project_tls_certificates[0]}" ]; then
+    printf 'expected exactly one Project TLS certificate leaf, found %s\n' "${#project_tls_certificates[@]}" >&2
+    return 1
+  fi
+
+  PROJECT_TLS_CERT=${project_tls_certificates[0]}
+}
+
+record_project_tls_metadata() {
+  openssl x509 \
+    -in "$1" \
+    -noout \
+    -text \
+    -subject \
+    -issuer \
+    -startdate \
+    -enddate
+}
+
+assert_project_tls_lifetime() {
+  local certificate=$1
+  if [ -z "$certificate" ]; then
+    return 1
+  fi
+
+  LC_ALL=C python3 - "$certificate" <<'PY'
+import datetime
+import subprocess
+import sys
+
+output = subprocess.check_output(
+    ["openssl", "x509", "-in", sys.argv[1], "-noout", "-startdate", "-enddate"],
+    text=True,
+)
+dates = {}
+for line in output.splitlines():
+    name, value = line.split("=", 1)
+    dates[name] = datetime.datetime.strptime(
+        value.strip().rsplit(" ", 1)[0], "%b %d %H:%M:%S %Y"
+    )
+
+lifetime = dates["notAfter"] - dates["notBefore"]
+print(f"lifetime_seconds={int(lifetime.total_seconds())}")
+print(f"lifetime_days={lifetime.total_seconds() / 86400:.6f}")
+if lifetime > datetime.timedelta(days=366):
+    raise SystemExit("Project TLS certificate lifetime exceeds 366 days")
+PY
+}
+
 require_binary_contains_url() {
   local label=$1
   local url=$2
@@ -128,7 +179,12 @@ record_status sudo-preflight required sudo -n true || {
 
 mkdir -p "$PV_RC_PROJECT/public"
 printf '%s\n' "<?php echo 'pv-privileged-rc-ok';" > "$PV_RC_PROJECT/public/index.php"
-printf '%s\n' "document_root: public" > "$PV_RC_PROJECT/pv.yml"
+cat > "$PV_RC_PROJECT/pv.yml" <<'YAML'
+document_root: public
+env:
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls_key}"
+YAML
 cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
 Privileged macOS RC evidence checklist:
 - candidate install.sh downloaded and used to install PV
@@ -137,6 +193,8 @@ Privileged macOS RC evidence checklist:
 - System keychain CA trust installed and removed
 - LaunchAgent installed, printed, restarted, and uninstalled
 - Project linked and served through .test
+- PV placeholder TLS leaf recorded and verified with macOS system policy without an explicit anchor
+- Gateway HTTPS verified through installed system trust without --cacert
 - Update check and diagnostics executed
 CHECKLIST
 
@@ -161,14 +219,20 @@ record_status launch-agent-print required launchctl print "gui/$(id -u)/com.prvi
 
 record_status link required pv link "$PV_RC_PROJECT"
 record_status link-reconciliation-idle required wait_for_pv_jobs_idle
+PROJECT_TLS_CERT=
+record_status project-tls-path required resolve_project_tls_cert
+collect_file project-tls-leaf "$PROJECT_TLS_CERT"
+record_status project-tls-metadata evidence record_project_tls_metadata "$PROJECT_TLS_CERT"
+record_status project-tls-system-policy required security verify-cert -c "$PROJECT_TLS_CERT" -p ssl -s pv-rc-project.test -L
+record_status project-tls-lifetime required assert_project_tls_lifetime "$PROJECT_TLS_CERT"
 record_status status-json required pv status --json
 record_status serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" http://pv-rc-project.test/ && require_output_contains serve-http pv-privileged-rc-ok
-record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" https://pv-rc-project.test/ && require_output_contains serve-https pv-privileged-rc-ok
+record_status serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains serve-https pv-privileged-rc-ok
 record_status daemon-restart required pv daemon:restart
 record_status restart-reconciliation-idle required wait_for_pv_jobs_idle
 record_status post-restart-status-json required pv status --json
 record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" http://pv-rc-project.test/ && require_output_contains post-restart-serve-http pv-privileged-rc-ok
-record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok
+record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok
 record_status update-check required pv update --check --json
 record_status diagnostics required pv doctor
 record_status jobs evidence pv jobs
