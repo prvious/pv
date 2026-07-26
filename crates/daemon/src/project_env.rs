@@ -20,6 +20,7 @@ use state::{
 use crate::DaemonError;
 use crate::jobs::DaemonDownloadProgress;
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
+use crate::structured_log;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectEnvReconciliationSummary {
@@ -151,66 +152,98 @@ async fn reconcile_loaded_project(
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
-            if let Ok(true) = project_tls_artifacts_exist(paths, project) {
-                let _maintenance_result = ensure_project_tls_files(paths, project);
+            if let Ok(true) = project_tls_artifact_exists(paths, project)
+                && let Err(maintenance_error) = ensure_project_tls_files(paths, project)
+            {
+                structured_log::project_tls_maintenance_failed(
+                    paths,
+                    &project.id,
+                    &maintenance_error.to_string(),
+                );
             }
             return Err(error.into());
         }
     };
-    let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
-    let resolved_php_runtime = maybe_resolve_project_php_runtime(
-        paths,
-        database,
-        project,
-        config_file.config.php.as_ref(),
-    )?;
-    let has_env_mappings = config_file.config.has_env_mappings();
-
-    if let Some(runtime) = &resolved_php_runtime {
-        record_project_php_runtime_resource_requirements(database, runtime)?;
-    }
-    apply_project_resource_plan(database, &project.id, &plan)?;
-    let resource_result = if let Some(catalog) = catalog {
-        crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
-            paths, database, project, &plan, catalog, progress,
-        )
-        .await
+    let tls_maintenance_result = if config_file.config.uses_tls_placeholders() {
+        Some(ensure_project_tls_files(paths, project))
     } else {
-        crate::managed_resources::reconcile_project_resources_with_progress(
-            paths, database, project, &plan, progress,
-        )
-        .await
+        None
     };
-    if let Err(error) = resource_result {
-        if config_file.config.uses_tls_placeholders() {
-            let _maintenance_result = ensure_project_tls_files(paths, project);
+    let has_env_mappings = config_file.config.has_env_mappings();
+    let pre_render_result = async {
+        let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
+        let resolved_php_runtime = maybe_resolve_project_php_runtime(
+            paths,
+            database,
+            project,
+            config_file.config.php.as_ref(),
+        )?;
+
+        if let Some(runtime) = &resolved_php_runtime {
+            record_project_php_runtime_resource_requirements(database, runtime)?;
         }
+        apply_project_resource_plan(database, &project.id, &plan)?;
+
+        let resource_result = if let Some(catalog) = catalog {
+            crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
+                paths, database, project, &plan, catalog, progress,
+            )
+            .await
+        } else {
+            crate::managed_resources::reconcile_project_resources_with_progress(
+                paths, database, project, &plan, progress,
+            )
+            .await
+        };
+        resource_result?;
+
+        if let Some(runtime) = &resolved_php_runtime {
+            database.replace_project_php_runtime(
+                &project.id,
+                Some(&ProjectPhpRuntimeInput {
+                    track: runtime.track.clone(),
+                    requested_extensions: runtime.requested_extensions.clone(),
+                    loaded_extensions: runtime.loaded_extensions.clone(),
+                    ignored_extensions: runtime.ignored_extensions.clone(),
+                }),
+            )?;
+        } else if project.desired_php_track.is_some() {
+            database.replace_project_php_runtime(&project.id, None)?;
+        }
+        database
+            .replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+
+        let runtime_warnings = resolved_php_runtime
+            .as_ref()
+            .map(ignored_php_extension_warnings)
+            .unwrap_or_default();
+        let requested_php_extensions = config_file
+            .config
+            .php
+            .as_ref()
+            .is_some_and(|php| !php.requested_extensions().is_empty());
+
+        Ok::<_, DaemonError>((plan, runtime_warnings, requested_php_extensions))
+    }
+    .await;
+    let (plan, runtime_warnings, requested_php_extensions) = match pre_render_result {
+        Ok(values) => values,
+        Err(error) => {
+            if let Some(Err(tls_error)) = tls_maintenance_result.as_ref() {
+                structured_log::project_tls_maintenance_failed(
+                    paths,
+                    &project.id,
+                    &tls_error.to_string(),
+                );
+            }
+            return Err(error);
+        }
+    };
+
+    if let Some(Err(error)) = tls_maintenance_result {
         return Err(error);
     }
-    if let Some(runtime) = &resolved_php_runtime {
-        database.replace_project_php_runtime(
-            &project.id,
-            Some(&ProjectPhpRuntimeInput {
-                track: runtime.track.clone(),
-                requested_extensions: runtime.requested_extensions.clone(),
-                loaded_extensions: runtime.loaded_extensions.clone(),
-                ignored_extensions: runtime.ignored_extensions.clone(),
-            }),
-        )?;
-    } else if project.desired_php_track.is_some() {
-        database.replace_project_php_runtime(&project.id, None)?;
-    }
-    database.replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
 
-    let runtime_warnings = resolved_php_runtime
-        .as_ref()
-        .map(ignored_php_extension_warnings)
-        .unwrap_or_default();
-    let requested_php_extensions = config_file
-        .config
-        .php
-        .as_ref()
-        .is_some_and(|php| !php.requested_extensions().is_empty());
     if !has_env_mappings {
         let status = if runtime_warnings.is_empty() {
             ProjectEnvObservedStatus::Rendered
@@ -242,10 +275,6 @@ async fn reconcile_loaded_project(
         };
 
         return Ok(summary);
-    }
-
-    if config_file.config.uses_tls_placeholders() {
-        ensure_project_tls_files(paths, project)?;
     }
 
     let context = project_env_context_for_plan(paths, database, project, &plan)?;
@@ -324,13 +353,13 @@ pub(crate) fn project_tls_files_are_current(
     })
 }
 
-pub(crate) fn project_tls_artifacts_exist(
+pub(crate) fn project_tls_artifact_exists(
     paths: &PvPaths,
     project: &ProjectRecord,
 ) -> Result<bool, DaemonError> {
     Ok(
         state::fs::path_entry_exists(&paths.project_tls_certificate(&project.id))?
-            && state::fs::path_entry_exists(&paths.project_tls_private_key(&project.id))?,
+            || state::fs::path_entry_exists(&paths.project_tls_private_key(&project.id))?,
     )
 }
 

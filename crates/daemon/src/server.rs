@@ -15,7 +15,7 @@ use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
-use crate::project_env::{project_tls_artifacts_exist, project_tls_files_are_current};
+use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
 use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
@@ -100,9 +100,16 @@ pub(crate) async fn serve(
                 }
             }, if tls_health_task.is_some() => {
                 tls_health_task = None;
-                if let Some(Ok(Ok(scopes))) = tls_health_result {
-                    for scope in scopes {
-                        debouncer.request(scope).await;
+                if let Some(tls_health_result) = tls_health_result {
+                    match tls_health_result {
+                        Ok(Ok(scopes)) => {
+                            for scope in scopes {
+                                debouncer.request(scope).await;
+                            }
+                        }
+                        Ok(Err(_error)) => {}
+                        Err(error) if error.is_panic() => return Err(error.into()),
+                        Err(_error) => {}
                     }
                 }
             }
@@ -162,7 +169,7 @@ fn collect_project_tls_health_scopes(
     for project in projects {
         let should_assess = match ProjectConfigFile::read_from_root(&project.path) {
             Ok(config_file) => config_file.config.uses_tls_placeholders(),
-            Err(_error) => project_tls_artifacts_exist(paths, &project).unwrap_or(false),
+            Err(_error) => project_tls_artifact_exists(paths, &project).unwrap_or(false),
         };
         if !should_assess {
             continue;
@@ -318,6 +325,18 @@ mod tests {
             "env: [\n",
         )?;
         assert!(config::ProjectConfigFile::read_from_root(&invalid_project.path).is_err());
+        let malformed_cert_only_project = link_health_project(
+            &paths,
+            &tempdir.path().join("malformed-cert-only"),
+            "b-malformed-cert-only.test",
+            "env: [\n",
+        )?;
+        let malformed_key_only_project = link_health_project(
+            &paths,
+            &tempdir.path().join("malformed-key-only"),
+            "c-malformed-key-only.test",
+            "env: [\n",
+        )?;
         let expiring_project = link_health_project(
             &paths,
             &tempdir.path().join("expiring"),
@@ -327,11 +346,17 @@ mod tests {
         write_project_certificate(&paths, &valid_project, &local_ca, 365)?;
         write_project_certificate(&paths, &expiring_project, &local_ca, 7)?;
         write_project_certificate(&paths, &invalid_project, &local_ca, 7)?;
+        write_project_certificate(&paths, &malformed_cert_only_project, &local_ca, 7)?;
+        write_project_certificate(&paths, &malformed_key_only_project, &local_ca, 7)?;
+        state::fs::remove_file(&paths.project_tls_private_key(&malformed_cert_only_project.id))?;
+        state::fs::remove_file(&paths.project_tls_certificate(&malformed_key_only_project.id))?;
 
         let scopes = collect_project_tls_health_scopes(&paths)?;
         let mut expected_scopes = vec![
             ReconciliationScope::project(expiring_project.id.clone())?,
             ReconciliationScope::project(invalid_project.id.clone())?,
+            ReconciliationScope::project(malformed_cert_only_project.id.clone())?,
+            ReconciliationScope::project(malformed_key_only_project.id.clone())?,
         ];
         expected_scopes.sort();
 

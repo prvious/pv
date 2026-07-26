@@ -988,6 +988,7 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
         &project.primary_hostname,
         &local_ca.certificate_pem,
     ));
+    state::fs::remove_file(&paths.project_tls_private_key(&project.id))?;
     write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
     let dotenv_before = read_dotenv(&project)?;
     let malformed_config = "env: [\n";
@@ -1002,22 +1003,28 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     let mut failed_job = None;
     for _attempt in 0..50 {
-        let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
-        let renewed = platform::project_certificate_matches(
-            &certificate,
-            &private_key,
-            &project.primary_hostname,
-            &local_ca.certificate_pem,
-        );
-        let database = Database::open(&paths)?;
-        if renewed
-            && let Some(job) = database.recent_jobs()?.into_iter().find(|job| {
-                job.scope == format!("project:{}", project.id)
-                    && job.status == state::JobStatus::Failed
-            })
-        {
-            failed_job = Some(job);
-            break;
+        let certificate_exists =
+            state::fs::path_entry_exists(&paths.project_tls_certificate(&project.id))?;
+        let private_key_exists =
+            state::fs::path_entry_exists(&paths.project_tls_private_key(&project.id))?;
+        if certificate_exists && private_key_exists {
+            let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
+            let renewed = platform::project_certificate_matches(
+                &certificate,
+                &private_key,
+                &project.primary_hostname,
+                &local_ca.certificate_pem,
+            );
+            let database = Database::open(&paths)?;
+            if renewed
+                && let Some(job) = database.recent_jobs()?.into_iter().find(|job| {
+                    job.scope == format!("project:{}", project.id)
+                        && job.status == state::JobStatus::Failed
+                })
+            {
+                failed_job = Some(job);
+                break;
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -1256,6 +1263,108 @@ AFTER=1
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_renews_before_malformed_dotenv_validation_without_mutating_primary_error_or_state()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"env:
+  VITE_DEV_SERVER_CERT: "${tls_cert}"
+postgres:
+  version: "8.0"
+  env:
+    DB_HOST: "${host}"
+"#,
+    )?;
+    let local_ca = seed_local_ca(&paths)?;
+    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
+    let dotenv = "USER_VALUE=kept\n# >>> PV MANAGED\n";
+    write_sensitive_file(&project.path.join(".env"), dotenv)?;
+    let database = Database::open(&paths)?;
+    let project_before = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project"))?;
+    let resources_before = database.project_managed_resources(&project.id)?;
+    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
+    let expected_validation_error = match config::validate_managed_env_block(Some(dotenv)) {
+        Ok(()) => return Err(anyhow!("malformed managed .env should fail validation")),
+        Err(error) => error,
+    };
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
+    let database = Database::open(&paths)?;
+    let project_after = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project after reconciliation"))?;
+    let job = latest_job(&database, &format!("project:{}", project.id))?;
+
+    assert!(platform::project_certificate_matches(
+        &certificate,
+        &private_key,
+        &project.primary_hostname,
+        &local_ca.certificate_pem,
+    ));
+    assert_eq!(
+        job.error.as_deref(),
+        Some(format!("Project config error: {expected_validation_error}").as_str())
+    );
+    assert_eq!(read_dotenv(&project)?, dotenv);
+    assert_eq!(project_after, project_before);
+    assert_eq!(
+        database.project_managed_resources(&project.id)?,
+        resources_before
+    );
+    assert_eq!(
+        database.resource_allocations(&project.id, "postgres")?,
+        allocations_before
+    );
+    assert!(!lines.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn masked_tls_maintenance_failure_is_written_to_structured_log() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  CERT: \"${tls_cert}\"\n",
+    )?;
+    seed_local_ca(&paths)?;
+    write_sensitive_file(
+        &project.path.join(".env"),
+        "USER_VALUE=kept\n# >>> PV MANAGED\n",
+    )?;
+    state::fs::remove_file(&paths.ca_private_key())?;
+    let expected_tls_error = match state::fs::read_to_string(&paths.ca_private_key()) {
+        Ok(_) => return Err(anyhow!("missing CA private key should fail to read")),
+        Err(error) => daemon::DaemonError::from(error).to_string(),
+    };
+
+    run_project_reconciliation(&paths, &project).await?;
+
+    let content = state::fs::read_to_string(&paths.daemon_log())?;
+    let events = content
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(events.iter().any(|event| {
+        event["event"] == "project_tls_maintenance_failed"
+            && event["project_id"] == project.id
+            && event["error"] == expected_tls_error
+    }));
 
     Ok(())
 }
