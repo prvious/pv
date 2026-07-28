@@ -44,6 +44,7 @@ pub use trust::{
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use insta::assert_debug_snapshot;
 
     use crate::capability::require_capability_for;
