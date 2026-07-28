@@ -1,0 +1,10 @@
+---
+source: crates/platform/src/listener/macos/kernel_table.rs
+expression: parse_tcp_table(&fixture.finish())?
+---
+{
+    45000,
+    45001,
+    45002,
+    45003,
+}

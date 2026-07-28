@@ -1,0 +1,22 @@
+---
+source: crates/platform/src/listener/macos/kernel_table.rs
+expression: detections
+---
+[
+    (
+        "ipv4 loopback",
+        10,
+    ),
+    (
+        "ipv4 wildcard",
+        10,
+    ),
+    (
+        "ipv6 loopback",
+        10,
+    ),
+    (
+        "ipv6 wildcard",
+        10,
+    ),
+]

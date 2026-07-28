@@ -1,0 +1,62 @@
+---
+source: crates/platform/src/listener/macos/kernel_table.rs
+expression: errors
+---
+[
+    (
+        "empty",
+        Err(
+            TableTooShort {
+                minimum: 48,
+                actual: 0,
+            },
+        ),
+    ),
+    (
+        "invalid envelope",
+        Err(
+            InvalidEnvelopeLength {
+                position: "leading",
+                expected: 24,
+                actual: 16,
+            },
+        ),
+    ),
+    (
+        "invalid record length",
+        Err(
+            InvalidRecordLength {
+                offset: 24,
+                length: 16,
+            },
+        ),
+    ),
+    (
+        "truncated record",
+        Err(
+            TruncatedRecord {
+                offset: 24,
+                padded_length: 1024,
+            },
+        ),
+    ),
+    (
+        "incomplete record",
+        Err(
+            IncompleteRecord,
+        ),
+    ),
+    (
+        "changed snapshot",
+        Err(
+            SnapshotChanged {
+                header_count: 8,
+                header_generation: 100,
+                header_socket_generation: 200,
+                trailer_count: 8,
+                trailer_generation: 101,
+                trailer_socket_generation: 200,
+            },
+        ),
+    ),
+]

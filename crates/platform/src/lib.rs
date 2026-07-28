@@ -4,10 +4,10 @@ mod capability;
 mod command;
 mod error;
 mod launch_agent;
+mod listener;
 mod pf;
 mod process;
 mod resolver;
-mod socket;
 mod target;
 mod trust;
 
@@ -24,6 +24,7 @@ pub use launch_agent::{
     bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
     kickstart_launch_agent, launch_agent_path, remove_launch_agent_file, write_launch_agent_file,
 };
+pub use listener::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use pf::{
     PfConfReference, PfFileState, PfRedirectConfig, SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH,
     active_pf_redirect_config, active_pf_redirect_config_with_privilege_mode,
@@ -34,7 +35,6 @@ pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
     install_resolver_config, remove_resolver_config,
 };
-pub use socket::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use target::PlatformTarget;
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, PrivilegeMode,
@@ -48,7 +48,8 @@ mod tests {
 
     use crate::capability::require_capability_for;
     use crate::error::PlatformError;
-    use crate::socket::parse_netstat_tcp_listener_ports;
+    #[cfg(target_os = "macos")]
+    use crate::listener::parse_netstat_tcp_listener_ports;
     use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
@@ -99,6 +100,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn netstat_tcp_listener_port_parser_covers_loopback_and_wildcard_addresses() {
         let output = r#"
 Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
