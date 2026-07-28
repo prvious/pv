@@ -1,0 +1,18 @@
+---
+source: crates/platform/src/listener/macos/kernel_table.rs
+expression: fixtures
+---
+[
+    (
+        "zero count",
+        Ok(
+            {},
+        ),
+    ),
+    (
+        "nonzero count",
+        Err(
+            MissingTrailer,
+        ),
+    ),
+]
