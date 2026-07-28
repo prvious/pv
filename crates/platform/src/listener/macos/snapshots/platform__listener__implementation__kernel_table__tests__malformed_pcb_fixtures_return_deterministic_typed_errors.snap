@@ -7,7 +7,7 @@ expression: errors
         "empty",
         Err(
             TableTooShort {
-                minimum: 48,
+                minimum: 24,
                 actual: 0,
             },
         ),

@@ -201,15 +201,18 @@ fn query_tcp_table(buffer: Option<&mut [u8]>) -> io::Result<usize> {
 }
 
 fn parse_tcp_table(table: &[u8]) -> Result<BTreeSet<u16>, ParseError> {
-    let minimum_length = XINPGEN_LENGTH * 2;
-    if table.len() < minimum_length {
+    if table.len() < XINPGEN_LENGTH {
         return Err(ParseError::TableTooShort {
-            minimum: minimum_length,
+            minimum: XINPGEN_LENGTH,
             actual: table.len(),
         });
     }
 
     let header = parse_envelope(table, "leading")?;
+    if table.len() == XINPGEN_LENGTH && header.count == 0 {
+        return Ok(BTreeSet::new());
+    }
+
     let mut offset = XINPGEN_LENGTH;
     let mut pending_internet_pcb = None;
     let mut ports = BTreeSet::new();
@@ -222,6 +225,9 @@ fn parse_tcp_table(table: &[u8]) -> Result<BTreeSet<u16>, ParseError> {
             if pending_internet_pcb.is_some() {
                 return Err(ParseError::IncompleteRecord);
             }
+            // `xig_sogen` is global across all socket families, so unrelated
+            // socket allocation or release can change it while this TCP PCB snapshot
+            // remains coherent. Apple netstat likewise checks the PCB-specific generation.
             if header.generation != trailer.generation || header.count != trailer.count {
                 return Err(ParseError::SnapshotChanged {
                     header_count: header.count,
@@ -465,6 +471,26 @@ mod tests {
         assert_debug_snapshot!(parse_tcp_table(&fixture.finish())?);
 
         Ok(())
+    }
+
+    #[test]
+    fn empty_pcb_fixture_matches_xnu_single_envelope_shape() {
+        let fixtures = [
+            (
+                "zero count",
+                parse_tcp_table(&envelope(0, SNAPSHOT_GENERATION, SOCKET_GENERATION)),
+            ),
+            (
+                "nonzero count",
+                parse_tcp_table(&envelope(
+                    SNAPSHOT_COUNT,
+                    SNAPSHOT_GENERATION,
+                    SOCKET_GENERATION,
+                )),
+            ),
+        ];
+
+        assert_debug_snapshot!(fixtures);
     }
 
     #[test]
