@@ -584,6 +584,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "acceptance-only: depends on the live macOS TCP PCB table"]
     fn live_kernel_table_repeatedly_detects_all_controlled_listener_classes() -> Result<()> {
         let ipv4_loopback = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let ipv4_wildcard = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
