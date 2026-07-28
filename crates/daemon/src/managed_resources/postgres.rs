@@ -277,13 +277,8 @@ fn generate_hex_password() -> Result<String, DaemonError> {
     Ok(hex_string(&bytes))
 }
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "Postgres adapter generates local credentials from the OS random device"
-)]
 fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), DaemonError> {
-    let mut file = std::fs::File::open("/dev/urandom")?;
-    std::io::Read::read_exact(&mut file, bytes)?;
+    getrandom::fill(bytes).map_err(io::Error::other)?;
 
     Ok(())
 }

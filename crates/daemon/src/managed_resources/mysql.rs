@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io;
 #[cfg(test)]
 use std::net::TcpListener;
 
@@ -454,14 +454,9 @@ fn generated_password() -> Result<String, DaemonError> {
     Ok(password)
 }
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "MySQL adapter generates local-only credentials from the OS random source"
-)]
 fn random_password_bytes() -> Result<[u8; PASSWORD_HEX_BYTES], DaemonError> {
     let mut bytes = [0_u8; PASSWORD_HEX_BYTES];
-    let mut random = std::fs::File::open("/dev/urandom")?;
-    random.read_exact(&mut bytes)?;
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
 
     Ok(bytes)
 }
