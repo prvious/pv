@@ -6,17 +6,21 @@ expression: detections
     (
         "ipv4 loopback",
         10,
+        10,
     ),
     (
         "ipv4 wildcard",
+        10,
         10,
     ),
     (
         "ipv6 loopback",
         10,
+        10,
     ),
     (
         "ipv6 wildcard",
+        10,
         10,
     ),
 ]
