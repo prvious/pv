@@ -182,19 +182,8 @@ async fn reconcile_loaded_project(
             return Err(error);
         }
     };
-    let project = match synchronize_project_link_state(database, project, &config_file) {
-        Ok(project) => project,
-        Err(error) => {
-            maintain_existing_project_tls_after_config_error(
-                paths,
-                project,
-                config_file.config.uses_tls_placeholders(),
-            );
-            return Err(error);
-        }
-    };
     let tls_maintenance_result = if serves_http && config_file.config.uses_tls_placeholders() {
-        Some(ensure_project_tls_files(paths, &project))
+        Some(ensure_project_tls_files(paths, &candidate_project))
     } else {
         None
     };
@@ -203,16 +192,25 @@ async fn reconcile_loaded_project(
         if let Some(runtime) = &resolved_php_runtime {
             record_project_php_runtime_resource_requirements(database, runtime)?;
         }
-        apply_project_resource_plan(database, &project.id, &plan)?;
+        apply_project_resource_plan(database, &candidate_project.id, &plan)?;
 
         let resource_result = if let Some(catalog) = catalog {
             crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
-                paths, database, &project, &plan, catalog, progress,
+                paths,
+                database,
+                &candidate_project,
+                &plan,
+                catalog,
+                progress,
             )
             .await
         } else {
             crate::managed_resources::reconcile_project_resources_with_progress(
-                paths, database, &project, &plan, progress,
+                paths,
+                database,
+                &candidate_project,
+                &plan,
+                progress,
             )
             .await
         };
@@ -220,7 +218,7 @@ async fn reconcile_loaded_project(
 
         if let Some(runtime) = &resolved_php_runtime {
             database.replace_project_php_runtime(
-                &project.id,
+                &candidate_project.id,
                 Some(&ProjectPhpRuntimeInput {
                     track: runtime.track.clone(),
                     requested_extensions: runtime.requested_extensions.clone(),
@@ -228,12 +226,8 @@ async fn reconcile_loaded_project(
                     ignored_extensions: runtime.ignored_extensions.clone(),
                 }),
             )?;
-        } else if project.desired_php_track.is_some() {
-            database.replace_project_php_runtime(&project.id, None)?;
-        }
-        if serves_http {
-            database
-                .replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+        } else if candidate_project.desired_php_track.is_some() {
+            database.replace_project_php_runtime(&candidate_project.id, None)?;
         }
 
         let runtime_warnings = resolved_php_runtime
@@ -255,7 +249,7 @@ async fn reconcile_loaded_project(
             if let Some(Err(tls_error)) = tls_maintenance_result.as_ref() {
                 structured_log::project_tls_maintenance_failed(
                     paths,
-                    &project.id,
+                    &candidate_project.id,
                     &tls_error.to_string(),
                 );
             }
@@ -279,11 +273,12 @@ async fn reconcile_loaded_project(
             "Project runtime has warnings"
         };
         database.record_project_env_observed_snapshot(
-            &project.id,
+            &candidate_project.id,
             status,
             Some(message),
             &runtime_warnings,
         )?;
+        synchronize_project_link_state(database, project, &config_file)?;
 
         let summary = if runtime_warnings.is_empty() {
             ProjectEnvReconciliationSummary {
@@ -300,10 +295,16 @@ async fn reconcile_loaded_project(
         return Ok(summary);
     }
 
-    let context =
-        project_env_context_for_plan(paths, database, &project, &config_file.config, &plan)?;
+    let context = project_env_context_for_plan(
+        paths,
+        database,
+        &candidate_project,
+        &config_file.config,
+        &plan,
+    )?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
-    let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+    let env_file_path =
+        config::resolve_project_env_file_path(&candidate_project.path, &config_file.config)?;
     let transform = config::write_project_env_file(&env_file_path, &rendered)?;
     let mut warnings = observed_warnings(&transform.warnings);
     warnings.extend(runtime_warnings);
@@ -318,7 +319,13 @@ async fn reconcile_loaded_project(
         "rendered Project env with warnings"
     };
 
-    database.record_project_env_observed_snapshot(&project.id, status, Some(message), &warnings)?;
+    database.record_project_env_observed_snapshot(
+        &candidate_project.id,
+        status,
+        Some(message),
+        &warnings,
+    )?;
+    synchronize_project_link_state(database, project, &config_file)?;
 
     let summary = if warnings.is_empty() {
         ProjectEnvReconciliationSummary {
@@ -550,9 +557,22 @@ fn synchronize_project_link_state(
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
 ) -> Result<ProjectRecord, DaemonError> {
+    let project =
+        database
+            .project_by_id(&project.id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project.id.clone(),
+            })?;
     let mode = project_mode_for_config(&config_file.config);
     if project.mode == mode {
-        return Ok(project.clone());
+        if mode == ProjectMode::Served {
+            return Ok(database.replace_project_additional_hostnames(
+                &project.id,
+                &config_file.config.hostnames,
+            )?);
+        }
+
+        return Ok(project);
     }
     let primary_hostname = project
         .primary_hostname

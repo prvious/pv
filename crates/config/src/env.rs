@@ -201,16 +201,15 @@ pub fn transform_managed_env_block(
     rendered: &RenderedProjectEnv,
 ) -> Result<ManagedEnvBlockTransform, ConfigError> {
     let existing_content = existing_content.unwrap_or_default();
-    if rendered.values.is_empty() {
+    let lines = split_env_lines(existing_content);
+    let blocks = managed_blocks(&lines)?;
+    if rendered.values.is_empty() && blocks.is_empty() {
         return Ok(ManagedEnvBlockTransform {
             content: existing_content.to_string(),
             warnings: Vec::new(),
             changed: false,
         });
     }
-
-    let lines = split_env_lines(existing_content);
-    let blocks = managed_blocks(&lines)?;
     let warnings = duplicate_existing_key_warnings(&lines, &blocks, rendered);
     let block_lines = managed_block_lines(rendered);
 

@@ -7,6 +7,7 @@ use resources::{
 };
 use yaml_serde::{Mapping, Number, Value};
 
+use crate::discovery::validate_document_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
@@ -64,7 +65,9 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             }
             "document_root" => {
                 let document_root = non_empty_string("document_root", &value)?;
-                config.document_root = Some(Utf8PathBuf::from(document_root));
+                let document_root = Utf8PathBuf::from(document_root);
+                validate_document_root_shape(&document_root)?;
+                config.document_root = Some(document_root);
             }
             "hostnames" => {
                 hostnames = Some(value);
@@ -91,7 +94,7 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
     }
 
     if let Some(hostnames) = hostnames {
-        config.hostnames = parse_hostnames(&hostnames, config.serve)?;
+        config.hostnames = parse_hostnames(&hostnames)?;
     }
 
     Ok(config)
@@ -228,7 +231,7 @@ fn parse_allocation_config(
     Ok(config)
 }
 
-fn parse_hostnames(value: &Value, serve: bool) -> Result<Vec<String>, ConfigError> {
+fn parse_hostnames(value: &Value) -> Result<Vec<String>, ConfigError> {
     let sequence = match value {
         Value::Null => return Ok(Vec::new()),
         Value::Sequence(sequence) => sequence,
@@ -244,11 +247,6 @@ fn parse_hostnames(value: &Value, serve: bool) -> Result<Vec<String>, ConfigErro
 
     for value in sequence {
         let hostname = non_empty_string("hostnames", value)?;
-        if !serve {
-            hostnames.push(hostname);
-            continue;
-        }
-
         let hostname = normalize_additional_hostname(&hostname)?;
         if hostnames.contains(&hostname) {
             return Err(ConfigError::DuplicateHostname { hostname });

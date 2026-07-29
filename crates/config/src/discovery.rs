@@ -68,6 +68,9 @@ fn validate_project_paths(
 ) -> Result<ProjectConfig, ConfigError> {
     resolve_project_env_file_path(project_root, &config)?;
 
+    if let Some(document_root) = &config.document_root {
+        validate_document_root_shape(document_root)?;
+    }
     if !config.serve {
         return Ok(config);
     }
@@ -75,12 +78,6 @@ fn validate_project_paths(
     let Some(document_root) = &config.document_root else {
         return Ok(config);
     };
-
-    if document_root.is_absolute() {
-        return Err(ConfigError::AbsoluteDocumentRoot {
-            document_root: document_root.clone(),
-        });
-    }
 
     let absolute_document_root = project_root.join(document_root);
     let canonical_document_root = match canonicalize_utf8(&absolute_document_root) {
@@ -106,6 +103,35 @@ fn validate_project_paths(
     }
 
     Ok(config)
+}
+
+pub(crate) fn validate_document_root_shape(document_root: &Utf8Path) -> Result<(), ConfigError> {
+    if document_root.is_absolute() {
+        return Err(ConfigError::AbsoluteDocumentRoot {
+            document_root: document_root.to_path_buf(),
+        });
+    }
+
+    let mut depth = 0_u32;
+    for component in document_root.components() {
+        match component {
+            camino::Utf8Component::Normal(_) => depth += 1,
+            camino::Utf8Component::ParentDir if depth == 0 => {
+                return Err(ConfigError::DocumentRootEscapesProject {
+                    document_root: document_root.to_path_buf(),
+                });
+            }
+            camino::Utf8Component::ParentDir => depth -= 1,
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::RootDir | camino::Utf8Component::Prefix(_) => {
+                return Err(ConfigError::AbsoluteDocumentRoot {
+                    document_root: document_root.to_path_buf(),
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn resolve_project_env_file_path(

@@ -125,6 +125,55 @@ fn list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel() -> 
 }
 
 #[test]
+fn list_json_sorts_projects_by_displayed_value() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let served = tempdir.path().join("Zulu Web");
+    let resource_only = tempdir.path().join("Beta Data");
+    create_dir(&served)?;
+    create_dir(&resource_only)?;
+    write_file(&served.join("pv.yml"), "")?;
+    write_file(&resource_only.join("pv.yml"), "serve: false\n")?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &served);
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: served.clone(),
+        original_path: served.clone(),
+        primary_hostname: "alpha.test".to_string(),
+        config_path: served.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    database.link_project_with_mode(
+        LinkProjectInput {
+            path: resource_only.clone(),
+            original_path: resource_only.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: resource_only.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    drop(database);
+
+    let output = run_pv(&["list", "--json"], &environment)?;
+    let json = parse_json_output(output)?;
+    let projects = json["projects"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("expected Projects array"))?;
+    let [first, second] = projects.as_slice() else {
+        return Err(anyhow::anyhow!("expected exactly two Projects"));
+    };
+
+    assert_eq!(first["hostname"], "alpha.test");
+    assert_eq!(second["slug"], "beta-data");
+
+    Ok(())
+}
+
+#[test]
 fn resource_list_json_outputs_installed_tracks_and_aliases() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

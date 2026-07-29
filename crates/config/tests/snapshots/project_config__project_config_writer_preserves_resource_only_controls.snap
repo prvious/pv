@@ -6,4 +6,4 @@ serve: false
 env_file: .env.local
 document_root: missing
 hostnames:
-- api.example.com
+- api.example.test

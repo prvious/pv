@@ -44,7 +44,7 @@ serve: false
 env_file: .env.local
 document_root: missing
 hostnames:
-  - api.example.com
+  - Api.Example.test.
 env:
   APP_URL: "${project_url}"
   APP_ENV: local
@@ -74,6 +74,26 @@ fn project_config_rejects_invalid_resource_only_control_shapes() {
         ProjectConfig::parse("env_file: config/../../acme.env\n"),
         Err(ConfigError::EnvFileEscapesProject { env_file })
             if env_file == "config/../../acme.env"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("serve: false\ndocument_root: /tmp/public\n"),
+        Err(ConfigError::AbsoluteDocumentRoot { document_root })
+            if document_root == "/tmp/public"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("serve: false\ndocument_root: public/../../outside\n"),
+        Err(ConfigError::DocumentRootEscapesProject { document_root })
+            if document_root == "public/../../outside"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("serve: false\nhostnames:\n  - '*.acme.test'\n"),
+        Err(ConfigError::InvalidHostname { hostname, .. }) if hostname == "*.acme.test"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse(
+            "serve: false\nhostnames:\n  - api.acme.test\n  - API.ACME.TEST.\n"
+        ),
+        Err(ConfigError::DuplicateHostname { hostname }) if hostname == "api.acme.test"
     ));
 }
 
@@ -697,7 +717,7 @@ fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
     let config = ProjectConfig::parse(
-        "serve: false\nenv_file: .env.local\ndocument_root: missing\nhostnames:\n  - api.example.com\n",
+        "serve: false\nenv_file: .env.local\ndocument_root: missing\nhostnames:\n  - api.example.test\n",
     )?;
 
     config::write_project_config(&project, &config)?;
@@ -911,13 +931,13 @@ fn project_config_rejects_document_roots_that_escape_project() -> Result<()> {
 }
 
 #[test]
-fn resource_only_config_defers_serving_path_and_hostname_validation() -> Result<()> {
+fn resource_only_config_defers_document_root_existence_validation() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
     write_file(
         &project.join("pv.yml"),
-        "serve: false\ndocument_root: ../outside\nhostnames:\n  - api.example.com\n",
+        "serve: false\ndocument_root: missing\nhostnames:\n  - Api.Acme.test.\n",
     )?;
 
     let config_file = ProjectConfigFile::read_from_root(&project)?;
@@ -925,9 +945,9 @@ fn resource_only_config_defers_serving_path_and_hostname_validation() -> Result<
     assert!(!config_file.config.serve);
     assert_eq!(
         config_file.config.document_root.as_deref(),
-        Some(Utf8Path::new("../outside"))
+        Some(Utf8Path::new("missing"))
     );
-    assert_eq!(config_file.config.hostnames, ["api.example.com"]);
+    assert_eq!(config_file.config.hostnames, ["api.acme.test"]);
 
     Ok(())
 }

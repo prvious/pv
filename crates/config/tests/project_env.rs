@@ -28,22 +28,41 @@ mysql:
     };
 
     let rendered = render_project_env(&config, &context)?;
-    let transformed = transform_managed_env_block(
-        Some(
-            r#"USER_VALUE=1
-# >>> PV MANAGED
-OLD_VALUE=stays
-# <<< PV MANAGED
-"#,
-        ),
-        &rendered,
-    )?;
-
     assert_debug_snapshot!((
         &rendered,
-        format_project_env(&RenderedProjectEnv::default()),
-        transformed
+        format_project_env(&RenderedProjectEnv::default())
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_env_block_transformer_clears_existing_block_when_all_mappings_are_dormant() -> Result<()>
+{
+    let config = ProjectConfig::parse(
+        r#"serve: false
+env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let rendered = render_project_env(&config, &ProjectEnvContext::default())?;
+    let existing = r#"USER_VALUE=kept
+# >>> PV MANAGED
+APP_URL=https://acme.test
+# <<< PV MANAGED
+"#;
+
+    let cleared = transform_managed_env_block(Some(existing), &rendered)?;
+    let missing = transform_managed_env_block(None, &rendered)?;
+
+    assert!(rendered.values.is_empty());
+    assert_eq!(
+        cleared.content,
+        "USER_VALUE=kept\n# >>> PV MANAGED\n# <<< PV MANAGED\n"
+    );
+    assert!(cleared.changed);
+    assert_eq!(missing.content, "");
+    assert!(!missing.changed);
 
     Ok(())
 }

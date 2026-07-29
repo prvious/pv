@@ -7,21 +7,21 @@ expression: "(link_served, link_resource_only, list)"
         code: Some(
             0,
         ),
-        stdout: "Linked web-app.test -> <tempdir>/Web App\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stdout: "Linked alpha.test -> <tempdir>/Zulu Web\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Linked data-services (resource-only) -> <tempdir>/Data Services\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stdout: "Linked beta-data (resource-only) -> <tempdir>/Beta Data\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\ndata-services  resource-only  default  unknown  unknown  none  <tempdir>/Data Services\nweb-app.test  served  default  unknown  unknown  none  <tempdir>/Web App\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nalpha.test  served  default  unknown  unknown  none  <tempdir>/Zulu Web\nbeta-data  resource-only  default  unknown  unknown  none  <tempdir>/Beta Data\n",
         stderr: "",
     },
 )

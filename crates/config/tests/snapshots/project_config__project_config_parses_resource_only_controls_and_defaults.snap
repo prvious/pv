@@ -20,7 +20,7 @@ expression: "(defaults, resource_only)"
             "missing",
         ),
         hostnames: [
-            "api.example.com",
+            "api.example.test",
         ],
         env: {
             "APP_ENV": "local",

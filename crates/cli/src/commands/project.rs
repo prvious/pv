@@ -209,14 +209,19 @@ pub(crate) fn env(
         serves_http,
     );
     let rendered = config::render_project_env(&config_file.config, &context)?;
-    let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
-    let existing_env = read_project_env_file(&env_file_path)?;
-    let transform = config::transform_managed_env_block(existing_env.as_deref(), &rendered)?;
+    let warnings = if config_file.config.has_env_mappings() {
+        let env_file_path =
+            config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+        let existing_env = read_project_env_file(&env_file_path)?;
+        config::transform_managed_env_block(existing_env.as_deref(), &rendered)?.warnings
+    } else {
+        Vec::new()
+    };
 
     if args.json {
         serde_json::to_writer(&mut *stdout, &rendered.values)?;
         writeln!(stdout)?;
-        write_project_env_warnings(&transform.warnings, stderr)?;
+        write_project_env_warnings(&warnings, stderr)?;
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -227,7 +232,7 @@ pub(crate) fn env(
     }
 
     write!(stdout, "{content}")?;
-    write_project_env_warnings(&transform.warnings, stderr)?;
+    write_project_env_warnings(&warnings, stderr)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -239,7 +244,12 @@ pub(crate) fn list(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
-    let projects = database.projects()?;
+    let mut projects = database.projects()?;
+    projects.sort_by(|left, right| {
+        project_display_name(left)
+            .cmp(project_display_name(right))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
     if args.json {
         let projects = projects

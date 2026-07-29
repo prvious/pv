@@ -482,6 +482,14 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         };
         let config = match config_file {
             Some(config_file) => {
+                if config_file.config.serve != (project.mode == ProjectMode::Served) {
+                    append_persisted_runtime_project(
+                        &mut database,
+                        &mut projects_by_runtime_key,
+                        project,
+                    )?;
+                    continue;
+                }
                 match validate_project_config_for_gateway(paths, &database, &project, &config_file)
                 {
                     Ok(()) => Some(config_file.config),
@@ -503,9 +511,6 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             }
             None => None,
         };
-        if config.as_ref().is_some_and(|config| !config.serve) {
-            continue;
-        }
         let primary_hostname =
             project
                 .primary_hostname

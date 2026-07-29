@@ -707,13 +707,13 @@ fn project_init_rejects_yes_with_print() -> Result<()> {
 fn project_list_shows_project_and_mode_for_served_and_resource_only_projects() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let served = tempdir.path().join("Web App");
-    let resource_only = tempdir.path().join("Data Services");
+    let served = tempdir.path().join("Zulu Web");
+    let resource_only = tempdir.path().join("Beta Data");
     create_dir(&served)?;
     create_dir(&resource_only)?;
     write_file(&resource_only.join("pv.yml"), "serve: false\n")?;
 
-    let link_served = run_pv_in_dir_with_home(&["link"], &served, &home)?;
+    let link_served = run_pv_in_dir_with_home(&["link", "--hostname", "alpha"], &served, &home)?;
     let link_resource_only = run_pv_in_dir_with_home(&["link"], &resource_only, &home)?;
     let list = run_pv_in_dir_with_home(&["list"], &resource_only, &home)?;
 

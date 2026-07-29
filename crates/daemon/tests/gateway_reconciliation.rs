@@ -1261,6 +1261,42 @@ fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Result<()>
 }
 
 #[test]
+fn runtime_plan_preserves_served_project_while_resource_only_transition_is_pending() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("served");
+    create_project(&project_root, "php: \"8.4\"\n")?;
+
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: "served.test".to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+    fs::write_sensitive_file(&project_root.join("pv.yml"), "serve: false\nphp: \"8.4\"\n")?;
+
+    let plan = build_runtime_plan(&paths)?;
+    let planned_project = plan
+        .workers
+        .iter()
+        .flat_map(|worker| worker.projects.iter())
+        .find(|candidate| candidate.id == project.id)
+        .ok_or_else(|| anyhow::anyhow!("expected persisted served Project in runtime plan"))?;
+
+    assert!(!planned_project.render_config);
+    assert_eq!(planned_project.primary_hostname, "served.test");
+
+    Ok(())
+}
+
+#[test]
 fn gateway_runtime_plan_groups_projects_by_php_track_and_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

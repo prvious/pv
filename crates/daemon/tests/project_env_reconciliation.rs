@@ -123,6 +123,70 @@ postgres:
 }
 
 #[tokio::test]
+async fn failed_resource_only_transition_after_preflight_preserves_served_mode() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(&paths, &tempdir.path().join("project"), "acme.test", "")?;
+    write_project_config(
+        &project,
+        r#"serve: false
+postgres:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DB_DATABASE: "${database}"
+"#,
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let reconciled = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
+    let job = latest_job(&database, &format!("project:{}", project.id))?;
+
+    assert!(!lines.is_empty());
+    assert_eq!(job.status, state::JobStatus::Failed);
+    assert_eq!(reconciled.mode, ProjectMode::Served);
+    assert_eq!(reconciled.primary_hostname.as_deref(), Some("acme.test"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_served_transition_after_preflight_preserves_resource_only_mode() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project =
+        link_resource_only_project(&paths, &tempdir.path().join("project"), "serve: false\n")?;
+    write_project_config(
+        &project,
+        r#"postgres:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DB_DATABASE: "${database}"
+"#,
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let reconciled = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
+    let job = latest_job(&database, &format!("project:{}", project.id))?;
+
+    assert!(!lines.is_empty());
+    assert_eq!(job.status, state::JobStatus::Failed);
+    assert_eq!(reconciled.mode, ProjectMode::ResourceOnly);
+    assert_eq!(reconciled.primary_hostname, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -300,6 +364,55 @@ async fn disabling_serving_retains_tls_files_without_refreshing_them() -> Result
         private_key_before
     );
     assert_eq!(read_optional_dotenv(&project)?, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
+
+    run_project_reconciliation(&paths, &project).await?;
+    assert_eq!(
+        read_dotenv(&project)?,
+        "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n"
+    );
+
+    write_project_config(
+        &project,
+        "serve: false\nenv:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let resource_only = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected resource-only Project"))?;
+    assert_eq!(resource_only.mode, ProjectMode::ResourceOnly);
+    assert_eq!(
+        read_dotenv(&project)?,
+        "USER_VALUE=kept\n# >>> PV MANAGED\n# <<< PV MANAGED\n"
+    );
+    drop(database);
+
+    write_project_config(&project, "env:\n  APP_URL: \"${project_url}\"\n")?;
+    run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+    let served = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected served Project"))?;
+    assert_eq!(served.mode, ProjectMode::Served);
+    assert_eq!(
+        read_dotenv(&project)?,
+        "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n"
+    );
 
     Ok(())
 }
