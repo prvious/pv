@@ -10,6 +10,7 @@ pub enum PlatformCapability {
     ListenerInspection,
     LowPortFrontend,
     ProcessContainment,
+    ProcessInspection,
     ResolverIntegration,
     TrustStore,
 }
@@ -23,6 +24,7 @@ impl PlatformCapability {
             Self::ListenerInspection => "listener inspection",
             Self::LowPortFrontend => "low-port frontend",
             Self::ProcessContainment => "process containment",
+            Self::ProcessInspection => "process inspection",
             Self::ResolverIntegration => "resolver integration",
             Self::TrustStore => "trust store",
         }

@@ -7,9 +7,7 @@ use std::{fmt, future::Future, io};
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
-use rustix::process::{
-    Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
-};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,12 +32,6 @@ enum ProcessSignal {
     Terminate,
     Kill,
 }
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "PV process supervisor verifies live process ownership"
-)]
-type StdCommand = std::process::Command;
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct ProcessSpec {
@@ -108,6 +100,9 @@ pub struct ManagedProcess {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedRuntime {
     pid: u32,
+    command: Utf8PathBuf,
+    arguments: Vec<String>,
+    process_start_identity: platform::ProcessStartIdentity,
     log_path: Utf8PathBuf,
     pid_path: Utf8PathBuf,
     metadata_path: Utf8PathBuf,
@@ -159,6 +154,8 @@ struct RuntimeMetadata {
     track: String,
     log_path: String,
     started_at: String,
+    #[serde(default)]
+    process_start_identity: Option<platform::ProcessStartIdentity>,
 }
 
 impl ProcessSupervisor {
@@ -221,9 +218,18 @@ impl ProcessSupervisor {
             return Ok(None);
         };
 
-        if metadata.matches(spec, pid) && live_process_matches_spec(pid, spec)? {
+        let Some(process_start_identity) = metadata.process_start_identity else {
+            return Ok(None);
+        };
+
+        if metadata.matches(spec, pid)
+            && live_process_matches(pid, &spec.command, &spec.arguments, process_start_identity)?
+        {
             return Ok(Some(OwnedRuntime {
                 pid,
+                command: spec.command.clone(),
+                arguments: spec.arguments.clone(),
+                process_start_identity,
                 log_path: spec.log_path.clone(),
                 pid_path: spec.pid_path.clone(),
                 metadata_path: spec.metadata_path.clone(),
@@ -254,10 +260,19 @@ impl ProcessSupervisor {
         };
         let spec = metadata.process_spec(pid_path.to_path_buf(), metadata_path.to_path_buf());
 
-        if metadata.matches_recorded(&spec, pid) && live_process_matches_spec(pid, &spec)? {
+        let Some(process_start_identity) = metadata.process_start_identity else {
+            return Ok(None);
+        };
+
+        if metadata.matches_recorded(&spec, pid)
+            && live_process_matches(pid, &spec.command, &spec.arguments, process_start_identity)?
+        {
             return Ok(Some(AdoptedProcess {
                 owned: OwnedRuntime {
                     pid,
+                    command: spec.command,
+                    arguments: spec.arguments,
+                    process_start_identity,
                     log_path: spec.log_path,
                     pid_path: spec.pid_path,
                     metadata_path: spec.metadata_path,
@@ -273,9 +288,8 @@ impl ProcessSupervisor {
         let Some(owned) = self.verify_ownership(spec)? else {
             return Ok(false);
         };
-        signal_process_group(owned.pid, ProcessSignal::Reload)?;
 
-        Ok(true)
+        owned.signal(ProcessSignal::Reload)
     }
 }
 
@@ -340,6 +354,25 @@ impl OwnedRuntime {
     pub fn pid(&self) -> u32 {
         self.pid
     }
+
+    fn matches_live(&self) -> Result<bool, DaemonError> {
+        live_process_matches(
+            self.pid,
+            &self.command,
+            &self.arguments,
+            self.process_start_identity,
+        )
+    }
+
+    fn signal(&self, signal: ProcessSignal) -> Result<bool, DaemonError> {
+        if !self.matches_live()? {
+            return Ok(false);
+        }
+
+        signal_process_group(self.pid, signal)?;
+
+        Ok(true)
+    }
 }
 
 impl AdoptedProcess {
@@ -349,6 +382,10 @@ impl AdoptedProcess {
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
         require_process_containment()?;
+        if !self.owned.matches_live()? {
+            return Ok(());
+        }
+
         stop_process_group_by_pid(self.owned.pid, grace_period).await
     }
 }
@@ -671,11 +708,22 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
 }
 
 fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
+    let Some(process_identity) = platform::inspect_process_identity(pid)? else {
+        return Err(DaemonError::MissingProcessIdentity {
+            name: spec.name.clone(),
+            pid,
+        });
+    };
+
     fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
-    write_runtime_metadata(spec, pid)
+    write_runtime_metadata(spec, pid, process_identity.start_identity)
 }
 
-fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
+fn write_runtime_metadata(
+    spec: &ProcessSpec,
+    pid: u32,
+    process_start_identity: platform::ProcessStartIdentity,
+) -> Result<(), DaemonError> {
     let started_at = timestamp()?;
     let metadata = RuntimeMetadata {
         name: spec.name.clone(),
@@ -688,6 +736,7 @@ fn write_runtime_metadata(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonErro
         track: spec.track.clone(),
         log_path: spec.log_path.to_string(),
         started_at,
+        process_start_identity: Some(process_start_identity),
     };
     let encoded = serde_json::to_string(&metadata)?;
 
@@ -727,30 +776,6 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_exists(pid: u32) -> Result<bool, DaemonError> {
-    let pid = process_group_pid(pid)?;
-
-    match test_kill_process(pid) {
-        Ok(()) => Ok(true),
-        Err(source) => {
-            let error = io::Error::from(source);
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(false);
-            }
-
-            Err(error.into())
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
-    require_process_containment()?;
-
-    Ok(false)
-}
-
-#[cfg(target_os = "macos")]
 fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
     let process_group = process_group_pid(pid)?;
 
@@ -774,108 +799,48 @@ fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
     Ok(false)
 }
 
-fn live_process_matches_spec(pid: u32, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-    if !process_exists(pid)? {
-        return Ok(false);
-    }
-
-    let Some(command_line) = live_process_command_line(pid)? else {
-        return Ok(false);
-    };
-    let command_tokens = command_line_tokens(&command_line);
-    let Some(live_executable) = command_tokens.first().map(String::as_str) else {
+fn live_process_matches(
+    pid: u32,
+    command: &Utf8Path,
+    arguments: &[String],
+    process_start_identity: platform::ProcessStartIdentity,
+) -> Result<bool, DaemonError> {
+    let Some(process_identity) = platform::inspect_process_identity(pid)? else {
         return Ok(false);
     };
+    if process_identity.start_identity != process_start_identity {
+        return Ok(false);
+    }
 
-    let command_matches = live_executable == spec.command.as_str()
-        || spec.command.file_name().is_some_and(|file_name| {
-            live_executable == file_name || live_executable.ends_with(&format!("/{file_name}"))
-        })
-        || command_tokens
-            .get(1)
-            .is_some_and(|script| script == spec.command.as_str());
-    let shell_command_argument = spec
-        .command
-        .file_name()
-        .is_some_and(|file_name| file_name == "sh" || file_name == "bash");
-    let arguments_match = spec.arguments.iter().enumerate().all(|(index, argument)| {
-        if shell_command_argument
-            && index > 0
-            && spec
-                .arguments
-                .get(index - 1)
-                .is_some_and(|previous| previous == "-c")
-            && argument.split_whitespace().count() > 1
-        {
-            command_line.contains(argument)
-        } else {
-            command_tokens.iter().any(|token| token == argument)
-        }
-    });
-
-    Ok(command_matches && arguments_match)
+    Ok(process_identity_matches(
+        &process_identity,
+        command,
+        arguments,
+    ))
 }
 
-fn command_line_tokens(command_line: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut token = String::new();
-    let mut quote = None;
-    let mut escaped = false;
+fn process_identity_matches(
+    process_identity: &platform::ProcessIdentity,
+    command: &Utf8Path,
+    arguments: &[String],
+) -> bool {
+    let direct_arguments_match = process_identity.arguments == arguments;
+    let direct_command_matches = process_identity.executable == command
+        || (command == Utf8Path::new("/bin/sh")
+            && process_identity.executable == Utf8Path::new("/bin/bash")
+            && process_identity.argument_zero == command.as_str());
+    let script_command_matches = process_identity
+        .arguments
+        .first()
+        .is_some_and(|script| script == command.as_str())
+        && fs::read_to_string(command).is_ok_and(|source| source.starts_with("#!"));
+    let script_arguments_match = process_identity
+        .arguments
+        .get(1..)
+        .is_some_and(|live_arguments| live_arguments == arguments);
 
-    for character in command_line.chars() {
-        if escaped {
-            token.push(character);
-            escaped = false;
-            continue;
-        }
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-        if let Some(quote_character) = quote {
-            if character == quote_character {
-                quote = None;
-            } else {
-                token.push(character);
-            }
-            continue;
-        }
-        if character == '\'' || character == '"' {
-            quote = Some(character);
-            continue;
-        }
-        if character.is_whitespace() {
-            if !token.is_empty() {
-                tokens.push(std::mem::take(&mut token));
-            }
-            continue;
-        }
-
-        token.push(character);
-    }
-
-    if !token.is_empty() {
-        tokens.push(token);
-    }
-
-    tokens
-}
-
-fn live_process_command_line(pid: u32) -> Result<Option<String>, DaemonError> {
-    let output = StdCommand::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if command_line.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(command_line))
+    (direct_command_matches && direct_arguments_match)
+        || (script_command_matches && script_arguments_match)
 }
 
 #[cfg(target_os = "macos")]

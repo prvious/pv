@@ -6,6 +6,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use resources::RuntimeArtifactAdapter;
+use serde_json::{Value, json};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
 use super::ManagedResourceRuntimeAdapter;
@@ -293,10 +294,14 @@ fn read_dotenv(project: &ProjectRecord) -> Result<String> {
     state::fs::read_to_string(&project.path.join(".env")).map_err(Into::into)
 }
 
-fn read_runtime_metadata(paths: &PvPaths, track: &str) -> Result<serde_json::Value> {
+fn read_runtime_metadata(paths: &PvPaths, track: &str) -> Result<Value> {
     let content = state::fs::read_to_string(&paths.resource_runtime_metadata("mysql", track))?;
+    let mut metadata: Value = serde_json::from_str(&content)?;
+    if let Some(process_start_identity) = metadata.get_mut("process_start_identity") {
+        *process_start_identity = json!("<native-start-identity>");
+    }
 
-    serde_json::from_str(&content).map_err(Into::into)
+    Ok(metadata)
 }
 
 fn mysql_system_database_initialized(paths: &PvPaths, track: &str) -> Result<bool> {

@@ -15,6 +15,7 @@ expression: "(\"<pid>\", log, metadata)"
         "log_path": String("<home>/.pv/logs/test-runtime.log"),
         "name": String("test-runtime"),
         "pid": String("<pid>"),
+        "process_start_identity": String("<native-start-identity>"),
         "resource_name": String("test-runtime"),
         "started_at": String("<timestamp>"),
         "track": String("test"),
