@@ -61,7 +61,7 @@ class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 
 smtp_server = TcpServer(host_port(smtp), SmtpHandler)
-dashboard = http.server.ThreadingHTTPServer(
+dashboard = http.server.HTTPServer(
     host_port(listen),
     http.server.SimpleHTTPRequestHandler,
 )

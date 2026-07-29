@@ -16,5 +16,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), Handler)
+server = http.server.HTTPServer(("127.0.0.1", int(sys.argv[2])), Handler)
 server.serve_forever()
