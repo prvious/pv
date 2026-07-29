@@ -1022,9 +1022,8 @@ async fn reconcile_system_projects_with_progress(
                 report.summaries.push(summary.as_str().to_owned());
             }
             Err(error) => {
-                report
-                    .failures
-                    .push(format!("{}: {error}", project.primary_hostname));
+                let project_label = project.primary_hostname.as_deref().unwrap_or(&project.slug);
+                report.failures.push(format!("{project_label}: {error}"));
             }
         }
     }

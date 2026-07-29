@@ -10,7 +10,7 @@ use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
 use state::{
     Database, LinkProjectInput, ManagedResourceTrackInstallInput, PortRequest,
-    ProjectManagedResourceInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    ProjectManagedResourceInput, ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -76,6 +76,50 @@ fn list_json_outputs_linked_projects() -> anyhow::Result<()> {
     let json = parse_json_output(output)?;
 
     assert_list_json_snapshot("list_json_outputs_linked_projects", tempdir.path(), &json);
+
+    Ok(())
+}
+
+#[test]
+fn list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Resource Project");
+    create_dir(&project.join("config"))?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nenv_file: config/development.env\n",
+    )?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &project);
+    let mut database = Database::open(&paths)?;
+    database.link_project_with_mode(
+        LinkProjectInput {
+            path: project.clone(),
+            original_path: project.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: project.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    drop(database);
+
+    let output = run_pv(&["list", "--json"], &environment)?;
+    assert!(!output.stdout.contains(".invalid"));
+    let json = parse_json_output(output)?;
+    let project = &json["projects"][0];
+
+    assert_eq!(project["mode"], "resource-only");
+    assert_eq!(project["slug"], "resource-project");
+    assert_eq!(project["hostname"], serde_json::Value::Null);
+    assert_eq!(project["env_file"], "config/development.env");
+    assert_list_json_snapshot(
+        "list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel",
+        tempdir.path(),
+        &json,
+    );
 
     Ok(())
 }

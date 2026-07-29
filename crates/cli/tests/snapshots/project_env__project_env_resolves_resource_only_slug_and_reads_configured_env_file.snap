@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/project_env.rs
+expression: "(output, env_before)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "APP_NAME=resource-project\n",
+        stderr: "",
+    },
+    "USER_VALUE=kept\n",
+)

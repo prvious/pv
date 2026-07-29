@@ -88,6 +88,36 @@ fn unlink_removes_project_tls_directory() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn unlink_resolves_resource_only_slug_and_leaves_managed_env_block() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("acme");
+    state::fs::write_sensitive_file(&project_path.join("pv.yml"), "serve: false\n")?;
+    let env_path = project_path.join(".env");
+    let env_before = "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=acme\n# <<< PV MANAGED\n";
+    state::fs::write_sensitive_file(&env_path, env_before)?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &project_path);
+
+    let link = run_pv(&["link"], &environment)?;
+    let unlink = run_pv(&["unlink", "acme"], &environment)?;
+    let database = Database::open(&paths)?;
+
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(unlink.exit_code, ExitCode::SUCCESS);
+    assert!(database.projects()?.is_empty());
+    assert_eq!(state::fs::read_to_string(&env_path)?, env_before);
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((link, unlink, env_before));
+    });
+
+    Ok(())
+}
+
 fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<ProjectRecord> {
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: 8.4\n")?;
 
@@ -106,6 +136,7 @@ fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<Proj
     Ok(project)
 }
 
+#[derive(Debug)]
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,

@@ -36,6 +36,48 @@ postgresql:
 }
 
 #[test]
+fn project_config_parses_resource_only_controls_and_defaults() -> Result<()> {
+    let defaults = ProjectConfig::parse("")?;
+    let resource_only = ProjectConfig::parse(
+        r#"
+serve: false
+env_file: .env.local
+document_root: missing
+hostnames:
+  - api.example.com
+env:
+  APP_URL: "${project_url}"
+  APP_ENV: local
+"#,
+    )?;
+
+    assert_debug_snapshot!((defaults, resource_only));
+
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_invalid_resource_only_control_shapes() {
+    assert!(matches!(
+        ProjectConfig::parse("serve: disabled\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "serve"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("env_file: false\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "env_file"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("env_file: /tmp/acme.env\n"),
+        Err(ConfigError::AbsoluteEnvFile { env_file }) if env_file == "/tmp/acme.env"
+    ));
+    assert!(matches!(
+        ProjectConfig::parse("env_file: config/../../acme.env\n"),
+        Err(ConfigError::EnvFileEscapesProject { env_file })
+            if env_file == "config/../../acme.env"
+    ));
+}
+
+#[test]
 fn project_config_accepts_registered_resource_aliases() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
@@ -650,6 +692,24 @@ mysql:
 }
 
 #[test]
+fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let config = ProjectConfig::parse(
+        "serve: false\nenv_file: .env.local\ndocument_root: missing\nhostnames:\n  - api.example.com\n",
+    )?;
+
+    config::write_project_config(&project, &config)?;
+    let reloaded = ProjectConfigFile::read_from_root(&project)?;
+
+    assert_eq!(reloaded.config, config);
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_writer_rejects_invalid_document_root_without_writing() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
@@ -845,6 +905,56 @@ fn project_config_rejects_document_roots_that_escape_project() -> Result<()> {
     assert!(matches!(
         result,
         Err(ConfigError::DocumentRootEscapesProject { document_root }) if document_root.as_str() == "../outside"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn resource_only_config_defers_serving_path_and_hostname_validation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\ndocument_root: ../outside\nhostnames:\n  - api.example.com\n",
+    )?;
+
+    let config_file = ProjectConfigFile::read_from_root(&project)?;
+
+    assert!(!config_file.config.serve);
+    assert_eq!(
+        config_file.config.document_root.as_deref(),
+        Some(Utf8Path::new("../outside"))
+    );
+    assert_eq!(config_file.config.hostnames, ["api.example.com"]);
+
+    Ok(())
+}
+
+#[test]
+fn project_config_validates_env_file_parent_and_symlink_boundaries() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+
+    write_file(&project.join("pv.yml"), "env_file: missing/.env\n")?;
+    assert!(matches!(
+        ProjectConfigFile::read_from_root(&project),
+        Err(ConfigError::EnvFileParentNotDirectory { env_file })
+            if env_file == "missing/.env"
+    ));
+
+    let outside_env = outside.join(".env");
+    write_file(&outside_env, "")?;
+    create_symlink(&outside_env, &project.join(".env.link"))?;
+    write_file(&project.join("pv.yml"), "env_file: .env.link\n")?;
+    assert!(matches!(
+        ProjectConfigFile::read_from_root(&project),
+        Err(ConfigError::EnvFileEscapesProject { env_file })
+            if env_file == ".env.link"
     ));
 
     Ok(())

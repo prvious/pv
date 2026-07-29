@@ -1,0 +1,54 @@
+---
+source: crates/cli/tests/project_open.rs
+expression: "(link_resource_only, explicit_open, current_open, link_served, picker_open,\nopened_urls)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Linked resources (resource-only) -> <tempdir>/resources\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: Project `resources` is resource-only and cannot be opened\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: could not resolve a linked Project; pass a Project slug or hostname\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Linked web.test -> <tempdir>/web\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Select a Project:\n1. web.test  <tempdir>/web\nEnter selection:\nOpened https://web.test for web.test\n",
+        stderr: "",
+    },
+    [
+        "https://web.test",
+    ],
+)

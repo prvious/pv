@@ -13,6 +13,8 @@ expression: "(output, config_file.config,\nproject_snapshot(&project_after, temp
         stderr: "",
     },
     ProjectConfig {
+        serve: true,
+        env_file: ".env",
         php: Some(
             PhpConfig {
                 version: Some(

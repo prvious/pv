@@ -11,10 +11,10 @@ use resources::{
     generated_allocation_name,
 };
 use state::{
-    Database, ManagedResourceDesiredState, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectPhpRuntimeInput,
-    ProjectRecord, PvPaths, ResourceAllocationInput, ResourceAllocationRecord,
-    ResourceAllocationStatus, StateError,
+    Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
+    ProjectPhpRuntimeInput, ProjectRecord, PvPaths, ResourceAllocationInput,
+    ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
 
 use crate::DaemonError;
@@ -152,33 +152,54 @@ async fn reconcile_loaded_project(
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
-            if let Ok(true) = project_tls_artifact_exists(paths, project)
-                && let Err(maintenance_error) = ensure_project_tls_files(paths, project)
-            {
-                structured_log::project_tls_maintenance_failed(
-                    paths,
-                    &project.id,
-                    &maintenance_error.to_string(),
-                );
-            }
+            maintain_existing_project_tls_after_config_error(paths, project, false);
             return Err(error.into());
         }
     };
-    let tls_maintenance_result = if config_file.config.uses_tls_placeholders() {
-        Some(ensure_project_tls_files(paths, project))
+    let candidate_project = project_with_config_mode(project, &config_file.config);
+    let serves_http = candidate_project.mode == ProjectMode::Served;
+    let preflight_result = (|| {
+        let plan =
+            validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
+        let resolved_php_runtime = maybe_resolve_project_php_runtime(
+            paths,
+            database,
+            &candidate_project,
+            config_file.config.php.as_ref(),
+            serves_http,
+        )?;
+
+        Ok::<_, DaemonError>((plan, resolved_php_runtime))
+    })();
+    let (plan, resolved_php_runtime) = match preflight_result {
+        Ok(result) => result,
+        Err(error) => {
+            maintain_existing_project_tls_after_config_error(
+                paths,
+                project,
+                config_file.config.uses_tls_placeholders(),
+            );
+            return Err(error);
+        }
+    };
+    let project = match synchronize_project_link_state(database, project, &config_file) {
+        Ok(project) => project,
+        Err(error) => {
+            maintain_existing_project_tls_after_config_error(
+                paths,
+                project,
+                config_file.config.uses_tls_placeholders(),
+            );
+            return Err(error);
+        }
+    };
+    let tls_maintenance_result = if serves_http && config_file.config.uses_tls_placeholders() {
+        Some(ensure_project_tls_files(paths, &project))
     } else {
         None
     };
     let has_env_mappings = config_file.config.has_env_mappings();
     let pre_render_result = async {
-        let plan = validate_project_config_and_plan(paths, database, project, &config_file)?;
-        let resolved_php_runtime = maybe_resolve_project_php_runtime(
-            paths,
-            database,
-            project,
-            config_file.config.php.as_ref(),
-        )?;
-
         if let Some(runtime) = &resolved_php_runtime {
             record_project_php_runtime_resource_requirements(database, runtime)?;
         }
@@ -186,12 +207,12 @@ async fn reconcile_loaded_project(
 
         let resource_result = if let Some(catalog) = catalog {
             crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
-                paths, database, project, &plan, catalog, progress,
+                paths, database, &project, &plan, catalog, progress,
             )
             .await
         } else {
             crate::managed_resources::reconcile_project_resources_with_progress(
-                paths, database, project, &plan, progress,
+                paths, database, &project, &plan, progress,
             )
             .await
         };
@@ -210,8 +231,10 @@ async fn reconcile_loaded_project(
         } else if project.desired_php_track.is_some() {
             database.replace_project_php_runtime(&project.id, None)?;
         }
-        database
-            .replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+        if serves_http {
+            database
+                .replace_project_additional_hostnames(&project.id, &config_file.config.hostnames)?;
+        }
 
         let runtime_warnings = resolved_php_runtime
             .as_ref()
@@ -277,9 +300,11 @@ async fn reconcile_loaded_project(
         return Ok(summary);
     }
 
-    let context = project_env_context_for_plan(paths, database, project, &plan)?;
+    let context =
+        project_env_context_for_plan(paths, database, &project, &config_file.config, &plan)?;
     let rendered = config::render_project_env(&config_file.config, &context)?;
-    let transform = config::write_project_env_file(&project.path.join(".env"), &rendered)?;
+    let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
     let mut warnings = observed_warnings(&transform.warnings);
     warnings.extend(runtime_warnings);
     let status = if warnings.is_empty() {
@@ -310,7 +335,21 @@ async fn reconcile_loaded_project(
     Ok(summary)
 }
 
+fn maintain_existing_project_tls_after_config_error(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    required_by_config: bool,
+) {
+    if project.mode == ProjectMode::Served
+        && (required_by_config || matches!(project_tls_artifact_exists(paths, project), Ok(true)))
+        && let Err(error) = ensure_project_tls_files(paths, project)
+    {
+        structured_log::project_tls_maintenance_failed(paths, &project.id, &error.to_string());
+    }
+}
+
 fn ensure_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<(), DaemonError> {
+    let primary_hostname = served_project_hostname(project)?;
     let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
     let ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
 
@@ -322,7 +361,7 @@ fn ensure_project_tls_files(paths: &PvPaths, project: &ProjectRecord) -> Result<
     let private_key_path = paths.project_tls_private_key(&project.id);
 
     let generated = platform::generate_project_certificate(
-        &project.primary_hostname,
+        primary_hostname,
         &ca_certificate_pem,
         &ca_private_key_pem,
     )?;
@@ -339,6 +378,7 @@ pub(crate) fn project_tls_files_are_current(
     project: &ProjectRecord,
     ca_certificate_pem: &str,
 ) -> Result<bool, DaemonError> {
+    let primary_hostname = served_project_hostname(project)?;
     let certificate_pem = read_optional_file(&paths.project_tls_certificate(&project.id))?;
     let private_key_pem = read_optional_file(&paths.project_tls_private_key(&project.id))?;
 
@@ -346,7 +386,7 @@ pub(crate) fn project_tls_files_are_current(
         (Some(certificate_pem), Some(private_key_pem)) => platform::project_certificate_matches(
             &certificate_pem,
             &private_key_pem,
-            &project.primary_hostname,
+            primary_hostname,
             ca_certificate_pem,
         ),
         _ => false,
@@ -378,7 +418,12 @@ fn maybe_resolve_project_php_runtime(
     database: &Database,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
+    serves_http: bool,
 ) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    if !serves_http && php.is_none() {
+        return Ok(None);
+    }
+
     if php.is_none()
         && project.desired_php_track.is_none()
         && !paths.downloads().join("manifest.json").exists()
@@ -482,20 +527,68 @@ fn validate_project_config_and_plan(
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
 ) -> Result<ProjectResourcePlan, DaemonError> {
-    database.validate_project_hostnames(
-        &project.id,
-        &project.primary_hostname,
-        &config_file.config.hostnames,
-    )?;
+    if project.mode == ProjectMode::Served && config_file.config.serve {
+        database.validate_project_hostnames(
+            &project.id,
+            served_project_hostname(project)?,
+            &config_file.config.hostnames,
+        )?;
+    }
     config::validate_project_env_shape(&config_file.config)?;
 
     let plan = project_resource_plan(paths, database, project, &config_file.config)?;
     if config_file.config.has_env_mappings() {
-        let existing_content = read_optional_dotenv(project)?;
+        let existing_content = read_optional_project_env_file(project, &config_file.config)?;
         config::validate_managed_env_block(existing_content.as_deref())?;
     }
 
     Ok(plan)
+}
+
+fn synchronize_project_link_state(
+    database: &mut Database,
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+) -> Result<ProjectRecord, DaemonError> {
+    let mode = project_mode_for_config(&config_file.config);
+    if project.mode == mode {
+        return Ok(project.clone());
+    }
+    let primary_hostname = project
+        .primary_hostname
+        .clone()
+        .unwrap_or_else(|| format!("{}.test", project.slug));
+    let result = database.link_project_with_mode(
+        LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname,
+            config_path: config_file.path.clone(),
+            desired_php_track: project.desired_php_track.clone(),
+            additional_hostnames: config_file.config.hostnames.clone(),
+        },
+        mode,
+    )?;
+
+    Ok(result.project)
+}
+
+fn project_with_config_mode(project: &ProjectRecord, config: &ProjectConfig) -> ProjectRecord {
+    let mut candidate = project.clone();
+    candidate.mode = project_mode_for_config(config);
+    if candidate.mode == ProjectMode::Served && candidate.primary_hostname.is_none() {
+        candidate.primary_hostname = Some(format!("{}.test", candidate.slug));
+    }
+
+    candidate
+}
+
+fn project_mode_for_config(config: &ProjectConfig) -> ProjectMode {
+    if config.serve {
+        ProjectMode::Served
+    } else {
+        ProjectMode::ResourceOnly
+    }
 }
 
 fn project_resource_plan(
@@ -565,7 +658,7 @@ fn allocation_generated_name(
         return Ok(existing.generated_name.clone());
     }
 
-    let generated = generated_allocation_name(resource, &project.primary_hostname, allocation)?;
+    let generated = generated_allocation_name(resource, &project.slug, allocation)?;
 
     Ok(generated.generated_name().to_string())
 }
@@ -675,6 +768,7 @@ fn project_env_context_for_plan(
     paths: &PvPaths,
     database: &Database,
     project: &ProjectRecord,
+    config: &ProjectConfig,
     plan: &ProjectResourcePlan,
 ) -> Result<ProjectEnvContext, DaemonError> {
     let mut resources = BTreeMap::new();
@@ -705,11 +799,28 @@ fn project_env_context_for_plan(
         );
     }
 
+    let serves_http = project.mode == ProjectMode::Served && config.serve;
     Ok(ProjectEnvContext {
-        primary_hostname: project.primary_hostname.clone(),
-        tls_ca_path: paths.ca_certificate().to_string(),
-        tls_cert_path: paths.project_tls_certificate(&project.id).to_string(),
-        tls_key_path: paths.project_tls_private_key(&project.id).to_string(),
+        primary_hostname: if serves_http {
+            served_project_hostname(project)?.to_string()
+        } else {
+            String::new()
+        },
+        tls_ca_path: if serves_http {
+            paths.ca_certificate().to_string()
+        } else {
+            String::new()
+        },
+        tls_cert_path: if serves_http {
+            paths.project_tls_certificate(&project.id).to_string()
+        } else {
+            String::new()
+        },
+        tls_key_path: if serves_http {
+            paths.project_tls_private_key(&project.id).to_string()
+        } else {
+            String::new()
+        },
         resources,
     })
 }
@@ -758,14 +869,28 @@ fn planned_allocation_contexts(
     Ok(allocations)
 }
 
-fn read_optional_dotenv(project: &ProjectRecord) -> Result<Option<String>, DaemonError> {
-    match state::fs::read_to_string(&project.path.join(".env")) {
+fn read_optional_project_env_file(
+    project: &ProjectRecord,
+    config: &ProjectConfig,
+) -> Result<Option<String>, DaemonError> {
+    let path = config::resolve_project_env_file_path(&project.path, config)?;
+    match state::fs::read_to_string(&path) {
         Ok(content) => Ok(Some(content)),
         Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Ok(None)
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn served_project_hostname(project: &ProjectRecord) -> Result<&str, DaemonError> {
+    project
+        .primary_hostname
+        .as_deref()
+        .ok_or_else(|| StateError::ProjectNotServed {
+            project_id: project.id.clone(),
+        })
+        .map_err(Into::into)
 }
 
 fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWarningInput> {

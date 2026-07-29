@@ -14,6 +14,7 @@ expression: "(before, after)"
                 "003:project_primary_hostname_updates",
                 "004:project_original_path",
                 "005:project_resource_requirements",
+                "009:project_mode_and_slug",
             ],
             tables: [
                 "jobs",
@@ -30,10 +31,14 @@ expression: "(before, after)"
         },
         [
             ProjectRecord {
-                id: "<project_id>",
+                id: "project_1",
+                slug: "project_1",
+                mode: Served,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
-                primary_hostname: "acme.test",
+                primary_hostname: Some(
+                    "acme.test",
+                ),
                 config_path: "<tempdir>/acme/pv.yml",
                 desired_php_track: Some(
                     "8.4",
@@ -75,10 +80,14 @@ expression: "(before, after)"
     (
         [
             ProjectRecord {
-                id: "<project_id>",
+                id: "project_1",
+                slug: "project_1",
+                mode: Served,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
-                primary_hostname: "acme.test",
+                primary_hostname: Some(
+                    "acme.test",
+                ),
                 config_path: "<tempdir>/acme/pv.yml",
                 desired_php_track: Some(
                     "8.4",
@@ -100,10 +109,14 @@ expression: "(before, after)"
         ],
         Some(
             ProjectRecord {
-                id: "<project_id>",
+                id: "project_1",
+                slug: "project_1",
+                mode: Served,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
-                primary_hostname: "acme.test",
+                primary_hostname: Some(
+                    "acme.test",
+                ),
                 config_path: "<tempdir>/acme/pv.yml",
                 desired_php_track: Some(
                     "8.4",
@@ -125,14 +138,14 @@ expression: "(before, after)"
         ),
         [
             ProjectManagedResourceRecord {
-                project_id: "<project_id>",
+                project_id: "project_1",
                 resource_name: "mysql",
                 track: "8.0",
                 created_at: "<timestamp>",
                 updated_at: "<timestamp>",
             },
             ProjectManagedResourceRecord {
-                project_id: "<project_id>",
+                project_id: "project_1",
                 resource_name: "redis",
                 track: "7.2",
                 created_at: "<timestamp>",
@@ -180,7 +193,7 @@ expression: "(before, after)"
         [
             ResourceAllocationRecord {
                 id: "allocation_000001",
-                project_id: "<project_id>",
+                project_id: "project_1",
                 resource_name: "mysql",
                 track: "8.0",
                 allocation_name: "app-db",
@@ -193,7 +206,7 @@ expression: "(before, after)"
         ],
         ResourceAllocationRecord {
             id: "allocation_000001",
-            project_id: "<project_id>",
+            project_id: "project_1",
             resource_name: "mysql",
             track: "8.0",
             allocation_name: "app-db",
@@ -208,7 +221,7 @@ expression: "(before, after)"
         [
             ResourceAllocationRecord {
                 id: "allocation_000001",
-                project_id: "<project_id>",
+                project_id: "project_1",
                 resource_name: "mysql",
                 track: "8.0",
                 allocation_name: "app-db",
@@ -222,8 +235,10 @@ expression: "(before, after)"
             },
         ],
         ProjectEnvStateContext {
-            project_id: "<project_id>",
-            primary_hostname: "acme.test",
+            project_id: "project_1",
+            primary_hostname: Some(
+                "acme.test",
+            ),
             resources: {
                 "mysql": ProjectEnvResourceContext {
                     track: "8.0",
@@ -253,7 +268,7 @@ expression: "(before, after)"
             },
         },
         ProjectEnvObservedStateRecord {
-            project_id: "<project_id>",
+            project_id: "project_1",
             status: Warning,
             message: Some(
                 "rendered with warnings after migration",
@@ -261,7 +276,7 @@ expression: "(before, after)"
             observed_at: "<timestamp>",
             warnings: [
                 ProjectEnvObservedWarningRecord {
-                    project_id: "<project_id>",
+                    project_id: "project_1",
                     kind: "duplicate_key",
                     message: "APP_URL already exists outside the PV block",
                     observed_at: "<timestamp>",
@@ -270,7 +285,7 @@ expression: "(before, after)"
         },
         [
             ProjectEnvObservedWarningRecord {
-                project_id: "<project_id>",
+                project_id: "project_1",
                 kind: "duplicate_key",
                 message: "APP_URL already exists outside the PV block",
                 observed_at: "<timestamp>",

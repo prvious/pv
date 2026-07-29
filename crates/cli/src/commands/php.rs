@@ -11,7 +11,9 @@ use resources::{
     TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
 use serde::Serialize;
-use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
+use state::{
+    Database, ManagedResourceDesiredState, ProjectMode, ProjectRecord, PvPaths, StateError,
+};
 
 use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
@@ -64,7 +66,7 @@ pub(crate) fn use_track(
 
     output.line(&format!(
         "Set {} PHP track to {track}",
-        project.primary_hostname
+        project_display_name(&project)
     ))?;
     output.line(&format!("Updated Project config: {}", config_file.path))?;
     write_install_lines(&installed, &mut output)?;
@@ -313,7 +315,8 @@ fn resolve_php_runtime_for_shim(
                 return Err(error.into());
             }
         };
-        if let Some(track) = project.php_runtime.track.clone() {
+        let uses_project_runtime = config_file.config.serve || config_file.config.php.is_some();
+        if uses_project_runtime && let Some(track) = project.php_runtime.track.clone() {
             let php = config_file.config.php.as_ref();
             let requested_extensions = php
                 .map(|php| php.requested_extensions().to_vec())
@@ -362,7 +365,7 @@ fn resolve_php_runtime_for_shim(
             if let Some(php) = php {
                 return resolve_project_config_php_runtime_for_shim(database, &current_track, php);
             }
-        } else if let Some(php) = config_file.config.php.as_ref() {
+        } else if uses_project_runtime && let Some(php) = config_file.config.php.as_ref() {
             let track = resolve_project_config_php_track_for_shim(paths, database, php)?;
 
             return resolve_project_config_php_runtime_for_shim(database, &track, php);
@@ -650,7 +653,8 @@ fn request_project_reconciliation(
     match daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, &scope) {
         Ok(job) => output.line(&format!(
             "Queued reconciliation {} for {}",
-            job.id, project.primary_hostname
+            job.id,
+            project_display_name(project)
         ))?,
         Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
             write_daemon_unavailable_warning(output)?
@@ -659,6 +663,17 @@ fn request_project_reconciliation(
     }
 
     Ok(())
+}
+
+fn project_display_name(project: &ProjectRecord) -> &str {
+    if project.mode == ProjectMode::ResourceOnly {
+        return project.slug.as_str();
+    }
+
+    project
+        .primary_hostname
+        .as_deref()
+        .unwrap_or(project.slug.as_str())
 }
 
 fn request_system_reconciliation(

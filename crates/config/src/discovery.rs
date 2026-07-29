@@ -1,6 +1,6 @@
 use std::io;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::filesystem::{canonicalize_utf8, is_directory, path_present, read_to_string};
 use crate::{ConfigError, ProjectConfig, ProjectConfigFile};
@@ -66,6 +66,12 @@ fn validate_project_paths(
     project_root: &Utf8Path,
     config: ProjectConfig,
 ) -> Result<ProjectConfig, ConfigError> {
+    resolve_project_env_file_path(project_root, &config)?;
+
+    if !config.serve {
+        return Ok(config);
+    }
+
     let Some(document_root) = &config.document_root else {
         return Ok(config);
     };
@@ -100,6 +106,69 @@ fn validate_project_paths(
     }
 
     Ok(config)
+}
+
+pub fn resolve_project_env_file_path(
+    project_root: &Utf8Path,
+    config: &ProjectConfig,
+) -> Result<Utf8PathBuf, ConfigError> {
+    let canonical_root = canonicalize_utf8(project_root)?;
+    let env_file = &config.env_file;
+    let target = canonical_root.join(env_file);
+
+    if path_present(&target)? {
+        let canonical_target = canonicalize_utf8(&target)?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err(ConfigError::EnvFileEscapesProject {
+                env_file: env_file.clone(),
+            });
+        }
+        if is_directory(&canonical_target)? {
+            return Err(ConfigError::EnvFileNotFile {
+                env_file: env_file.clone(),
+            });
+        }
+
+        return Ok(canonical_target);
+    }
+
+    let Some(parent) = target.parent() else {
+        return Err(ConfigError::EnvFileParentNotDirectory {
+            env_file: env_file.clone(),
+        });
+    };
+    let canonical_parent = match canonicalize_utf8(parent) {
+        Ok(path) => path,
+        Err(ConfigError::Filesystem { source, .. })
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Err(ConfigError::EnvFileParentNotDirectory {
+                env_file: env_file.clone(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(ConfigError::EnvFileEscapesProject {
+            env_file: env_file.clone(),
+        });
+    }
+    if !is_directory(&canonical_parent)? {
+        return Err(ConfigError::EnvFileParentNotDirectory {
+            env_file: env_file.clone(),
+        });
+    }
+
+    let Some(file_name) = target.file_name() else {
+        return Err(ConfigError::EnvFileNotFile {
+            env_file: env_file.clone(),
+        });
+    };
+
+    Ok(canonical_parent.join(file_name))
 }
 
 fn validate_config_path(

@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/project_env.rs
+expression: "(ambiguous, explicit_hostname)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: Project selector `acme` matches slug `acme` and hostname `acme.test` on different Projects; pass the full `acme.test` hostname\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PROJECT_KIND=served\n",
+        stderr: "",
+    },
+)

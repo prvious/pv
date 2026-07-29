@@ -151,7 +151,7 @@ impl StatusSnapshot {
             for project in &self.projects {
                 output.line(&format!(
                     "  {} env={} {}",
-                    project.hostname,
+                    project.display_name(),
                     project.env_status,
                     project.message.as_deref().unwrap_or("-"),
                 ))?;
@@ -304,12 +304,24 @@ struct RuntimeStatus {
 
 #[derive(Serialize)]
 struct ProjectStatus {
-    hostname: String,
+    mode: &'static str,
+    slug: String,
+    hostname: Option<String>,
     env_status: &'static str,
     message: Option<String>,
     observed_at: Option<String>,
     #[serde(skip)]
     failure: bool,
+}
+
+impl ProjectStatus {
+    fn display_name(&self) -> &str {
+        if self.mode == "resource-only" {
+            return &self.slug;
+        }
+
+        self.hostname.as_deref().unwrap_or(&self.slug)
+    }
 }
 
 #[derive(Serialize)]
@@ -424,6 +436,8 @@ fn project_status(
 ) -> ProjectStatus {
     let Some(observed) = observed else {
         return ProjectStatus {
+            mode: project.mode.as_str(),
+            slug: project.slug,
             hostname: project.primary_hostname,
             env_status: "pending",
             message: Some("Project env has not been observed yet".to_string()),
@@ -440,6 +454,8 @@ fn project_status(
     };
 
     ProjectStatus {
+        mode: project.mode.as_str(),
+        slug: project.slug,
         hostname: project.primary_hostname,
         env_status,
         message,

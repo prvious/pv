@@ -39,7 +39,9 @@ expression: snapshot
         ],
     ),
     Some(
-        "acme.test",
+        Some(
+            "acme.test",
+        ),
     ),
     JobRecord {
         id: "job_000001",

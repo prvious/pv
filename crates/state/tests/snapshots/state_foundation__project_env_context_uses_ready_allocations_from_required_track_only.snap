@@ -5,7 +5,9 @@ expression: "(old_track_context, switched_track_context)"
 (
     ProjectEnvStateContext {
         project_id: "<project_id>",
-        primary_hostname: "acme.test",
+        primary_hostname: Some(
+            "acme.test",
+        ),
         resources: {
             "mysql": ProjectEnvResourceContext {
                 track: "8.0",
@@ -26,7 +28,9 @@ expression: "(old_track_context, switched_track_context)"
     },
     ProjectEnvStateContext {
         project_id: "<project_id>",
-        primary_hostname: "acme.test",
+        primary_hostname: Some(
+            "acme.test",
+        ),
         resources: {
             "mysql": ProjectEnvResourceContext {
                 track: "8.4",

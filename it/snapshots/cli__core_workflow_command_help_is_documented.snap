@@ -35,21 +35,21 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Unlink a Project\n\nUsage: pv unlink [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to unlink\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Unlink a Project\n\nUsage: pv unlink [OPTIONS] [project]\n\nArguments:\n  [project]  Project slug or hostname to unlink\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Open a linked Project\n\nUsage: pv open [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to open\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Open a linked Project\n\nUsage: pv open [OPTIONS] [project]\n\nArguments:\n  [project]  Project slug or hostname to open\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Print generated Project environment values\n\nUsage: pv project:env [OPTIONS] [hostname]\n\nArguments:\n  [hostname]  Project hostname to render env for\n\nOptions:\n      --json      Print generated Project environment values as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Print generated Project environment values\n\nUsage: pv project:env [OPTIONS] [project]\n\nArguments:\n  [project]  Project slug or hostname to render env for\n\nOptions:\n      --json      Print generated Project environment values as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
 ]

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8Path;
 
+use crate::model::value_uses_serving_placeholder;
 use crate::{ConfigError, ProjectConfig, filesystem};
 
 pub const MANAGED_ENV_START_MARKER: &str = "# >>> PV MANAGED";
@@ -57,8 +58,8 @@ pub fn render_project_env(
     config: &ProjectConfig,
     context: &ProjectEnvContext,
 ) -> Result<RenderedProjectEnv, ConfigError> {
-    let project_values = project_context_values(context)?;
-    let mut values = render_mapping("env", &config.env, &project_values)?
+    let project_values = project_context_values(context, config.serve)?;
+    let mut values = render_mapping("env", &config.env, &project_values, config.serve)?
         .into_iter()
         .map(|(key, entry)| (key, entry.value))
         .collect::<BTreeMap<_, _>>();
@@ -79,6 +80,7 @@ pub fn render_project_env(
             &format!("{resource}.env"),
             &resource_config.env,
             &context_values,
+            config.serve,
         )?;
         insert_same_depth_entries(&mut resource_values, rendered)?;
     }
@@ -114,6 +116,7 @@ pub fn render_project_env(
                 &format!("{resource}.allocations.{allocation}.env"),
                 &allocation_config.env,
                 &context_values,
+                config.serve,
             )?;
             insert_same_depth_entries(&mut allocation_values, rendered)?;
         }
@@ -130,7 +133,10 @@ pub fn render_project_env(
 pub fn validate_project_env_shape(config: &ProjectConfig) -> Result<(), ConfigError> {
     let mut resource_values = BTreeMap::new();
     for (resource, resource_config) in &config.resources {
-        for key in resource_config.env.keys() {
+        for (key, value) in &resource_config.env {
+            if !config.serve && value_uses_serving_placeholder(value) {
+                continue;
+            }
             insert_same_depth_key(&mut resource_values, key, format!("{resource}.env.{key}"))?;
         }
     }
@@ -138,7 +144,10 @@ pub fn validate_project_env_shape(config: &ProjectConfig) -> Result<(), ConfigEr
     let mut allocation_values = BTreeMap::new();
     for (resource, resource_config) in &config.resources {
         for (allocation, allocation_config) in &resource_config.allocations {
-            for key in allocation_config.env.keys() {
+            for (key, value) in &allocation_config.env {
+                if !config.serve && value_uses_serving_placeholder(value) {
+                    continue;
+                }
                 insert_same_depth_key(
                     &mut allocation_values,
                     key,
@@ -251,8 +260,9 @@ pub fn write_project_env_file(
 
 fn project_context_values(
     context: &ProjectEnvContext,
+    serve: bool,
 ) -> Result<BTreeMap<String, String>, ConfigError> {
-    if context.primary_hostname.is_empty() {
+    if serve && context.primary_hostname.is_empty() {
         return Err(ConfigError::MissingEnvContext {
             field: "project.primary_hostname".to_string(),
             placeholder: "project_url".to_string(),
@@ -260,10 +270,12 @@ fn project_context_values(
     }
 
     let mut values = BTreeMap::new();
-    values.insert(
-        "project_url".to_string(),
-        format!("https://{}", context.primary_hostname),
-    );
+    if !context.primary_hostname.is_empty() {
+        values.insert(
+            "project_url".to_string(),
+            format!("https://{}", context.primary_hostname),
+        );
+    }
     if !context.tls_ca_path.is_empty() {
         values.insert("tls_ca".to_string(), context.tls_ca_path.clone());
     }
@@ -307,10 +319,14 @@ fn render_mapping(
     field: &str,
     mapping: &BTreeMap<String, String>,
     context_values: &BTreeMap<String, String>,
+    serve: bool,
 ) -> Result<BTreeMap<String, RenderedEnvEntry>, ConfigError> {
     let mut rendered = BTreeMap::new();
 
     for (key, value) in mapping {
+        if !serve && value_uses_serving_placeholder(value) {
+            continue;
+        }
         let field = format!("{field}.{key}");
         let value = render_env_value(&field, value, context_values)?;
         rendered.insert(

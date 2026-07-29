@@ -256,9 +256,9 @@ The daemon watches linked Project config files and automatically reconciles when
 
 On startup, the daemon detects privileged system drift such as stale DNS resolver ports or stale `pf` redirects, but it does not prompt for admin privileges or mutate system configuration from the background. It records repair-required observed status instead.
 
-If a linked Project config becomes invalid, the daemon keeps serving the last valid desired state, records the config error in observed status, stops updating `.env` from the invalid config, and surfaces the error in `pv list` and `pv status`. PV does not tear down working resources because of a transient invalid edit.
+If a linked Project config becomes invalid, the daemon keeps the last valid served or resource-only desired state, records the config error in observed status, stops updating the configured env file from the invalid config, and surfaces the error in `pv list` and `pv status`. PV does not tear down working routes or resources because of a transient invalid edit.
 
-Project config changes restart or reload only affected runtime processes. PHP version or routing changes may restart/reassign FrankenPHP serving for the affected Project. Env-only changes update `.env` without restarting the Gateway.
+Project config changes restart or reload only affected runtime processes. PHP version or routing changes may restart/reassign FrankenPHP serving for the affected Project. Env-only changes update the configured env file without restarting the Gateway.
 
 When a Project's PHP track or optional extension set changes, PV reconfigures only affected Project-serving workers. It may stop an old PHP worker if no Projects remain on that runtime identity and start or reload the new runtime's worker. Unrelated PHP workers are not touched.
 
@@ -322,7 +322,7 @@ export COMPOSER_CACHE_DIR="/Users/<user>/.pv/composer/cache";
 
 `pv env` only prints shell code. It does not create directories or otherwise mutate filesystem state during shell startup.
 
-`pv project:env` prints the generated Project environment values PV would render into the PV-managed `.env` block, without editing `.env`. With no argument, it resolves the current directory's Project. With a hostname argument, it resolves that Project hostname, including additional hostnames declared in `hostnames:`. It prints actual rendered values, including secrets. Broad status commands should avoid printing secrets.
+`pv project:env` prints the generated Project environment values PV would render into the PV-managed block, without editing the configured env file. With no argument, it resolves the current directory's Project. With a selector argument, it resolves an exact Project slug or Project hostname, including additional hostnames declared in `hostnames:`. Bare slug/normalized-hostname ambiguity fails and suggests the full `.test` hostname. It prints actual rendered values, including secrets. Broad status commands should avoid printing secrets.
 
 ## Multi-version PHP
 
@@ -332,6 +332,8 @@ Projects using a different PHP runtime are proxied to secondary FrankenPHP proce
 The Gateway is always-on core PV infrastructure after setup. It only routes/proxies and does not serve Projects directly. Runtime-specific Project-serving FrankenPHP processes run only when at least one linked Project needs that PHP runtime identity.
 
 Each Project-serving FrankenPHP worker serves all Projects assigned to one PHP runtime identity. The runtime identity is the resolved PHP track plus the sorted available optional extension set. PV does not run one worker per Project.
+
+Resource-only Projects do not contribute Gateway routes or Project-serving worker demand. The core Gateway remains running and healthy when every linked Project is resource-only. A successful served-to-resource-only transition removes stale generated route and worker config for that Project.
 
 Project-serving FrankenPHP workers bind only to loopback high ports. They are internal to PV behind the Gateway.
 
@@ -356,6 +358,8 @@ Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, 
 When routing or Gateway config changes, PV reloads the Gateway config using Caddy/FrankenPHP reload capabilities where possible. PV restarts the Gateway only if reload fails or is unavailable.
 
 PV owns one local CA and passes that CA to the Gateway's FrankenPHP/Caddy configuration. FrankenPHP/Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: primary Project hostnames plus additional `hostnames:` from valid Project config. The Gateway selects certificates by SNI.
+
+While a Project is resource-only, PV retains any existing stable Project TLS files but does not refresh them or include the Project in Gateway TLS demand. Re-enabling serving resumes normal TLS reconciliation after hostname and document-root validation succeeds.
 
 The Gateway does not automatically route `*.project.test` to a Project. Subdomain routing must be explicitly requested in Project config, which allows `acme.test` and `api.acme.test` to belong to different Projects.
 
@@ -971,6 +975,12 @@ Projects may opt in to Project-specific Managed Resource requirements and enviro
 
 An empty Project config is valid and means no Project-specific overrides. PV uses defaults and does not touch `.env`.
 
+Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
+
+Serving-only config remains valid but dormant while `serve: false`. This includes `document_root`, `hostnames:`, the primary Project hostname, and env entries that use `${project_url}`, `${tls_cert}`, `${tls_key}`, or `${tls_ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries.
+
+Basic YAML types, unknown keys, env key rules, and placeholder spelling are validated in both serving modes. A malformed dormant value is still a config error when it can be validated without serving context. Hostname collision and document-root existence checks are deferred until serving is enabled. As with other invalid Project config, a failed transition keeps the last valid desired state active.
+
 Empty string values for meaningful config fields, such as `php` or Managed Resource `version`, are invalid.
 
 Version/track fields may be YAML strings or numbers. PV normalizes them to strings during validation.
@@ -980,6 +990,8 @@ Project config can request Managed Resource tracks and define environment variab
 Project config can declare additional Project hostnames with `hostnames:`. These hostnames are routed to the same Project and receive Gateway TLS certificates for their own hostnames. `hostnames:` is additive and does not include or redefine the primary Project hostname, which comes from `pv link --hostname` or the directory-derived default. Additional hostnames must be full `.test` hostnames; PV v1 rejects non-`.test` hostnames and wildcard hostnames.
 
 All hostnames in PV's desired routing table are unique across primary and additional hostnames. If an additional hostname conflicts with another Project's primary or additional hostname, the Project config is invalid. If `pv link --hostname` tries to use a hostname that is already primary or additional for another Project, it fails with a clear collision error. PV keeps serving the last valid desired state and surfaces conflicts in `pv list` and `pv status`.
+
+When a served Project changes to `serve: false`, it retains its primary and additional hostname reservations so another Project cannot take them during a temporary serving pause. A Project first linked with `serve: false` does not need or reserve a real `.test` hostname.
 
 Project config `hostnames:` cannot include the Project's own primary hostname.
 
@@ -994,6 +1006,8 @@ Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV 
 If Project config asks for a Managed Resource track that is not installed, daemon reconciliation installs it automatically.
 
 Declaring a Managed Resource in Project config means the Project needs that resource. Reconciliation installs and starts the selected track even when no env mappings or Resource allocations are declared.
+
+An explicit `php:` selection remains available to the Project-aware `php` and Composer shims for a resource-only Project and installs the selected PHP/FrankenPHP lifecycle pair when required. It does not create a PHP worker while `serve: false`. Without explicit `php:`, a resource-only Project creates no Project-specific PHP demand and Project-aware CLI commands may use the global PHP runtime fallback.
 
 If no linked Projects need a running Managed Resource track anymore, the daemon stops that process. Installed Managed Resource assets remain on disk unless explicitly uninstalled.
 
@@ -1015,9 +1029,9 @@ SQL root/superuser passwords are randomly generated once per Managed Resource in
 
 For SQL database names, allocation names are normalized to underscore-style identifiers: hyphens are converted to underscores. Project config allocation names may still use hyphens.
 
-SQL database names use the same readable hostname-based naming approach as RustFS buckets, but with underscores: `<hostname_slug>_<allocation_name>`. The hostname slug includes the `.test` suffix, with dots and hyphens converted to underscores. For example, primary Project hostname `acme.test` and allocation `app-db` creates database `acme_test_app_db`.
+SQL database names use the Project's immutable slug with underscores: `<project_slug>_<allocation_name>`. Hyphens in both the Project slug and allocation name are converted to underscores. For example, Project slug `acme` and allocation `app-db` creates database `acme_app_db`.
 
-SQL database names are generated when the Resource allocation is first created and then stored in `pv.db`. If the Project's primary hostname changes later, PV keeps using the existing stored database name instead of renaming the database or creating a new database.
+SQL database names are generated when the Resource allocation is first created and then stored in `pv.db`. If the Project's hostname, path, slug derivation input, or serving mode changes later, PV keeps using the existing stored database name instead of renaming the database or creating a new database.
 
 Generated local development secrets are stored plainly in the user-owned SQLite database for v1. PV relies on filesystem permissions rather than macOS Keychain encryption at rest.
 
@@ -1025,7 +1039,7 @@ Generated credentials are stable. PV creates them once for the relevant Managed 
 
 PV v1 does not support credential rotation commands.
 
-Redis Resource allocations create generated key prefixes only in v1. PV does not manage Redis logical DB indexes or ACL users in v1. Redis prefix values use `<hostname-slug>-<allocation>-`, where the primary Project hostname at allocation creation time is slugged by replacing dots with hyphens and includes the `.test` suffix. For example, primary hostname `acme.test` and allocation `cache` renders `acme-test-cache-`. Redis prefixes are generated when the Resource allocation is first created and then stored in `pv.db`. If the Project's primary hostname changes later, PV keeps using the existing stored prefix instead of switching to a new key namespace.
+Redis Resource allocations create generated key prefixes only in v1. PV does not manage Redis logical DB indexes or ACL users in v1. Redis prefix values use `<project-slug>-<allocation>-`. For example, Project slug `acme` and allocation `cache` renders `acme-cache-`. Redis prefixes are generated when the Resource allocation is first created and then stored in `pv.db`. Later Project changes do not switch the stored key namespace.
 
 For Redis prefixes, allocation names are normalized the same way as RustFS bucket allocation segments: underscores are converted to hyphens.
 
@@ -1033,7 +1047,7 @@ Mailpit does not support Resource allocations in v1. It is a shared capture serv
 
 RustFS uses one randomly generated PV-managed root/access credential per Managed Resource instance/track so PV can manage and access the local RustFS instance. RustFS Resource allocations create per-Project buckets and render the shared instance access credentials plus bucket name. PV v1 does not create dedicated per-allocation RustFS access keys.
 
-RustFS Resource allocation bucket names use the Project hostname slug and allocation name: `<hostname-slug>-<allocation_name>`. The hostname slug includes the `.test` suffix, with dots replaced by hyphens. For example, primary Project hostname `acme.test` and allocation `uploads` creates bucket `acme-test-uploads`.
+RustFS Resource allocation bucket names use the Project slug and allocation name: `<project-slug>-<allocation_name>`. For example, Project slug `acme` and allocation `uploads` creates bucket `acme-uploads`.
 
 For RustFS bucket names, allocation names are normalized to bucket-safe lowercase DNS-style labels: underscores are converted to hyphens. Project config allocation names may still use underscores.
 
@@ -1059,7 +1073,7 @@ If a Resource allocation is removed from Project config, PV stops reconciling it
 
 PV v1 does not automatically garbage-collect orphaned Resource allocations.
 
-PV uses readable hostname-based generated names for user-visible Resource allocation objects. SQL database names use `<hostname_slug>_<allocation_name>`, RustFS bucket names use `<hostname-slug>-<allocation_name>`, and Redis prefixes use `<hostname-slug>-<allocation>-`. These names are generated at first allocation creation and stored in `pv.db` so later Project hostname changes do not silently switch backing data.
+PV uses readable Project-slug-based generated names for user-visible Resource allocation objects. SQL database names use `<project_slug>_<allocation_name>`, RustFS bucket names use `<project-slug>-<allocation_name>`, and Redis prefixes use `<project-slug>-<allocation>-`. These names are generated at first allocation creation and stored in `pv.db`; reconciliation always reuses the persisted `generated_name` and never renames an existing database, bucket, or prefix.
 
 PV applies a hard 63-character maximum to generated Resource allocation object names in v1. If the generated SQL database name, Redis prefix, or RustFS bucket name would exceed 63 characters, PV fails Project config/reconciliation with a clear error. PV does not truncate, hash, or silently rewrite generated Resource allocation names in v1.
 
@@ -1092,6 +1106,8 @@ Placeholder names must use lowercase snake_case, such as `${project_url}`, `${ac
 `${project_url}` renders the URL for the primary Project hostname, such as `https://acme.test`. It does not vary by additional hostnames.
 
 `${tls_key}` renders the stable PV-owned path to the TLS private key for the Project's primary hostname. `${tls_cert}` renders the stable PV-owned path to the TLS certificate chain for the Project's primary hostname. `${tls_ca}` renders the path to PV's local CA certificate. PV must never expose the local CA private key through Project env placeholders.
+
+While `serve: false`, `${project_url}`, `${tls_key}`, `${tls_cert}`, and `${tls_ca}` remain recognized placeholders, but PV omits any complete env entry containing one of them instead of rendering a partial or fake serving value. Other entries at the same mapping scope continue to render.
 
 TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with Gateway-managed TLS certificates.
 
@@ -1157,13 +1173,15 @@ rustfs:
 
 Any `env:` mapping in Project config is explicit opt-in to PV-managed `.env` rendering, including root-level `env:` without Managed Resource mappings.
 
-When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates only a PV-owned delimited block inside the Project's `.env` file. PV never rewrites user-owned `.env` lines outside that block. If the Project's `.env` file does not exist, PV creates it automatically with the PV-owned block.
+When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates only a PV-owned delimited block inside the configured env file. PV never rewrites user-owned lines outside that block. If the configured env file does not exist, PV creates it automatically with the PV-owned block.
 
 PV renders `.env` only after required Managed Resource ports and Resource allocations are known. Env rendering is all-or-nothing for the full Project config. If a required allocation or resource reconciliation fails, PV keeps the last valid managed block and records the failure instead of rendering incomplete values.
 
-PV v1 only renders to `.env`. It does not support `.env.local` or configurable env file targets.
+Project config accepts a root-level `env_file` path and defaults it to `.env`. The path is relative to the canonical Project root. Absolute paths, lexical `..` escapes, and symlinks that resolve outside the canonical Project root are rejected. The target's parent directory must already exist; PV does not create parent directories.
 
-When creating a missing `.env`, PV creates a user-owned file containing only the PV-owned block with `0600` permissions. It does not copy `.env.example`. When updating an existing `.env`, PV preserves the existing file permissions.
+When creating a missing configured env file, PV creates a user-owned file containing only the PV-owned block with `0600` permissions. It does not copy `.env.example`. When updating an existing env file, PV preserves the existing file permissions.
+
+If `env_file` changes, PV writes or updates only the newly configured target. PV leaves the prior target and its last PV-managed block untouched and does not track historical env targets for cleanup. If config later switches back to a previous target, PV updates the existing block there normally.
 
 PV uses these exact `.env` delimiters:
 
@@ -1187,7 +1205,7 @@ Duplicate env key warnings appear as compact Project warnings in `pv list`, with
 
 PV writes `.env` values unquoted when safe and quotes/escapes values when necessary, such as values containing spaces, `#`, quotes, or newlines.
 
-If a Project has no Project config, or its Project config has no environment mappings, PV does not touch the Project's `.env` file. If a previously generated PV-managed block exists, PV leaves the last generated values in place and stops updating the block. The Project is still served through the Gateway using the default PHP version, or the `php` version requested in Project config when present.
+If a Project has no Project config, or its Project config has no environment mappings, PV does not touch the configured env file. If a previously generated PV-managed block exists, PV leaves the last generated values in place and stops updating the block. A served Project still uses the default PHP version, or the `php` version requested in Project config when present.
 
 PV does not watch `.env` files. It only writes the PV-managed block during reconciliation when Project config or Managed Resource state requires an update.
 
@@ -1199,7 +1217,7 @@ PV does not create sample Project config files during setup and does not create 
 
 ## Project Linking
 
-`pv link [path]` registers a Project as desired state and immediately requests daemon reconciliation.
+`pv link [path]` registers a Project as desired state and immediately requests daemon reconciliation. PV reads and validates Project config before choosing whether the new Project is served or resource-only.
 
 If `path` is omitted, `pv link` uses the current directory.
 
@@ -1223,7 +1241,7 @@ PV v1 does not run Laravel application commands, such as `php artisan key:genera
 
 PV v1 does not diagnose Laravel application state, such as missing `APP_KEY`.
 
-The command succeeds when PV has recorded the desired Project and submitted the reconciliation request. If the daemon is running and reconciliation succeeds, the Project should be reachable at its `.test` URL by the end of the command.
+The command succeeds when PV has recorded the desired Project and submitted the reconciliation request. If the daemon is running and reconciliation succeeds, a served Project should be reachable at its `.test` URL by the end of the command. A resource-only Project should have its declared Managed Resources, allocations, and env reconciled without becoming reachable through the Gateway.
 
 `pv link` can run before `pv setup`. It records desired state and warns that setup is incomplete, so routing will not work until `pv setup` completes.
 
@@ -1233,11 +1251,17 @@ Project hostnames are normalized to lowercase and validated as DNS-safe `.test` 
 
 `pv.test` is reserved for PV diagnostics or future internal UI and cannot be assigned to a Project.
 
-PV identifies a Project by its canonical absolute path. Generated names and Project hostnames are unique attributes, but they are not Project identity. Running `pv link` more than once for the same canonical path updates the existing Project record.
+PV identifies a Project by its canonical absolute path. Project slugs, generated names, and Project hostnames are unique attributes, but they are not Project identity. Running `pv link` more than once for the same canonical path updates the existing Project record.
 
 PV stores both the original linked path string and the canonical absolute path. The canonical path is used for identity, routing, and equality; the original path is display/debug metadata.
 
 PV also assigns each Project a random stable Project ID at first link and stores it in `pv.db`. The Project ID is PV's stable internal reference for the Project and does not change when the Project hostname changes. Project IDs should be short random URL-safe IDs, roughly 8-12 characters, to avoid local collisions while keeping diagnostics readable.
+
+PV also assigns every Project a globally unique, immutable Project slug at first link and stores it in `pv.db`. The base slug is derived from the canonical directory basename using the same lowercase DNS-safe normalization as a default hostname label. If that slug is already stored by another Project, PV appends the first available numeric suffix: `appointment`, `appointment-1`, `appointment-2`, and so on. Slug collision checks use PV state, not underlying Managed Resource data. Relinking the same canonical path preserves its assigned slug.
+
+The Project slug is the stable readable namespace for all newly generated Resource allocation names in both serving modes. It does not change when the Project path, hostname, or serving mode changes.
+
+Persisted Project state records serving mode and Project slug additively. Where the current database hostname invariants require a non-null unique value for a newly linked resource-only Project, PV stores a unique internal `.invalid` hostname. This compatibility value is storage-only and must never appear in user-facing text or JSON, selectors, Gateway or TLS planning, env rendering, Resource allocation names, status, or logs.
 
 If a Project directory moves and is linked again at the new path, PV v1 treats it as a new Project. Path-move semantics may be added later if needed.
 
@@ -1246,6 +1270,8 @@ If a linked Project path no longer exists, PV marks the Project failed or missin
 Missing Projects continue to own their Project hostnames until the user unlinks or repairs them. If technically feasible, the Gateway returns a specific missing-Project response for linked hostnames whose Project path is missing.
 
 If the derived Project hostname is already assigned to another Project, `pv link` fails with a clear collision error. The user can pass an explicit Project hostname with `--hostname <hostname>` to resolve the collision.
+
+When a newly linked resource-only Project is later enabled for serving without an established real hostname, PV derives its initial hostname from its immutable Project slug. Normal hostname collision and document-root validation applies, and a collision fails clearly instead of silently choosing a different hostname.
 
 `--hostname` accepts either a bare label or a full `.test` hostname. A bare label always normalizes to `<label>.test`; for example, `--hostname acme` and `--hostname acme.test` both normalize to `acme.test`. Multi-label hostnames must be provided in full, such as `api.acme.test`. PV v1 rejects non-`.test` hostnames.
 
@@ -1263,7 +1289,9 @@ If `pv link` is run for an already linked Project without `--hostname`, PV prese
 
 `pv unlink` with no argument unlinks the Project resolved from the current directory, using the nearest linked Project ancestor rule.
 
-`pv unlink <hostname>` unlinks the Project resolved by that hostname. The hostname argument accepts the same forms as `pv link --hostname`, so `acme` and `acme.test` both resolve to `acme.test`. Additional hostnames declared in `hostnames:` may also resolve the owning Project. Output should identify the owning primary Project hostname before unlinking.
+`pv unlink <selector>` unlinks the Project resolved by an exact Project slug or hostname. Hostname selectors accept the same forms as `pv link --hostname`, so `acme` and `acme.test` can normalize to `acme.test`. Additional hostnames declared in `hostnames:` may also resolve the owning Project. Output identifies the owning primary Project hostname for a served Project and the Project slug for a resource-only Project.
+
+If a bare selector could resolve both an exact Project slug and a normalized hostname belonging to different Projects, PV fails clearly and suggests using the full `.test` hostname to select the served Project.
 
 `pv unlink <additional-hostname>` does not require confirmation in v1 because unlink is non-destructive, but output must make the resolved primary Project explicit.
 
@@ -1275,7 +1303,7 @@ If PV previously generated a Project `.env` block, `pv unlink` leaves the block 
 
 ## Opening Projects
 
-`pv open [hostname]` opens a Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
+`pv open [hostname]` opens a served Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
 
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
@@ -1288,6 +1316,8 @@ If the hostname argument matches an additional hostname from a Project's `hostna
 If no current Project can be resolved and the terminal is non-interactive, `pv open` exits non-zero unless a hostname argument was provided.
 
 Current-directory Project resolution walks up from the current directory to linked Project roots, stopping at the filesystem root. If linked Projects are nested, PV chooses the nearest linked Project ancestor. This applies to commands that resolve a Project from the current directory.
+
+An explicit resource-only Project target returns a clear non-zero error and never launches a browser. Resource-only Projects are excluded from the interactive picker.
 
 `pv open` is Project-focused and does not open Managed Resource dashboards.
 
@@ -1303,17 +1333,19 @@ The picker sorts Projects by primary Project hostname.
 
 ## Listing Projects
 
-`pv list` lists desired Projects and enriches them with the Project config and env rendering status currently stored in `pv.db`. At minimum, each row should include Project hostname, canonical absolute path, resolved PHP version, declared Managed Resource demand, env rendering status, and a serving field that may be `unknown` until Project serving observations are added.
+`pv list` lists desired Projects and enriches them with the Project config and env rendering status currently stored in `pv.db`. At minimum, each row includes separate Project and Mode fields, canonical absolute path, resolved PHP version, declared Managed Resource demand, env rendering status, and currently known serving status. Mode is `served` or `resource-only`; serving observation may remain `unknown` until reconciliation.
 
 Status values use words such as `ok`, `pending`, `failed`, `degraded`, or `unknown` by default. TTY output may add color or icons, but words remain present.
 
 If the daemon has not reconciled a Project yet, the Project still appears with pending or unknown observed status.
 
-`pv list` shows the primary Project hostname by default and may show a compact indicator for additional hostnames, such as a count. Full additional hostname detail belongs in broader status/detail output.
+In the Project field, `pv list` normally shows the primary hostname for a served Project and the immutable slug for a resource-only Project. It may show a compact indicator for additional hostnames, such as a count. Full additional hostname detail belongs in broader status/detail output.
+
+`pv list --json` includes `mode`, `slug`, nullable `hostname`, and `env_file` for every Project. The internal `.invalid` compatibility hostname is represented as `null`, never as a string.
 
 `pv list` does not show Resource allocation details by default. It stays focused on Project-level serving status.
 
-`pv list` sorts Projects by primary Project hostname by default.
+`pv list` sorts Projects by their displayed Project value by default.
 
 ## System Status
 
@@ -1383,13 +1415,13 @@ If the daemon is intentionally disabled while DNS, ports, or CA integrations rem
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | pv link [path] [--hostname <hostname>] | Register a Project and request daemon reconciliation                                                    |
 | pv open [hostname]       | Opens a Project in the browser                                                                                    |
-| pv project:env [hostname] [--json] | Print generated Project environment values without editing `.env`                                         |
+| pv project:env [selector] [--json] | Print generated Project environment values without editing the configured env file                          |
 | pv list [--json]         | List linked Projects with PHP, declared Managed Resource demand, env status, and currently known serving status    |
 | pv logs [--follow]       | Show PV daemon/reconciliation logs                                                                                |
 | pv status [--json]       | Show whole-system PV status                                                                                       |
 | pv setup [--yes] [--non-interactive] [--no-path] | Configure macOS resolver, `pf` redirects, CA trust, daemon registration, and default Managed Resources |
 | pv uninstall [--prune] [--force] | Uninstall PV, preserving data by default                                                                  |
-| pv unlink [hostname]     | Unlink a Project by current directory or Project hostname                                                         |
+| pv unlink [selector]     | Unlink a Project by current directory, Project slug, or Project hostname                                           |
 | pv update [--check] [--json] | Update the PV application and installed Managed Resources to their latest versions, or report available updates with `--check`; `--json` requires `--check` |
 | pv restart               | Restart PV-managed runtime processes and reconcile desired state                                                   |
 | pv env [--shell <shell>] | Print shell exports for PV-managed binaries and Composer environment                                              |

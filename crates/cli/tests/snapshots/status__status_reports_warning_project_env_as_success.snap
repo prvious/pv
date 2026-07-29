@@ -18,7 +18,7 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "{\"overall\":\"ok\",\"daemon\":{\"state\":\"disabled\",\"launch_agent\":\"missing\",\"socket\":\"missing\",\"failure\":false},\"integrations\":{\"dns\":\"missing\",\"ports\":\"missing\",\"ca\":\"missing\"},\"managed_resources\":[],\"runtimes\":[],\"projects\":[{\"hostname\":\"app.test\",\"env_status\":\"warning\",\"message\":\"ignored unsupported PHP extension `missing`\",\"observed_at\":\"<timestamp>\"}],\"recent_errors\":[],\"log_directory\":\"<tempdir>/home/.pv/logs\"}\n",
+        stdout: "{\"overall\":\"ok\",\"daemon\":{\"state\":\"disabled\",\"launch_agent\":\"missing\",\"socket\":\"missing\",\"failure\":false},\"integrations\":{\"dns\":\"missing\",\"ports\":\"missing\",\"ca\":\"missing\"},\"managed_resources\":[],\"runtimes\":[],\"projects\":[{\"mode\":\"served\",\"slug\":\"project\",\"hostname\":\"app.test\",\"env_status\":\"warning\",\"message\":\"ignored unsupported PHP extension `missing`\",\"observed_at\":\"<timestamp>\"}],\"recent_errors\":[],\"log_directory\":\"<tempdir>/home/.pv/logs\"}\n",
         stderr: "",
     },
 )

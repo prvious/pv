@@ -7,6 +7,8 @@ expression: cases
         "project-url-project-env",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -21,6 +23,8 @@ expression: cases
         "tls-placeholders-project-env",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -55,6 +59,8 @@ expression: cases
         "resource-project-url",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -75,6 +81,8 @@ expression: cases
         "resource-project-tls",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -97,6 +105,8 @@ expression: cases
         "resource-scoped-url",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -126,6 +136,8 @@ expression: cases
         "allocation-project-url",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -150,6 +162,8 @@ expression: cases
         "allocation-project-tls",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],
@@ -176,6 +190,8 @@ expression: cases
         "allocation-scoped-url",
         Ok(
             ProjectConfig {
+                serve: true,
+                env_file: ".env",
                 php: None,
                 document_root: None,
                 hostnames: [],

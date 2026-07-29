@@ -8,6 +8,8 @@ expression: "(updated.path.file_name(), updated.exists, updated.config)"
     ),
     true,
     ProjectConfig {
+        serve: true,
+        env_file: ".env",
         php: Some(
             PhpConfig {
                 version: Some(

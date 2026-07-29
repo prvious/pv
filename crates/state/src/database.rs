@@ -18,6 +18,7 @@ pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
 const PROJECT_ID_LENGTH: usize = 10;
 const PROJECT_ID_ATTEMPTS: usize = 16;
 const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+const PROJECT_SLUG_ATTEMPTS: usize = 10_000;
 const MAX_DNS_LABEL_LENGTH: usize = 63;
 const MAX_HOSTNAME_LENGTH: usize = 253;
 const RESERVED_HOSTNAME: &str = "pv.test";
@@ -180,6 +181,36 @@ pub struct LinkProjectResult {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProjectMode {
+    Served,
+    ResourceOnly,
+}
+
+impl ProjectMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Served => "served",
+            Self::ResourceOnly => "resource-only",
+        }
+    }
+
+    const fn as_database(self) -> i64 {
+        match self {
+            Self::Served => 1,
+            Self::ResourceOnly => 0,
+        }
+    }
+
+    fn from_database(serves_http: i64) -> Result<Self, StateError> {
+        match serves_http {
+            1 => Ok(Self::Served),
+            0 => Ok(Self::ResourceOnly),
+            value => Err(StateError::UnknownProjectMode { value }),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LinkProjectStatus {
     Created,
     Updated,
@@ -189,9 +220,11 @@ pub enum LinkProjectStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectRecord {
     pub id: String,
+    pub slug: String,
+    pub mode: ProjectMode,
     pub path: Utf8PathBuf,
     pub original_path: Utf8PathBuf,
-    pub primary_hostname: String,
+    pub primary_hostname: Option<String>,
     pub config_path: Utf8PathBuf,
     pub desired_php_track: Option<String>,
     pub php_runtime: ProjectPhpRuntimeRecord,
@@ -262,7 +295,7 @@ pub struct ResourceAllocationRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectEnvStateContext {
     pub project_id: String,
-    pub primary_hostname: String,
+    pub primary_hostname: Option<String>,
     pub resources: BTreeMap<String, ProjectEnvResourceContext>,
 }
 
@@ -429,6 +462,8 @@ struct RuntimeObservedStateRow {
 
 struct ProjectRow {
     id: String,
+    project_slug: Option<String>,
+    serves_http: i64,
     path: String,
     original_path: Option<String>,
     primary_hostname: String,
@@ -614,7 +649,15 @@ impl Database {
         &mut self,
         input: LinkProjectInput,
     ) -> Result<LinkProjectResult, StateError> {
-        validate_link_project_input(&input)?;
+        self.link_project_with_mode(input, ProjectMode::Served)
+    }
+
+    pub fn link_project_with_mode(
+        &mut self,
+        mut input: LinkProjectInput,
+        mode: ProjectMode,
+    ) -> Result<LinkProjectResult, StateError> {
+        validate_link_project_input(&input, mode)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -623,9 +666,31 @@ impl Database {
             Some(project) => project.id.clone(),
             None => generate_project_id(&transaction)?,
         };
-        validate_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        let project_slug = match &existing {
+            Some(project) => project.slug.clone(),
+            None => generate_project_slug(&transaction, &input.path)?,
+        };
+        if mode == ProjectMode::ResourceOnly {
+            match &existing {
+                Some(project) => {
+                    input.primary_hostname = project
+                        .primary_hostname
+                        .clone()
+                        .unwrap_or_else(|| internal_project_hostname(&project_id));
+                    input.additional_hostnames = project.additional_hostnames.clone();
+                }
+                None => {
+                    input.primary_hostname = internal_project_hostname(&project_id);
+                    input.additional_hostnames.clear();
+                }
+            }
+        } else {
+            validate_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        }
         let status = match &existing {
-            Some(project) if project_matches_input(project, &input) => LinkProjectStatus::Unchanged,
+            Some(project) if project_matches_input(project, &input, mode) => {
+                LinkProjectStatus::Unchanged
+            }
             Some(_) => LinkProjectStatus::Updated,
             None => LinkProjectStatus::Created,
         };
@@ -637,11 +702,23 @@ impl Database {
                     &project.id,
                     &input.primary_hostname,
                 )?;
-                update_project_in_transaction(&transaction, &project.id, &input)?;
+                update_project_in_transaction(&transaction, &project.id, &input, mode)?;
             }
-            None => insert_project_in_transaction(&transaction, &project_id, &input)?,
+            None => insert_project_in_transaction(
+                &transaction,
+                &project_id,
+                &project_slug,
+                &input,
+                mode,
+            )?,
         }
-        replace_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        if mode == ProjectMode::Served
+            || existing
+                .as_ref()
+                .is_some_and(|project| project.primary_hostname.is_some())
+        {
+            replace_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+        }
         let project =
             project_by_id_in_transaction(&transaction, &project_id)?.ok_or_else(|| {
                 StateError::ProjectNotFound {
@@ -706,10 +783,17 @@ impl Database {
                 target: project_id.to_string(),
             }
         })?;
+        let primary_hostname =
+            project
+                .primary_hostname
+                .clone()
+                .ok_or_else(|| StateError::ProjectNotServed {
+                    project_id: project_id.to_string(),
+                })?;
         validate_project_hostname_set(
             &transaction,
             project_id,
-            &project.primary_hostname,
+            &primary_hostname,
             additional_hostnames,
         )?;
 
@@ -718,12 +802,12 @@ impl Database {
             let input = LinkProjectInput {
                 path: project.path.clone(),
                 original_path: project.original_path.clone(),
-                primary_hostname: project.primary_hostname.clone(),
+                primary_hostname,
                 config_path: project.config_path.clone(),
                 desired_php_track: project.desired_php_track.clone(),
                 additional_hostnames: additional_hostnames.to_vec(),
             };
-            update_project_in_transaction(&transaction, project_id, &input)?;
+            update_project_in_transaction(&transaction, project_id, &input, ProjectMode::Served)?;
             replace_project_hostnames_in_transaction(&transaction, project_id, &input)?;
         }
 
@@ -790,7 +874,7 @@ impl Database {
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
             FROM projects
             WHERE id = ?1",
         )?;
@@ -804,7 +888,7 @@ impl Database {
 
     pub fn project_by_path(&self, path: &Utf8Path) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
             FROM projects
             WHERE path = ?1",
         )?;
@@ -818,12 +902,26 @@ impl Database {
 
     pub fn project_by_hostname(&self, hostname: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http
             FROM projects
             INNER JOIN project_hostnames ON project_hostnames.project_id = projects.id
             WHERE project_hostnames.hostname = ?1",
         )?;
         let mut rows = statement.query_map(params![hostname], project_from_row)?;
+
+        match rows.next() {
+            Some(row) => row?.into_record(&self.connection).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn project_by_slug(&self, slug: &str) -> Result<Option<ProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            FROM projects
+            WHERE project_slug = ?1",
+        )?;
+        let mut rows = statement.query_map(params![slug], project_from_row)?;
 
         match rows.next() {
             Some(row) => row?.into_record(&self.connection).map(Some),
@@ -844,9 +942,9 @@ impl Database {
 
     pub fn projects(&self) -> Result<Vec<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
             FROM projects
-            ORDER BY primary_hostname",
+            ORDER BY project_slug",
         )?;
         let rows = statement.query_map([], project_from_row)?;
         let mut projects = Vec::new();
@@ -2408,12 +2506,22 @@ impl ProjectRow {
             .config_path
             .map(Utf8PathBuf::from)
             .unwrap_or_else(|| path.join("pv.yml"));
+        let slug = self
+            .project_slug
+            .ok_or_else(|| StateError::ProjectSlugMissing {
+                project_id: self.id.clone(),
+            })?;
+        let mode = ProjectMode::from_database(self.serves_http)?;
+        let primary_hostname = (!is_internal_project_hostname(&self.primary_hostname))
+            .then_some(self.primary_hostname);
 
         Ok(ProjectRecord {
             id: self.id,
+            slug,
+            mode,
             path,
             original_path,
-            primary_hostname: self.primary_hostname,
+            primary_hostname,
             config_path,
             desired_php_track: self.desired_php_track,
             php_runtime,
@@ -2445,7 +2553,7 @@ fn project_by_path_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
             FROM projects
             WHERE path = ?1",
             params![path.as_str()],
@@ -2465,7 +2573,7 @@ fn project_by_id_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
             FROM projects
             WHERE id = ?1",
             params![project_id],
@@ -2906,13 +3014,18 @@ fn validate_project_env_observed_warnings(
     Ok(())
 }
 
-fn validate_link_project_input(input: &LinkProjectInput) -> Result<(), StateError> {
+fn validate_link_project_input(
+    input: &LinkProjectInput,
+    mode: ProjectMode,
+) -> Result<(), StateError> {
     validate_project_path("path", &input.path)?;
     validate_original_project_path(&input.original_path)?;
     validate_project_path("config path", &input.config_path)?;
-    validate_project_hostname(&input.primary_hostname)?;
-    for hostname in &input.additional_hostnames {
-        validate_project_hostname(hostname)?;
+    if mode == ProjectMode::Served {
+        validate_project_hostname(&input.primary_hostname)?;
+        for hostname in &input.additional_hostnames {
+            validate_project_hostname(hostname)?;
+        }
     }
     if let Some(track) = &input.desired_php_track {
         validate_project_php_track(track)?;
@@ -3100,10 +3213,17 @@ fn validate_project_hostname_label(hostname: &str, label: &str) -> Result<(), St
     }
 }
 
-fn project_matches_input(project: &ProjectRecord, input: &LinkProjectInput) -> bool {
+fn project_matches_input(
+    project: &ProjectRecord,
+    input: &LinkProjectInput,
+    mode: ProjectMode,
+) -> bool {
     project.path == input.path
         && project.original_path == input.original_path
-        && project.primary_hostname == input.primary_hostname
+        && project.primary_hostname.as_deref()
+            == (!is_internal_project_hostname(&input.primary_hostname))
+                .then_some(input.primary_hostname.as_str())
+        && project.mode == mode
         && project.config_path == input.config_path
         && project.desired_php_track == input.desired_php_track
         && sorted_hostnames(&project.additional_hostnames)
@@ -3120,14 +3240,18 @@ fn sorted_hostnames(hostnames: &[String]) -> Vec<String> {
 fn insert_project_in_transaction(
     transaction: &Transaction<'_>,
     project_id: &str,
+    project_slug: &str,
     input: &LinkProjectInput,
+    mode: ProjectMode,
 ) -> Result<(), StateError> {
     let created_at = timestamp()?;
     transaction.execute(
-        "INSERT INTO projects (id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        "INSERT INTO projects (id, project_slug, serves_http, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
         params![
             project_id,
+            project_slug,
+            mode.as_database(),
             input.path.as_str(),
             input.original_path.as_str(),
             input.primary_hostname.as_str(),
@@ -3144,6 +3268,7 @@ fn update_project_in_transaction(
     transaction: &Transaction<'_>,
     project_id: &str,
     input: &LinkProjectInput,
+    mode: ProjectMode,
 ) -> Result<(), StateError> {
     let previous_desired_php_track = transaction.query_row(
         "SELECT desired_php_track FROM projects WHERE id = ?1",
@@ -3155,13 +3280,15 @@ fn update_project_in_transaction(
     transaction.execute(
         "UPDATE projects
         SET primary_hostname = ?1,
-            original_path = ?2,
-            config_path = ?3,
-            desired_php_track = ?4,
-            updated_at = ?5
-        WHERE id = ?6",
+            serves_http = ?2,
+            original_path = ?3,
+            config_path = ?4,
+            desired_php_track = ?5,
+            updated_at = ?6
+        WHERE id = ?7",
         params![
             input.primary_hostname.as_str(),
+            mode.as_database(),
             input.original_path.as_str(),
             input.config_path.as_str(),
             input.desired_php_track.as_deref(),
@@ -3299,6 +3426,78 @@ fn generate_project_id(transaction: &Transaction<'_>) -> Result<String, StateErr
     Err(StateError::ProjectIdExhausted {
         attempts: PROJECT_ID_ATTEMPTS,
     })
+}
+
+fn generate_project_slug(
+    transaction: &Transaction<'_>,
+    project_path: &Utf8Path,
+) -> Result<String, StateError> {
+    let base = project_slug_base(project_path)?;
+
+    for attempt in 0..PROJECT_SLUG_ATTEMPTS {
+        let slug = if attempt == 0 {
+            base.clone()
+        } else {
+            let suffix = format!("-{attempt}");
+            let maximum_base_length = MAX_DNS_LABEL_LENGTH - suffix.len();
+            let base_length = base.len().min(maximum_base_length);
+            let shortened_base = base[..base_length].trim_end_matches('-');
+
+            format!("{shortened_base}{suffix}")
+        };
+        let count = transaction.query_row(
+            "SELECT COUNT(*) FROM projects WHERE project_slug = ?1",
+            params![slug.as_str()],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if count == 0 {
+            return Ok(slug);
+        }
+    }
+
+    Err(StateError::ProjectSlugExhausted {
+        attempts: PROJECT_SLUG_ATTEMPTS,
+    })
+}
+
+fn project_slug_base(project_path: &Utf8Path) -> Result<String, StateError> {
+    let Some(file_name) = project_path.file_name() else {
+        return Err(StateError::InvalidProjectSlug {
+            name: project_path.to_string(),
+        });
+    };
+    let mut slug = String::new();
+    let mut previous_was_hyphen = false;
+
+    for character in file_name.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            previous_was_hyphen = false;
+        } else if !previous_was_hyphen && !slug.is_empty() {
+            slug.push('-');
+            previous_was_hyphen = true;
+        }
+    }
+
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+
+    if slug.is_empty() || slug.len() > MAX_DNS_LABEL_LENGTH {
+        return Err(StateError::InvalidProjectSlug {
+            name: file_name.to_string(),
+        });
+    }
+
+    Ok(slug)
+}
+
+fn internal_project_hostname(project_id: &str) -> String {
+    format!("{project_id}.invalid")
+}
+
+fn is_internal_project_hostname(hostname: &str) -> bool {
+    hostname.ends_with(".invalid")
 }
 
 fn random_project_id(rng: &mut fastrand::Rng) -> String {
@@ -3663,6 +3862,8 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
         desired_php_track: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        project_slug: row.get(8)?,
+        serves_http: row.get(9)?,
     })
 }
 

@@ -16,7 +16,7 @@ pub use database::{
     ManagedResourceTrackRemovalInput, PortAssignment, PortOwner, PortRequest, ProjectConfigWatch,
     ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
-    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord,
+    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode,
     ProjectPhpRuntimeInput, ProjectPhpRuntimeRecord, ProjectRecord, RUNTIME_PORT_FALLBACK_END,
     RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationRecord,
     ResourceAllocationStatus, RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject,

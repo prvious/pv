@@ -12,7 +12,7 @@ use rcgen::generate_simple_self_signed;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::json;
 use state::{
-    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, PvPaths,
+    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode, PvPaths,
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
 };
 use std::collections::BTreeMap;
@@ -1206,6 +1206,56 @@ document_root: public
     let plan = build_runtime_plan(&paths)?;
 
     assert_runtime_plan_snapshot("runtime_plan_groups_linked_projects_by_php_track", plan);
+
+    Ok(())
+}
+
+#[test]
+fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let served = tempdir.path().join("served");
+    let resource_only = tempdir.path().join("resource-only");
+    create_project(&served, "php: \"8.4\"\n")?;
+    create_project(&resource_only, "serve: false\nphp: \"8.4\"\n")?;
+
+    let mut database = Database::open(&paths)?;
+    let served = database
+        .link_project(LinkProjectInput {
+            path: served.clone(),
+            original_path: served.clone(),
+            primary_hostname: "served.test".to_owned(),
+            config_path: served.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let resource_only = database
+        .link_project_with_mode(
+            LinkProjectInput {
+                path: resource_only.clone(),
+                original_path: resource_only.clone(),
+                primary_hostname: "ignored.test".to_owned(),
+                config_path: resource_only.join("pv.yml"),
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            },
+            ProjectMode::ResourceOnly,
+        )?
+        .project;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+
+    let plan = build_runtime_plan(&paths)?;
+    let project_ids = plan
+        .workers
+        .iter()
+        .flat_map(|worker| worker.projects.iter())
+        .map(|project| project.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(project_ids, [served.id.as_str()]);
+    assert!(!project_ids.contains(&resource_only.id.as_str()));
 
     Ok(())
 }

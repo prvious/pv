@@ -117,8 +117,8 @@ mod tests {
         let mut database = Database::open(&paths)?;
         state::testing::transaction(&mut database, |transaction| {
             transaction.execute(
-                "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+                VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     "bad_project",
                     "bad\0path",
@@ -129,8 +129,8 @@ mod tests {
                 ],
             )?;
             transaction.execute(
-                "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+                VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     "good_project",
                     project_path.as_str(),
@@ -232,8 +232,8 @@ mod tests {
         let mut database = Database::open(paths)?;
         state::testing::transaction(&mut database, |transaction| {
             transaction.execute(
-                "INSERT INTO projects (id, path, primary_hostname, config_path, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+                VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     "project_1",
                     project_path.as_str(),

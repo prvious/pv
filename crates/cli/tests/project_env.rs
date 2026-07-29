@@ -11,8 +11,8 @@ use cli::{Environment, run_with_environment};
 use config::ProjectConfigFile;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
-    Database, EnvContextValues, LinkProjectInput, ProjectManagedResourceInput, ProjectRecord,
-    PvPaths, ResourceAllocationInput,
+    Database, EnvContextValues, LinkProjectInput, ProjectManagedResourceInput, ProjectMode,
+    ProjectRecord, PvPaths, ResourceAllocationInput,
 };
 
 #[derive(Debug)]
@@ -205,6 +205,76 @@ fn project_env_json_returns_empty_object_for_no_mappings() -> anyhow::Result<()>
 }
 
 #[test]
+fn project_env_resolves_resource_only_slug_and_reads_configured_env_file() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("Resource Project");
+    create_dir(&project.join("config"))?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"serve: false
+env_file: config/development.env
+env:
+  APP_NAME: resource-project
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let env_path = project.join("config/development.env");
+    let env_before = "USER_VALUE=kept\n";
+    write_file(&env_path, env_before)?;
+    register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let output = run_pv(&["project:env", "resource-project"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(output.stdout, "APP_NAME=resource-project\n");
+    assert!(output.stderr.is_empty());
+    assert_eq!(read_file(&env_path)?, env_before);
+    assert!(!output.stdout.contains("project_url"));
+    assert_debug_snapshot!((output, env_before));
+
+    Ok(())
+}
+
+#[test]
+fn project_env_rejects_bare_slug_hostname_ambiguity() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let resource_only = tempdir.path().join("acme");
+    let served = tempdir.path().join("web");
+    let outside = tempdir.path().join("outside");
+    create_dir(&resource_only)?;
+    create_dir(&served)?;
+    create_dir(&outside)?;
+    write_file(
+        &resource_only.join("pv.yml"),
+        "serve: false\nenv:\n  PROJECT_KIND: resource\n",
+    )?;
+    write_file(&served.join("pv.yml"), "env:\n  PROJECT_KIND: served\n")?;
+    register_project_with_mode(
+        &home,
+        &resource_only,
+        "ignored.test",
+        ProjectMode::ResourceOnly,
+    )?;
+    register_project_with_mode(&home, &served, "acme.test", ProjectMode::Served)?;
+    let environment = TestEnvironment::new(&home, &outside);
+
+    let ambiguous = run_pv(&["project:env", "acme"], &environment)?;
+    let explicit_hostname = run_pv(&["project:env", "acme.test"], &environment)?;
+
+    assert_eq!(ambiguous.exit_code, ExitCode::FAILURE);
+    assert!(ambiguous.stdout.is_empty());
+    assert!(ambiguous.stderr.contains("full `acme.test` hostname"));
+    assert_eq!(explicit_hostname.exit_code, ExitCode::SUCCESS);
+    assert_eq!(explicit_hostname.stdout, "PROJECT_KIND=served\n");
+    assert_debug_snapshot!((ambiguous, explicit_hostname));
+
+    Ok(())
+}
+
+#[test]
 fn project_env_writes_duplicate_warnings_to_stderr_without_mutating_dotenv() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -334,6 +404,15 @@ fn register_project(
     project: &Utf8Path,
     primary_hostname: &str,
 ) -> anyhow::Result<ProjectRecord> {
+    register_project_with_mode(home, project, primary_hostname, ProjectMode::Served)
+}
+
+fn register_project_with_mode(
+    home: &Utf8Path,
+    project: &Utf8Path,
+    primary_hostname: &str,
+    mode: ProjectMode,
+) -> anyhow::Result<ProjectRecord> {
     let config_file = ProjectConfigFile::read_from_root(project)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
     let desired_php_track = config_file
@@ -343,14 +422,17 @@ fn register_project(
         .and_then(|php| php.version_selector())
         .map(str::to_owned);
     let mut database = Database::open(&pv_paths(home))?;
-    let result = database.link_project(LinkProjectInput {
-        path: project_path,
-        original_path: project.to_path_buf(),
-        primary_hostname: primary_hostname.to_string(),
-        config_path: config_file.path,
-        desired_php_track,
-        additional_hostnames: config_file.config.hostnames,
-    })?;
+    let result = database.link_project_with_mode(
+        LinkProjectInput {
+            path: project_path,
+            original_path: project.to_path_buf(),
+            primary_hostname: primary_hostname.to_string(),
+            config_path: config_file.path,
+            desired_php_track,
+            additional_hostnames: config_file.config.hostnames,
+        },
+        mode,
+    )?;
 
     Ok(result.project)
 }

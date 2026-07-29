@@ -118,6 +118,18 @@ pub enum ConfigError {
     #[error("Project config document_root must be an existing directory: {document_root}")]
     DocumentRootNotDirectory { document_root: Utf8PathBuf },
 
+    #[error("Project config env_file must be relative to the Project root: {env_file}")]
+    AbsoluteEnvFile { env_file: Utf8PathBuf },
+
+    #[error("Project config env_file escapes the Project root: {env_file}")]
+    EnvFileEscapesProject { env_file: Utf8PathBuf },
+
+    #[error("Project config env_file parent must be an existing directory: {env_file}")]
+    EnvFileParentNotDirectory { env_file: Utf8PathBuf },
+
+    #[error("Project config env_file must point to a file: {env_file}")]
+    EnvFileNotFile { env_file: Utf8PathBuf },
+
     #[error("invalid Project config env key `{key}`")]
     InvalidEnvKey { key: String },
 

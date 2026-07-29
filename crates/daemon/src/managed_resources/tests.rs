@@ -3082,13 +3082,17 @@ fn write_expiring_project_certificate(
 ) -> Result<()> {
     let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
     let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
-    let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+    let primary_hostname = project
+        .primary_hostname
+        .as_deref()
+        .ok_or_else(|| anyhow!("expected Project `{}` to have a hostname", project.slug))?;
+    let mut params = CertificateParams::new(vec![primary_hostname.to_string()])?;
     let now = OffsetDateTime::now_utc();
     params.not_before = now - CertificateDuration::days(1);
     params.not_after = now + CertificateDuration::days(7);
     params
         .distinguished_name
-        .push(DnType::CommonName, &project.primary_hostname);
+        .push(DnType::CommonName, primary_hostname);
     params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];

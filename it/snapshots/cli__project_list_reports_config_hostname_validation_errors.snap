@@ -14,7 +14,7 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  8.4  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: Project hostname `acme-store.test` appears more than once for the same Project\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: Project hostname `acme-store.test` appears more than once for the same Project\n",
         stderr: "",
     },
 )

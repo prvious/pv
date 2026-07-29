@@ -14,7 +14,7 @@ use insta::assert_debug_snapshot;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    ProjectRecord, PvPaths, fs,
+    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -694,6 +694,76 @@ fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
         assert_debug_snapshot!((output, exec_calls));
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_honors_explicit_resource_only_php_track() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("resources");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "serve: false\nphp: 8.4\n")?;
+    let project_record =
+        register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
+    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["-v".to_string()],
+            env: php_exec_env(&home, "8.4")?,
+        }]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_shim_uses_global_fallback_for_resource_only_project_without_php() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("resources");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "serve: false\n")?;
+    let project_record =
+        register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
+    let release = record_installed_php(&home, "8.3", "8.3.12-pv1")?;
+    record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.3")?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: Vec::new(),
+                loaded_extensions: Vec::new(),
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["-v".to_string()],
+            env: php_exec_env(&home, "8.3")?,
+        }]
+    );
 
     Ok(())
 }
@@ -1609,17 +1679,29 @@ fn register_project(
     project: &Utf8Path,
     primary_hostname: &str,
 ) -> anyhow::Result<ProjectRecord> {
+    register_project_with_mode(home, project, primary_hostname, ProjectMode::Served)
+}
+
+fn register_project_with_mode(
+    home: &Utf8Path,
+    project: &Utf8Path,
+    primary_hostname: &str,
+    mode: ProjectMode,
+) -> anyhow::Result<ProjectRecord> {
     let config_file = ProjectConfigFile::read_from_root(project)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
     let mut database = Database::open(&pv_paths(home))?;
-    let result = database.link_project(LinkProjectInput {
-        path: project_path,
-        original_path: project.to_path_buf(),
-        primary_hostname: primary_hostname.to_string(),
-        config_path: config_file.path,
-        desired_php_track: None,
-        additional_hostnames: config_file.config.hostnames,
-    })?;
+    let result = database.link_project_with_mode(
+        LinkProjectInput {
+            path: project_path,
+            original_path: project.to_path_buf(),
+            primary_hostname: primary_hostname.to_string(),
+            config_path: config_file.path,
+            desired_php_track: None,
+            additional_hostnames: config_file.config.hostnames,
+        },
+        mode,
+    )?;
 
     Ok(result.project)
 }
@@ -1659,7 +1741,10 @@ struct ProjectSnapshot {
 
 fn project_snapshot(project: &ProjectRecord, root: &Utf8Path) -> anyhow::Result<ProjectSnapshot> {
     Ok(ProjectSnapshot {
-        primary_hostname: project.primary_hostname.clone(),
+        primary_hostname: project
+            .primary_hostname
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("expected served Project hostname"))?,
         path: normalize_path(&project.path, root),
         config_path: normalize_path(&project.config_path, root),
         desired_php_track: project.desired_php_track.clone(),

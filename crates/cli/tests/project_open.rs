@@ -234,6 +234,52 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
 }
 
 #[test]
+fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let resource_only = tempdir.path().join("resources");
+    let served = tempdir.path().join("web");
+    let outside = tempdir.path().join("outside");
+    create_dir(&resource_only)?;
+    create_dir(&served)?;
+    create_dir(&outside)?;
+    write_file(&resource_only.join("pv.yml"), "serve: false\n")?;
+    let environment = TestEnvironment::new(&home, &resource_only).interactive(["1\n"]);
+
+    let link_resource_only = run_pv(&["link"], &environment)?;
+    let explicit_open = run_pv(&["open", "resources"], &environment)?;
+    let current_open = run_pv(&["open"], &environment)?;
+    environment.set_current_dir(&served);
+    let link_served = run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let picker_open = run_pv(&["open"], &environment)?;
+    let opened_urls = environment.opened_urls();
+
+    assert_eq!(link_resource_only.exit_code, ExitCode::SUCCESS);
+    assert_eq!(explicit_open.exit_code, ExitCode::FAILURE);
+    assert_eq!(current_open.exit_code, ExitCode::FAILURE);
+    assert_eq!(link_served.exit_code, ExitCode::SUCCESS);
+    assert_eq!(picker_open.exit_code, ExitCode::SUCCESS);
+    assert_eq!(opened_urls, ["https://web.test"]);
+    assert!(!picker_open.stdout.contains("resources"));
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((
+            link_resource_only,
+            explicit_open,
+            current_open,
+            link_served,
+            picker_open,
+            opened_urls
+        ));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

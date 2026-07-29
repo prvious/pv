@@ -25,7 +25,9 @@ expression: snapshot
         ],
         ProjectEnvStateContext {
             project_id: "<project_id>",
-            primary_hostname: "acme.test",
+            primary_hostname: Some(
+                "acme.test",
+            ),
             resources: {
                 "redis": ProjectEnvResourceContext {
                     track: "7.2",
@@ -71,7 +73,9 @@ expression: snapshot
         ],
         ProjectEnvStateContext {
             project_id: "<project_id>",
-            primary_hostname: "acme.test",
+            primary_hostname: Some(
+                "acme.test",
+            ),
             resources: {
                 "redis": ProjectEnvResourceContext {
                     track: "7.2",

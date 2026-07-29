@@ -1,0 +1,25 @@
+---
+source: crates/cli/tests/project_unlink.rs
+expression: "(link, unlink, env_before)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Unlinked acme -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=acme\n# <<< PV MANAGED\n",
+)

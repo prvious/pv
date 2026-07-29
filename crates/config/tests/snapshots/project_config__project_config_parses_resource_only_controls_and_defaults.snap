@@ -1,0 +1,31 @@
+---
+source: crates/config/tests/project_config.rs
+expression: "(defaults, resource_only)"
+---
+(
+    ProjectConfig {
+        serve: true,
+        env_file: ".env",
+        php: None,
+        document_root: None,
+        hostnames: [],
+        env: {},
+        resources: {},
+    },
+    ProjectConfig {
+        serve: false,
+        env_file: ".env.local",
+        php: None,
+        document_root: Some(
+            "missing",
+        ),
+        hostnames: [
+            "api.example.com",
+        ],
+        env: {
+            "APP_ENV": "local",
+            "APP_URL": "${project_url}",
+        },
+        resources: {},
+    },
+)

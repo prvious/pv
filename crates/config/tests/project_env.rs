@@ -258,6 +258,53 @@ mysql:
 }
 
 #[test]
+fn resource_only_env_omits_serving_placeholders_across_scopes() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+serve: false
+env:
+  APP_ENV: local
+  APP_URL: "${project_url}"
+mysql:
+  env:
+    DB_HOST: "${host}"
+    TLS_CA: "${tls_ca}"
+  allocations:
+    app:
+      env:
+        DB_DATABASE: "${database}"
+        TLS_CERT: "${tls_cert}"
+"#,
+    )?;
+    let context = ProjectEnvContext {
+        primary_hostname: String::new(),
+        tls_ca_path: String::new(),
+        tls_cert_path: String::new(),
+        tls_key_path: String::new(),
+        resources: BTreeMap::from([(
+            "mysql".to_string(),
+            ResourceEnvContext {
+                track: "8.4".to_string(),
+                values: values(&[("host", "127.0.0.1")]),
+                allocations: allocations(&[(
+                    "app",
+                    AllocationEnvContext {
+                        generated_name: "acme_app".to_string(),
+                        values: values(&[("database", "acme_app")]),
+                    },
+                )]),
+            },
+        )]),
+    };
+
+    let rendered = render_project_env(&config, &context)?;
+
+    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
+
+    Ok(())
+}
+
+#[test]
 fn project_env_renderer_reports_missing_contexts() -> Result<()> {
     let resource_config = ProjectConfig::parse(
         r#"

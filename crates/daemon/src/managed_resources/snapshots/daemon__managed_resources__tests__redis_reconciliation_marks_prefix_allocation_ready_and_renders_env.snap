@@ -3,7 +3,7 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "# >>> PV MANAGED\nCACHE_REDIS_HOST=127.0.0.1\nCACHE_REDIS_PORT=<redis_port>\nCACHE_REDIS_PREFIX=acme-test-cache-\nCACHE_REDIS_URL=redis://127.0.0.1:<redis_port>/0\nREDIS_HOST=127.0.0.1\nREDIS_PORT=<redis_port>\nREDIS_URL=redis://127.0.0.1:<redis_port>/0\n# <<< PV MANAGED\n",
+    "# >>> PV MANAGED\nCACHE_REDIS_HOST=127.0.0.1\nCACHE_REDIS_PORT=<redis_port>\nCACHE_REDIS_PREFIX=project-cache-\nCACHE_REDIS_URL=redis://127.0.0.1:<redis_port>/0\nREDIS_HOST=127.0.0.1\nREDIS_PORT=<redis_port>\nREDIS_URL=redis://127.0.0.1:<redis_port>/0\n# <<< PV MANAGED\n",
     ManagedResourceTrackRecord {
         resource_name: "redis",
         track: "7.2",
@@ -31,11 +31,11 @@ expression: snapshot
             resource_name: "redis",
             track: "7.2",
             allocation_name: "cache",
-            generated_name: "acme-test-cache-",
+            generated_name: "project-cache-",
             env: {
                 "host": "127.0.0.1",
                 "port": "<redis_port>",
-                "prefix": "acme-test-cache-",
+                "prefix": "project-cache-",
                 "url": "redis://127.0.0.1:<redis_port>/0",
             },
             status: Ready,

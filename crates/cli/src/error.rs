@@ -18,8 +18,16 @@ pub enum CliError {
     #[error("path is not valid UTF-8: {path:?}")]
     NonUtf8Path { path: std::path::PathBuf },
 
-    #[error("could not resolve a linked Project; pass a hostname")]
+    #[error("could not resolve a linked Project; pass a Project slug or hostname")]
     ProjectNotResolved,
+
+    #[error(
+        "Project selector `{selector}` matches slug `{selector}` and hostname `{hostname}` on different Projects; pass the full `{hostname}` hostname"
+    )]
+    AmbiguousProjectSelector { selector: String, hostname: String },
+
+    #[error("Project `{project}` is resource-only and cannot be opened")]
+    ResourceOnlyProjectCannotOpen { project: String },
 
     #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
     InvalidProjectSelection { selection: String, count: usize },
