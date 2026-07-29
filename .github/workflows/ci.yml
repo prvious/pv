@@ -10,14 +10,38 @@ permissions:
 
 jobs:
   rust:
-    name: Rust
-    runs-on: macos-14
+    name: Rust (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 14 arm64
+            runner: macos-14
+            macos_major: "14"
+            architecture: arm64
+          - name: macOS 15 Intel
+            runner: macos-15-intel
+            macos_major: "15"
+            architecture: x86_64
+          - name: macOS 26 arm64
+            runner: macos-26
+            macos_major: "26"
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Verify supported macOS host
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+          EXPECTED_MACOS_MAJOR: ${{ matrix.macos_major }}
+        run: |
+          test "$(sw_vers -productVersion | cut -d. -f1)" = "$EXPECTED_MACOS_MAJOR"
+          test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

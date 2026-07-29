@@ -82,18 +82,9 @@ pub enum PlatformError {
     SystemIntegrationCommandStatus { command: String, status: String },
 
     #[cfg(target_os = "macos")]
-    #[error("could not inspect socket table: {0}")]
-    SocketTable(#[from] netstat::Error),
-
-    #[cfg(target_os = "macos")]
-    #[error("could not run netstat for socket inspection: {0}")]
-    SocketTableCommand(#[source] io::Error),
-
-    #[cfg(target_os = "macos")]
-    #[error("netstat socket inspection exited with {status}")]
-    SocketTableCommandStatus { status: String },
-
-    #[cfg(target_os = "macos")]
-    #[error("could not decode netstat socket table: {0}")]
-    SocketTableCommandUtf8(#[from] std::string::FromUtf8Error),
+    #[error("could not inspect TCP listeners: {source}")]
+    ListenerInspection {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }

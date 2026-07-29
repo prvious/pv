@@ -4,6 +4,7 @@ import http.server
 import os
 import posixpath
 import signal
+import socketserver
 import sys
 import threading
 import urllib.parse
@@ -131,6 +132,11 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
 class Server(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
+
+    def server_bind(self):
+        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 api = Server(split_address(api_address), RustfsHandler)

@@ -35,7 +35,7 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             client,
-            target_platform: None,
+            target_platform: Some(TargetPlatform::DarwinArm64),
             target_platform_resolution_fails: false,
             exec_calls: RefCell::new(Vec::new()),
         }

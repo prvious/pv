@@ -2192,17 +2192,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netstat-esr"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db13bc9e63aaed8fbd195b1835c1bdcd5d4bc834ba62f3bef459e88c00f0d08"
-dependencies = [
- "bitflags 1.3.2",
- "cc",
- "libc",
-]
-
-[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2423,7 +2412,6 @@ dependencies = [
  "getrandom 0.4.2",
  "insta",
  "libc",
- "netstat-esr",
  "plist",
  "rcgen",
  "rustix",

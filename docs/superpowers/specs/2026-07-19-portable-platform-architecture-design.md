@@ -12,7 +12,7 @@ The implementation will use compile-time-selected operating-system modules behin
 
 The implementation must update `DESIGN.md` to record these decisions:
 
-- PV v1 targets macOS 13 and newer.
+- PV v1 supports macOS 14 and newer. macOS 13 may remain binary-compatible, but it is untested and unsupported.
 - Stabilizing the macOS application remains the immediate product priority.
 - Linux and Windows are committed subsequent platforms.
 - New system boundaries must avoid unnecessary portability blockers.
@@ -278,7 +278,7 @@ These phases define dependency and review order. They should be split into indep
 - Detect IPv4 loopback, IPv6 loopback, IPv4 wildcard, and IPv6 wildcard listeners relevant to PV.
 - Report TCP listen state and the owning process evidence when the operating system makes it available.
 - Define deterministic behavior for permission limitations and processes that exit during inspection.
-- Pass fixtures on supported macOS versions and both supported macOS architectures before replacing production inspection.
+- Pass fixtures on every supported macOS major version and both supported macOS architectures across the full representative CI matrix defined in `DESIGN.md` before replacing production inspection.
 - Remove both `netstat-esr` and `/usr/sbin/netstat` together after acceptance; do not add a third permanent source.
 
 ### Lifecycle Candidates

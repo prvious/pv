@@ -1621,6 +1621,7 @@ mod update_tests {
                 while let Some(response) = responses.front() {
                     match listener.accept() {
                         Ok((mut stream, _address)) => {
+                            stream.set_nonblocking(false)?;
                             let mut request = String::new();
                             BufReader::new(stream.try_clone()?).read_line(&mut request)?;
                             stream.write_all(format!("{response}\n").as_bytes())?;

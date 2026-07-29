@@ -44,13 +44,8 @@ pub use trust::{
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
-    use insta::assert_debug_snapshot;
-
     use crate::capability::require_capability_for;
     use crate::error::PlatformError;
-    #[cfg(target_os = "macos")]
-    use crate::listener::parse_netstat_tcp_listener_ports;
     use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
@@ -98,23 +93,5 @@ mod tests {
                 target: PlatformTarget::Windows,
             })
         ));
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn netstat_tcp_listener_port_parser_covers_loopback_and_wildcard_addresses() {
-        let output = r#"
-Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
-tcp4       0      0  *.45000                *.*                    LISTEN
-tcp4       0      0  127.0.0.1.45001        *.*                    LISTEN
-tcp6       0      0  ::1.45002              *.*                    LISTEN
-tcp6       0      0  ::.45003               *.*                    LISTEN
-tcp4       0      0  192.168.1.5.45004      *.*                    LISTEN
-tcp4       0      0  127.0.0.1.45005        127.0.0.1.12345        ESTABLISHED
-udp4       0      0  127.0.0.1.45006        *.*
-tcp4       0      0  127.0.0.1.notaport     *.*                    LISTEN
-"#;
-
-        assert_debug_snapshot!(parse_netstat_tcp_listener_ports(output));
     }
 }

@@ -55,13 +55,20 @@ class SmtpHandler(socketserver.BaseRequestHandler):
         self.request.sendall(b"220 mailpit fixture\r\n")
 
 
+class HttpServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 
 smtp_server = TcpServer(host_port(smtp), SmtpHandler)
-dashboard = http.server.ThreadingHTTPServer(
+dashboard = HttpServer(
     host_port(listen),
     http.server.SimpleHTTPRequestHandler,
 )

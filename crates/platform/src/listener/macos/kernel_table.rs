@@ -32,7 +32,7 @@ const INPCB_IPV4_ADDRESS_OFFSET: usize = INPCB_LOCAL_ADDRESS_OFFSET + 12;
 const TCPCB_STATE_OFFSET: usize = 36;
 
 #[derive(Debug, Error)]
-enum KernelTableError {
+pub(super) enum KernelTableError {
     #[error(transparent)]
     Fetch(#[from] FetchError),
 
@@ -44,7 +44,7 @@ enum KernelTableError {
 }
 
 #[derive(Debug, Error)]
-enum FetchError {
+pub(super) enum FetchError {
     #[error("could not query the macOS TCP PCB table size: {0}")]
     Size(#[source] io::Error),
 
@@ -61,7 +61,7 @@ enum FetchError {
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
-enum ParseError {
+pub(super) enum ParseError {
     #[error("TCP PCB table is too short: expected at least {minimum} bytes, received {actual}")]
     TableTooShort { minimum: usize, actual: usize },
 
@@ -130,7 +130,7 @@ struct InternetPcb {
     local_address: [u8; INPCB_LOCAL_ADDRESS_LENGTH],
 }
 
-fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, KernelTableError> {
+pub(super) fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, KernelTableError> {
     for _attempt in 1..=MAX_ATTEMPTS {
         let table = fetch_tcp_table()?;
 
@@ -397,17 +397,18 @@ fn read_network_u16(bytes: &[u8], offset: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeSet, VecDeque};
     use std::io;
     use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
     use anyhow::Result;
     use insta::assert_debug_snapshot;
 
+    use crate::command::run_system_command_output;
+
     use super::{
         FetchError, INP_IPV4, INP_IPV6, MAX_ATTEMPTS, TCPS_LISTEN, XINPCB_MINIMUM_LENGTH,
-        XSO_INPCB, XSO_TCPCB, XTCPCB_MINIMUM_LENGTH, fetch_tcp_table_with,
-        loopback_tcp_listener_ports, parse_tcp_table,
+        XSO_INPCB, XSO_TCPCB, XTCPCB_MINIMUM_LENGTH, fetch_tcp_table_with, parse_tcp_table,
     };
 
     const SNAPSHOT_COUNT: u32 = 8;
@@ -584,7 +585,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "acceptance-only: depends on the live macOS TCP PCB table"]
     fn live_kernel_table_repeatedly_detects_all_controlled_listener_classes() -> Result<()> {
         let ipv4_loopback = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let ipv4_wildcard = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
@@ -596,13 +596,20 @@ mod tests {
             ("ipv6 loopback", ipv6_loopback.local_addr()?.port()),
             ("ipv6 wildcard", ipv6_wildcard.local_addr()?.port()),
         ];
-        let mut detections = expected.map(|(name, _port)| (name, 0));
+        let mut detections = expected.map(|(name, _port)| (name, 0, 0));
 
         for _sample in 0..10 {
-            let ports = loopback_tcp_listener_ports()?;
+            let kernel_ports = crate::loopback_tcp_listener_ports()?;
+            let netstat_output =
+                run_system_command_output("/usr/sbin/netstat", &["-anv", "-p", "tcp"])?;
+            let netstat_ports = controlled_netstat_listener_ports(&netstat_output, &expected);
+
             for (index, (_name, port)) in expected.iter().enumerate() {
-                if ports.contains(port) {
+                if kernel_ports.contains(port) {
                     detections[index].1 += 1;
+                }
+                if netstat_ports.contains(port) {
+                    detections[index].2 += 1;
                 }
             }
         }
@@ -610,6 +617,38 @@ mod tests {
         assert_debug_snapshot!(detections);
 
         Ok(())
+    }
+
+    fn controlled_netstat_listener_ports(output: &str, expected: &[(&str, u16)]) -> BTreeSet<u16> {
+        output
+            .lines()
+            .filter_map(|line| {
+                let columns = line.split_whitespace().collect::<Vec<_>>();
+                let [
+                    protocol,
+                    _recv_queue,
+                    _send_queue,
+                    local_address,
+                    _foreign_address,
+                    state,
+                    ..,
+                ] = columns.as_slice()
+                else {
+                    return None;
+                };
+                if !protocol.starts_with("tcp") || *state != "LISTEN" {
+                    return None;
+                }
+
+                let (_address, port) = local_address.rsplit_once('.')?;
+                let port = port.parse::<u16>().ok()?;
+
+                expected
+                    .iter()
+                    .any(|(_name, expected_port)| *expected_port == port)
+                    .then_some(port)
+            })
+            .collect()
     }
 
     #[derive(Debug)]

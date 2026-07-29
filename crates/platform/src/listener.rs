@@ -15,9 +15,6 @@ mod implementation;
 #[path = "listener/windows.rs"]
 mod implementation;
 
-#[cfg(all(target_os = "macos", test))]
-pub(crate) use implementation::parse_netstat_tcp_listener_ports;
-
 pub fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, PlatformError> {
     implementation::loopback_tcp_listener_ports()
 }

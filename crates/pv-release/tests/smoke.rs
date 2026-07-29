@@ -3772,6 +3772,7 @@ import http.server
 import os
 import signal
 import socket
+import socketserver
 import threading
 import time
 
@@ -3798,8 +3799,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
 
+class Server(http.server.HTTPServer):
+    def server_bind(self):
+        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 api_host, api_port = split_address(os.environ["PV_TEST_RUSTFS_ADDRESS"])
-server = http.server.HTTPServer((api_host, api_port), Handler)
+server = Server((api_host, api_port), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
 console_address = os.environ.get("PV_TEST_RUSTFS_CONSOLE_ADDRESS")
