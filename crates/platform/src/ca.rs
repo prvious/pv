@@ -424,6 +424,7 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::SystemIntegrationCommand { .. }
         | PlatformError::SystemIntegrationCommandStatus { .. } => CaRepairReason::InvalidCaShape,
         #[cfg(target_os = "macos")]
-        PlatformError::ListenerInspection { .. } => CaRepairReason::InvalidCaShape,
+        PlatformError::ListenerInspection { .. }
+        | PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
     }
 }

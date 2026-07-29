@@ -364,6 +364,7 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     metadata["config_path"] = json!("<home>/.pv/config/test-runtime.json");
     metadata["log_path"] = json!("<home>/.pv/logs/test-runtime.log");
     metadata["started_at"] = json!("<timestamp>");
+    metadata["process_start_identity"] = json!("<native-start-identity>");
 
     process.stop(Duration::from_secs(1)).await?;
 
@@ -672,6 +673,7 @@ async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command()
             vec!["-c".to_string(), "sleep 30".to_string()],
         ))
         .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged = process_spec(
         &paths,
         "forged-runtime",
@@ -691,8 +693,100 @@ async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command()
             "track": "test",
             "log_path": forged.log_path.as_str(),
             "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
         }))?,
     )?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn supervisor_rejects_spoofed_argument_zero_for_wrong_executable() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "spoofed-argument-zero-runtime",
+            "/bin/bash",
+            vec![
+                "-c".to_string(),
+                "exec -a /bin/sh /bin/sleep 30".to_string(),
+            ],
+        ))
+        .await?;
+    let pid = actual.pid();
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
+    let live_identity = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(identity) = platform::inspect_process_identity(pid)?
+                && identity.executable == Utf8Path::new("/bin/sleep")
+            {
+                return Ok::<_, platform::PlatformError>(identity);
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    let forged = process_spec(
+        &paths,
+        "forged-spoofed-argument-zero-runtime",
+        "/bin/sh",
+        vec!["30".to_string()],
+    );
+    write_forged_runtime_files(&forged, pid, process_start_identity)?;
+
+    assert_eq!(live_identity.argument_zero, "/bin/sh");
+    assert_eq!(live_identity.arguments, ["30"]);
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn supervisor_rejects_shebang_identity_with_wrong_interpreter() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let runtime = paths.run().join("expected-script-runtime");
+    let ready = paths.run().join("wrong-interpreter-ready");
+    state::fs::write_sensitive_file(
+        &runtime,
+        &format!(
+            "#!/usr/bin/false\ntrap 'exit 0' TERM; touch \"{ready}\"; while true; do sleep 1; done\n"
+        ),
+    )?;
+    set_executable(&runtime)?;
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "wrong-interpreter-runtime",
+            "/bin/sh",
+            vec![runtime.to_string()],
+        ))
+        .await?;
+    wait_for_path(&ready).await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
+    let forged = process_spec(&paths, "forged-script-runtime", runtime, Vec::new());
+    write_forged_runtime_files(&forged, actual.pid(), process_start_identity)?;
+    let mut metadata = runtime_metadata(&forged.metadata_path)?;
+    metadata["process_executable_identity"] = json!({
+        "executable": "/usr/bin/false",
+        "argument_zero": "/usr/bin/false",
+    });
+    state::fs::write_sensitive_file(&forged.metadata_path, &serde_json::to_string(&metadata)?)?;
 
     assert!(supervisor.verify_ownership(&forged)?.is_none());
 
@@ -717,6 +811,7 @@ async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arg
             vec!["-c".to_string(), format!("sleep 30 # {fake_command}")],
         ))
         .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged = process_spec(
         &paths,
         "forged-argument-runtime",
@@ -736,6 +831,7 @@ async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arg
             "track": "test",
             "log_path": forged.log_path.as_str(),
             "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
         }))?,
     )?;
 
@@ -760,6 +856,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_but_different_arguments(
             vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
         ))
         .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged = process_spec(
         &paths,
         "forged-argument-runtime",
@@ -779,6 +876,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_but_different_arguments(
             "track": "test",
             "log_path": forged.log_path.as_str(),
             "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
         }))?,
     )?;
 
@@ -808,6 +906,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_and_argument_prefix() ->
             ],
         ))
         .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged = process_spec(
         &paths,
         "forged-prefix-runtime",
@@ -827,6 +926,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_and_argument_prefix() ->
             "track": "test",
             "log_path": forged.log_path.as_str(),
             "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
         }))?,
     )?;
 
@@ -856,6 +956,7 @@ async fn supervisor_rejects_reused_pid_with_spaced_argument_prefix() -> Result<(
             vec![actual_config.to_string()],
         ))
         .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged = process_spec(
         &paths,
         "forged-spaced-prefix-runtime",
@@ -875,12 +976,150 @@ async fn supervisor_rejects_reused_pid_with_spaced_argument_prefix() -> Result<(
             "track": "test",
             "log_path": forged.log_path.as_str(),
             "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
         }))?,
     )?;
 
     assert!(supervisor.verify_ownership(&forged)?.is_none());
 
     actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_reordered_missing_and_duplicated_arguments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let command = "while true; do sleep 1; done".to_string();
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "ordered-argument-runtime",
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                command.clone(),
+                "alpha".to_string(),
+                "beta".to_string(),
+            ],
+        ))
+        .await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
+    let forged_arguments = [
+        (
+            "reordered-argument-runtime",
+            vec![
+                "-c".to_string(),
+                command.clone(),
+                "beta".to_string(),
+                "alpha".to_string(),
+            ],
+        ),
+        (
+            "missing-argument-runtime",
+            vec!["-c".to_string(), command.clone(), "alpha".to_string()],
+        ),
+        (
+            "duplicated-argument-runtime",
+            vec![
+                "-c".to_string(),
+                command,
+                "alpha".to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+            ],
+        ),
+    ];
+
+    for (name, arguments) in forged_arguments {
+        let forged = process_spec(&paths, name, "/bin/sh", arguments);
+        write_forged_runtime_files(&forged, actual.pid(), process_start_identity.clone())?;
+
+        assert!(supervisor.verify_ownership(&forged)?.is_none());
+    }
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_fails_closed_for_missing_and_malformed_process_start_identity() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let spec = process_spec(
+        &paths,
+        "invalid-start-identity-runtime",
+        "/bin/sleep",
+        vec!["30".to_string()],
+    );
+    let process = supervisor.start(spec.clone()).await?;
+    let mut metadata = runtime_metadata(process.metadata_path())?;
+    let Some(metadata_object) = metadata.as_object_mut() else {
+        return Err(anyhow!("runtime metadata was not an object"));
+    };
+    let _removed_identity = metadata_object.remove("process_start_identity");
+    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
+
+    assert!(supervisor.verify_ownership(&spec)?.is_none());
+
+    metadata["process_start_identity"] = json!({
+        "seconds": "malformed",
+        "microseconds": 0,
+    });
+    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
+
+    assert!(matches!(
+        supervisor.verify_ownership(&spec),
+        Err(daemon::DaemonError::Json(_))
+    ));
+
+    process.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervisor_rejects_forged_process_start_identity_before_signalling() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let marker = paths.run().join("forged-start-signal-marker");
+    let ready = paths.run().join("forged-start-signal-ready");
+    let spec = process_spec(
+        &paths,
+        "forged-start-identity-runtime",
+        "/bin/sh",
+        vec![
+            "-c".to_string(),
+            format!(
+                "trap 'touch \"{marker}\"' USR1; touch \"{ready}\"; while true; do sleep 1; done"
+            ),
+        ],
+    );
+    let process = supervisor.start(spec.clone()).await?;
+    wait_for_path(&ready).await?;
+    let mut metadata = runtime_metadata(process.metadata_path())?;
+    let seconds = metadata["process_start_identity"]["seconds"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("process-start seconds were missing"))?;
+    let forged_seconds = seconds
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("process-start seconds could not be incremented"))?;
+    metadata["process_start_identity"]["seconds"] = json!(forged_seconds);
+    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
+
+    assert!(!supervisor.reload(&spec)?);
+    sleep(Duration::from_millis(50)).await;
+    assert!(!marker.exists());
+
+    process.stop(Duration::from_secs(1)).await?;
 
     Ok(())
 }
@@ -939,6 +1178,44 @@ async fn wait_for_path(path: &camino::Utf8Path) -> Result<()> {
     }
 
     Err(anyhow!("file {path} did not exist"))
+}
+
+fn runtime_metadata(path: &Utf8Path) -> Result<serde_json::Value> {
+    Ok(serde_json::from_str(&state::testing::read_to_string(
+        path,
+    )?)?)
+}
+
+fn runtime_process_start_identity(path: &Utf8Path) -> Result<serde_json::Value> {
+    runtime_metadata(path)?
+        .get("process_start_identity")
+        .cloned()
+        .ok_or_else(|| anyhow!("runtime metadata did not contain process_start_identity"))
+}
+
+fn write_forged_runtime_files(
+    spec: &ProcessSpec,
+    pid: u32,
+    process_start_identity: serde_json::Value,
+) -> Result<()> {
+    state::fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
+    state::fs::write_sensitive_file(
+        &spec.metadata_path,
+        &serde_json::to_string(&json!({
+            "name": spec.name,
+            "pid": pid,
+            "command": spec.command.as_str(),
+            "arguments": spec.arguments,
+            "config_path": spec.config_path.as_str(),
+            "resource_name": spec.resource_name,
+            "track": spec.track,
+            "log_path": spec.log_path.as_str(),
+            "started_at": "2026-05-25T00:00:00Z",
+            "process_start_identity": process_start_identity,
+        }))?,
+    )?;
+
+    Ok(())
 }
 
 fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Result<()> {

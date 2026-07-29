@@ -97,6 +97,8 @@ expression: snapshot
         "log_path": String("<tempdir>/home/.pv/logs/resources/mysql/8.0.log"),
         "name": String("mysql-8.0"),
         "pid": Number(<pid>),
+        "process_executable_identity": String("<native-executable-identity>"),
+        "process_start_identity": String("<native-start-identity>"),
         "resource_name": String("mysql"),
         "started_at": String("<timestamp>"),
         "track": String("8.0"),

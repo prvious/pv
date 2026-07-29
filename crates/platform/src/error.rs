@@ -87,4 +87,11 @@ pub enum PlatformError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    #[cfg(target_os = "macos")]
+    #[error("could not inspect process identity: {source}")]
+    ProcessIdentityInspection {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
