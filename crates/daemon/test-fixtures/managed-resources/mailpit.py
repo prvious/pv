@@ -55,10 +55,11 @@ class SmtpHandler(socketserver.BaseRequestHandler):
         self.request.sendall(b"220 mailpit fixture\r\n")
 
 
-class DashboardHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        print("mailpit fixture: dashboard request received", file=sys.stderr, flush=True)
-        super().do_GET()
+class HttpServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -67,12 +68,10 @@ class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 
 smtp_server = TcpServer(host_port(smtp), SmtpHandler)
-print("mailpit fixture: SMTP server constructed", file=sys.stderr, flush=True)
-dashboard = http.server.ThreadingHTTPServer(
+dashboard = HttpServer(
     host_port(listen),
-    DashboardHandler,
+    http.server.SimpleHTTPRequestHandler,
 )
-print("mailpit fixture: dashboard server constructed", file=sys.stderr, flush=True)
 shutdown_requested = threading.Event()
 shutdown_thread = None
 received_signal = None
@@ -99,7 +98,6 @@ signal.signal(signal.SIGINT, stop)
 threading.Thread(
     target=smtp_server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
 ).start()
-print("mailpit fixture: entering dashboard serve loop", file=sys.stderr, flush=True)
 dashboard.serve_forever(poll_interval=0.1)
 if shutdown_thread is not None:
     shutdown_thread.join()

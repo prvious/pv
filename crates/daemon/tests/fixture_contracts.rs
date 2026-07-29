@@ -118,6 +118,15 @@ def serve_forever(self, *args, **kwargs):
 
 socketserver.BaseServer.serve_forever = serve_forever
 "#;
+const FAILING_FQDN_SITECUSTOMIZE: &str = r#"import socket
+
+
+def getfqdn(_name=""):
+    raise RuntimeError("fixture attempted an FQDN lookup")
+
+
+socket.getfqdn = getfqdn
+"#;
 
 #[expect(
     clippy::disallowed_types,
@@ -428,7 +437,7 @@ fn single_server_fixture_exits_after_signal_status() -> Result<()> {
 }
 
 #[test]
-fn multi_server_fixture_exits_after_signal_status() -> Result<()> {
+fn multi_server_fixture_avoids_fqdn_lookup_and_exits_after_signal_status() -> Result<()> {
     for fixture in [
         MultiServerFixture::FakeMailpit,
         MultiServerFixture::Mailpit,
@@ -924,15 +933,19 @@ fn assert_multi_server_fixture_exits_after_signal(
     let second_port = second_port_reservation.local_addr()?.port();
     let first_address = format!("127.0.0.1:{first_port}");
     let second_address = format!("127.0.0.1:{second_port}");
+    let sitecustomize = tempdir.path().join("sitecustomize.py");
     let source = match fixture {
         MultiServerFixture::FakeMailpit => FAKE_MAILPIT_FIXTURE.to_owned(),
         MultiServerFixture::Mailpit => MAILPIT_FIXTURE.to_owned(),
         MultiServerFixture::Rustfs => render_rustfs_fixture(false)?,
     };
 
+    state::fs::write_sensitive_file(&sitecustomize, FAILING_FQDN_SITECUSTOMIZE)?;
     materialize_fixture(&executable, &source)?;
     let mut command = FixtureCommand::new(executable.as_std_path());
-    command.current_dir(tempdir.path());
+    command
+        .current_dir(tempdir.path())
+        .env("PYTHONPATH", tempdir.path());
     match fixture {
         MultiServerFixture::FakeMailpit => {
             command.args([first_port.to_string(), second_port.to_string()]);
