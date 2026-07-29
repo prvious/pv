@@ -27,7 +27,7 @@ PV v1 supports macOS 14 and newer. Stabilizing the macOS application remains the
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 
-For private macOS interfaces such as listener inspection, acceptance covers every supported macOS major version and both supported architectures across a representative matrix rather than every version/architecture combination. The initial matrix is macOS 14 on Apple Silicon, macOS 15 on Intel, and macOS 26 on Apple Silicon. New supported macOS major versions must be added to the matrix before PV relies on private interface behavior there.
+The full macOS CI quality and behavior suite covers every supported macOS major version and both supported architectures across a representative matrix rather than every version/architecture combination. The initial matrix is macOS 14 on Apple Silicon, macOS 15 on Intel, and macOS 26 on Apple Silicon. Private-interface acceptance tests such as listener inspection run as part of every matrix lane. New supported macOS major versions must be added to the matrix before PV relies on behavior there.
 
 Linux and Windows are committed subsequent platforms. During macOS stabilization, the installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
 

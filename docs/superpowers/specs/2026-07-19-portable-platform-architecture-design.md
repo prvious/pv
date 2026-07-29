@@ -278,7 +278,7 @@ These phases define dependency and review order. They should be split into indep
 - Detect IPv4 loopback, IPv6 loopback, IPv4 wildcard, and IPv6 wildcard listeners relevant to PV.
 - Report TCP listen state and the owning process evidence when the operating system makes it available.
 - Define deterministic behavior for permission limitations and processes that exit during inspection.
-- Pass fixtures on every supported macOS major version and both supported macOS architectures across the representative matrix defined in `DESIGN.md` before replacing production inspection.
+- Pass fixtures on every supported macOS major version and both supported macOS architectures across the full representative CI matrix defined in `DESIGN.md` before replacing production inspection.
 - Remove both `netstat-esr` and `/usr/sbin/netstat` together after acceptance; do not add a third permanent source.
 
 ### Lifecycle Candidates
