@@ -753,6 +753,48 @@ async fn supervisor_rejects_spoofed_argument_zero_for_wrong_executable() -> Resu
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn supervisor_rejects_shebang_identity_with_wrong_interpreter() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let runtime = paths.run().join("expected-script-runtime");
+    let ready = paths.run().join("wrong-interpreter-ready");
+    state::fs::write_sensitive_file(
+        &runtime,
+        &format!(
+            "#!/usr/bin/false\ntrap 'exit 0' TERM; touch \"{ready}\"; while true; do sleep 1; done\n"
+        ),
+    )?;
+    set_executable(&runtime)?;
+    let actual = supervisor
+        .start(process_spec(
+            &paths,
+            "wrong-interpreter-runtime",
+            "/bin/sh",
+            vec![runtime.to_string()],
+        ))
+        .await?;
+    wait_for_path(&ready).await?;
+    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
+    let forged = process_spec(&paths, "forged-script-runtime", runtime, Vec::new());
+    write_forged_runtime_files(&forged, actual.pid(), process_start_identity)?;
+    let mut metadata = runtime_metadata(&forged.metadata_path)?;
+    metadata["process_executable_identity"] = json!({
+        "executable": "/usr/bin/false",
+        "argument_zero": "/usr/bin/false",
+    });
+    state::fs::write_sensitive_file(&forged.metadata_path, &serde_json::to_string(&metadata)?)?;
+
+    assert!(supervisor.verify_ownership(&forged)?.is_none());
+
+    actual.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arguments()
 -> Result<()> {

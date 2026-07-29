@@ -300,6 +300,9 @@ fn read_runtime_metadata(paths: &PvPaths, track: &str) -> Result<Value> {
     if let Some(process_start_identity) = metadata.get_mut("process_start_identity") {
         *process_start_identity = json!("<native-start-identity>");
     }
+    if let Some(process_executable_identity) = metadata.get_mut("process_executable_identity") {
+        *process_executable_identity = json!("<native-executable-identity>");
+    }
 
     Ok(metadata)
 }

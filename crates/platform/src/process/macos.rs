@@ -117,7 +117,9 @@ fn process_arguments(
     for _attempt in 1..=MAX_SNAPSHOT_ATTEMPTS {
         let capacity = match query_process_arguments(pid, None) {
             Ok(capacity) => capacity,
-            Err(source) if process_not_found(&source) => return Ok(None),
+            Err(source) if process_not_found(&source) || argument_query_is_unavailable(&source) => {
+                return Ok(None);
+            }
             Err(source) if argument_query_is_transient(&source) => {
                 thread::sleep(SNAPSHOT_RETRY_DELAY);
                 continue;
@@ -134,7 +136,9 @@ fn process_arguments(
             Ok(actual) => {
                 return Err(InspectionError::InvalidArgumentSize { capacity, actual });
             }
-            Err(source) if process_not_found(&source) => return Ok(None),
+            Err(source) if process_not_found(&source) || argument_query_is_unavailable(&source) => {
+                return Ok(None);
+            }
             Err(source) if argument_query_is_transient(&source) => {
                 thread::sleep(SNAPSHOT_RETRY_DELAY);
             }
@@ -235,8 +239,30 @@ fn process_not_found(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
+fn argument_query_is_unavailable(error: &io::Error) -> bool {
+    // KERN_PROCARGS2 reports EINVAL when the target vanished or has no user stack.
+    error.raw_os_error() == Some(libc::EINVAL)
+}
+
 fn argument_query_is_transient(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::EIO) | Some(libc::ENOMEM))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::argument_query_is_unavailable;
+
+    #[test]
+    fn argument_query_einval_means_process_identity_is_unavailable() {
+        assert!(argument_query_is_unavailable(
+            &io::Error::from_raw_os_error(libc::EINVAL)
+        ));
+        assert!(!argument_query_is_unavailable(
+            &io::Error::from_raw_os_error(libc::EACCES)
+        ));
+    }
 }
 
 #[derive(Debug, Error)]
