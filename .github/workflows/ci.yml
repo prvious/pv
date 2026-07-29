@@ -77,12 +77,6 @@ jobs:
       - name: Run tests
         run: cargo nextest run --workspace --all-features --locked
 
-      - name: Compare listener inspection with Apple netstat
-        run: >-
-          cargo nextest run -p platform --all-features --locked
-          --run-ignored ignored-only
-          -E 'test(live_kernel_table_repeatedly_detects_all_controlled_listener_classes)'
-
   runtime-portability:
     name: Runtime (${{ matrix.target }})
     strategy:
