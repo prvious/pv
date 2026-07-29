@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
@@ -664,7 +665,9 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
     drop(mailpit_port_guards);
-    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let result = crate::project_env::reconcile_project_env(&paths, &project.id).await;
+    print_mailpit_fixture_log_on_error(&paths, &result);
+    result?;
     let snapshot = {
         let database = Database::open(&paths)?;
         let runtime_states = database.runtime_observed_states()?;
@@ -720,12 +723,14 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
     drop(mailpit_port_guards);
-    reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
+    let result = reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
         &paths,
         &project.id,
         OFFLINE_TEST_MANIFEST_URL,
     )
-    .await?;
+    .await;
+    print_mailpit_fixture_log_on_error(&paths, &result);
+    result?;
     let snapshot = {
         let database = Database::open(&paths)?;
         let runtime_states = database.runtime_observed_states()?;
@@ -1971,6 +1976,7 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
     drop(mailpit_port_guards);
     let result =
         reconcile_project_env_with_fast_exit_fake_runtime_catalog(&paths, &project.id).await;
+    print_mailpit_fixture_log_on_error(&paths, &result);
     let failure_snapshot = {
         let database = Database::open(&paths)?;
         let runtime_states = database.runtime_observed_states()?;
@@ -4860,6 +4866,23 @@ fn runtime_has_status_for_resource(
 
 fn runtime_files_exist(paths: &PvPaths, track: &str) -> Result<RuntimeFilePresence> {
     runtime_files_exist_for_resource(paths, "mailpit", track)
+}
+
+fn print_mailpit_fixture_log_on_error<T, E>(paths: &PvPaths, result: &Result<T, E>)
+where
+    E: Debug,
+{
+    if let Err(error) = result {
+        let log_path = paths.resource_log("mailpit", FAKE_MAILPIT_TRACK);
+        match state::fs::read_to_string(&log_path) {
+            Ok(log) => eprintln!("Mailpit fixture failed with {error:#?}\n{log}"),
+            Err(log_error) => {
+                eprintln!(
+                    "Mailpit fixture failed with {error:#?}; failed to read {log_path}: {log_error}"
+                );
+            }
+        }
+    }
 }
 
 fn runtime_files_exist_for_resource(
