@@ -250,6 +250,17 @@ pub struct ProjectPhpRuntimeInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectReconciliationStateInput {
+    pub project_id: String,
+    pub link: LinkProjectInput,
+    pub mode: ProjectMode,
+    pub php_runtime: Option<ProjectPhpRuntimeInput>,
+    pub env_status: ProjectEnvObservedStatus,
+    pub env_message: Option<String>,
+    pub env_warnings: Vec<ProjectEnvObservedWarningInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectManagedResourceInput {
     pub resource_name: String,
     pub track: String,
@@ -841,35 +852,71 @@ impl Database {
         project_id: &str,
         runtime: Option<&ProjectPhpRuntimeInput>,
     ) -> Result<ProjectRecord, StateError> {
-        let (track, requested, loaded, ignored) = match runtime {
-            Some(runtime) => {
-                validate_project_php_track(&runtime.track)?;
-                (
-                    Some(runtime.track.as_str()),
-                    user_extension_json(&runtime.requested_extensions)?,
-                    runtime_extension_json(&runtime.loaded_extensions)?,
-                    user_extension_json(&runtime.ignored_extensions)?,
-                )
-            }
-            None => (None, "[]".to_string(), "[]".to_string(), "[]".to_string()),
-        };
-        let updated_at = timestamp()?;
-
-        self.connection.execute(
-            "UPDATE projects
-            SET desired_php_track = ?2,
-                desired_php_requested_extensions_json = ?3,
-                desired_php_loaded_extensions_json = ?4,
-                desired_php_ignored_extensions_json = ?5,
-                updated_at = ?6
-            WHERE id = ?1",
-            params![project_id, track, requested, loaded, ignored, updated_at],
-        )?;
+        let runtime = project_php_runtime_database_values(runtime)?;
+        replace_project_php_runtime_in_connection(&self.connection, project_id, &runtime)?;
 
         self.project_by_id(project_id)?
             .ok_or_else(|| StateError::ProjectNotFound {
                 target: project_id.to_string(),
             })
+    }
+
+    pub fn finalize_project_reconciliation(
+        &mut self,
+        mut input: ProjectReconciliationStateInput,
+    ) -> Result<ProjectRecord, StateError> {
+        input.link.desired_php_track = input
+            .php_runtime
+            .as_ref()
+            .map(|runtime| runtime.track.clone());
+        validate_link_project_input(&input.link, input.mode)?;
+        validate_project_env_observed_warnings(&input.env_warnings)?;
+        let runtime = project_php_runtime_database_values(input.php_runtime.as_ref())?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project =
+            project_by_id_in_transaction(&transaction, &input.project_id)?.ok_or_else(|| {
+                StateError::ProjectNotFound {
+                    target: input.project_id.clone(),
+                }
+            })?;
+
+        if input.mode == ProjectMode::ResourceOnly {
+            input.link.primary_hostname = project
+                .primary_hostname
+                .clone()
+                .unwrap_or_else(|| internal_project_hostname(&project.id));
+            input.link.additional_hostnames = project.additional_hostnames.clone();
+        } else {
+            validate_project_hostnames_in_transaction(&transaction, &project.id, &input.link)?;
+        }
+        delete_same_project_additional_hostname_in_transaction(
+            &transaction,
+            &project.id,
+            &input.link.primary_hostname,
+        )?;
+        update_project_in_transaction(&transaction, &project.id, &input.link, input.mode)?;
+        if input.mode == ProjectMode::Served || project.primary_hostname.is_some() {
+            replace_project_hostnames_in_transaction(&transaction, &project.id, &input.link)?;
+        }
+        replace_project_php_runtime_in_connection(&transaction, &project.id, &runtime)?;
+        record_project_env_observed_snapshot_in_transaction(
+            &transaction,
+            &project.id,
+            input.env_status,
+            input.env_message.as_deref(),
+            &input.env_warnings,
+        )?;
+        let project =
+            project_by_id_in_transaction(&transaction, &project.id)?.ok_or_else(|| {
+                StateError::ProjectNotFound {
+                    target: input.project_id,
+                }
+            })?;
+        transaction.commit()?;
+
+        Ok(project)
     }
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
@@ -1570,51 +1617,13 @@ impl Database {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project_exists_in_transaction(&transaction, project_id)?;
-        let observed_at = timestamp()?;
-        transaction.execute(
-            "INSERT INTO observed_states (
-                subject_kind,
-                subject_id,
-                status,
-                message,
-                observed_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(subject_kind, subject_id) DO UPDATE SET
-                status = excluded.status,
-                message = excluded.message,
-                observed_at = excluded.observed_at",
-            params![
-                PROJECT_ENV_OBSERVED_SUBJECT_KIND,
-                project_id,
-                status.as_str(),
-                message,
-                observed_at,
-            ],
+        record_project_env_observed_snapshot_in_transaction(
+            &transaction,
+            project_id,
+            status,
+            message,
+            warnings,
         )?;
-        transaction.execute(
-            "DELETE FROM project_env_observed_warnings WHERE project_id = ?1",
-            params![project_id],
-        )?;
-
-        for warning in warnings {
-            transaction.execute(
-                "INSERT INTO project_env_observed_warnings (
-                    project_id,
-                    warning_kind,
-                    message,
-                    observed_at
-                )
-                VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    project_id,
-                    warning.kind.as_str(),
-                    warning.message.as_str(),
-                    observed_at.as_str(),
-                ],
-            )?;
-        }
-
         transaction.commit()?;
 
         self.project_env_observed_state(project_id)?
@@ -1942,6 +1951,123 @@ impl Database {
 
         row.into_record()
     }
+}
+
+struct ProjectPhpRuntimeDatabaseValues {
+    track: Option<String>,
+    requested_extensions_json: String,
+    loaded_extensions_json: String,
+    ignored_extensions_json: String,
+}
+
+fn project_php_runtime_database_values(
+    runtime: Option<&ProjectPhpRuntimeInput>,
+) -> Result<ProjectPhpRuntimeDatabaseValues, StateError> {
+    match runtime {
+        Some(runtime) => {
+            validate_project_php_track(&runtime.track)?;
+
+            Ok(ProjectPhpRuntimeDatabaseValues {
+                track: Some(runtime.track.clone()),
+                requested_extensions_json: user_extension_json(&runtime.requested_extensions)?,
+                loaded_extensions_json: runtime_extension_json(&runtime.loaded_extensions)?,
+                ignored_extensions_json: user_extension_json(&runtime.ignored_extensions)?,
+            })
+        }
+        None => Ok(ProjectPhpRuntimeDatabaseValues {
+            track: None,
+            requested_extensions_json: "[]".to_string(),
+            loaded_extensions_json: "[]".to_string(),
+            ignored_extensions_json: "[]".to_string(),
+        }),
+    }
+}
+
+fn replace_project_php_runtime_in_connection(
+    connection: &Connection,
+    project_id: &str,
+    runtime: &ProjectPhpRuntimeDatabaseValues,
+) -> Result<(), StateError> {
+    let updated_at = timestamp()?;
+    let updated = connection.execute(
+        "UPDATE projects
+        SET desired_php_track = ?2,
+            desired_php_requested_extensions_json = ?3,
+            desired_php_loaded_extensions_json = ?4,
+            desired_php_ignored_extensions_json = ?5,
+            updated_at = ?6
+        WHERE id = ?1",
+        params![
+            project_id,
+            runtime.track.as_deref(),
+            runtime.requested_extensions_json.as_str(),
+            runtime.loaded_extensions_json.as_str(),
+            runtime.ignored_extensions_json.as_str(),
+            updated_at,
+        ],
+    )?;
+    if updated == 0 {
+        return Err(StateError::ProjectNotFound {
+            target: project_id.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn record_project_env_observed_snapshot_in_transaction(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    status: ProjectEnvObservedStatus,
+    message: Option<&str>,
+    warnings: &[ProjectEnvObservedWarningInput],
+) -> Result<(), StateError> {
+    let observed_at = timestamp()?;
+    transaction.execute(
+        "INSERT INTO observed_states (
+            subject_kind,
+            subject_id,
+            status,
+            message,
+            observed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(subject_kind, subject_id) DO UPDATE SET
+            status = excluded.status,
+            message = excluded.message,
+            observed_at = excluded.observed_at",
+        params![
+            PROJECT_ENV_OBSERVED_SUBJECT_KIND,
+            project_id,
+            status.as_str(),
+            message,
+            observed_at,
+        ],
+    )?;
+    transaction.execute(
+        "DELETE FROM project_env_observed_warnings WHERE project_id = ?1",
+        params![project_id],
+    )?;
+
+    for warning in warnings {
+        transaction.execute(
+            "INSERT INTO project_env_observed_warnings (
+                project_id,
+                warning_kind,
+                message,
+                observed_at
+            )
+            VALUES (?1, ?2, ?3, ?4)",
+            params![
+                project_id,
+                warning.kind.as_str(),
+                warning.message.as_str(),
+                observed_at.as_str(),
+            ],
+        )?;
+    }
+
+    Ok(())
 }
 
 impl ManagedResourceDesiredState {

@@ -28,6 +28,7 @@ pub(crate) fn link(
     let paths = pv_paths(environment)?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
+    config::validate_project_env_shape(&config_file.config)?;
     let project_path = project_root_from_config_path(&config_file.path)?;
     let desired_php_track = resolved_project_php_track(
         &paths,
@@ -343,11 +344,16 @@ fn resolve_open_project(
         return Err(CliError::ProjectNotResolved.into());
     }
 
-    let projects = database
+    let mut projects = database
         .projects()?
         .into_iter()
         .filter(|project| project.mode == ProjectMode::Served && project.primary_hostname.is_some())
-        .collect();
+        .collect::<Vec<_>>();
+    projects.sort_by(|left, right| {
+        left.primary_hostname
+            .cmp(&right.primary_hostname)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let project = select_project(projects, environment, stdout)?;
     let hostname = served_project_hostname(&project)?.to_string();
 

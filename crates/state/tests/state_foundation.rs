@@ -2329,6 +2329,67 @@ fn linked_projects_assign_immutable_slugs_and_persist_serving_mode() -> Result<(
 }
 
 #[test]
+fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    database.replace_project_php_runtime(
+        &project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER fail_project_observed_state
+            BEFORE INSERT ON observed_states
+            BEGIN
+                SELECT RAISE(ABORT, 'forced observed-state failure');
+            END;",
+        )?;
+
+        Ok(())
+    })?;
+
+    let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        project_id: project.id.clone(),
+        link: state::LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: project.config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        mode: ProjectMode::ResourceOnly,
+        php_runtime: Some(state::ProjectPhpRuntimeInput {
+            track: "8.3".to_string(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+        env_status: ProjectEnvObservedStatus::Rendered,
+        env_message: Some("rendered Project env".to_string()),
+        env_warnings: Vec::new(),
+    });
+    let after_failure = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project"))?;
+
+    assert!(result.is_err());
+    assert_eq!(after_failure.mode, ProjectMode::Served);
+    assert_eq!(after_failure.primary_hostname.as_deref(), Some("acme.test"));
+    assert_eq!(after_failure.php_runtime.track.as_deref(), Some("8.4"));
+    assert!(database.project_env_observed_state(&project.id)?.is_none());
+
+    Ok(())
+}
+
+#[test]
 fn linked_projects_refresh_desired_php_track_independently() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

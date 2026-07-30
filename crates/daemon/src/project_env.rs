@@ -13,8 +13,8 @@ use resources::{
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
-    ProjectPhpRuntimeInput, ProjectRecord, PvPaths, ResourceAllocationInput,
-    ResourceAllocationRecord, ResourceAllocationStatus, StateError,
+    ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
+    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
 
 use crate::DaemonError;
@@ -216,20 +216,6 @@ async fn reconcile_loaded_project(
         };
         resource_result?;
 
-        if let Some(runtime) = &resolved_php_runtime {
-            database.replace_project_php_runtime(
-                &candidate_project.id,
-                Some(&ProjectPhpRuntimeInput {
-                    track: runtime.track.clone(),
-                    requested_extensions: runtime.requested_extensions.clone(),
-                    loaded_extensions: runtime.loaded_extensions.clone(),
-                    ignored_extensions: runtime.ignored_extensions.clone(),
-                }),
-            )?;
-        } else if candidate_project.desired_php_track.is_some() {
-            database.replace_project_php_runtime(&candidate_project.id, None)?;
-        }
-
         let runtime_warnings = resolved_php_runtime
             .as_ref()
             .map(ignored_php_extension_warnings)
@@ -272,13 +258,15 @@ async fn reconcile_loaded_project(
         } else {
             "Project runtime has warnings"
         };
-        database.record_project_env_observed_snapshot(
-            &candidate_project.id,
+        finalize_project_reconciliation_state(
+            database,
+            project,
+            &config_file,
+            resolved_php_runtime.as_ref(),
             status,
-            Some(message),
+            message,
             &runtime_warnings,
         )?;
-        synchronize_project_link_state(database, project, &config_file)?;
 
         let summary = if runtime_warnings.is_empty() {
             ProjectEnvReconciliationSummary {
@@ -319,13 +307,15 @@ async fn reconcile_loaded_project(
         "rendered Project env with warnings"
     };
 
-    database.record_project_env_observed_snapshot(
-        &candidate_project.id,
+    finalize_project_reconciliation_state(
+        database,
+        project,
+        &config_file,
+        resolved_php_runtime.as_ref(),
         status,
-        Some(message),
+        message,
         &warnings,
     )?;
-    synchronize_project_link_state(database, project, &config_file)?;
 
     let summary = if warnings.is_empty() {
         ProjectEnvReconciliationSummary {
@@ -552,10 +542,14 @@ fn validate_project_config_and_plan(
     Ok(plan)
 }
 
-fn synchronize_project_link_state(
+fn finalize_project_reconciliation_state(
     database: &mut Database,
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
+    resolved_php_runtime: Option<&ResolvedPhpRuntime>,
+    env_status: ProjectEnvObservedStatus,
+    env_message: &str,
+    env_warnings: &[ProjectEnvObservedWarningInput],
 ) -> Result<ProjectRecord, DaemonError> {
     let project =
         database
@@ -564,33 +558,34 @@ fn synchronize_project_link_state(
                 target: project.id.clone(),
             })?;
     let mode = project_mode_for_config(&config_file.config);
-    if project.mode == mode {
-        if mode == ProjectMode::Served {
-            return Ok(database.replace_project_additional_hostnames(
-                &project.id,
-                &config_file.config.hostnames,
-            )?);
-        }
-
-        return Ok(project);
-    }
     let primary_hostname = project
         .primary_hostname
         .clone()
         .unwrap_or_else(|| format!("{}.test", project.slug));
-    let result = database.link_project_with_mode(
-        LinkProjectInput {
+    let php_runtime = resolved_php_runtime.map(|runtime| ProjectPhpRuntimeInput {
+        track: runtime.track.clone(),
+        requested_extensions: runtime.requested_extensions.clone(),
+        loaded_extensions: runtime.loaded_extensions.clone(),
+        ignored_extensions: runtime.ignored_extensions.clone(),
+    });
+    let project = database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+        project_id: project.id.clone(),
+        link: LinkProjectInput {
             path: project.path.clone(),
             original_path: project.original_path.clone(),
             primary_hostname,
             config_path: config_file.path.clone(),
-            desired_php_track: project.desired_php_track.clone(),
+            desired_php_track: None,
             additional_hostnames: config_file.config.hostnames.clone(),
         },
         mode,
-    )?;
+        php_runtime,
+        env_status,
+        env_message: Some(env_message.to_string()),
+        env_warnings: env_warnings.to_vec(),
+    })?;
 
-    Ok(result.project)
+    Ok(project)
 }
 
 fn project_with_config_mode(project: &ProjectRecord, config: &ProjectConfig) -> ProjectRecord {

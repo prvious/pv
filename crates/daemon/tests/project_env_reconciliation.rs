@@ -187,6 +187,46 @@ async fn failed_served_transition_after_preflight_preserves_resource_only_mode()
 }
 
 #[tokio::test]
+async fn failed_transition_after_php_resolution_preserves_served_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: \"8.4\"\n",
+    )?;
+    run_project_reconciliation(&paths, &project).await?;
+    let locked_directory = project.path.join("locked");
+    state::fs::ensure_user_dir(&locked_directory)?;
+    set_file_mode(&locked_directory, 0o500)?;
+    write_project_config(
+        &project,
+        r#"serve: false
+php: "8.3"
+env_file: locked/.env
+env:
+  APP_NAME: acme
+"#,
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    set_file_mode(&locked_directory, 0o700)?;
+    let database = Database::open(&paths)?;
+    let reconciled = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
+    let job = latest_job(&database, &format!("project:{}", project.id))?;
+
+    assert!(!lines.is_empty());
+    assert_eq!(job.status, state::JobStatus::Failed);
+    assert_eq!(reconciled.mode, ProjectMode::Served);
+    assert_eq!(reconciled.php_runtime.track.as_deref(), Some("8.4"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

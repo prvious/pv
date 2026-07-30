@@ -9,7 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use state::{Database, PvPaths};
+use state::{Database, ProjectMode, PvPaths};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -136,6 +136,50 @@ fn link_rejects_update_lock_without_recording_project() -> anyhow::Result<()> {
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!(link);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn link_rejects_invalid_mode_change_without_replacing_served_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &project);
+
+    let initial_link = run_pv(&["link"], &environment)?;
+    write_file(
+        &project.join("pv.yml"),
+        r#"serve: false
+postgres:
+  allocations:
+    analytics:
+      env:
+        DATABASE_URL: "postgres://${database}"
+    app:
+      env:
+        DATABASE_URL: "postgres://${database}"
+"#,
+    )?;
+    let invalid_link = run_pv(&["link"], &environment)?;
+    let database = Database::open(&paths)?;
+    let linked = database
+        .project_by_path(&canonical_path(&project)?)?
+        .ok_or_else(|| anyhow::anyhow!("expected linked Project"))?;
+
+    assert_eq!(initial_link.exit_code, ExitCode::SUCCESS);
+    assert_eq!(invalid_link.exit_code, ExitCode::FAILURE);
+    assert_eq!(linked.mode, ProjectMode::Served);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+    settings.bind(|| {
+        assert_debug_snapshot!((initial_link, invalid_link, linked));
     });
 
     Ok(())
@@ -283,33 +327,33 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
 fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let acme = tempdir.path().join("acme");
-    let zeta = tempdir.path().join("zeta");
+    let first_by_slug = tempdir.path().join("alpha-project");
+    let second_by_slug = tempdir.path().join("zeta-project");
     let outside = tempdir.path().join("outside");
-    create_dir(&acme)?;
-    create_dir(&zeta)?;
+    create_dir(&first_by_slug)?;
+    create_dir(&second_by_slug)?;
     create_dir(&outside)?;
-    let environment = TestEnvironment::new(&home, &zeta).interactive(["2\n"]);
+    let environment = TestEnvironment::new(&home, &first_by_slug).interactive(["2\n"]);
 
-    let link_zeta = run_pv(&["link"], &environment)?;
-    environment.set_current_dir(&acme);
-    let link_acme = run_pv(&["link"], &environment)?;
+    let link_zeta = run_pv(&["link", "--hostname", "zeta"], &environment)?;
+    environment.set_current_dir(&second_by_slug);
+    let link_alpha = run_pv(&["link", "--hostname", "alpha"], &environment)?;
     environment.set_current_dir(&outside);
     let open = run_pv(&["open"], &environment)?;
     let opened_urls = environment.opened_urls();
 
     assert_eq!(link_zeta.exit_code, ExitCode::SUCCESS);
-    assert_eq!(link_acme.exit_code, ExitCode::SUCCESS);
+    assert_eq!(link_alpha.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://zeta.test"]);
     assert!(link_zeta.stderr.is_empty());
-    assert!(link_acme.stderr.is_empty());
+    assert!(link_alpha.stderr.is_empty());
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
-        assert_debug_snapshot!((link_zeta, link_acme, open, opened_urls));
+        assert_debug_snapshot!((link_zeta, link_alpha, open, opened_urls));
     });
 
     Ok(())
