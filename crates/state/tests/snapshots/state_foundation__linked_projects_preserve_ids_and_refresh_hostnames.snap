@@ -8,9 +8,13 @@ expression: "(created.status, updated.status, database.projects()?)"
     [
         ProjectRecord {
             id: "<project_id>",
+            slug: "acme",
+            mode: Served,
             path: "<tempdir>/acme",
             original_path: "<tempdir>/acme",
-            primary_hostname: "store.test",
+            primary_hostname: Some(
+                "store.test",
+            ),
             config_path: "<tempdir>/acme/pv.yml",
             desired_php_track: Some(
                 "8.3",

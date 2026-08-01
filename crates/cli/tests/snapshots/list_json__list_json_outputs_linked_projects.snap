@@ -10,8 +10,10 @@ Object {
             ],
             "config_path": String("<tempdir>/acme/pv.yml"),
             "env": String("none"),
+            "env_file": String(".env"),
             "hostname": String("acme.test"),
             "id": String("<project-id>"),
+            "mode": String("served"),
             "path": String("<tempdir>/acme"),
             "php": String("8.4"),
             "resources": Array [
@@ -20,6 +22,7 @@ Object {
                     "track": String("8.0"),
                 },
             ],
+            "slug": String("acme"),
             "status": String("unknown"),
         },
     ],

@@ -3,7 +3,7 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "Err(\n    UnexpectedProtocolResponse {\n        reason: \"RustFS admin error: failed to create bucket `acme-test-uploads`; service error\",\n    },\n)",
+    "Err(\n    UnexpectedProtocolResponse {\n        reason: \"RustFS admin error: failed to create bucket `project-uploads`; service error\",\n    },\n)",
     "EXISTING=value\n",
     [
         ResourceAllocationRecord {
@@ -12,7 +12,7 @@ expression: snapshot
             resource_name: "rustfs",
             track: "1.0",
             allocation_name: "uploads",
-            generated_name: "acme-test-uploads",
+            generated_name: "project-uploads",
             env: {},
             status: Desired,
             created_at: "<timestamp>",
@@ -27,7 +27,7 @@ expression: snapshot
             },
             status: Failed,
             message: Some(
-                "daemon protocol error: RustFS admin error: failed to create bucket `acme-test-uploads`; service error",
+                "daemon protocol error: RustFS admin error: failed to create bucket `project-uploads`; service error",
             ),
             observed_at: "<timestamp>",
         },
@@ -37,7 +37,7 @@ expression: snapshot
             project_id: "<project_id>",
             status: Failed,
             message: Some(
-                "daemon protocol error: RustFS admin error: failed to create bucket `acme-test-uploads`; service error",
+                "daemon protocol error: RustFS admin error: failed to create bucket `project-uploads`; service error",
             ),
             observed_at: "<timestamp>",
             warnings: [],

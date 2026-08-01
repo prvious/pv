@@ -1,0 +1,14 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(&rendered, format_project_env(&rendered))"
+---
+(
+    RenderedProjectEnv {
+        values: {
+            "APP_ENV": "local",
+            "DB_DATABASE": "acme_app",
+            "DB_HOST": "127.0.0.1",
+        },
+    },
+    "APP_ENV=local\nDB_DATABASE=acme_app\nDB_HOST=127.0.0.1\n",
+)

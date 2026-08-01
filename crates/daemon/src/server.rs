@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use config::ProjectConfigFile;
 use futures_util::StreamExt;
-use state::{Database, PvPaths};
+use state::{Database, ProjectMode, PvPaths};
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
@@ -167,6 +167,9 @@ fn collect_project_tls_health_scopes(
     let mut scopes = Vec::new();
 
     for project in projects {
+        if project.mode == ProjectMode::ResourceOnly {
+            continue;
+        }
         let should_assess = match ProjectConfigFile::read_from_root(&project.path) {
             Ok(config_file) => config_file.config.uses_tls_placeholders(),
             Err(_error) => project_tls_artifact_exists(paths, &project).unwrap_or(false),
@@ -271,7 +274,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use anyhow::Result;
+    use anyhow::{Result, anyhow};
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use rcgen::{
@@ -423,13 +426,17 @@ mod tests {
     ) -> Result<()> {
         let ca_key_pair = KeyPair::from_pem(&local_ca.private_key_pem)?;
         let issuer = Issuer::from_ca_cert_pem(&local_ca.certificate_pem, ca_key_pair)?;
-        let mut params = CertificateParams::new(vec![project.primary_hostname.clone()])?;
+        let primary_hostname = project
+            .primary_hostname
+            .as_deref()
+            .ok_or_else(|| anyhow!("expected Project `{}` to have a hostname", project.slug))?;
+        let mut params = CertificateParams::new(vec![primary_hostname.to_string()])?;
         let now = OffsetDateTime::now_utc();
         params.not_before = now - CertificateDuration::days(1);
         params.not_after = now + CertificateDuration::days(remaining_days);
         params
             .distinguished_name
-            .push(DnType::CommonName, &project.primary_hostname);
+            .push(DnType::CommonName, primary_hostname);
         params.use_authority_key_identifier_extension = true;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];

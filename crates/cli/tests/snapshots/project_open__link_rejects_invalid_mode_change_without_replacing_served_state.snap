@@ -1,0 +1,45 @@
+---
+source: crates/cli/tests/project_open.rs
+expression: "(initial_link, invalid_link, linked)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Linked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `postgres.allocations.analytics.env.DATABASE_URL` and `postgres.allocations.app.env.DATABASE_URL`\n",
+    },
+    ProjectRecord {
+        id: "<project_id>",
+        slug: "acme",
+        mode: Served,
+        path: "<tempdir>/acme",
+        original_path: "<tempdir>/acme",
+        primary_hostname: Some(
+            "acme.test",
+        ),
+        config_path: "<tempdir>/acme/pv.yml",
+        desired_php_track: None,
+        php_runtime: ProjectPhpRuntimeRecord {
+            track: None,
+            requested_extensions: [],
+            loaded_extensions: [],
+            ignored_extensions: [],
+        },
+        additional_hostnames: [],
+        created_at: "<timestamp>",
+        updated_at: "<timestamp>",
+    },
+)

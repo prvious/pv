@@ -33,20 +33,22 @@ struct PlaceholderContractSnapshot {
 #[test]
 fn resource_allocations_generate_resource_specific_names() -> Result<()> {
     let allocations = [
-        ("mysql", "acme.test", "app-db"),
-        ("postgres", "api.acme.test", "analytics"),
-        ("redis", "acme.test", "cache"),
-        ("rustfs", "acme.test", "uploads_bucket"),
-        ("mysql", "acme-store.test", "app-db"),
-        ("redis", "acme-store.test", "cache_bucket"),
-        ("rustfs", "acme-store.test", "cache_bucket"),
-        ("pg", "acme.test", "app-db"),
-        ("s3", "acme.test", "uploads_bucket"),
+        ("mysql", "acme", "app-db"),
+        ("postgres", "api", "analytics"),
+        ("redis", "acme", "cache"),
+        ("rustfs", "acme", "uploads_bucket"),
+        ("mysql", "acme-store", "app-db"),
+        ("redis", "acme-store", "cache_bucket"),
+        ("rustfs", "acme-store", "cache_bucket"),
+        ("pg", "acme", "app-db"),
+        ("s3", "acme", "uploads_bucket"),
     ]
     .into_iter()
-    .map(|(resource, hostname, allocation)| {
+    .map(|(resource, project_slug, allocation)| {
         Ok(allocation_name_summary(generated_allocation_name(
-            resource, hostname, allocation,
+            resource,
+            project_slug,
+            allocation,
         )?))
     })
     .collect::<Result<Vec<_>>>()?;
@@ -58,36 +60,36 @@ fn resource_allocations_generate_resource_specific_names() -> Result<()> {
 
 #[test]
 fn generated_allocation_names_enforce_sixty_three_character_limit() -> Result<()> {
-    let sql_exact_allocation = "a".repeat(56);
-    let redis_exact_allocation = "a".repeat(55);
-    let rustfs_exact_allocation = "a".repeat(56);
+    let sql_exact_allocation = "a".repeat(61);
+    let redis_exact_allocation = "a".repeat(60);
+    let rustfs_exact_allocation = "a".repeat(61);
 
     assert_eq!(
-        generated_allocation_name("mysql", "a.test", &sql_exact_allocation)?
+        generated_allocation_name("mysql", "a", &sql_exact_allocation)?
             .generated_name()
             .len(),
         63
     );
     assert_eq!(
-        generated_allocation_name("redis", "a.test", &redis_exact_allocation)?
+        generated_allocation_name("redis", "a", &redis_exact_allocation)?
             .generated_name()
             .len(),
         63
     );
     assert_eq!(
-        generated_allocation_name("rustfs", "a.test", &rustfs_exact_allocation)?
+        generated_allocation_name("rustfs", "a", &rustfs_exact_allocation)?
             .generated_name()
             .len(),
         63
     );
 
-    let sql_too_long_allocation = "a".repeat(57);
-    let redis_too_long_allocation = "a".repeat(56);
-    let rustfs_too_long_allocation = "a".repeat(57);
+    let sql_too_long_allocation = "a".repeat(62);
+    let redis_too_long_allocation = "a".repeat(61);
+    let rustfs_too_long_allocation = "a".repeat(62);
     let errors = vec![
-        allocation_error("mysql", "a.test", &sql_too_long_allocation)?,
-        allocation_error("redis", "a.test", &redis_too_long_allocation)?,
-        allocation_error("rustfs", "a.test", &rustfs_too_long_allocation)?,
+        allocation_error("mysql", "a", &sql_too_long_allocation)?,
+        allocation_error("redis", "a", &redis_too_long_allocation)?,
+        allocation_error("rustfs", "a", &rustfs_too_long_allocation)?,
     ];
 
     assert_debug_snapshot!(errors);
@@ -99,7 +101,7 @@ fn generated_allocation_names_enforce_sixty_three_character_limit() -> Result<()
 fn unsupported_resource_allocations_report_canonical_resource_names() -> Result<()> {
     let errors = ["mailpit", "mail", "php", "frankenphp", "composer"]
         .into_iter()
-        .map(|resource| allocation_error(resource, "acme.test", "app"))
+        .map(|resource| allocation_error(resource, "acme", "app"))
         .collect::<Result<Vec<_>>>()?;
 
     assert_debug_snapshot!(errors);
@@ -184,10 +186,10 @@ fn allocation_name_summary(name: ResourceAllocationName) -> AllocationNameSnapsh
 
 fn allocation_error(
     resource: &str,
-    primary_hostname: &str,
+    project_slug: &str,
     allocation: &str,
 ) -> Result<ResourcesError> {
-    match generated_allocation_name(resource, primary_hostname, allocation) {
+    match generated_allocation_name(resource, project_slug, allocation) {
         Ok(name) => Err(anyhow!("expected allocation error, got {name:?}")),
         Err(error) => Ok(error),
     }

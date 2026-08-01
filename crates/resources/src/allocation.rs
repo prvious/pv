@@ -67,7 +67,7 @@ impl ResourceAllocationName {
 /// Generates the stable backing object name for a Resource allocation.
 pub fn generated_allocation_name(
     resource_name_or_alias: &str,
-    primary_hostname: &str,
+    project_slug: &str,
     allocation_name: &str,
 ) -> Result<ResourceAllocationName> {
     let descriptor = registry::resolve(resource_name_or_alias)?;
@@ -80,23 +80,15 @@ pub fn generated_allocation_name(
         ResourceAllocationKind::SqlDatabase => {
             format!(
                 "{}_{}",
-                sql_hostname_slug(primary_hostname),
+                project_slug.replace('-', "_"),
                 allocation_name.replace('-', "_")
             )
         }
         ResourceAllocationKind::RedisPrefix => {
-            format!(
-                "{}-{}-",
-                dash_hostname_slug(primary_hostname),
-                allocation_name.replace('_', "-")
-            )
+            format!("{}-{}-", project_slug, allocation_name.replace('_', "-"))
         }
         ResourceAllocationKind::RustfsBucket => {
-            format!(
-                "{}-{}",
-                dash_hostname_slug(primary_hostname),
-                allocation_name.replace('_', "-")
-            )
+            format!("{}-{}", project_slug, allocation_name.replace('_', "-"))
         }
     };
 
@@ -130,18 +122,4 @@ pub fn allocation_env_placeholders(
     Ok(registry::resolve(resource_name_or_alias)?
         .env_placeholder_contract()
         .allocation_placeholders())
-}
-
-fn sql_hostname_slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| match character {
-            '.' | '-' => '_',
-            character => character,
-        })
-        .collect()
-}
-
-fn dash_hostname_slug(value: &str) -> String {
-    value.replace('.', "-")
 }

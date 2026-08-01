@@ -13,8 +13,8 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    RuntimeObservedStatus, RuntimeSubject, StateError, fs,
+    ProjectEnvObservedStatus, ProjectMode, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, StateError, fs,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::timeout;
@@ -459,6 +459,10 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
 
     for project in database.projects()? {
+        if project.mode == ProjectMode::ResourceOnly {
+            continue;
+        }
+
         let config_file = match ProjectConfigFile::read_from_root(&project.path) {
             Ok(config_file) => Some(config_file),
             Err(error) => {
@@ -478,6 +482,14 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         };
         let config = match config_file {
             Some(config_file) => {
+                if config_file.config.serve != (project.mode == ProjectMode::Served) {
+                    append_persisted_runtime_project(
+                        &mut database,
+                        &mut projects_by_runtime_key,
+                        project,
+                    )?;
+                    continue;
+                }
                 match validate_project_config_for_gateway(paths, &database, &project, &config_file)
                 {
                     Ok(()) => Some(config_file.config),
@@ -499,6 +511,13 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             }
             None => None,
         };
+        let primary_hostname =
+            project
+                .primary_hostname
+                .clone()
+                .ok_or_else(|| StateError::ProjectNotServed {
+                    project_id: project.id.clone(),
+                })?;
         let runtime = resolve_project_php_runtime(
             paths,
             &database,
@@ -509,9 +528,9 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
-            primary_hostname: project.primary_hostname.clone(),
+            primary_hostname: primary_hostname.clone(),
             hostnames: additional_hostnames(
-                &project.primary_hostname,
+                &primary_hostname,
                 project.additional_hostnames,
                 config
                     .as_ref()
@@ -588,6 +607,16 @@ fn append_persisted_runtime_project(
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     project: state::ProjectRecord,
 ) -> Result<(), DaemonError> {
+    if project.mode == ProjectMode::ResourceOnly {
+        return Ok(());
+    }
+    let primary_hostname =
+        project
+            .primary_hostname
+            .clone()
+            .ok_or_else(|| StateError::ProjectNotServed {
+                project_id: project.id.clone(),
+            })?;
     let runtime = match persisted_project_php_runtime(database, &project) {
         Ok(Some(runtime)) => runtime,
         Ok(None) => return Ok(()),
@@ -611,9 +640,9 @@ fn append_persisted_runtime_project(
     let runtime_project = RuntimeProject {
         id: project.id,
         render_config: false,
-        primary_hostname: project.primary_hostname.clone(),
+        primary_hostname: primary_hostname.clone(),
         hostnames: additional_hostnames(
-            &project.primary_hostname,
+            &primary_hostname,
             project.additional_hostnames,
             Vec::new(),
         ),

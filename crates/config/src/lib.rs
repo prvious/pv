@@ -8,6 +8,7 @@ mod model;
 mod parser;
 mod writer;
 
+pub use discovery::resolve_project_env_file_path;
 pub use env::{
     AllocationEnvContext, MANAGED_ENV_END_MARKER, MANAGED_ENV_START_MARKER,
     ManagedEnvBlockTransform, ProjectEnvContext, ProjectEnvWarning, RenderedProjectEnv,

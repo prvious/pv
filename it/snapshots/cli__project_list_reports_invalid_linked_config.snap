@@ -14,7 +14,7 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  8.4  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: unknown Project config key `unexpected`\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: unknown Project config key `unexpected`\n",
         stderr: "",
     },
 )

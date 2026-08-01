@@ -8,6 +8,8 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     ),
     true,
     ProjectConfig {
+        serve: true,
+        env_file: ".env",
         php: Some(
             PhpConfig {
                 version: Some(
@@ -51,6 +53,8 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         },
     },
     ProjectConfig {
+        serve: true,
+        env_file: ".env",
         php: Some(
             PhpConfig {
                 version: Some(

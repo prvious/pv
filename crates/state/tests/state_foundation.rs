@@ -12,7 +12,7 @@ use state::{
     GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobStatus, ManagedResourceDesiredState,
     ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
     ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
@@ -564,9 +564,10 @@ fn resource_allocations_reject_duplicate_generated_names_per_resource_track() ->
 
     state::testing::transaction(&mut database, |transaction| {
         transaction.execute(
-            "INSERT INTO projects (id, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO projects (id, project_slug, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 "project_1",
+                "acme",
                 "/tmp/acme",
                 "/tmp/acme",
                 "acme.test",
@@ -953,15 +954,39 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
         ),
     ];
     let mut old_database = state::testing::open_with_migrations(&paths, &old_migrations)?;
-    let linked = old_database.link_project(state::LinkProjectInput {
-        path: tempdir.path().join("acme"),
-        original_path: tempdir.path().join("acme"),
-        primary_hostname: "acme.test".to_string(),
-        config_path: tempdir.path().join("acme/pv.yml"),
-        desired_php_track: Some("8.4".to_string()),
-        additional_hostnames: vec!["api.acme.test".to_string()],
-    })?;
+    let project_id = "project_1".to_string();
     state::testing::transaction(&mut old_database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (
+                id,
+                path,
+                original_path,
+                primary_hostname,
+                config_path,
+                desired_php_track,
+                created_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                project_id,
+                tempdir.path().join("acme").as_str(),
+                "acme.test",
+                tempdir.path().join("acme/pv.yml").as_str(),
+                "8.4",
+                "2026-05-23T00:00:00Z",
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at)
+            VALUES (?1, ?2, 1, ?3), (?4, ?2, 0, ?3)",
+            params![
+                "acme.test",
+                project_id,
+                "2026-05-23T00:00:00Z",
+                "api.acme.test",
+            ],
+        )?;
         transaction.execute(
             "INSERT INTO managed_resource_tracks (
                 resource_name,
@@ -998,9 +1023,13 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
             "project_resource_requirements",
             include_str!("../src/sql/005_project_resource_requirements.sql"),
         ),
+        Migration::new(
+            9,
+            "project_mode_and_slug",
+            include_str!("../src/sql/009_project_mode_and_slug.sql"),
+        ),
     ];
     let mut database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
-    let project_id = linked.project.id;
     let before = (
         database.inspect()?,
         database.projects()?,
@@ -1889,6 +1918,11 @@ fn project_original_path_migration_backfills_existing_paths() -> Result<()> {
             "project_original_path",
             include_str!("../src/sql/004_project_original_path.sql"),
         ),
+        Migration::new(
+            9,
+            "project_mode_and_slug",
+            include_str!("../src/sql/009_project_mode_and_slug.sql"),
+        ),
     ];
     let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
     let project = database
@@ -2005,9 +2039,10 @@ fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
 
     state::testing::transaction(&mut database, |transaction| {
         transaction.execute(
-            "INSERT INTO projects (id, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO projects (id, project_slug, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 "project_1",
+                "acme",
                 "/tmp/acme",
                 "/tmp/acme",
                 "acme.test",
@@ -2134,6 +2169,222 @@ fn linked_projects_preserve_ids_and_refresh_hostnames() -> Result<()> {
         assert_debug_snapshot!((created.status, updated.status, database.projects()?));
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn linked_projects_assign_immutable_slugs_and_persist_serving_mode() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let first_path = tempdir.path().join("first/Appointment");
+    let second_path = tempdir.path().join("second/Appointment");
+
+    let first = database.link_project(state::LinkProjectInput {
+        path: first_path.clone(),
+        original_path: first_path.clone(),
+        primary_hostname: "appointment.test".to_string(),
+        config_path: first_path.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: vec!["api.appointment.test".to_string()],
+    })?;
+    let second = database.link_project_with_mode(
+        state::LinkProjectInput {
+            path: second_path.clone(),
+            original_path: second_path.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: second_path.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: vec!["ignored-alias.test".to_string()],
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    let second_relinked = database.link_project_with_mode(
+        state::LinkProjectInput {
+            path: second_path.clone(),
+            original_path: second_path,
+            primary_hostname: "another-ignored.test".to_string(),
+            config_path: second.project.config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+
+    assert_eq!(first.project.slug, "appointment");
+    assert_eq!(first.project.mode, ProjectMode::Served);
+    assert_eq!(
+        first.project.primary_hostname.as_deref(),
+        Some("appointment.test")
+    );
+    assert_eq!(second.project.slug, "appointment-1");
+    assert_eq!(second.project.mode, ProjectMode::ResourceOnly);
+    assert_eq!(second.project.primary_hostname, None);
+    assert!(second.project.additional_hostnames.is_empty());
+    assert_eq!(second_relinked.status, state::LinkProjectStatus::Unchanged);
+    assert_eq!(second_relinked.project.slug, second.project.slug);
+    assert_eq!(
+        database.project_by_slug("appointment-1")?,
+        Some(second.project.clone())
+    );
+    assert!(
+        database
+            .project_by_hostname(&format!("{}.invalid", second.project.id))?
+            .is_none()
+    );
+
+    let first_disabled = database.link_project_with_mode(
+        state::LinkProjectInput {
+            path: first.project.path.clone(),
+            original_path: first.project.original_path.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: first.project.config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    assert_eq!(first_disabled.project.slug, first.project.slug);
+    assert_eq!(first_disabled.project.mode, ProjectMode::ResourceOnly);
+    assert_eq!(
+        first_disabled.project.primary_hostname.as_deref(),
+        Some("appointment.test")
+    );
+    assert_eq!(
+        first_disabled.project.additional_hostnames,
+        ["api.appointment.test"]
+    );
+    assert!(database.project_by_hostname("appointment.test")?.is_some());
+
+    let second_enabled = database.link_project_with_mode(
+        state::LinkProjectInput {
+            path: second.project.path.clone(),
+            original_path: second.project.original_path.clone(),
+            primary_hostname: "appointment-1.test".to_string(),
+            config_path: second.project.config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::Served,
+    )?;
+    assert_eq!(second_enabled.project.slug, second.project.slug);
+    assert_eq!(second_enabled.project.mode, ProjectMode::Served);
+    assert_eq!(
+        second_enabled.project.primary_hostname.as_deref(),
+        Some("appointment-1.test")
+    );
+
+    let maximum_length_name = "a".repeat(63);
+    let long_first_path = tempdir.path().join("long-first").join(&maximum_length_name);
+    let long_second_path = tempdir
+        .path()
+        .join("long-second")
+        .join(&maximum_length_name);
+    let long_first = database.link_project(state::LinkProjectInput {
+        path: long_first_path.clone(),
+        original_path: long_first_path.clone(),
+        primary_hostname: "long-first.test".to_string(),
+        config_path: long_first_path.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    let long_second = database.link_project(state::LinkProjectInput {
+        path: long_second_path.clone(),
+        original_path: long_second_path.clone(),
+        primary_hostname: "long-second.test".to_string(),
+        config_path: long_second_path.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    assert_eq!(long_first.project.slug, maximum_length_name);
+    assert_eq!(long_second.project.slug, format!("{}-1", "a".repeat(61)));
+
+    let changed_slug = state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE projects SET project_slug = ?1 WHERE id = ?2",
+            params!["changed", first.project.id],
+        )?;
+
+        Ok(())
+    });
+    let missing_slug = state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE projects SET project_slug = NULL WHERE id = ?1",
+            params![first.project.id],
+        )?;
+
+        Ok(())
+    });
+    assert!(changed_slug.is_err());
+    assert!(missing_slug.is_err());
+    assert_eq!(
+        database
+            .project_by_id(&first.project.id)?
+            .map(|project| project.slug),
+        Some("appointment".to_string())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    database.replace_project_php_runtime(
+        &project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER fail_project_observed_state
+            BEFORE INSERT ON observed_states
+            BEGIN
+                SELECT RAISE(ABORT, 'forced observed-state failure');
+            END;",
+        )?;
+
+        Ok(())
+    })?;
+
+    let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        project_id: project.id.clone(),
+        link: state::LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: project.config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        mode: ProjectMode::ResourceOnly,
+        php_runtime: Some(state::ProjectPhpRuntimeInput {
+            track: "8.3".to_string(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+        env_status: ProjectEnvObservedStatus::Rendered,
+        env_message: Some("rendered Project env".to_string()),
+        env_warnings: Vec::new(),
+    });
+    let after_failure = database
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked Project"))?;
+
+    assert!(result.is_err());
+    assert_eq!(after_failure.mode, ProjectMode::Served);
+    assert_eq!(after_failure.primary_hostname.as_deref(), Some("acme.test"));
+    assert_eq!(after_failure.php_runtime.track.as_deref(), Some("8.4"));
+    assert!(database.project_env_observed_state(&project.id)?.is_none());
 
     Ok(())
 }
@@ -2447,7 +2698,10 @@ fn linked_projects_can_promote_additional_hostname_to_primary() -> Result<()> {
     })?;
 
     assert_eq!(created.project.id, updated.project.id);
-    assert_eq!(updated.project.primary_hostname, "api.acme.test");
+    assert_eq!(
+        updated.project.primary_hostname.as_deref(),
+        Some("api.acme.test")
+    );
     assert_eq!(updated.project.additional_hostnames, vec!["acme.test"]);
 
     Ok(())
@@ -2580,8 +2834,8 @@ fn linked_project_hostname_validation_checks_pending_config_hostnames() -> Resul
 
     let duplicate_primary = database.validate_project_hostnames(
         &first.project.id,
-        &first.project.primary_hostname,
-        std::slice::from_ref(&first.project.primary_hostname),
+        "acme.test",
+        &["acme.test".to_string()],
     );
     assert!(matches!(
         duplicate_primary,
@@ -2590,8 +2844,8 @@ fn linked_project_hostname_validation_checks_pending_config_hostnames() -> Resul
 
     let collision = database.validate_project_hostnames(
         &second.project.id,
-        &second.project.primary_hostname,
-        std::slice::from_ref(&first.project.primary_hostname),
+        "other.test",
+        &["acme.test".to_string()],
     );
     assert!(matches!(
         collision,

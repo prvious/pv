@@ -103,6 +103,9 @@ pub enum StateError {
     #[error("unknown Project env observed status `{status}`")]
     UnknownProjectEnvObservedStatus { status: String },
 
+    #[error("unknown Project serving mode value `{value}`")]
+    UnknownProjectMode { value: i64 },
+
     #[error("unknown runtime observed status `{status}`")]
     UnknownRuntimeObservedStatus { status: String },
 
@@ -139,6 +142,18 @@ pub enum StateError {
 
     #[error("could not allocate a unique Project ID after {attempts} attempts")]
     ProjectIdExhausted { attempts: usize },
+
+    #[error("Project directory name `{name}` cannot produce a valid Project slug")]
+    InvalidProjectSlug { name: String },
+
+    #[error("Project `{project_id}` has no stored Project slug")]
+    ProjectSlugMissing { project_id: String },
+
+    #[error("could not allocate a unique Project slug after {attempts} attempts")]
+    ProjectSlugExhausted { attempts: usize },
+
+    #[error("Project `{project_id}` is resource-only and has no served hostname")]
+    ProjectNotServed { project_id: String },
 
     #[error("invalid managed resource {kind} `{value}`")]
     InvalidManagedResourceIdentity { kind: &'static str, value: String },

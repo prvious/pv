@@ -3,7 +3,7 @@ source: crates/daemon/src/managed_resources/tests.rs
 expression: snapshot
 ---
 (
-    "# >>> PV MANAGED\nDATABASE_URL=mysql://root:secret@127.0.0.1:<mysql_port>/acme_test_app_db\n# <<< PV MANAGED\n",
+    "# >>> PV MANAGED\nDATABASE_URL=mysql://root:secret@127.0.0.1:<port>/project_app_db\n# <<< PV MANAGED\n",
     [
         ResourceAllocationRecord {
             id: "allocation_000001",
@@ -11,13 +11,13 @@ expression: snapshot
             resource_name: "mysql",
             track: "8.0",
             allocation_name: "app-db",
-            generated_name: "acme_test_app_db",
+            generated_name: "project_app_db",
             env: {
-                "database": "acme_test_app_db",
+                "database": "project_app_db",
                 "host": "127.0.0.1",
                 "password": "secret",
                 "port": "<port>",
-                "url": "mysql://root:secret@127.0.0.1:<mysql_port>/acme_test_app_db",
+                "url": "mysql://root:secret@127.0.0.1:<port>/project_app_db",
                 "username": "root",
             },
             status: Ready,

@@ -19,7 +19,7 @@ expression: "(link, open, opened_urls)"
             ),
         ),
         stdout: "",
-        stderr: "error: could not resolve a linked Project; pass a hostname\n",
+        stderr: "error: could not resolve a linked Project; pass a Project slug or hostname\n",
     },
     [],
 )

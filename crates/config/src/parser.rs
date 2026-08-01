@@ -7,6 +7,7 @@ use resources::{
 };
 use yaml_serde::{Mapping, Number, Value};
 
+use crate::discovery::validate_document_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
@@ -47,19 +48,29 @@ impl ProjectConfig {
 
 fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError> {
     let mut config = ProjectConfig::default();
+    let mut hostnames = None;
 
     for (key, value) in mapping {
         let key = string_key(key)?;
         match key.as_str() {
+            "serve" => {
+                config.serve = bool_scalar("serve", &value)?;
+            }
+            "env_file" => {
+                let env_file = non_empty_string("env_file", &value)?;
+                config.env_file = validate_env_file(Utf8PathBuf::from(env_file))?;
+            }
             "php" => {
                 config.php = Some(php_config(&value)?);
             }
             "document_root" => {
                 let document_root = non_empty_string("document_root", &value)?;
-                config.document_root = Some(Utf8PathBuf::from(document_root));
+                let document_root = Utf8PathBuf::from(document_root);
+                validate_document_root_shape(&document_root)?;
+                config.document_root = Some(document_root);
             }
             "hostnames" => {
-                config.hostnames = parse_hostnames(&value)?;
+                hostnames = Some(value);
             }
             "env" => {
                 config.env = parse_env_mapping("env", EnvPlaceholderScope::Project, &value)?;
@@ -80,6 +91,10 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
                 }
             }
         }
+    }
+
+    if let Some(hostnames) = hostnames {
+        config.hostnames = parse_hostnames(&hostnames)?;
     }
 
     Ok(config)
@@ -243,6 +258,29 @@ fn parse_hostnames(value: &Value) -> Result<Vec<String>, ConfigError> {
     Ok(hostnames)
 }
 
+fn validate_env_file(env_file: Utf8PathBuf) -> Result<Utf8PathBuf, ConfigError> {
+    if env_file.is_absolute() {
+        return Err(ConfigError::AbsoluteEnvFile { env_file });
+    }
+
+    let mut depth = 0_u32;
+    for component in env_file.components() {
+        match component {
+            camino::Utf8Component::Normal(_) => depth += 1,
+            camino::Utf8Component::ParentDir if depth == 0 => {
+                return Err(ConfigError::EnvFileEscapesProject { env_file });
+            }
+            camino::Utf8Component::ParentDir => depth -= 1,
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::RootDir | camino::Utf8Component::Prefix(_) => {
+                return Err(ConfigError::AbsoluteEnvFile { env_file });
+            }
+        }
+    }
+
+    Ok(env_file)
+}
+
 fn parse_env_mapping(
     field: &str,
     scope: EnvPlaceholderScope<'_>,
@@ -373,6 +411,17 @@ fn string_scalar(field: &str, value: &Value) -> Result<String, ConfigError> {
         value => Err(ConfigError::InvalidFieldType {
             field: field.to_string(),
             expected: "a string",
+            found: value_type(value),
+        }),
+    }
+}
+
+fn bool_scalar(field: &str, value: &Value) -> Result<bool, ConfigError> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        value => Err(ConfigError::InvalidFieldType {
+            field: field.to_string(),
+            expected: "a boolean",
             found: value_type(value),
         }),
     }

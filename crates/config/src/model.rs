@@ -1,11 +1,20 @@
 use std::collections::BTreeMap;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+const DEFAULT_ENV_FILE: &str = ".env";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectConfig {
+    #[serde(skip_serializing_if = "is_true")]
+    pub serve: bool,
+    #[serde(
+        skip_serializing_if = "is_default_env_file",
+        serialize_with = "serialize_path"
+    )]
+    pub env_file: Utf8PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub php: Option<PhpConfig>,
     #[serde(
@@ -19,6 +28,20 @@ pub struct ProjectConfig {
     pub env: BTreeMap<String, String>,
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub resources: BTreeMap<String, ResourceConfig>,
+}
+
+impl Default for ProjectConfig {
+    fn default() -> Self {
+        Self {
+            serve: true,
+            env_file: default_env_file(),
+            php: None,
+            document_root: None,
+            hostnames: Vec::new(),
+            env: BTreeMap::new(),
+            resources: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,25 +127,35 @@ impl ProjectConfig {
     }
 
     pub fn uses_tls_placeholders(&self) -> bool {
-        self.env
-            .values()
-            .any(|value| value_uses_tls_placeholder(value))
-            || self.resources.values().any(|resource| {
-                resource
-                    .env
-                    .values()
-                    .any(|value| value_uses_tls_placeholder(value))
-                    || resource.allocations.values().any(|allocation| {
-                        allocation
-                            .env
-                            .values()
-                            .any(|value| value_uses_tls_placeholder(value))
-                    })
-            })
+        self.serve
+            && (self
+                .env
+                .values()
+                .any(|value| value_uses_tls_placeholder(value))
+                || self.resources.values().any(|resource| {
+                    resource
+                        .env
+                        .values()
+                        .any(|value| value_uses_tls_placeholder(value))
+                        || resource.allocations.values().any(|allocation| {
+                            allocation
+                                .env
+                                .values()
+                                .any(|value| value_uses_tls_placeholder(value))
+                        })
+                }))
     }
 }
 
 fn value_uses_tls_placeholder(value: &str) -> bool {
+    value_uses_any_placeholder(value, &["tls_ca", "tls_cert", "tls_key"])
+}
+
+pub(crate) fn value_uses_serving_placeholder(value: &str) -> bool {
+    value_uses_any_placeholder(value, &["project_url", "tls_ca", "tls_cert", "tls_key"])
+}
+
+fn value_uses_any_placeholder(value: &str, placeholders: &[&str]) -> bool {
     let characters = value.chars().collect::<Vec<_>>();
     let mut index = 0;
 
@@ -151,7 +184,7 @@ fn value_uses_tls_placeholder(value: &str) -> bool {
             continue;
         };
         let placeholder = characters[index + 2..end_index].iter().collect::<String>();
-        if matches!(placeholder.as_str(), "tls_ca" | "tls_cert" | "tls_key") {
+        if placeholders.contains(&placeholder.as_str()) {
             return true;
         }
 
@@ -168,4 +201,23 @@ where
     path.as_ref()
         .map(|path| path.as_str())
         .serialize(serializer)
+}
+
+fn serialize_path<S>(path: &Utf8PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    path.as_str().serialize(serializer)
+}
+
+fn default_env_file() -> Utf8PathBuf {
+    Utf8PathBuf::from(DEFAULT_ENV_FILE)
+}
+
+const fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_default_env_file(path: &Utf8PathBuf) -> bool {
+    path == Utf8Path::new(DEFAULT_ENV_FILE)
 }

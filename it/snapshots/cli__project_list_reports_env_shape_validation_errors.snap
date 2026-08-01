@@ -14,7 +14,7 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: duplicate rendered Project env key `DB_HOST` from same-depth mappings `mysql.env.DB_HOST` and `redis.env.DB_HOST`\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: duplicate rendered Project env key `DB_HOST` from same-depth mappings `mysql.env.DB_HOST` and `redis.env.DB_HOST`\n",
         stderr: "",
     },
 )

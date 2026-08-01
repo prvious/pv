@@ -15,6 +15,7 @@ DatabaseInspection {
         "006:global_php_default",
         "007:resource_port_roles",
         "008:project_php_runtime_extensions",
+        "009:project_mode_and_slug",
     ],
     tables: [
         "global_php_default_track",

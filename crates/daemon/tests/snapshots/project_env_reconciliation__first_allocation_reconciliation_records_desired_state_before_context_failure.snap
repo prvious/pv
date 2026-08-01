@@ -45,7 +45,7 @@ expression: snapshot
             resource_name: "postgres",
             track: "8.0",
             allocation_name: "app-db",
-            generated_name: "acme_test_app_db",
+            generated_name: "project_app_db",
             env: {},
             status: Desired,
             created_at: "<timestamp>",

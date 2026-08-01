@@ -14,28 +14,28 @@ expression: "(link, list_initial, list_stale_pending, list_stale_warning,\nlist_
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  none  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  none  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  none  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  none  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  none  <tempdir>/Acme Store\n",
         stderr: "",
     },
 )

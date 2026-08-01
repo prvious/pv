@@ -14,28 +14,28 @@ expression: "(link, list_pending, list_rendered, list_warning, list_failed)"
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  pending  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  pending  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  rendered  <tempdir>/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  rendered  <tempdir>/Acme Store\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: APP_URL already exists outside the PV block\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  warning  <tempdir>/Acme Store\n  env: warning: APP_URL already exists outside the PV block\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Hostname  PHP  Status  Resources  Env  Path\nacme-store.test  default  unknown  unknown  failed  <tempdir>/Acme Store\n  env: failed: Project config error: duplicate rendered Project env key `DATABASE_URL`\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  unknown  unknown  failed  <tempdir>/Acme Store\n  env: failed: Project config error: duplicate rendered Project env key `DATABASE_URL`\n",
         stderr: "",
     },
 )

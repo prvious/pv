@@ -1,6 +1,6 @@
 ---
 source: crates/cli/tests/project_open.rs
-expression: "(link_zeta, link_acme, open, opened_urls)"
+expression: "(link_zeta, link_alpha, open, opened_urls)"
 ---
 (
     RunOutput {
@@ -9,7 +9,7 @@ expression: "(link_zeta, link_acme, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Linked zeta.test -> <tempdir>/zeta\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stdout: "Linked zeta.test -> <tempdir>/alpha-project\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
         stderr: "",
     },
     RunOutput {
@@ -18,7 +18,7 @@ expression: "(link_zeta, link_acme, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Linked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stdout: "Linked alpha.test -> <tempdir>/zeta-project\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
         stderr: "",
     },
     RunOutput {
@@ -27,7 +27,7 @@ expression: "(link_zeta, link_acme, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Select a Project:\n1. acme.test  <tempdir>/acme\n2. zeta.test  <tempdir>/zeta\nEnter selection:\nOpened https://zeta.test for zeta.test\n",
+        stdout: "Select a Project:\n1. alpha.test  <tempdir>/zeta-project\n2. zeta.test  <tempdir>/alpha-project\nEnter selection:\nOpened https://zeta.test for zeta.test\n",
         stderr: "",
     },
     [

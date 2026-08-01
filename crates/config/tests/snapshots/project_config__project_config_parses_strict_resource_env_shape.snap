@@ -3,6 +3,8 @@ source: crates/config/tests/project_config.rs
 expression: config
 ---
 ProjectConfig {
+    serve: true,
+    env_file: ".env",
     php: Some(
         PhpConfig {
             version: Some(

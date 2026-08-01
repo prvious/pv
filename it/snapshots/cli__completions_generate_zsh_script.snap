@@ -195,7 +195,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::hostname -- Project hostname to unlink:_default' \
+'::hostname -- Project slug or hostname to unlink:_default' \
 && ret=0
 ;;
 (open)
@@ -203,7 +203,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::hostname -- Project hostname to open:_default' \
+'::hostname -- Project slug or hostname to open:_default' \
 && ret=0
 ;;
 (project:env)
@@ -212,7 +212,7 @@ _arguments "${_arguments_options[@]}" : \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::hostname -- Project hostname to render env for:_default' \
+'::hostname -- Project slug or hostname to render env for:_default' \
 && ret=0
 ;;
 (status)

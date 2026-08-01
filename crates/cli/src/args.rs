@@ -481,13 +481,13 @@ pub(crate) struct InitArgs {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct UnlinkArgs {
-    #[arg(value_name = "hostname", help = "Project hostname to unlink")]
+    #[arg(value_name = "project", help = "Project slug or hostname to unlink")]
     pub(crate) hostname: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct OpenArgs {
-    #[arg(value_name = "hostname", help = "Project hostname to open")]
+    #[arg(value_name = "project", help = "Project slug or hostname to open")]
     pub(crate) hostname: Option<String>,
 }
 
@@ -496,7 +496,10 @@ pub(crate) struct ProjectEnvArgs {
     #[arg(long, help = "Print generated Project environment values as JSON")]
     pub(crate) json: bool,
 
-    #[arg(value_name = "hostname", help = "Project hostname to render env for")]
+    #[arg(
+        value_name = "project",
+        help = "Project slug or hostname to render env for"
+    )]
     pub(crate) hostname: Option<String>,
 }
 

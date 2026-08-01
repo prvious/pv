@@ -1,6 +1,5 @@
 ---
 source: crates/config/tests/project_config.rs
-assertion_line: 67
 expression: "(config_file.path.file_name(), config_file.exists, config_file.config,)"
 ---
 (
@@ -9,6 +8,8 @@ expression: "(config_file.path.file_name(), config_file.exists, config_file.conf
     ),
     true,
     ProjectConfig {
+        serve: true,
+        env_file: ".env",
         php: None,
         document_root: Some(
             "public",

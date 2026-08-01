@@ -33,7 +33,9 @@ expression: "(created, ready, context, removed, after_removal, readded)"
     },
     ProjectEnvStateContext {
         project_id: "<project_id>",
-        primary_hostname: "acme.test",
+        primary_hostname: Some(
+            "acme.test",
+        ),
         resources: {
             "mysql": ProjectEnvResourceContext {
                 track: "8.0",

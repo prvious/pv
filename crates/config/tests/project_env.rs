@@ -28,22 +28,41 @@ mysql:
     };
 
     let rendered = render_project_env(&config, &context)?;
-    let transformed = transform_managed_env_block(
-        Some(
-            r#"USER_VALUE=1
-# >>> PV MANAGED
-OLD_VALUE=stays
-# <<< PV MANAGED
-"#,
-        ),
-        &rendered,
-    )?;
-
     assert_debug_snapshot!((
         &rendered,
-        format_project_env(&RenderedProjectEnv::default()),
-        transformed
+        format_project_env(&RenderedProjectEnv::default())
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_env_block_transformer_clears_existing_block_when_all_mappings_are_dormant() -> Result<()>
+{
+    let config = ProjectConfig::parse(
+        r#"serve: false
+env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    let rendered = render_project_env(&config, &ProjectEnvContext::default())?;
+    let existing = r#"USER_VALUE=kept
+# >>> PV MANAGED
+APP_URL=https://acme.test
+# <<< PV MANAGED
+"#;
+
+    let cleared = transform_managed_env_block(Some(existing), &rendered)?;
+    let missing = transform_managed_env_block(None, &rendered)?;
+
+    assert!(rendered.values.is_empty());
+    assert_eq!(
+        cleared.content,
+        "USER_VALUE=kept\n# >>> PV MANAGED\n# <<< PV MANAGED\n"
+    );
+    assert!(cleared.changed);
+    assert_eq!(missing.content, "");
+    assert!(!missing.changed);
 
     Ok(())
 }
@@ -249,6 +268,53 @@ mysql:
             )]),
         },
     )]);
+
+    let rendered = render_project_env(&config, &context)?;
+
+    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
+
+    Ok(())
+}
+
+#[test]
+fn resource_only_env_omits_serving_placeholders_across_scopes() -> Result<()> {
+    let config = ProjectConfig::parse(
+        r#"
+serve: false
+env:
+  APP_ENV: local
+  APP_URL: "${project_url}"
+mysql:
+  env:
+    DB_HOST: "${host}"
+    TLS_CA: "${tls_ca}"
+  allocations:
+    app:
+      env:
+        DB_DATABASE: "${database}"
+        TLS_CERT: "${tls_cert}"
+"#,
+    )?;
+    let context = ProjectEnvContext {
+        primary_hostname: String::new(),
+        tls_ca_path: String::new(),
+        tls_cert_path: String::new(),
+        tls_key_path: String::new(),
+        resources: BTreeMap::from([(
+            "mysql".to_string(),
+            ResourceEnvContext {
+                track: "8.4".to_string(),
+                values: values(&[("host", "127.0.0.1")]),
+                allocations: allocations(&[(
+                    "app",
+                    AllocationEnvContext {
+                        generated_name: "acme_app".to_string(),
+                        values: values(&[("database", "acme_app")]),
+                    },
+                )]),
+            },
+        )]),
+    };
 
     let rendered = render_project_env(&config, &context)?;
 
