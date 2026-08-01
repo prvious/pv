@@ -370,6 +370,62 @@ postgres:
 }
 
 #[test]
+fn php_shim_preserves_resource_only_runtime_during_invalid_served_transition() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("resources");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "serve: false\nphp: 8.4\n")?;
+    let project_record =
+        register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
+    record_installed_php(&home, "8.3", "8.3.12-pv1")?;
+    let project_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+    {
+        let mut database = Database::open(&pv_paths(&home))?;
+        database.record_global_php_default_track("8.3")?;
+        database.replace_project_php_runtime(
+            &project_record.id,
+            Some(&ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: Vec::new(),
+                loaded_extensions: Vec::new(),
+                ignored_extensions: Vec::new(),
+            }),
+        )?;
+    }
+    write_file(
+        &project.join("pv.yml"),
+        r#"postgres:
+  version: "8.0"
+  allocations:
+    analytics:
+      env:
+        DATABASE_URL: "postgres://${database}"
+    app:
+      env:
+        DATABASE_URL: "postgres://${database}"
+"#,
+    )?;
+    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+    let exec_calls = environment.exec_calls();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        exec_calls,
+        vec![ExecCall {
+            program: project_release.join("bin/php").as_std_path().to_path_buf(),
+            args: vec!["-v".to_string()],
+            env: php_exec_env(&home, "8.4")?,
+        }]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_shim_resolves_project_config_extensions_when_persisted_runtime_is_empty()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -791,19 +847,9 @@ fn php_shim_uses_global_fallback_for_resource_only_project_without_php() -> anyh
     let project_record =
         register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
     let release = record_installed_php(&home, "8.3", "8.3.12-pv1")?;
-    record_installed_php(&home, "8.4", "8.4.8-pv1")?;
     {
         let mut database = Database::open(&pv_paths(&home))?;
         database.record_global_php_default_track("8.3")?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: Vec::new(),
-                loaded_extensions: Vec::new(),
-                ignored_extensions: Vec::new(),
-            }),
-        )?;
     }
     let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
 

@@ -315,9 +315,7 @@ fn resolve_php_runtime_for_shim(
                 return Err(error.into());
             }
         };
-        let uses_project_runtime =
-            project.mode == ProjectMode::Served || config_file.config.php.is_some();
-        if uses_project_runtime && let Some(track) = project.php_runtime.track.clone() {
+        if let Some(track) = project.php_runtime.track.clone() {
             let php = config_file.config.php.as_ref();
             let requested_extensions = php
                 .map(|php| php.requested_extensions().to_vec())
@@ -366,7 +364,7 @@ fn resolve_php_runtime_for_shim(
             if let Some(php) = php {
                 return resolve_project_config_php_runtime_for_shim(database, &current_track, php);
             }
-        } else if uses_project_runtime && let Some(php) = config_file.config.php.as_ref() {
+        } else if let Some(php) = config_file.config.php.as_ref() {
             let track = resolve_project_config_php_track_for_shim(paths, database, php)?;
 
             return resolve_project_config_php_runtime_for_shim(database, &track, php);
