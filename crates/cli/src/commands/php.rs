@@ -315,7 +315,8 @@ fn resolve_php_runtime_for_shim(
                 return Err(error.into());
             }
         };
-        let uses_project_runtime = config_file.config.serve || config_file.config.php.is_some();
+        let uses_project_runtime =
+            project.mode == ProjectMode::Served || config_file.config.php.is_some();
         if uses_project_runtime && let Some(track) = project.php_runtime.track.clone() {
             let php = config_file.config.php.as_ref();
             let requested_extensions = php
