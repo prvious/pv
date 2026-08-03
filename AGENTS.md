@@ -2,6 +2,9 @@
 
 - Read CONTRIBUTING.md for guidelines on how to run tools
 - Before making implementation or product decisions, consult DESIGN.md
+- Do not preserve backward compatibility.
+- Choose the simplest implementation that fully meets the current requirements.
+- Prefer established, well-maintained libraries over custom implementations.
 - If the decision is not covered by DESIGN.md, ask instead of guessing
 - Add or update tests when they provide meaningful coverage for changed behavior.
 - Skip tests for changes that are purely cosmetic, mechanical, documentation-only, formatting-only, naming-only, or configuration-only, unless there is actual behavior worth protecting.
