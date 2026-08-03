@@ -605,7 +605,7 @@ The PV application update phase runs in this order:
 5. Fetch and parse the PV app update manifest.
 6. If the manifest version is not newer than the running version, report current, release the update lock, and continue to the Managed Resource phase in the same process.
 7. Download, verify, install, and activate the newer app release.
-8. Restart or kickstart the daemon without submitting `reconcile system`.
+8. Reload the validated PV-owned LaunchAgent with tolerant bootout/bootstrap, then kickstart the daemon without submitting `reconcile system`.
 9. Wait for daemon health.
 10. Release the update lock and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
 
@@ -625,7 +625,7 @@ User-facing `pv update` only performs PV application self-update when PV is runn
 
 `pv update` is version-driven. If the manifest version equals or is lower than the running version, it reports current and does not download, reinstall, or reactivate the same version. Downgrades are out of v1 scope.
 
-Installed and self-updating PV uses the stable active symlink as the LaunchAgent program path: `~/.pv/bin/pv daemon:run`. During update preflight, a PV-owned stale LaunchAgent plist is normalized to that stable path. When an update later needs to restart the daemon after stale plist normalization, PV reloads the launchd job with bootout/bootstrap before kickstart so launchd uses the normalized `ProgramArguments`. A missing LaunchAgent fails before activation with guidance to run `pv setup` or `pv daemon:enable`. A non-PV-owned LaunchAgent fails before activation and is left unchanged. If LaunchAgent normalization succeeds but the manifest says the PV application is current, `pv update` exits zero without restarting the daemon.
+Installed and self-updating PV uses the stable active symlink as the LaunchAgent program path: `~/.pv/bin/pv daemon:run`. During update preflight, a PV-owned stale LaunchAgent plist is normalized to that stable path. After every actual app release activation, PV reloads the validated PV-owned launchd job with tolerant bootout/bootstrap before kickstart so launchd resolves the active symlink again and uses the current `ProgramArguments`. This reload is required whether the plist was already current or was normalized during preflight. If post-activation health fails, rollback restores the previous active symlink and repeats the same bootout/bootstrap/kickstart sequence before checking daemon health. A missing LaunchAgent fails before activation with guidance to run `pv setup` or `pv daemon:enable`. A non-PV-owned LaunchAgent fails before activation and is left unchanged. If LaunchAgent normalization succeeds but the manifest says the PV application is current, `pv update` exits zero without restarting or reloading the daemon.
 
 PV app binary downloads use a freshly created command-scoped temporary file under `~/.pv/downloads/`; an existing path is never reused or truncated. While streaming the response, PV writes to that temporary file, computes SHA-256, and counts bytes. After the stream completes, PV verifies byte count and digest against the selected manifest asset. Verification failure deletes the temporary file, fails before app release installation, and leaves the active release unchanged. Successful installation uses the self-update release layout helper, then removes the temporary download; v1 does not introduce a persistent PV app binary download cache.
 
