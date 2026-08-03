@@ -160,7 +160,9 @@ pub(crate) fn database_exists(paths: &PvPaths) -> bool {
 }
 
 pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
-    for (_, path) in database_files(paths) {
+    secure_sensitive_file(paths.db())?;
+
+    for path in database_auxiliary_files(paths) {
         if !path_exists(&path) {
             continue;
         }
@@ -190,6 +192,13 @@ fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
         ("database", paths.db().to_path_buf()),
         ("wal", paths.root().join("pv.db-wal")),
         ("shared_memory", paths.root().join("pv.db-shm")),
+    ]
+}
+
+fn database_auxiliary_files(paths: &PvPaths) -> [Utf8PathBuf; 2] {
+    [
+        paths.root().join("pv.db-wal"),
+        paths.root().join("pv.db-shm"),
     ]
 }
 
@@ -604,14 +613,35 @@ fn require_owner_only_filesystem() -> Result<(), StateError> {
 #[cfg(test)]
 mod tests {
     use camino::Utf8Path;
-    #[cfg(windows)]
     use camino_tempfile::tempdir;
 
+    #[cfg(unix)]
+    use super::secure_database_files;
     use super::temporary_path_for;
     #[cfg(windows)]
     use super::{ensure_user_dir, path_exists};
+    #[cfg(unix)]
+    use crate::PvPaths;
     #[cfg(windows)]
-    use crate::{StateCapability, StateError};
+    use crate::StateCapability;
+    use crate::StateError;
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_persistent_database_file_is_not_ignored() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        let result = secure_database_files(&paths);
+
+        assert!(matches!(
+            result,
+            Err(StateError::Filesystem { path, source })
+                if path == paths.db() && source.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        Ok(())
+    }
 
     #[test]
     fn temporary_paths_keep_the_target_extension_in_the_derived_name() {
