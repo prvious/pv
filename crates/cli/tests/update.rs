@@ -34,6 +34,7 @@ mod update_tests {
         operations: RefCell<Vec<String>>,
         execs: RefCell<Vec<(PathBuf, Vec<String>)>>,
         exec_result: RefCell<Result<ExitCode, io::Error>>,
+        launch_agent_unloaded: bool,
         delete_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
         lock_probe: RefCell<Option<PvPaths>>,
         startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
@@ -47,6 +48,7 @@ mod update_tests {
                 operations: RefCell::new(Vec::new()),
                 execs: RefCell::new(Vec::new()),
                 exec_result: RefCell::new(Ok(ExitCode::SUCCESS)),
+                launch_agent_unloaded: false,
                 delete_on_first_kickstart: RefCell::new(None),
                 lock_probe: RefCell::new(None),
                 startup_marker_on_first_kickstart: RefCell::new(None),
@@ -63,6 +65,11 @@ mod update_tests {
 
         fn with_exec_error(self, error: io::Error) -> Self {
             let _previous = self.exec_result.replace(Err(error));
+            self
+        }
+
+        fn with_unloaded_launch_agent(mut self) -> Self {
+            self.launch_agent_unloaded = true;
             self
         }
 
@@ -147,6 +154,12 @@ mod update_tests {
             self.operations
                 .borrow_mut()
                 .push(format!("bootout {LAUNCH_AGENT_LABEL}"));
+
+            if self.launch_agent_unloaded {
+                return Err(platform::PlatformError::LaunchAgent(
+                    "launch agent is not loaded".to_string(),
+                ));
+            }
 
             Ok(())
         }
@@ -680,6 +693,45 @@ mod update_tests {
                 ))
                 .with_download(APP_BINARY),
         );
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(
+            environment.operations(),
+            vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_bootstraps_launch_agent_when_bootout_reports_already_unloaded() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&app_manifest(
+                    "0.3.0",
+                    APP_BINARY_SHA256,
+                    u64::try_from(APP_BINARY.len())?,
+                ))
+                .with_download(APP_BINARY),
+        )
+        .with_unloaded_launch_agent();
 
         let output = run_pv(&["update"], &environment)?;
         let _daemon_requests = daemon.join()?;
