@@ -163,14 +163,20 @@ pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
     secure_sensitive_file(paths.db())?;
 
     for path in database_auxiliary_files(paths) {
-        if !path_exists(&path) {
-            continue;
-        }
-
-        secure_sensitive_file(&path)?;
+        secure_database_auxiliary_file(&path)?;
     }
 
     Ok(())
+}
+
+fn secure_database_auxiliary_file(path: &Utf8Path) -> Result<(), StateError> {
+    match secure_sensitive_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
@@ -615,11 +621,14 @@ mod tests {
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
 
-    #[cfg(unix)]
-    use super::secure_database_files;
     use super::temporary_path_for;
     #[cfg(windows)]
     use super::{ensure_user_dir, path_exists};
+    #[cfg(unix)]
+    use super::{
+        path_exists, remove_file, secure_database_auxiliary_file, secure_database_files,
+        write_sensitive_file,
+    };
     #[cfg(unix)]
     use crate::PvPaths;
     #[cfg(windows)]
@@ -638,6 +647,41 @@ mod tests {
             result,
             Err(StateError::Filesystem { path, source })
                 if path == paths.db() && source.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disappearing_database_auxiliary_file_is_ignored() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let auxiliary_path = paths.root().join("pv.db-wal");
+        write_sensitive_file(&auxiliary_path, "")?;
+        assert!(path_exists(&auxiliary_path));
+        remove_file(&auxiliary_path)?;
+
+        secure_database_auxiliary_file(&auxiliary_path)?;
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_auxiliary_file_security_errors_are_preserved() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let blocking_file = paths.root().join("blocking-file");
+        write_sensitive_file(&blocking_file, "")?;
+        let auxiliary_path = blocking_file.join("pv.db-wal");
+
+        let result = secure_database_auxiliary_file(&auxiliary_path);
+
+        assert!(matches!(
+            result,
+            Err(StateError::Filesystem { path, source })
+                if path == auxiliary_path && source.kind() == std::io::ErrorKind::NotADirectory
         ));
 
         Ok(())
