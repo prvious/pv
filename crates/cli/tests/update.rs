@@ -548,7 +548,11 @@ mod update_tests {
         );
         assert_eq!(
             environment.operations(),
-            vec![format!("kickstart {LAUNCH_AGENT_LABEL}")]
+            vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+            ]
         );
         assert_eq!(
             environment.execs(),
@@ -724,6 +728,8 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
                 format!("kickstart {LAUNCH_AGENT_LABEL}"),
                 "lock probe held".to_string(),
             ]
@@ -1078,7 +1084,11 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
                 format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
                 format!("kickstart {LAUNCH_AGENT_LABEL}"),
             ]
         );
@@ -1137,7 +1147,11 @@ mod update_tests {
         assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
         assert_eq!(
             environment.operations(),
-            vec![format!("kickstart {LAUNCH_AGENT_LABEL}")]
+            vec![
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {}", launch_agent_path(&paths)),
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+            ]
         );
         assert_eq!(
             daemon_requests,

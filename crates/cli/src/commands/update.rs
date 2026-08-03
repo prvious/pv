@@ -169,15 +169,15 @@ fn validate_active_release(
 fn normalize_launch_agent(
     environment: &impl Environment,
     paths: &PvPaths,
-) -> Result<LaunchAgentReload, ExecuteError> {
+) -> Result<Utf8PathBuf, ExecuteError> {
     let expected = launch_agent_config(paths);
     let path = launch_agent_path(environment)?;
     match platform::inspect_launch_agent_file(&path, Some(&expected)) {
-        LaunchAgentFileState::Current { .. } => Ok(LaunchAgentReload::NotRequired),
+        LaunchAgentFileState::Current { path, .. } => Ok(path),
         LaunchAgentFileState::Stale { .. } => {
             platform::write_launch_agent_file(&path, &expected)?;
 
-            Ok(LaunchAgentReload::Required { path })
+            Ok(path)
         }
         LaunchAgentFileState::Missing { path } => Err(CliError::AppUpdateLaunchAgentMissing {
             path: path.to_string(),
@@ -191,12 +191,6 @@ fn normalize_launch_agent(
             Err(CliError::AppUpdateLaunchAgentUnreadable { message }.into())
         }
     }
-}
-
-#[derive(Clone, Debug)]
-enum LaunchAgentReload {
-    NotRequired,
-    Required { path: Utf8PathBuf },
 }
 
 fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
@@ -287,13 +281,11 @@ fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
 fn restart_daemon_without_reconciliation(
     environment: &impl Environment,
     paths: &PvPaths,
-    reload: &LaunchAgentReload,
+    launch_agent_path: &Utf8Path,
     health_check: DaemonHealthCheck,
 ) -> Result<(), ExecuteError> {
-    if let LaunchAgentReload::Required { path } = reload {
-        bootout_launch_agent_if_loaded(environment)?;
-        environment.bootstrap_launch_agent(path)?;
-    }
+    bootout_launch_agent_if_loaded(environment)?;
+    environment.bootstrap_launch_agent(launch_agent_path)?;
     clear_daemon_startup_failure_marker(paths)?;
     environment.kickstart_launch_agent()?;
     wait_until_daemon_started(paths.clone(), health_check)?;
@@ -484,7 +476,7 @@ fn run_app_update_phase(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     let previous_version = validate_active_release(&layout, &current_version)?;
-    let launch_agent_reload = normalize_launch_agent(environment, &paths)?;
+    let launch_agent_path = normalize_launch_agent(environment, &paths)?;
 
     let manifest = fetch_app_update_manifest(environment)?;
     if manifest.version() <= &current_version {
@@ -523,7 +515,7 @@ fn run_app_update_phase(
     if let Err(error) = restart_daemon_without_reconciliation(
         environment,
         &paths,
-        &launch_agent_reload,
+        &launch_agent_path,
         DaemonHealthCheck::AcceptProtocolMismatch,
     ) {
         return rollback_app_update(
@@ -531,7 +523,7 @@ fn run_app_update_phase(
             RollbackContext {
                 paths: &paths,
                 layout: &layout,
-                launch_agent_reload: &launch_agent_reload,
+                launch_agent_path: &launch_agent_path,
             },
             RollbackVersions {
                 previous: &previous_version,
@@ -566,7 +558,7 @@ struct RollbackVersions<'a> {
 struct RollbackContext<'a> {
     paths: &'a PvPaths,
     layout: &'a state::AppReleaseLayout,
-    launch_agent_reload: &'a LaunchAgentReload,
+    launch_agent_path: &'a Utf8Path,
 }
 
 fn rollback_app_update(
@@ -592,7 +584,7 @@ fn rollback_app_update(
     if let Err(rollback_error) = restart_daemon_without_reconciliation(
         environment,
         context.paths,
-        context.launch_agent_reload,
+        context.launch_agent_path,
         DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
         output.line(&format!(
