@@ -274,7 +274,7 @@ fn update_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> 
 
     assert!(matches!(
         second,
-        Err(StateError::UpdateInProgress { path }) if path == paths.update_lock()
+        Err(StateError::CoordinationLockHeld { path }) if path == paths.update_lock()
     ));
 
     drop(first);

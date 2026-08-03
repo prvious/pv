@@ -10,7 +10,7 @@ use crate::{PvPaths, StateError, fs};
 #[derive(Debug)]
 #[expect(
     clippy::disallowed_types,
-    reason = "update lock guard owns the OS-locked file handle"
+    reason = "coordination lock guard owns the OS-locked file handle"
 )]
 pub struct UpdateLock {
     _file: std::fs::File,
@@ -65,7 +65,7 @@ fn lock_exclusively<FileHandle: std::os::fd::AsFd>(
     match rustix::fs::flock(file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            Err(StateError::UpdateInProgress {
+            Err(StateError::CoordinationLockHeld {
                 path: path.to_path_buf(),
             })
         }
@@ -95,7 +95,7 @@ fn inspect_existing_lock<FileHandle: std::os::fd::AsFd>(
             Ok(())
         }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            Err(StateError::UpdateInProgress {
+            Err(StateError::CoordinationLockHeld {
                 path: path.to_path_buf(),
             })
         }
@@ -120,7 +120,7 @@ fn require_file_locking() -> Result<(), StateError> {
 
 #[expect(
     clippy::disallowed_types,
-    reason = "update lock helper owns direct file handles for OS locking"
+    reason = "coordination lock helper owns direct file handles for OS locking"
 )]
 fn open_update_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     std::fs::OpenOptions::new()
@@ -135,7 +135,7 @@ fn open_update_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
 #[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
-    reason = "update lock helper owns direct file handles for OS lock inspection"
+    reason = "coordination lock helper owns direct file handles for OS lock inspection"
 )]
 fn open_existing_update_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     std::fs::OpenOptions::new()
@@ -224,7 +224,7 @@ mod tests {
     #[cfg(windows)]
     #[expect(
         clippy::disallowed_methods,
-        reason = "Windows update lock test creates an isolated existing-lock fixture"
+        reason = "Windows coordination lock test creates an isolated existing-lock fixture"
     )]
     fn create_lock_fixture(path: &Utf8Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {

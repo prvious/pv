@@ -56,8 +56,8 @@ pub enum StateError {
     #[error("active PV binary symlink at {path} targets invalid release `{target}`")]
     InvalidAppReleasePointer { path: Utf8PathBuf, target: String },
 
-    #[error("PV update is already in progress; update lock is held at {path}")]
-    UpdateInProgress { path: Utf8PathBuf },
+    #[error("PV self-update/daemon mutation coordination is active; the OS lock is held on {path}")]
+    CoordinationLockHeld { path: Utf8PathBuf },
 
     #[error("unsafe permissions for {path}: expected {expected:o}, found {actual:o}")]
     UnsafePermissions {

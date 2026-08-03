@@ -354,7 +354,7 @@ fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
 
 fn update_state_error(error: StateError) -> ExecuteError {
     match error {
-        StateError::UpdateInProgress { path } => CliError::UpdateInProgress {
+        StateError::CoordinationLockHeld { path } => CliError::CoordinationLockHeld {
             path: path.to_string(),
         }
         .into(),

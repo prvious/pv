@@ -149,7 +149,7 @@ async fn run_reconciliation_job(
 ) -> Result<(), DaemonError> {
     let result = match enqueue_reconciliation_job(&paths, &queue, scope) {
         Ok(result) => result,
-        Err(DaemonError::State(error @ StateError::UpdateInProgress { .. })) => {
+        Err(DaemonError::State(error @ StateError::CoordinationLockHeld { .. })) => {
             write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
 
             return Ok(());
@@ -221,7 +221,7 @@ async fn run_update_job(
 ) -> Result<(), DaemonError> {
     let result = match enqueue_update_job(&paths, &queue) {
         Ok(result) => result,
-        Err(DaemonError::State(error @ StateError::UpdateInProgress { .. })) => {
+        Err(DaemonError::State(error @ StateError::CoordinationLockHeld { .. })) => {
             write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
 
             return Ok(());
@@ -2278,7 +2278,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::DaemonError::State(StateError::UpdateInProgress { path }))
+            Err(crate::DaemonError::State(StateError::CoordinationLockHeld { path }))
                 if path == paths.update_lock()
         ));
         drop(update_lock);
@@ -2312,7 +2312,7 @@ mod tests {
 
         assert!(matches!(
             update_lock,
-            Err(StateError::UpdateInProgress { path }) if path == paths.update_lock()
+            Err(StateError::CoordinationLockHeld { path }) if path == paths.update_lock()
         ));
 
         queued_task.abort();

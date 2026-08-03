@@ -158,7 +158,7 @@ mod update_tests {
             if let Some(paths) = self.lock_probe.borrow().as_ref() {
                 let probe = match state::UpdateLock::acquire(paths) {
                     Ok(_lock) => "lock probe free".to_string(),
-                    Err(state::StateError::UpdateInProgress { .. }) => {
+                    Err(state::StateError::CoordinationLockHeld { .. }) => {
                         "lock probe held".to_string()
                     }
                     Err(error) => format!("lock probe failed: {error}"),
