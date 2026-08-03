@@ -865,6 +865,40 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 }
 
 #[tokio::test]
+async fn project_config_watcher_survives_disappearing_database_side_files() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    drop(Database::open(&paths)?);
+
+    for name in ["pv.db-wal", "pv.db-shm"] {
+        let auxiliary_path = paths.root().join(name);
+        state::fs::write_sensitive_file(&auxiliary_path, "")?;
+        assert!(state::fs::path_exists(&auxiliary_path));
+        state::fs::remove_file(&auxiliary_path)?;
+    }
+
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    sleep(Duration::from_millis(250)).await;
+
+    let health_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+
+    daemon.shutdown().await?;
+
+    assert_eq!(health_lines.len(), 1);
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+    assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dns_resolver_answers_udp_a_and_aaaa_for_test_hostnames() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
