@@ -14,8 +14,9 @@ use platform::{
 };
 use platform::{KeychainTrustResult, LaunchAgentConfig};
 use state::{
-    Database, LinkProjectInput, ManagedResourceTrackInstallInput, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    Database, JobDiagnosticSubject, LinkProjectInput, ManagedResourceTrackInstallInput,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, RuntimeObservedStatus,
+    RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -166,7 +167,7 @@ fn status_reports_current_launch_agent_with_stale_socket_as_down() -> anyhow::Re
 }
 
 #[test]
-fn status_reports_failed_jobs_as_failure() -> anyhow::Result<()> {
+fn status_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
@@ -175,14 +176,30 @@ fn status_reports_failed_jobs_as_failure() -> anyhow::Result<()> {
     let job = database.start_job("reconcile", "project:acme")?;
     database.fail_job(&job.id, "Gateway failed to start")?;
 
-    let output = run_pv(&["status"], &environment)?;
+    let failed = run_pv(&["status"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
+    let repair = database.start_job("reconcile", "system")?;
+    database.complete_job_with_coverage(
+        &repair.id,
+        "System reconciled",
+        &[JobDiagnosticSubject::SystemReconciliation],
+    )?;
+    let healthy = run_pv(&["status"], &environment)?;
+
+    let recurrence = database.start_job("reconcile", "project:acme")?;
+    database.fail_job(&recurrence.id, "Gateway failed to start")?;
+    let recurring = run_pv(&["status"], &environment)?;
+
+    assert_eq!(failed.exit_code, ExitCode::FAILURE);
+    assert_eq!(healthy.exit_code, ExitCode::SUCCESS);
+    assert_eq!(recurring.exit_code, ExitCode::FAILURE);
+    assert!(failed.stderr.is_empty());
+    assert!(healthy.stderr.is_empty());
+    assert!(recurring.stderr.is_empty());
     assert_status_snapshot(
-        "status_reports_failed_jobs_as_failure",
+        "status_tracks_failure_repair_and_identical_recurrence",
         tempdir.path(),
-        output,
+        (failed, healthy, recurring),
     );
 
     Ok(())

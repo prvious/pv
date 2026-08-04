@@ -8,7 +8,7 @@ use platform::{
 };
 use serde::Serialize;
 use state::{
-    Database, JobRecord, JobStatus, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    Database, JobRecord, ManagedResourceDesiredState, ManagedResourceTrackRecord,
     ProjectEnvObservedStatus, ProjectRecord, PvPaths, RuntimeObservedStateRecord,
     RuntimeObservedStatus, RuntimeSubject, StateError,
 };
@@ -83,10 +83,9 @@ impl StatusSnapshot {
         };
         let recent_errors = match &database {
             Some(database) => database
-                .recent_jobs()?
+                .unresolved_job_failures()?
                 .into_iter()
-                .filter(|job| job.status == JobStatus::Failed)
-                .map(JobStatusSummary::from_job)
+                .map(|failure| JobStatusSummary::from_job(failure.job))
                 .collect::<Vec<_>>(),
             None => Vec::new(),
         };
@@ -176,10 +175,11 @@ impl StatusSnapshot {
         } else {
             for job in &self.recent_errors {
                 output.line(&format!(
-                    "  {} {} {} failed: {}",
+                    "  {} {} {} failed at {}: {}",
                     job.id,
                     job.kind,
                     job.scope,
+                    job.finished_at.as_deref().unwrap_or(&job.started_at),
                     job.error.as_deref().unwrap_or("-"),
                 ))?;
             }
