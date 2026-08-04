@@ -233,13 +233,15 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             &supervisor,
             promoted_config,
             process_spec,
-            ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_owned(),
-                port: worker.port,
+            RuntimeReadinessPlan {
+                check: ReadinessCheck::Tcp {
+                    host: "127.0.0.1".to_owned(),
+                    port: worker.port,
+                },
+                failure_policy: ReadinessFailurePolicy::FailRuntime,
+                timeout: readiness_timeout,
             },
             subject.clone(),
-            readiness_timeout,
-            ReadinessFailurePolicy::FailRuntime,
         )
         .await?;
         record_runtime_observed(
@@ -263,10 +265,8 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         &supervisor,
         gateway_config.promoted_config,
         gateway_process_spec(paths, &gateway_command),
-        gateway_readiness.check,
+        gateway_readiness,
         RuntimeSubject::Gateway,
-        gateway_readiness.timeout,
-        gateway_readiness.failure_policy,
     )
     .await?;
     record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
@@ -280,7 +280,7 @@ fn gateway_readiness_plan(
     readiness_hostname: Option<String>,
     pf_routing_state: GatewayPfRoutingState,
     readiness_timeout: Duration,
-) -> GatewayReadinessPlan {
+) -> RuntimeReadinessPlan {
     let ports = gateway_readiness_ports(plan, pf_routing_state);
     let failure_policy = match pf_routing_state {
         GatewayPfRoutingState::Active | GatewayPfRoutingState::Inactive => {
@@ -303,7 +303,7 @@ fn gateway_readiness_plan(
         gateway_public_readiness_check(plan, ports)
     };
 
-    GatewayReadinessPlan {
+    RuntimeReadinessPlan {
         check,
         failure_policy,
         timeout,
@@ -311,7 +311,7 @@ fn gateway_readiness_plan(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct GatewayReadinessPlan {
+struct RuntimeReadinessPlan {
     check: ReadinessCheck,
     failure_policy: ReadinessFailurePolicy,
     timeout: Duration,
@@ -1111,21 +1111,10 @@ async fn start_or_adopt_promoted_runtime(
     supervisor: &ProcessSupervisor,
     promoted_config: PromotedConfigTree,
     spec: ProcessSpec,
-    readiness: ReadinessCheck,
+    readiness: RuntimeReadinessPlan,
     subject: RuntimeSubject,
-    readiness_timeout: Duration,
-    failure_policy: ReadinessFailurePolicy,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
-    let result = start_or_adopt_runtime(
-        paths,
-        supervisor,
-        spec,
-        readiness,
-        subject.clone(),
-        readiness_timeout,
-        failure_policy,
-    )
-    .await;
+    let result = start_or_adopt_runtime(paths, supervisor, spec, readiness, subject.clone()).await;
 
     match result {
         Ok(outcome) => {
@@ -1154,15 +1143,18 @@ async fn start_or_adopt_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: ProcessSpec,
-    readiness: ReadinessCheck,
+    readiness: RuntimeReadinessPlan,
     subject: RuntimeSubject,
-    readiness_timeout: Duration,
-    failure_policy: ReadinessFailurePolicy,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
+    let RuntimeReadinessPlan {
+        check,
+        failure_policy,
+        timeout: readiness_timeout,
+    } = readiness;
     let result = async {
         if supervisor.adopt(&spec)?.is_some() {
             if supervisor.reload(&spec)? {
-                if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+                if let Err(error) = wait_for_readiness(check, readiness_timeout).await {
                     if failure_policy == ReadinessFailurePolicy::PreserveRuntime
                         && supervisor.verify_ownership(&spec)?.is_some()
                     {
@@ -1185,7 +1177,7 @@ async fn start_or_adopt_runtime(
             supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
         {
             adopted.stop(Duration::from_secs(1)).await?;
-        } else if foreign_listener_is_ready(&readiness).await {
+        } else if foreign_listener_is_ready(&check).await {
             return Err(DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
                     "runtime `{}` is listening but no PV-owned process could be verified",
@@ -1195,7 +1187,7 @@ async fn start_or_adopt_runtime(
         }
 
         let mut process = supervisor.start(spec.clone()).await?;
-        if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+        if let Err(error) = wait_for_readiness(check, readiness_timeout).await {
             record_runtime_readiness_diagnostics(paths, &spec, &mut process, &error);
             if failure_policy == ReadinessFailurePolicy::PreserveRuntime && !process.has_exited()? {
                 return Ok(RuntimeReadinessOutcome::Unverified);
