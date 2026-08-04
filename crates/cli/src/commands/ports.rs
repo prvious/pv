@@ -4,7 +4,10 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::{PfConfReference, PfFileState, PfRedirectConfig};
-use state::{Database, GatewayPort, GatewayPortAssignments, PortOwner, PvPaths, StateError};
+use state::{
+    Database, GatewayPort, GatewayPortAssignments, PortOwner, PvPaths, RuntimeObservedStatus,
+    RuntimeSubject, StateError,
+};
 
 use crate::args::PortsStatusArgs;
 use crate::environment::Environment;
@@ -159,6 +162,12 @@ pub(crate) fn install(
 
         if active_config.as_ref() == Some(&config) {
             output.line("System pf redirect config already matches PV")?;
+            refresh_gateway_observation_after_pf_repair(
+                environment,
+                &paths,
+                &config,
+                &mut database,
+            )?;
 
             return Ok(ExitCode::SUCCESS);
         }
@@ -183,9 +192,52 @@ pub(crate) fn install(
         had_http_assignment,
         had_https_assignment,
     )?;
+    refresh_gateway_observation_after_pf_repair(environment, &paths, &config, &mut database)?;
     output.line("Installed system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_gateway_observation_after_pf_repair(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    config: &PfRedirectConfig,
+    database: &mut Database,
+) -> Result<(), ExecuteError> {
+    if environment
+        .probe_gateway_redirects(config, &paths.ca_certificate())
+        .is_ok()
+    {
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Running,
+            Some("Gateway identity verified through ports 80 and 443 after PF repair"),
+        )?;
+
+        return Ok(());
+    }
+
+    let pf_derived_observation = database
+        .runtime_observed_states()?
+        .into_iter()
+        .any(|state| {
+            state.subject == RuntimeSubject::Gateway
+                && state.status == RuntimeObservedStatus::Degraded
+                && state
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.starts_with("Low-port routing is "))
+        });
+    if pf_derived_observation {
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Pending,
+            Some("Low-port routing repaired; Gateway readiness is pending reconciliation"),
+        )?;
+    }
+    let _request_result = environment.request_system_reconciliation(paths);
+
+    Ok(())
 }
 
 fn ensure_active_gateway_ports(

@@ -10,7 +10,7 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
-use state::{Database, PortOwner, PvPaths, StateError};
+use state::{Database, PortOwner, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -24,6 +24,8 @@ struct TestEnvironment {
     active_pf_read_fails_when_unloaded: bool,
     unprivileged_pf_inspection_fails: bool,
     gateway_probe_succeeds: bool,
+    accepts_reconciliation_requests: bool,
+    reconciliation_requests: RefCell<u32>,
     operations: RefCell<Vec<String>>,
 }
 
@@ -45,6 +47,8 @@ impl TestEnvironment {
             active_pf_read_fails_when_unloaded: false,
             unprivileged_pf_inspection_fails: false,
             gateway_probe_succeeds: false,
+            accepts_reconciliation_requests: false,
+            reconciliation_requests: RefCell::new(0),
             operations: RefCell::new(Vec::new()),
         }
     }
@@ -66,6 +70,11 @@ impl TestEnvironment {
 
     fn with_gateway_probe_succeeding(mut self) -> Self {
         self.gateway_probe_succeeds = true;
+        self
+    }
+
+    fn with_reconciliation_requests_succeeding(mut self) -> Self {
+        self.accepts_reconciliation_requests = true;
         self
     }
 }
@@ -192,6 +201,15 @@ impl Environment for TestEnvironment {
         }
     }
 
+    fn request_system_reconciliation(&self, _paths: &PvPaths) -> Result<(), String> {
+        if !self.accepts_reconciliation_requests {
+            return Err("daemon unavailable".to_owned());
+        }
+        *self.reconciliation_requests.borrow_mut() += 1;
+
+        Ok(())
+    }
+
     fn remove_pf_redirects(
         &self,
         system_anchor_path: &Utf8Path,
@@ -257,6 +275,122 @@ fn ports_install_writes_prepared_and_system_pf_artifacts() -> anyhow::Result<()>
             environment.operations.borrow().clone(),
         ));
     });
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_records_healthy_gateway_after_public_identity_probe() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_gateway_probe_succeeding();
+    let paths = pv_paths(&home);
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let gateway = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| state.subject == RuntimeSubject::Gateway)
+        .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(gateway.status, RuntimeObservedStatus::Running);
+    assert_eq!(
+        gateway.message.as_deref(),
+        Some("Gateway identity verified through ports 80 and 443 after PF repair")
+    );
+    assert_eq!(*environment.reconciliation_requests.borrow(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_invalidates_pf_degradation_and_requests_reconciliation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_reconciliation_requests_succeeding();
+    let paths = pv_paths(&home);
+    let mut database = Database::open(&paths)?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Degraded,
+        Some("Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443"),
+    )?;
+    drop(database);
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let gateway = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| state.subject == RuntimeSubject::Gateway)
+        .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(gateway.status, RuntimeObservedStatus::Pending);
+    assert_eq!(
+        gateway.message.as_deref(),
+        Some("Low-port routing repaired; Gateway readiness is pending reconciliation")
+    );
+    assert_eq!(*environment.reconciliation_requests.borrow(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn ports_install_preserves_unrelated_gateway_failure_observation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_reconciliation_requests_succeeding();
+    let paths = pv_paths(&home);
+    let mut database = Database::open(&paths)?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Degraded,
+        Some("Gateway config validation failed"),
+    )?;
+    drop(database);
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let gateway = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| state.subject == RuntimeSubject::Gateway)
+        .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(gateway.status, RuntimeObservedStatus::Degraded);
+    assert_eq!(
+        gateway.message.as_deref(),
+        Some("Gateway config validation failed")
+    );
+    assert_eq!(*environment.reconciliation_requests.borrow(), 1);
 
     Ok(())
 }

@@ -141,6 +141,10 @@ pub trait Environment {
         Err("Gateway identity probing is unavailable in this environment".to_owned())
     }
 
+    fn request_system_reconciliation(&self, _paths: &state::PvPaths) -> Result<(), String> {
+        Err("daemon reconciliation requests are unavailable in this environment".to_owned())
+    }
+
     fn remove_pf_redirects(
         &self,
         system_anchor_path: &Utf8Path,
@@ -255,6 +259,12 @@ impl Environment for ProcessEnvironment {
         ca_certificate_path: &Utf8Path,
     ) -> Result<(), String> {
         daemon::gateway::probe_gateway_identity_blocking(expected, ca_certificate_path)
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_system_reconciliation(&self, paths: &state::PvPaths) -> Result<(), String> {
+        daemon::submit_job_blocking(paths.clone(), "reconcile", "system")
+            .map(|_job| ())
             .map_err(|error| error.to_string())
     }
 
