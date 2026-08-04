@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -22,6 +23,12 @@ const PF_LOAD_ANCHOR_DIRECTIVE: &str =
 pub struct PfRedirectConfig {
     pub http_port: u16,
     pub https_port: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActivePfRedirectInspection {
+    pub pv_config: Option<PfRedirectConfig>,
+    pub loopback_target_ports: BTreeSet<u16>,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -226,6 +233,11 @@ pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformE
     active_pf_redirect_config_with_privilege_mode(PrivilegeMode::NonInteractive)
 }
 
+pub fn inspect_active_pf_redirects_unprivileged()
+-> Result<ActivePfRedirectInspection, PlatformError> {
+    inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
+}
+
 pub fn active_pf_redirect_config_with_privilege_mode(
     privilege_mode: PrivilegeMode,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
@@ -250,6 +262,41 @@ fn active_pf_redirect_config_with_runner(
     )?;
 
     Ok(PfRedirectConfig::parse_active_rules(&anchor_nat_rules))
+}
+
+fn inspect_active_pf_redirects_unprivileged_with_runner(
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+) -> Result<ActivePfRedirectInspection, PlatformError> {
+    let main_nat_rules = run_system_output("/sbin/pfctl", &["-s", "nat"])?;
+    let pv_config = if main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
+        let anchor_nat_rules =
+            run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
+
+        PfRedirectConfig::parse_active_rules(&anchor_nat_rules)
+    } else {
+        None
+    };
+    let recursive_nat_rules = run_system_output("/sbin/pfctl", &["-a", "*", "-s", "nat"])?;
+
+    Ok(ActivePfRedirectInspection {
+        pv_config,
+        loopback_target_ports: loopback_redirect_target_ports(&recursive_nat_rules),
+    })
+}
+
+fn loopback_redirect_target_ports(rules: &str) -> BTreeSet<u16> {
+    rules
+        .lines()
+        .filter_map(active_pf_line)
+        .filter_map(|line| line.rsplit_once("-> 127.0.0.1 port "))
+        .filter_map(|(_prefix, port)| {
+            port.strip_prefix("= ")
+                .unwrap_or(port)
+                .split_whitespace()
+                .next()
+        })
+        .filter_map(|port| port.parse::<u16>().ok())
+        .collect()
 }
 
 fn active_pf_rules_with_runner(
@@ -810,10 +857,76 @@ mod tests {
     use camino_tempfile::tempdir;
 
     use super::{
-        PfConfReference, PfRedirectConfig, active_pf_redirect_config_with_runner,
-        install_pf_redirects_with_runner, read_platform_file, remove_pf_redirects_with_runner,
-        temporary_pf_conf_candidate_path,
+        ActivePfRedirectInspection, PfConfReference, PfRedirectConfig,
+        active_pf_redirect_config_with_runner,
+        inspect_active_pf_redirects_unprivileged_with_runner, install_pf_redirects_with_runner,
+        read_platform_file, remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
     };
+
+    #[test]
+    fn active_pf_redirect_inspection_never_invokes_sudo() {
+        let mut commands = Vec::new();
+
+        let result = inspect_active_pf_redirects_unprivileged_with_runner(&mut |program, args| {
+            let command = format!("{program} {}", args.join(" "));
+            commands.push(command.clone());
+
+            Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                command,
+                status: "exit status: 1".to_string(),
+            })
+        });
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegrationCommandStatus { .. })
+        ));
+        assert_eq!(commands, ["/sbin/pfctl -s nat"]);
+    }
+
+    #[test]
+    fn active_pf_redirect_inspection_reports_recursive_loopback_targets() -> anyhow::Result<()> {
+        let mut commands = Vec::new();
+
+        let inspection = inspect_active_pf_redirects_unprivileged_with_runner(
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                match command.as_str() {
+                    "/sbin/pfctl -s nat" => Ok(
+                        "rdr-anchor \"com.prvious.pv\" all\nrdr-anchor \"other\" all\n".to_string(),
+                    ),
+                    "/sbin/pfctl -a com.prvious.pv -s nat" => Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
+                            .to_string(),
+                    ),
+                    _ => Ok(
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 8080 -> 127.0.0.1 port = 45080 round-robin\n"
+                            .to_string(),
+                    ),
+                }
+            },
+        )?;
+
+        assert_eq!(
+            inspection,
+            ActivePfRedirectInspection {
+                pv_config: Some(PfRedirectConfig::new(48080, 48443)),
+                loopback_target_ports: [45080, 48080].into_iter().collect(),
+            }
+        );
+        assert_eq!(
+            commands,
+            [
+                "/sbin/pfctl -s nat",
+                "/sbin/pfctl -a com.prvious.pv -s nat",
+                "/sbin/pfctl -a * -s nat",
+            ]
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn active_pf_redirect_config_reads_loaded_rdr_anchor_reference() -> anyhow::Result<()> {
