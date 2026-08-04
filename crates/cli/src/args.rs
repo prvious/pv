@@ -77,7 +77,7 @@ pub(crate) enum Command {
     DnsUninstall,
 
     #[command(name = "ports:status", about = "Show PV pf redirect status")]
-    PortsStatus,
+    PortsStatus(PortsStatusArgs),
 
     #[command(name = "ports:install", about = "Install or repair PV pf redirects")]
     PortsInstall,
@@ -510,6 +510,12 @@ pub(crate) struct StatusArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub(crate) struct PortsStatusArgs {
+    #[arg(long, help = "Print pf redirect status as JSON")]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub(crate) struct LogsArgs {
     #[arg(
         short = 'n',
@@ -552,7 +558,10 @@ pub(crate) struct LogsArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct DoctorArgs {}
+pub(crate) struct DoctorArgs {
+    #[arg(long, help = "Print diagnostics as JSON")]
+    pub(crate) json: bool,
+}
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct JobsArgs {

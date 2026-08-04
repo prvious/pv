@@ -127,6 +127,20 @@ pub trait Environment {
         platform::active_pf_redirect_config_with_privilege_mode(privilege_mode)
     }
 
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<platform::ActivePfRedirectInspection, platform::PlatformError> {
+        platform::inspect_active_pf_redirects_unprivileged()
+    }
+
+    fn probe_gateway_redirects(
+        &self,
+        _expected: &platform::PfRedirectConfig,
+        _ca_certificate_path: &Utf8Path,
+    ) -> Result<(), String> {
+        Err("Gateway identity probing is unavailable in this environment".to_owned())
+    }
+
     fn remove_pf_redirects(
         &self,
         system_anchor_path: &Utf8Path,
@@ -233,6 +247,15 @@ impl Environment for ProcessEnvironment {
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         platform::open_url(url).map_err(io::Error::other)
+    }
+
+    fn probe_gateway_redirects(
+        &self,
+        expected: &platform::PfRedirectConfig,
+        ca_certificate_path: &Utf8Path,
+    ) -> Result<(), String> {
+        daemon::gateway::probe_gateway_identity_blocking(expected, ca_certificate_path)
+            .map_err(|error| error.to_string())
     }
 
     fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {

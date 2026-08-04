@@ -3,9 +3,10 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, PfConfReference, PfFileState,
-    PfRedirectConfig, ResolverConfig, ResolverFileState, TrustDomainState,
+    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
+    TrustDomainState,
 };
+use serde::Serialize;
 use state::{Database, JobStatus, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::DoctorArgs;
@@ -14,8 +15,10 @@ use crate::error::CliError;
 use crate::error::ExecuteError;
 use crate::output::{Output, OutputMode};
 
+use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
+
 pub(crate) fn run(
-    _args: DoctorArgs,
+    args: DoctorArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
@@ -25,12 +28,19 @@ pub(crate) fn run(
     } else {
         ExitCode::SUCCESS
     };
+    if args.json {
+        serde_json::to_writer(&mut *stdout, &report)?;
+        writeln!(stdout)?;
+
+        return Ok(exit_code);
+    }
     let mut output = Output::new(stdout, OutputMode::plain());
     report.write_plain(&mut output)?;
 
     Ok(exit_code)
 }
 
+#[derive(Serialize)]
 struct DoctorReport {
     checks: Vec<DoctorCheck>,
 }
@@ -47,7 +57,7 @@ impl DoctorReport {
             launch_agent_check(&launch_agent),
             daemon_socket_check(&paths, &launch_agent),
             dns_check(environment, &paths)?,
-            ports_check(environment, &paths)?,
+            ports_check(environment, &paths, database.as_ref())?,
             ca_check(environment, &paths),
             recent_jobs_check(database.as_ref())?,
             runtime_states_check(database.as_ref())?,
@@ -104,7 +114,8 @@ impl DoctorReport {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum CheckStatus {
     Pass,
     Warn,
@@ -121,12 +132,15 @@ impl CheckStatus {
     }
 }
 
+#[derive(Serialize)]
 struct DoctorCheck {
     status: CheckStatus,
     name: &'static str,
     message: String,
     detail: Option<String>,
     repair: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routing: Option<PfRoutingDiagnostic>,
 }
 
 impl DoctorCheck {
@@ -137,6 +151,7 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: None,
+            routing: None,
         }
     }
 
@@ -147,6 +162,7 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair,
+            routing: None,
         }
     }
 
@@ -157,11 +173,17 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: Some(repair),
+            routing: None,
         }
     }
 
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    fn with_routing(mut self, routing: PfRoutingDiagnostic) -> Self {
+        self.routing = Some(routing);
         self
     }
 }
@@ -338,95 +360,35 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
 fn ports_check(
     environment: &impl Environment,
     paths: &PvPaths,
+    database: Option<&Database>,
 ) -> Result<DoctorCheck, ExecuteError> {
-    let prepared_anchor = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
-    let prepared_reference =
-        platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
-    if let Some(check) = pf_file_failure(
-        "Port redirect config",
-        "prepared pf config",
-        &prepared_anchor,
-        &prepared_reference,
-    ) {
-        return Ok(check);
-    }
-
-    let expected_anchor = pf_config_from_anchor_state(&prepared_anchor);
-    let expected_reference = pf_reference_from_state(&prepared_reference);
-    let system_anchor_path = pf_anchor_path(environment)?;
-    let system_pf_conf_path = pf_conf_path(environment)?;
-    let system_anchor =
-        platform::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
-    let system_reference =
-        platform::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
-    if let Some(check) = pf_file_failure(
-        "Port redirect config",
-        "system pf config",
-        &system_anchor,
-        &system_reference,
-    ) {
-        return Ok(check);
-    }
-
-    let active = match environment.active_pf_redirect_config() {
-        Ok(active) => active,
-        Err(error) => {
-            return Ok(DoctorCheck::fail(
-                "Port redirect config",
-                "active pf redirects could not be inspected",
-                "pv ports:install",
-            )
-            .with_detail(error.to_string()));
-        }
+    let routing = PfRoutingDiagnostic::read(environment, paths, database)?;
+    let message = match routing.state {
+        PfRoutingState::Active => "low-port routing is active",
+        PfRoutingState::Inactive => "low-port redirects are inactive",
+        PfRoutingState::Drifted => "low-port routing has drifted",
+        PfRoutingState::Unknown => "low-port routing could not be verified",
     };
-    if active.as_ref() == expected_anchor.as_ref() {
-        return Ok(DoctorCheck::pass(
-            "Port redirect config",
-            "system pf config and active redirects are current",
-        ));
-    }
+    let detail = format!(
+        "evidence: {}; expected: HTTP {}, HTTPS {}; active: HTTP {}, HTTPS {}; observed: {}",
+        routing.evidence.as_str(),
+        display_port(routing.expected_http_port),
+        display_port(routing.expected_https_port),
+        display_port(routing.active_http_port),
+        display_port(routing.active_https_port),
+        routing.observed_at,
+    );
+    let check = if routing.is_active() {
+        DoctorCheck::pass("Port redirect config", message)
+    } else {
+        DoctorCheck::fail("Port redirect config", message, "pv ports:install")
+    };
 
-    Ok(DoctorCheck::fail(
-        "Port redirect config",
-        "active pf redirects are not loaded",
-        "pv ports:install",
-    ))
+    Ok(check.with_detail(detail).with_routing(routing))
 }
 
-fn pf_file_failure(
-    name: &'static str,
-    label: &'static str,
-    anchor: &PfFileState<PfRedirectConfig>,
-    reference: &PfFileState<PfConfReference>,
-) -> Option<DoctorCheck> {
-    match (anchor, reference) {
-        (PfFileState::Current { .. }, PfFileState::Current { .. }) => None,
-        (PfFileState::Missing { path }, _) | (_, PfFileState::Missing { path }) => Some(
-            DoctorCheck::fail(name, format!("{label} is missing"), "pv ports:install")
-                .with_detail(format!("path: {path}")),
-        ),
-        (PfFileState::Conflict { path }, _) | (_, PfFileState::Conflict { path }) => Some(
-            DoctorCheck::fail(name, format!("{label} is not PV-owned"), "pv ports:install")
-                .with_detail(format!("path: {path}")),
-        ),
-        (PfFileState::Unreadable { path, message }, _)
-        | (_, PfFileState::Unreadable { path, message }) => Some(
-            DoctorCheck::fail(
-                name,
-                format!("{label} could not be inspected"),
-                "pv ports:install",
-            )
-            .with_detail(format!("{path}: {message}")),
-        ),
-        (PfFileState::Stale { path, .. }, _) | (_, PfFileState::Stale { path, .. }) => Some(
-            DoctorCheck::fail(
-                name,
-                format!("{label} is PV-owned but stale"),
-                "pv ports:install",
-            )
-            .with_detail(format!("path: {path}")),
-        ),
-    }
+fn display_port(port: Option<u16>) -> String {
+    port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
 fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
@@ -649,26 +611,6 @@ fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfi
     }
 }
 
-fn pf_config_from_anchor_state(state: &PfFileState<PfRedirectConfig>) -> Option<PfRedirectConfig> {
-    match state {
-        PfFileState::Current { value, .. } => Some(value.clone()),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn pf_reference_from_state(state: &PfFileState<PfConfReference>) -> Option<PfConfReference> {
-    match state {
-        PfFileState::Current { value, .. } => Some(*value),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
 fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
     match state {
         CaFileState::Current { metadata, .. } => Some(metadata.clone()),
@@ -712,15 +654,5 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_anchor_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_anchor_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_conf_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_conf_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
 }

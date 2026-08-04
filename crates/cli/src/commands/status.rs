@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, PfConfReference, PfFileState,
-    ResolverConfig, ResolverFileState, TrustDomainState,
+    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
+    TrustDomainState,
 };
 use serde::Serialize;
 use state::{
@@ -17,6 +17,8 @@ use crate::args::StatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
+
+use super::pf_diagnostics::PfRoutingDiagnostic;
 
 pub(crate) fn run(
     args: StatusArgs,
@@ -60,7 +62,12 @@ impl StatusSnapshot {
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
         let daemon = DaemonStatus::read(environment, &paths)?;
-        let integrations = IntegrationStatuses::read(environment, &paths)?;
+        let integrations = IntegrationStatuses::read(
+            environment,
+            &paths,
+            database.as_ref(),
+            daemon.state != "disabled",
+        )?;
         let runtime_states = match &database {
             Some(database) => database.runtime_observed_states()?,
             None => Vec::new(),
@@ -115,7 +122,13 @@ impl StatusSnapshot {
         output.line(&format!("  Socket: {}", self.daemon.socket))?;
         output.line("Integrations:")?;
         output.line(&format!("  DNS: {}", self.integrations.dns))?;
-        output.line(&format!("  Ports: {}", self.integrations.ports))?;
+        output.line(&format!(
+            "  Ports: {}",
+            self.integrations.ports.state.as_str()
+        ))?;
+        if !self.integrations.ports.is_active() {
+            output.line("    repair: `pv ports:install`")?;
+        }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
         output.line(&format!("Logs: {}", self.log_directory))?;
         output.line("Managed Resources:")?;
@@ -222,14 +235,19 @@ impl DaemonStatus {
 #[derive(Serialize)]
 struct IntegrationStatuses {
     dns: &'static str,
-    ports: &'static str,
+    ports: PfRoutingDiagnostic,
     ca: &'static str,
     #[serde(skip)]
     failure: bool,
 }
 
 impl IntegrationStatuses {
-    fn read(environment: &impl Environment, paths: &PvPaths) -> Result<Self, ExecuteError> {
+    fn read(
+        environment: &impl Environment,
+        paths: &PvPaths,
+        database: Option<&Database>,
+        low_port_routing_required: bool,
+    ) -> Result<Self, ExecuteError> {
         let prepared_resolver = platform::inspect_resolver_file(&paths.resolver_config(), None);
         let expected_resolver = resolver_config_from_state(&prepared_resolver);
         let system_resolver_path = resolver_test_path(environment)?;
@@ -237,35 +255,8 @@ impl IntegrationStatuses {
             platform::inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
         let (dns, dns_failure) = resolver_status(&prepared_resolver, &system_resolver);
 
-        let prepared_pf_anchor = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
-        let prepared_pf_reference =
-            platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
-        let expected_pf_anchor = pf_config_from_anchor_state(&prepared_pf_anchor);
-        let expected_pf_reference = pf_reference_from_state(&prepared_pf_reference);
-        let system_pf_anchor_path = pf_anchor_path(environment)?;
-        let system_pf_conf_path = pf_conf_path(environment)?;
-        let system_pf_anchor =
-            platform::inspect_pf_anchor_file(&system_pf_anchor_path, expected_pf_anchor.as_ref());
-        let system_pf_reference = platform::inspect_pf_conf_reference(
-            &system_pf_conf_path,
-            expected_pf_reference.as_ref(),
-        );
-        let active_pf = if pf_file_status(&prepared_pf_anchor, &prepared_pf_reference) == "current"
-            && pf_file_status(&system_pf_anchor, &system_pf_reference) == "current"
-        {
-            Some(environment.active_pf_redirect_config())
-        } else {
-            None
-        };
-        let (ports, ports_failure) = pf_status(
-            &prepared_pf_anchor,
-            &prepared_pf_reference,
-            &system_pf_anchor,
-            &system_pf_reference,
-            active_pf
-                .as_ref()
-                .and_then(|active| active.as_ref().map(|config| config.as_ref()).ok()),
-        );
+        let ports = PfRoutingDiagnostic::read(environment, paths, database)?;
+        let ports_failure = low_port_routing_required && !ports.is_active();
 
         let local_ca =
             platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -511,51 +502,6 @@ fn resolver_status(
     }
 }
 
-fn pf_status(
-    prepared_anchor: &PfFileState<platform::PfRedirectConfig>,
-    prepared_reference: &PfFileState<PfConfReference>,
-    system_anchor: &PfFileState<platform::PfRedirectConfig>,
-    system_reference: &PfFileState<PfConfReference>,
-    active: Option<Option<&platform::PfRedirectConfig>>,
-) -> (&'static str, bool) {
-    let prepared_status = pf_file_status(prepared_anchor, prepared_reference);
-    if prepared_status != "current" {
-        return (prepared_status, prepared_status != "missing");
-    }
-
-    let system_status = pf_file_status(system_anchor, system_reference);
-    if system_status != "current" {
-        if system_status == "missing" {
-            return ("prepared-only", true);
-        }
-
-        return (system_status, true);
-    }
-
-    let Some(active) = active else {
-        return ("unreadable", true);
-    };
-    let expected = pf_config_from_anchor_state(prepared_anchor);
-    if active == expected.as_ref() {
-        ("current", false)
-    } else {
-        ("inactive", true)
-    }
-}
-
-fn pf_file_status(
-    anchor: &PfFileState<platform::PfRedirectConfig>,
-    reference: &PfFileState<PfConfReference>,
-) -> &'static str {
-    match (anchor, reference) {
-        (PfFileState::Missing { .. }, PfFileState::Missing { .. }) => "missing",
-        (PfFileState::Current { .. }, PfFileState::Current { .. }) => "current",
-        (PfFileState::Conflict { .. }, _) | (_, PfFileState::Conflict { .. }) => "conflict",
-        (PfFileState::Unreadable { .. }, _) | (_, PfFileState::Unreadable { .. }) => "unreadable",
-        _ => "stale",
-    }
-}
-
 fn ca_status(state: &CaFileState, trust: &TrustDomainState) -> (&'static str, bool) {
     match state {
         CaFileState::Missing { .. } => ("missing", false),
@@ -619,28 +565,6 @@ fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfi
     }
 }
 
-fn pf_config_from_anchor_state(
-    state: &PfFileState<platform::PfRedirectConfig>,
-) -> Option<platform::PfRedirectConfig> {
-    match state {
-        PfFileState::Current { value, .. } => Some(value.clone()),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn pf_reference_from_state(state: &PfFileState<PfConfReference>) -> Option<PfConfReference> {
-    match state {
-        PfFileState::Current { value, .. } => Some(*value),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
 fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
     match state {
         CaFileState::Current { metadata, .. } => Some(metadata.clone()),
@@ -679,15 +603,5 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_anchor_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_anchor_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_conf_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_conf_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
