@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::net::UnixListener;
@@ -11,8 +12,8 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    KeychainCertificate, KeychainTrustResult, LaunchAgentConfig, PfConfReference, PfRedirectConfig,
-    ResolverConfig,
+    ActivePfRedirectInspection, KeychainCertificate, KeychainTrustResult, LaunchAgentConfig,
+    PfConfReference, PfRedirectConfig, ResolverConfig,
 };
 use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
@@ -117,6 +118,20 @@ impl Environment for TestEnvironment {
         Ok(self.active_pf_config.borrow().clone())
     }
 
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
+        let pv_config = self.active_pf_config.borrow().clone();
+        let loopback_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
+            BTreeSet::from([config.http_port, config.https_port])
+        });
+
+        Ok(ActivePfRedirectInspection {
+            pv_config,
+            loopback_target_ports,
+        })
+    }
+
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
         Ok(self.trusted_certificates.borrow().clone())
     }
@@ -133,13 +148,19 @@ fn doctor_passes_when_required_checks_pass() -> anyhow::Result<()> {
 
     let output = run_pv(&["doctor"], &environment)?;
     join_health_server(health_server)?;
+    state::fs::delete_file(&paths.daemon_socket())?;
+    let json_health_server = spawn_health_server(&paths.daemon_socket())?;
+    let json = run_pv(&["doctor", "--json"], &environment)?;
+    join_health_server(json_health_server)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert_eq!(json.exit_code, ExitCode::SUCCESS);
+    assert!(json.stderr.is_empty());
     assert_doctor_snapshot(
         "doctor_passes_when_required_checks_pass",
         tempdir.path(),
-        output,
+        (output, json),
     );
 
     Ok(())
@@ -329,7 +350,8 @@ fn seed_required_checks(
     environment: &TestEnvironment,
     include_manifest_cache: bool,
 ) -> anyhow::Result<()> {
-    Database::open(paths)?;
+    let mut database = Database::open(paths)?;
+    database.assign_gateway_ports(|port| port == 48080 || port == 48443)?;
 
     let launch_agent = LaunchAgentConfig::new(
         "/bin/pv",
@@ -460,6 +482,7 @@ fn assert_doctor_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"job_[0-9]+", "<job-id>");
     settings.add_filter(r"[0-9a-f]{64}", "<fingerprint>");
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
     });

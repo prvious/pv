@@ -1,0 +1,51 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(missing, prepared_only, current, current_json, stale_and_conflict,)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Port redirect status\nState: inactive\nEvidence: pfctl\nExpected redirects: HTTP -, HTTPS -\nActive redirects: HTTP -, HTTPS -\nObserved: <timestamp>\nRepair: `pv ports:install`\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Port redirect status\nState: inactive\nEvidence: pfctl\nExpected redirects: HTTP 48080, HTTPS 48443\nActive redirects: HTTP -, HTTPS -\nObserved: <timestamp>\nRepair: `pv ports:install`\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Port redirect status\nState: active\nEvidence: pfctl\nExpected redirects: HTTP 48080, HTTPS 48443\nActive redirects: HTTP 48080, HTTPS 48443\nObserved: <timestamp>\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "{\"state\":\"active\",\"evidence\":\"pfctl\",\"expected_http_port\":48080,\"expected_https_port\":48443,\"active_http_port\":48080,\"active_https_port\":48443,\"observed_at\":\"<timestamp>\"}\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Port redirect status\nState: drifted\nEvidence: pfctl\nExpected redirects: HTTP 48080, HTTPS 48443\nActive redirects: HTTP 48080, HTTPS 48443\nObserved: <timestamp>\nRepair: `pv ports:install`\n",
+        stderr: "",
+    },
+)

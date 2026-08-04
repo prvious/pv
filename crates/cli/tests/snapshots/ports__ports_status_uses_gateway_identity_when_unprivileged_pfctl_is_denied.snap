@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/ports.rs
+expression: "(working, broken)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "{\"state\":\"active\",\"evidence\":\"probe\",\"expected_http_port\":48080,\"expected_https_port\":48443,\"active_http_port\":48080,\"active_https_port\":48443,\"observed_at\":\"<timestamp>\"}\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "{\"state\":\"unknown\",\"evidence\":\"unavailable\",\"expected_http_port\":48080,\"expected_https_port\":48443,\"active_http_port\":null,\"active_https_port\":null,\"observed_at\":\"<timestamp>\"}\n",
+        stderr: "",
+    },
+)
