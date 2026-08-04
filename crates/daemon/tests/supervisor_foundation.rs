@@ -287,7 +287,7 @@ async fn gateway_identity_readiness_verifies_http_and_https_response_bodies() ->
             https_port,
             server_name: "pv-gateway.localhost".to_owned(),
             path: "/__pv/health".to_owned(),
-            expected_body: "pv-gateway-health-v1".to_owned(),
+            expected_body: "pv-gateway-health-v1:48080:48443".to_owned(),
             ca_certificate_path,
         },
         Duration::from_secs(1),
@@ -316,7 +316,7 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
             https_port,
             server_name: "pv-gateway.localhost".to_owned(),
             path: "/__pv/health".to_owned(),
-            expected_body: "pv-gateway-health-v1".to_owned(),
+            expected_body: "pv-gateway-health-v1:48080:48443".to_owned(),
             ca_certificate_path,
         },
         Duration::from_millis(50),
@@ -338,7 +338,7 @@ where
     let _bytes = stream.read(&mut request).await?;
     stream
         .write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\npv-gateway-health-v1",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\npv-gateway-health-v1:48080:48443",
         )
         .await?;
     stream.shutdown().await

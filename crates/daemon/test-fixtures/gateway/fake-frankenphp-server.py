@@ -34,7 +34,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/__pv/health":
-            body = b"pv-gateway-health-v1"
+            body = gateway_health_response.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -53,6 +53,7 @@ class Server(http.server.ThreadingHTTPServer):
 
 http_port = int(required(r"^# PV_FAKE_PORT (\d+)$"))
 https_port = optional(r"^\s*https_port (\d+)$")
+gateway_health_response = f"pv-gateway-health-v1:{http_port}:{https_port}"
 cert_path = optional(r'^\s*cert "([^"]+)"$')
 key_path = optional(r'^\s*key "([^"]+)"$')
 servers = [Server(("127.0.0.1", http_port), Handler)]
