@@ -16,9 +16,11 @@ DatabaseInspection {
         "007:resource_port_roles",
         "008:project_php_runtime_extensions",
         "009:project_mode_and_slug",
+        "010:job_diagnostic_outcomes",
     ],
     tables: [
         "global_php_default_track",
+        "job_diagnostic_outcomes",
         "jobs",
         "managed_resource_tracks",
         "observed_states",

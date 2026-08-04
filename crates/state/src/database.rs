@@ -81,6 +81,107 @@ pub struct JobRecord {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum JobDiagnosticSubject {
+    SystemReconciliation,
+    GatewayRuntime,
+    Project { id: String },
+    Resource { name: String, track: String },
+    UpdateAssessment,
+    Other { kind: String, scope: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnresolvedJobFailure {
+    pub job: JobRecord,
+    pub subject: JobDiagnosticSubject,
+}
+
+impl JobDiagnosticSubject {
+    fn from_job_identity(kind: &str, scope: &str) -> Self {
+        if kind == "update" && scope == "system" {
+            return Self::UpdateAssessment;
+        }
+        if kind != "reconcile" {
+            return Self::Other {
+                kind: kind.to_owned(),
+                scope: scope.to_owned(),
+            };
+        }
+
+        let components = scope.split(':').collect::<Vec<_>>();
+        match components.as_slice() {
+            ["system"] => Self::SystemReconciliation,
+            ["project", id] if !id.is_empty() => Self::Project {
+                id: (*id).to_owned(),
+            },
+            ["resource", name, _track] if matches!(*name, "php" | "frankenphp") => {
+                Self::GatewayRuntime
+            }
+            ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
+                name: (*name).to_owned(),
+                track: (*track).to_owned(),
+            },
+            _ => Self::Other {
+                kind: kind.to_owned(),
+                scope: scope.to_owned(),
+            },
+        }
+    }
+
+    fn database_identity(&self) -> (String, String) {
+        match self {
+            Self::SystemReconciliation => ("system_reconciliation".to_owned(), String::new()),
+            Self::GatewayRuntime => ("gateway_runtime".to_owned(), String::new()),
+            Self::Project { id } => ("project".to_owned(), id.clone()),
+            Self::Resource { name, track } => ("resource".to_owned(), format!("{name}:{track}")),
+            Self::UpdateAssessment => ("update_assessment".to_owned(), String::new()),
+            Self::Other { kind, scope } => (format!("other:{kind}"), scope.clone()),
+        }
+    }
+
+    fn from_database(subject_kind: &str, subject_id: &str) -> Self {
+        match subject_kind {
+            "system_reconciliation" => Self::SystemReconciliation,
+            "gateway_runtime" => Self::GatewayRuntime,
+            "project" => Self::Project {
+                id: subject_id.to_owned(),
+            },
+            "resource" => subject_id.split_once(':').map_or_else(
+                || Self::Other {
+                    kind: subject_kind.to_owned(),
+                    scope: subject_id.to_owned(),
+                },
+                |(name, track)| Self::Resource {
+                    name: name.to_owned(),
+                    track: track.to_owned(),
+                },
+            ),
+            "update_assessment" => Self::UpdateAssessment,
+            _ => Self::Other {
+                kind: subject_kind
+                    .strip_prefix("other:")
+                    .unwrap_or(subject_kind)
+                    .to_owned(),
+                scope: subject_id.to_owned(),
+            },
+        }
+    }
+
+    fn covers(&self, failure: &Self) -> bool {
+        match self {
+            Self::SystemReconciliation => matches!(
+                failure,
+                Self::SystemReconciliation
+                    | Self::GatewayRuntime
+                    | Self::Project { .. }
+                    | Self::Resource { .. }
+            ),
+            _ => self == failure,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortRequest {
     owner: PortOwner,
@@ -406,6 +507,13 @@ struct JobRecordRow {
     error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct JobDiagnosticOutcome {
+    job_id: String,
+    subject: JobDiagnosticSubject,
+    outcome: String,
+}
+
 struct PortAssignmentRow {
     owner_kind: String,
     owner_id: String,
@@ -557,6 +665,15 @@ impl Database {
     }
 
     pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
+        self.complete_job_with_coverage(id, summary, &[])
+    }
+
+    pub fn complete_job_with_coverage(
+        &mut self,
+        id: &str,
+        summary: &str,
+        coverage: &[JobDiagnosticSubject],
+    ) -> Result<(), StateError> {
         let finished_at = timestamp()?;
 
         let updated = self.transaction(|transaction| {
@@ -565,6 +682,9 @@ impl Database {
                 params![JobStatus::Succeeded.as_str(), finished_at, summary, id],
             )?;
             if updated > 0 {
+                for subject in coverage {
+                    insert_job_diagnostic_outcome(transaction, id, subject, "success")?;
+                }
                 prune_old_jobs(transaction)?;
             }
 
@@ -581,11 +701,20 @@ impl Database {
         let finished_at = timestamp()?;
 
         let updated = self.transaction(|transaction| {
+            let identity = transaction
+                .query_row(
+                    "SELECT kind, scope FROM jobs WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
             let updated = transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
                 params![JobStatus::Failed.as_str(), finished_at, error, id],
             )?;
-            if updated > 0 {
+            if let Some((kind, scope)) = identity {
+                let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
+                insert_job_diagnostic_outcome(transaction, id, &subject, "failure")?;
                 prune_old_jobs(transaction)?;
             }
 
@@ -602,6 +731,22 @@ impl Database {
         let finished_at = timestamp()?;
 
         let updated = self.transaction(|transaction| {
+            let running_jobs = {
+                let mut statement = transaction
+                    .prepare("SELECT id, kind, scope FROM jobs WHERE status = ?1 ORDER BY id")?;
+                let rows = statement.query_map(params![JobStatus::Running.as_str()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+                let mut jobs = Vec::new();
+                for row in rows {
+                    jobs.push(row?);
+                }
+                jobs
+            };
             let updated = transaction.execute(
                 "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE status = ?4",
                 params![
@@ -612,6 +757,10 @@ impl Database {
                 ],
             )?;
             if updated > 0 {
+                for (id, kind, scope) in running_jobs {
+                    let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
+                    insert_job_diagnostic_outcome(transaction, &id, &subject, "failure")?;
+                }
                 prune_old_jobs(transaction)?;
             }
 
@@ -654,6 +803,140 @@ impl Database {
         }
 
         Ok(jobs)
+    }
+
+    pub fn unresolved_job_failures(&self) -> Result<Vec<UnresolvedJobFailure>, StateError> {
+        let jobs = self.recent_jobs()?;
+        let outcomes = self.job_diagnostic_outcomes()?;
+        let runtime_states = self.runtime_observed_states()?;
+        let jobs_by_id = jobs
+            .iter()
+            .map(|job| (job.id.as_str(), job))
+            .collect::<BTreeMap<_, _>>();
+        let mut newer_successes = Vec::new();
+        let mut visited_failures = BTreeSet::new();
+        let mut recorded_failure_job_ids = BTreeSet::new();
+        let mut unresolved = Vec::new();
+
+        for outcome in outcomes {
+            if outcome.outcome == "success" {
+                newer_successes.push(outcome.subject);
+                continue;
+            }
+            if outcome.outcome != "failure" {
+                continue;
+            }
+            recorded_failure_job_ids.insert(outcome.job_id.clone());
+            let Some(job) = jobs_by_id.get(outcome.job_id.as_str()) else {
+                continue;
+            };
+            if !visited_failures.insert(outcome.subject.clone())
+                || newer_successes
+                    .iter()
+                    .any(|coverage| coverage.covers(&outcome.subject))
+                || self.has_newer_healthy_observation(job, &outcome.subject, &runtime_states)?
+            {
+                continue;
+            }
+            unresolved.push(UnresolvedJobFailure {
+                job: (*job).clone(),
+                subject: outcome.subject,
+            });
+        }
+        drop(jobs_by_id);
+
+        for job in jobs {
+            if job.status != JobStatus::Failed || recorded_failure_job_ids.contains(&job.id) {
+                continue;
+            }
+            let subject = JobDiagnosticSubject::from_job_identity(&job.kind, &job.scope);
+            if !visited_failures.insert(subject.clone())
+                || newer_successes
+                    .iter()
+                    .any(|coverage| coverage.covers(&subject))
+                || self.has_newer_healthy_observation(&job, &subject, &runtime_states)?
+            {
+                continue;
+            }
+            unresolved.push(UnresolvedJobFailure { job, subject });
+        }
+
+        Ok(unresolved)
+    }
+
+    fn job_diagnostic_outcomes(&self) -> Result<Vec<JobDiagnosticOutcome>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT job_id, subject_kind, subject_id, outcome
+            FROM job_diagnostic_outcomes
+            ORDER BY sequence DESC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let job_id = row.get::<_, String>(0)?;
+            let subject_kind = row.get::<_, String>(1)?;
+            let subject_id = row.get::<_, String>(2)?;
+            let outcome = row.get::<_, String>(3)?;
+
+            Ok((job_id, subject_kind, subject_id, outcome))
+        })?;
+        let mut outcomes = Vec::new();
+        for row in rows {
+            let (job_id, subject_kind, subject_id, outcome) = row?;
+            let subject = JobDiagnosticSubject::from_database(&subject_kind, &subject_id);
+            outcomes.push(JobDiagnosticOutcome {
+                job_id,
+                subject,
+                outcome,
+            });
+        }
+
+        Ok(outcomes)
+    }
+
+    fn has_newer_healthy_observation(
+        &self,
+        job: &JobRecord,
+        subject: &JobDiagnosticSubject,
+        runtime_states: &[RuntimeObservedStateRecord],
+    ) -> Result<bool, StateError> {
+        let failure_at = job.finished_at.as_deref().unwrap_or(&job.started_at);
+        let observed_at = match subject {
+            JobDiagnosticSubject::GatewayRuntime => runtime_states.iter().find_map(|state| {
+                (state.subject == RuntimeSubject::Gateway
+                    && state.status == RuntimeObservedStatus::Running)
+                    .then(|| state.observed_at.clone())
+            }),
+            JobDiagnosticSubject::Project { id } => self
+                .project_env_observed_state(id)?
+                .filter(|state| {
+                    matches!(
+                        state.status,
+                        ProjectEnvObservedStatus::Rendered | ProjectEnvObservedStatus::Warning
+                    )
+                })
+                .map(|state| state.observed_at),
+            JobDiagnosticSubject::Resource { name, track } => {
+                runtime_states.iter().find_map(|state| {
+                    let matches_subject = matches!(
+                        &state.subject,
+                        RuntimeSubject::Resource {
+                            name: actual_name,
+                            track: actual_track,
+                        } if actual_name == name && actual_track == track
+                    );
+                    (matches_subject
+                        && matches!(
+                            state.status,
+                            RuntimeObservedStatus::Running | RuntimeObservedStatus::Stopped
+                        ))
+                    .then(|| state.observed_at.clone())
+                })
+            }
+            JobDiagnosticSubject::SystemReconciliation
+            | JobDiagnosticSubject::UpdateAssessment
+            | JobDiagnosticSubject::Other { .. } => None,
+        };
+
+        Ok(observed_at.is_some_and(|observed_at| observed_at.as_str() > failure_at))
     }
 
     pub fn link_project(
@@ -4221,6 +4504,26 @@ fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
             SELECT id FROM jobs WHERE status != ?1 ORDER BY started_at DESC, id DESC LIMIT ?2
         )",
         params![JobStatus::Running.as_str(), RECENT_JOB_LIMIT],
+    )?;
+
+    Ok(())
+}
+
+fn insert_job_diagnostic_outcome(
+    transaction: &Transaction<'_>,
+    job_id: &str,
+    subject: &JobDiagnosticSubject,
+    outcome: &str,
+) -> rusqlite::Result<()> {
+    let (subject_kind, subject_id) = subject.database_identity();
+    transaction.execute(
+        "INSERT OR IGNORE INTO job_diagnostic_outcomes (
+            job_id,
+            subject_kind,
+            subject_id,
+            outcome
+        ) VALUES (?1, ?2, ?3, ?4)",
+        params![job_id, subject_kind, subject_id, outcome],
     )?;
 
     Ok(())

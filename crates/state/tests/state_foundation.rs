@@ -9,11 +9,12 @@ use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobStatus, ManagedResourceDesiredState,
-    ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject, JobStatus,
+    ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode, ProjectRecord,
+    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -3288,6 +3289,155 @@ fn job_records_expose_typed_statuses() -> Result<()> {
         jobs.first().map(|job| job.status),
         Some(JobStatus::Succeeded)
     ));
+
+    Ok(())
+}
+
+#[test]
+fn successful_coverage_resolves_failure_without_rewriting_history() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let first_failure = database.start_job("reconcile", "project:project_1")?;
+    database.fail_job(&first_failure.id, "Gateway failed")?;
+    let repair = database.start_job("reconcile", "project:project_1")?;
+    database.complete_job_with_coverage(
+        &repair.id,
+        "Project reconciled",
+        &[
+            JobDiagnosticSubject::Project {
+                id: "project_1".to_owned(),
+            },
+            JobDiagnosticSubject::GatewayRuntime,
+        ],
+    )?;
+
+    assert!(database.unresolved_job_failures()?.is_empty());
+    assert_eq!(database.recent_jobs()?.len(), 2);
+    assert!(
+        database
+            .recent_jobs()?
+            .iter()
+            .any(|job| job.id == first_failure.id && job.status == JobStatus::Failed)
+    );
+
+    let recurring_failure = database.start_job("reconcile", "project:project_1")?;
+    database.fail_job(&recurring_failure.id, "Gateway failed")?;
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, recurring_failure.id);
+    assert_eq!(
+        unresolved[0].subject,
+        JobDiagnosticSubject::Project {
+            id: "project_1".to_owned()
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("reconcile", "resource:php:8.4")?;
+    database.fail_job(&failure.id, "Gateway failed")?;
+    let update = database.start_job("update", "system")?;
+    database.complete_job_with_coverage(
+        &update.id,
+        "current",
+        &[JobDiagnosticSubject::UpdateAssessment],
+    )?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, failure.id);
+    assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
+
+    Ok(())
+}
+
+#[test]
+fn supersession_uses_outcome_order_for_overlapping_jobs() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let earlier_started_failure = database.start_job("reconcile", "project:project_1")?;
+    let later_started_success = database.start_job("reconcile", "project:project_1")?;
+    database.complete_job_with_coverage(
+        &later_started_success.id,
+        "Project reconciled",
+        &[JobDiagnosticSubject::Project {
+            id: "project_1".to_owned(),
+        }],
+    )?;
+    database.fail_job(&earlier_started_failure.id, "late failure")?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, earlier_started_failure.id);
+
+    Ok(())
+}
+
+#[test]
+fn system_reconciliation_coverage_resolves_component_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("reconcile", "resource:mysql:8.4")?;
+    database.fail_job(&failure.id, "MySQL failed")?;
+    let repair = database.start_job("reconcile", "system")?;
+    database.complete_job_with_coverage(
+        &repair.id,
+        "System reconciled",
+        &[JobDiagnosticSubject::SystemReconciliation],
+    )?;
+
+    assert!(database.unresolved_job_failures()?.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn matching_healthy_observation_resolves_only_its_job_subject() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let gateway_failure = database.start_job("reconcile", "resource:php:8.4")?;
+    database.fail_job(&gateway_failure.id, "Gateway failed")?;
+    let system_failure = database.start_job("reconcile", "system")?;
+    database.fail_job(&system_failure.id, "System config failed")?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE jobs SET finished_at = ?1 WHERE id IN (?2, ?3)",
+            params![
+                "2026-01-01T00:00:00Z",
+                gateway_failure.id.as_str(),
+                system_failure.id.as_str()
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Running,
+        Some("Gateway ready"),
+    )?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, system_failure.id);
+    assert_eq!(
+        unresolved[0].subject,
+        JobDiagnosticSubject::SystemReconciliation
+    );
 
     Ok(())
 }
