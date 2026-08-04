@@ -15,7 +15,7 @@ use rustix::process::{Pid, test_kill_process};
 use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
 use state::PvPaths;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
@@ -244,6 +244,104 @@ async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() ->
     drop(http_listener);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_verifies_http_and_https_response_bodies() -> Result<()> {
+    let tempdir = tempdir()?;
+    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let certified_key =
+        rcgen::generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
+    state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| anyhow!("TLS protocol configuration failed: {error}"))?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certified_key.cert.der().clone()],
+        PrivateKeyDer::Pkcs8(certified_key.signing_key.serialize_der().into()),
+    )?;
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let http_server = tokio::spawn(async move {
+        let (mut stream, _address) = http_listener.accept().await?;
+        write_gateway_identity_response(&mut stream).await
+    });
+    let https_server = tokio::spawn(async move {
+        let (stream, _address) = https_listener.accept().await?;
+        let mut stream = acceptor.accept(stream).await?;
+
+        write_gateway_identity_response(&mut stream).await
+    });
+
+    wait_for_readiness(
+        ReadinessCheck::GatewayIdentity {
+            http_host: "127.0.0.1".to_owned(),
+            http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port,
+            server_name: "pv-gateway.localhost".to_owned(),
+            path: "/__pv/health".to_owned(),
+            expected_body: "pv-gateway-health-v1".to_owned(),
+            ca_certificate_path,
+        },
+        Duration::from_secs(1),
+    )
+    .await?;
+    http_server.await??;
+    https_server.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()> {
+    let tempdir = tempdir()?;
+    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+
+    let result = wait_for_readiness(
+        ReadinessCheck::GatewayIdentity {
+            http_host: "127.0.0.1".to_owned(),
+            http_port,
+            https_host: "127.0.0.1".to_owned(),
+            https_port,
+            server_name: "pv-gateway.localhost".to_owned(),
+            path: "/__pv/health".to_owned(),
+            expected_body: "pv-gateway-health-v1".to_owned(),
+            ca_certificate_path,
+        },
+        Duration::from_millis(50),
+    )
+    .await;
+
+    assert!(result.is_err());
+    drop(http_listener);
+    drop(https_listener);
+
+    Ok(())
+}
+
+async fn write_gateway_identity_response<Stream>(stream: &mut Stream) -> Result<(), std::io::Error>
+where
+    Stream: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut request = [0_u8; 1024];
+    let _bytes = stream.read(&mut request).await?;
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\npv-gateway-health-v1",
+        )
+        .await?;
+    stream.shutdown().await
 }
 
 #[tokio::test]

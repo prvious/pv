@@ -1,0 +1,14 @@
+---
+source: crates/daemon/tests/gateway_reconciliation.rs
+expression: snapshot
+---
+[
+    RuntimeObservedStateRecord {
+        subject: Gateway,
+        status: Degraded,
+        message: Some(
+            "Low-port routing is unknown; run `pv ports:install` to verify ports 80 and 443",
+        ),
+        observed_at: "<timestamp>",
+    },
+]

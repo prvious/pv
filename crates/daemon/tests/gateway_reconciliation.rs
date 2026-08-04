@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::process::Output;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
@@ -162,6 +162,114 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
     assert!(paths.gateway_pid().exists());
     assert!(!paths.worker_pid("8.4").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_pf_files_do_not_force_public_readiness_when_rules_are_inactive() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let redirects = platform::PfRedirectConfig::new(ports[0], ports[1]);
+    fs::write_sensitive_file(&paths.pf_anchor_config(), &redirects.render_anchor())?;
+    fs::write_sensitive_file(
+        &paths.pf_conf_reference_config(),
+        &platform::PfConfReference.render(),
+    )?;
+
+    let started_at = Instant::now();
+    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
+        &paths,
+        Duration::from_millis(100),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert_runtime_states_snapshot(
+        "prepared_pf_files_do_not_force_public_readiness_when_rules_are_inactive",
+        Database::open(&paths)?.runtime_observed_states()?,
+    )?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_pf_state_keeps_owned_gateway_running_after_bounded_public_probe() -> Result<()> {
+    assert_uncertain_pf_state_preserves_gateway(
+        GatewayPfRoutingState::Unknown,
+        "unknown_pf_state_keeps_owned_gateway_running_after_bounded_public_probe",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn drifted_pf_state_keeps_owned_gateway_running_after_bounded_public_probe() -> Result<()> {
+    assert_uncertain_pf_state_preserves_gateway(
+        GatewayPfRoutingState::Drifted,
+        "drifted_pf_state_keeps_owned_gateway_running_after_bounded_public_probe",
+    )
+    .await
+}
+
+async fn assert_uncertain_pf_state_preserves_gateway(
+    pf_routing_state: GatewayPfRoutingState,
+    snapshot_name: &str,
+) -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let started_at = Instant::now();
+    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
+        &paths,
+        Duration::from_millis(100),
+        pf_routing_state,
+    )
+    .await?;
+
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert!(paths.gateway_pid().exists());
+    assert_runtime_states_snapshot(
+        snapshot_name,
+        Database::open(&paths)?.runtime_observed_states()?,
+    )?;
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
