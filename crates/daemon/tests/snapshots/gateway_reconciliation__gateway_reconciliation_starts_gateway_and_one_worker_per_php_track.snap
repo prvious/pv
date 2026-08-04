@@ -5,9 +5,9 @@ expression: snapshot
 [
     RuntimeObservedStateRecord {
         subject: Gateway,
-        status: Running,
+        status: Degraded,
         message: Some(
-            "Gateway runtime reconciled",
+            "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443",
         ),
         observed_at: "<timestamp>",
     },

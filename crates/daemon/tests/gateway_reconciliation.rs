@@ -3,9 +3,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::DaemonError;
 use daemon::gateway::{
-    FrankenphpCommand, build_runtime_plan, gateway_process_spec, promote_validated_config_for_test,
-    reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_readiness_timeout, validate_config,
-    worker_process_spec,
+    FrankenphpCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
+    promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
+    validate_config, worker_process_spec,
 };
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
@@ -40,6 +40,27 @@ const FAKE_FRANKENPHP_HANGS_ON_PORT_SERVER_SCRIPT: &str = include_str!(concat!(
     "/test-fixtures/gateway/fake-frankenphp-hangs-on-port-server.py"
 ));
 const FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL: &str = "__PV_BLOCKED_PORT__";
+
+async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state_for_test(
+        paths,
+        Duration::from_secs(60),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+}
+
+async fn reconcile_gateway_runtimes_with_readiness_timeout(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state_for_test(
+        paths,
+        readiness_timeout,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+}
 
 #[expect(
     clippy::disallowed_types,
@@ -2090,6 +2111,7 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
         "broken.test".to_owned(),
         "changed.acme.test".to_owned(),
         "other.test".to_owned(),
+        "pv-gateway.localhost".to_owned(),
     ])?;
     fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
     fs::write_sensitive_file(

@@ -1,6 +1,5 @@
 ---
 source: crates/daemon/tests/gateway_config.rs
-assertion_line: 132
 expression: rendered
 ---
 # PV_FAKE_PORT 48080
@@ -20,6 +19,21 @@ expression: rendered
             }
         }
     }
+}
+
+http://pv-gateway.localhost {
+    bind 127.0.0.1 ::1
+    respond /__pv/health "pv-gateway-health-v1" 200
+}
+
+https://pv-gateway.localhost {
+    bind 127.0.0.1 ::1
+    tls {
+        issuer internal {
+            ca local
+        }
+    }
+    respond /__pv/health "pv-gateway-health-v1" 200
 }
 
 http://127.0.0.1:48080 {

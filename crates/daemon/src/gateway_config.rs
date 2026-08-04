@@ -7,6 +7,9 @@ use state::fs;
 use crate::DaemonError;
 
 static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub(crate) const GATEWAY_HEALTH_HOSTNAME: &str = "pv-gateway.localhost";
+pub(crate) const GATEWAY_HEALTH_PATH: &str = "/__pv/health";
+pub(crate) const GATEWAY_HEALTH_RESPONSE: &str = "pv-gateway-health-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayConfigInput {
@@ -73,6 +76,12 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("        }\n");
     output.push_str("    }\n");
     output.push_str("}\n");
+    output.push_str(&format!(
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    respond {GATEWAY_HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
+    ));
+    output.push_str(&format!(
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    tls {{\n        issuer internal {{\n            ca local\n        }}\n    }}\n    respond {GATEWAY_HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
+    ));
 
     if input.import_project_configs {
         output.push('\n');

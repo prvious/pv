@@ -20,8 +20,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::timeout;
 
 use crate::gateway_config::{
-    GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
-    PromotedConfigDir, PromotedConfigTree, promote_config_dir, promote_validated_config_tree_async,
+    GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GATEWAY_HEALTH_RESPONSE, GatewayConfigInput,
+    GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigDir,
+    PromotedConfigTree, promote_config_dir, promote_validated_config_tree_async,
     render_gateway_config, render_gateway_project_config, render_php_worker_config,
     render_php_worker_project_config,
 };
@@ -41,6 +42,7 @@ type FrankenphpProcessCommand = tokio::process::Command;
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
@@ -89,6 +91,15 @@ pub struct GatewayRuntimePlan {
     pub storage_path: Utf8PathBuf,
 }
 
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GatewayPfRoutingState {
+    Active,
+    Inactive,
+    Drifted,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpWorkerRuntimePlan {
     pub php_track: String,
@@ -130,6 +141,23 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
 pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     paths: &PvPaths,
     readiness_timeout: Duration,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None).await
+}
+
+#[doc(hidden)]
+pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+    pf_routing_state: GatewayPfRoutingState,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, Some(pf_routing_state)).await
+}
+
+async fn reconcile_gateway_runtimes_with_pf_state(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
     let Some(gateway_command) = first_installed_frankenphp_command(paths)? else {
         record_runtime_observed(
@@ -209,37 +237,84 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
                 host: "127.0.0.1".to_owned(),
                 port: worker.port,
             },
-            subject,
+            subject.clone(),
             readiness_timeout,
+            ReadinessFailurePolicy::FailRuntime,
         )
         .await?;
+        record_runtime_observed(
+            paths,
+            subject,
+            RuntimeObservedStatus::Running,
+            Some(GATEWAY_RUNTIME_RECONCILED),
+        )?;
     }
     let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
-    let gateway_readiness =
-        gateway_readiness_check(paths, &plan, gateway_config.readiness_hostname.clone());
-    start_or_adopt_promoted_runtime(
+    let pf_routing_state =
+        pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &plan));
+    let gateway_readiness = gateway_readiness_plan(
+        &plan,
+        gateway_config.readiness_hostname.clone(),
+        pf_routing_state,
+        readiness_timeout,
+    );
+    let readiness_outcome = start_or_adopt_promoted_runtime(
         paths,
         &supervisor,
         gateway_config.promoted_config,
         gateway_process_spec(paths, &gateway_command),
-        gateway_readiness,
+        gateway_readiness.check,
         RuntimeSubject::Gateway,
-        readiness_timeout,
+        gateway_readiness.timeout,
+        gateway_readiness.failure_policy,
     )
     .await?;
+    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
 
-fn gateway_readiness_check(
-    paths: &PvPaths,
+fn gateway_readiness_plan(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
-) -> ReadinessCheck {
-    let ports = gateway_readiness_ports(paths, plan);
+    pf_routing_state: GatewayPfRoutingState,
+    readiness_timeout: Duration,
+) -> GatewayReadinessPlan {
+    let ports = gateway_readiness_ports(plan, pf_routing_state);
+    let failure_policy = match pf_routing_state {
+        GatewayPfRoutingState::Active | GatewayPfRoutingState::Inactive => {
+            ReadinessFailurePolicy::FailRuntime
+        }
+        GatewayPfRoutingState::Drifted | GatewayPfRoutingState::Unknown => {
+            ReadinessFailurePolicy::PreserveRuntime
+        }
+    };
+    let timeout = match failure_policy {
+        ReadinessFailurePolicy::FailRuntime => readiness_timeout,
+        ReadinessFailurePolicy::PreserveRuntime => {
+            readiness_timeout.min(PF_PUBLIC_READINESS_TIMEOUT)
+        }
+    };
 
-    gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
+    let check = if pf_routing_state == GatewayPfRoutingState::Inactive {
+        gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
+    } else {
+        gateway_public_readiness_check(plan, ports)
+    };
+
+    GatewayReadinessPlan {
+        check,
+        failure_policy,
+        timeout,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GatewayReadinessPlan {
+    check: ReadinessCheck,
+    failure_policy: ReadinessFailurePolicy,
+    timeout: Duration,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -248,11 +323,12 @@ struct GatewayReadinessPorts {
     https: u16,
 }
 
-fn gateway_readiness_ports(paths: &PvPaths, plan: &RuntimePlan) -> GatewayReadinessPorts {
+fn gateway_readiness_ports(
+    plan: &RuntimePlan,
+    pf_routing_state: GatewayPfRoutingState,
+) -> GatewayReadinessPorts {
     // macOS pf can make direct connections to an active rdr target port hang.
-    if active_gateway_redirects_match_plan(plan)
-        || prepared_gateway_redirects_match_plan(paths, plan)
-    {
+    if pf_routing_state != GatewayPfRoutingState::Inactive {
         return GatewayReadinessPorts {
             http: PUBLIC_HTTP_PORT,
             https: PUBLIC_HTTPS_PORT,
@@ -265,22 +341,76 @@ fn gateway_readiness_ports(paths: &PvPaths, plan: &RuntimePlan) -> GatewayReadin
     }
 }
 
-fn active_gateway_redirects_match_plan(plan: &RuntimePlan) -> bool {
-    matches!(
-        platform::active_pf_redirect_config(),
-        Ok(Some(config))
-            if config
-                == platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port)
-    )
+fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRoutingState {
+    let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+    let files_current = pf_files_current(paths, &expected);
+
+    match platform::inspect_active_pf_redirects_unprivileged() {
+        Ok(inspection) => classify_gateway_pf_routing_state(
+            &expected,
+            inspection.pv_config.as_ref(),
+            &inspection.loopback_target_ports,
+            true,
+            files_current,
+        ),
+        Err(_error) => classify_gateway_pf_routing_state(
+            &expected,
+            None,
+            &BTreeSet::new(),
+            false,
+            files_current,
+        ),
+    }
 }
 
-fn prepared_gateway_redirects_match_plan(paths: &PvPaths, plan: &RuntimePlan) -> bool {
-    let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+fn classify_gateway_pf_routing_state(
+    expected: &platform::PfRedirectConfig,
+    active: Option<&platform::PfRedirectConfig>,
+    loopback_target_ports: &BTreeSet<u16>,
+    inspection_available: bool,
+    files_current: bool,
+) -> GatewayPfRoutingState {
+    if !inspection_available {
+        return if files_current {
+            GatewayPfRoutingState::Unknown
+        } else {
+            GatewayPfRoutingState::Drifted
+        };
+    }
 
-    matches!(
-        platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), Some(&expected)),
-        platform::PfFileState::Current { .. }
-    )
+    match active {
+        Some(active) if active == expected && files_current => GatewayPfRoutingState::Active,
+        Some(active) if active == expected => GatewayPfRoutingState::Drifted,
+        Some(_active) => GatewayPfRoutingState::Drifted,
+        None if loopback_target_ports.contains(&expected.http_port)
+            || loopback_target_ports.contains(&expected.https_port) =>
+        {
+            GatewayPfRoutingState::Drifted
+        }
+        None => GatewayPfRoutingState::Inactive,
+    }
+}
+
+fn pf_files_current(paths: &PvPaths, expected: &platform::PfRedirectConfig) -> bool {
+    let prepared_anchor =
+        platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), Some(expected));
+    let prepared_reference = platform::inspect_pf_conf_reference(
+        &paths.pf_conf_reference_config(),
+        Some(&platform::PfConfReference),
+    );
+    let system_anchor = platform::inspect_pf_anchor_file(
+        Utf8Path::new(platform::SYSTEM_PF_ANCHOR_PATH),
+        Some(expected),
+    );
+    let system_reference = platform::inspect_pf_conf_reference(
+        Utf8Path::new(platform::SYSTEM_PF_CONF_PATH),
+        Some(&platform::PfConfReference),
+    );
+
+    matches!(prepared_anchor, platform::PfFileState::Current { .. })
+        && matches!(prepared_reference, platform::PfFileState::Current { .. })
+        && matches!(system_anchor, platform::PfFileState::Current { .. })
+        && matches!(system_reference, platform::PfFileState::Current { .. })
 }
 
 fn gateway_readiness_check_for_ports(
@@ -301,6 +431,22 @@ fn gateway_readiness_check_for_ports(
             host: "127.0.0.1".to_owned(),
             port: ports.http,
         },
+    }
+}
+
+fn gateway_public_readiness_check(
+    plan: &RuntimePlan,
+    ports: GatewayReadinessPorts,
+) -> ReadinessCheck {
+    ReadinessCheck::GatewayIdentity {
+        http_host: "127.0.0.1".to_owned(),
+        http_port: ports.http,
+        https_host: "127.0.0.1".to_owned(),
+        https_port: ports.https,
+        server_name: GATEWAY_HEALTH_HOSTNAME.to_owned(),
+        path: GATEWAY_HEALTH_PATH.to_owned(),
+        expected_body: GATEWAY_HEALTH_RESPONSE.to_owned(),
+        ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
     }
 }
 
@@ -968,7 +1114,8 @@ async fn start_or_adopt_promoted_runtime(
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
     readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
+    failure_policy: ReadinessFailurePolicy,
+) -> Result<RuntimeReadinessOutcome, DaemonError> {
     let result = start_or_adopt_runtime(
         paths,
         supervisor,
@@ -976,18 +1123,19 @@ async fn start_or_adopt_promoted_runtime(
         readiness,
         subject.clone(),
         readiness_timeout,
+        failure_policy,
     )
     .await;
 
     match result {
-        Ok(()) => {
+        Ok(outcome) => {
             if let Err(error) = promoted_config.commit() {
                 record_runtime_error(paths, subject, &error)?;
 
                 return Err(error);
             }
 
-            Ok(())
+            Ok(outcome)
         }
         Err(error) => {
             if let Err(rollback_error) = promoted_config.rollback() {
@@ -1009,13 +1157,22 @@ async fn start_or_adopt_runtime(
     readiness: ReadinessCheck,
     subject: RuntimeSubject,
     readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
+    failure_policy: ReadinessFailurePolicy,
+) -> Result<RuntimeReadinessOutcome, DaemonError> {
     let result = async {
         if supervisor.adopt(&spec)?.is_some() {
             if supervisor.reload(&spec)? {
-                wait_for_readiness(readiness, readiness_timeout).await?;
+                if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
+                    if failure_policy == ReadinessFailurePolicy::PreserveRuntime
+                        && supervisor.verify_ownership(&spec)?.is_some()
+                    {
+                        return Ok(RuntimeReadinessOutcome::Unverified);
+                    }
 
-                return Ok(());
+                    return Err(error);
+                }
+
+                return Ok(RuntimeReadinessOutcome::Verified);
             }
 
             return Err(DaemonError::UnexpectedProtocolResponse {
@@ -1040,6 +1197,10 @@ async fn start_or_adopt_runtime(
         let mut process = supervisor.start(spec.clone()).await?;
         if let Err(error) = wait_for_readiness(readiness, readiness_timeout).await {
             record_runtime_readiness_diagnostics(paths, &spec, &mut process, &error);
+            if failure_policy == ReadinessFailurePolicy::PreserveRuntime && !process.has_exited()? {
+                return Ok(RuntimeReadinessOutcome::Unverified);
+            }
+
             process.stop(Duration::from_secs(1)).await?;
 
             return Err(error);
@@ -1054,23 +1215,30 @@ async fn start_or_adopt_runtime(
             });
         }
 
-        Ok(())
+        Ok(RuntimeReadinessOutcome::Verified)
     }
     .await;
 
     match result {
-        Ok(()) => record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Running,
-            Some(GATEWAY_RUNTIME_RECONCILED),
-        ),
+        Ok(outcome) => Ok(outcome),
         Err(error) => {
             record_runtime_error(paths, subject, &error)?;
 
             Err(error)
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ReadinessFailurePolicy {
+    FailRuntime,
+    PreserveRuntime,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RuntimeReadinessOutcome {
+    Verified,
+    Unverified,
 }
 
 async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
@@ -1482,6 +1650,33 @@ fn record_runtime_error(
     )
 }
 
+fn record_gateway_runtime_observed(
+    paths: &PvPaths,
+    pf_routing_state: GatewayPfRoutingState,
+    readiness_outcome: RuntimeReadinessOutcome,
+) -> Result<(), DaemonError> {
+    let (status, message) = match (pf_routing_state, readiness_outcome) {
+        (GatewayPfRoutingState::Active, _)
+        | (GatewayPfRoutingState::Unknown, RuntimeReadinessOutcome::Verified) => {
+            (RuntimeObservedStatus::Running, GATEWAY_RUNTIME_RECONCILED)
+        }
+        (GatewayPfRoutingState::Inactive, _) => (
+            RuntimeObservedStatus::Degraded,
+            "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443",
+        ),
+        (GatewayPfRoutingState::Drifted, _) => (
+            RuntimeObservedStatus::Degraded,
+            "Low-port routing is drifted; run `pv ports:install` to restore ports 80 and 443",
+        ),
+        (GatewayPfRoutingState::Unknown, RuntimeReadinessOutcome::Unverified) => (
+            RuntimeObservedStatus::Degraded,
+            "Low-port routing is unknown; run `pv ports:install` to verify ports 80 and 443",
+        ),
+    };
+
+    record_runtime_observed(paths, RuntimeSubject::Gateway, status, Some(message))
+}
+
 fn record_runtime_observed(
     paths: &PvPaths,
     subject: RuntimeSubject,
@@ -1566,6 +1761,9 @@ fn worker_config_private_environment(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::time::Duration;
+
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
@@ -1576,8 +1774,10 @@ mod tests {
     use crate::gateway_config::GatewayProjectRoute;
 
     use super::{
-        GatewayReadinessPorts, GatewayRuntimePlan, RuntimePlan, gateway_project_config_fragments,
-        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_ports,
+        GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan, ReadinessFailurePolicy,
+        RuntimePlan, classify_gateway_pf_routing_state, gateway_project_config_fragments,
+        gateway_public_readiness_check, gateway_readiness_check_for_ports,
+        gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
         project_config_file_name,
     };
 
@@ -1610,12 +1810,11 @@ mod tests {
     }
 
     #[test]
-    fn gateway_readiness_uses_public_ports_when_redirects_are_active() -> Result<()> {
+    fn gateway_readiness_uses_identity_probes_on_public_ports() -> Result<()> {
         let plan = runtime_plan();
 
-        let readiness = gateway_readiness_check_for_ports(
+        let readiness = gateway_public_readiness_check(
             &plan,
-            Some("project.test".to_string()),
             GatewayReadinessPorts {
                 http: 80,
                 https: 443,
@@ -1624,12 +1823,14 @@ mod tests {
 
         assert_eq!(
             readiness,
-            ReadinessCheck::GatewayHttps {
+            ReadinessCheck::GatewayIdentity {
                 http_host: "127.0.0.1".to_string(),
                 http_port: 80,
                 https_host: "127.0.0.1".to_string(),
                 https_port: 443,
-                server_name: "project.test".to_string(),
+                server_name: "pv-gateway.localhost".to_string(),
+                path: "/__pv/health".to_string(),
+                expected_body: "pv-gateway-health-v1".to_string(),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
             }
         );
@@ -1638,67 +1839,132 @@ mod tests {
     }
 
     #[test]
-    fn gateway_readiness_uses_public_http_for_empty_gateway() -> Result<()> {
+    fn gateway_readiness_uses_public_ports_for_active_drifted_and_unknown_pf() {
         let plan = runtime_plan();
 
-        let readiness = gateway_readiness_check_for_ports(
-            &plan,
-            None,
-            GatewayReadinessPorts {
-                http: 80,
-                https: 443,
-            },
-        );
-
-        assert_eq!(
-            readiness,
-            ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 80,
-            }
-        );
-
-        Ok(())
+        for state in [
+            GatewayPfRoutingState::Active,
+            GatewayPfRoutingState::Drifted,
+            GatewayPfRoutingState::Unknown,
+        ] {
+            assert_eq!(
+                gateway_readiness_ports(&plan, state),
+                GatewayReadinessPorts {
+                    http: 80,
+                    https: 443,
+                }
+            );
+        }
     }
 
     #[test]
-    fn gateway_readiness_uses_public_ports_when_prepared_redirect_matches_plan() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let plan = runtime_plan();
-        let prepared_redirect =
-            PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-        state::fs::write_sensitive_file(
-            &paths.pf_anchor_config(),
-            &prepared_redirect.render_anchor(),
-        )?;
-
-        assert_eq!(
-            gateway_readiness_ports(&paths, &plan),
-            GatewayReadinessPorts {
-                http: 80,
-                https: 443,
-            }
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn gateway_readiness_uses_backend_ports_without_prepared_redirect() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
+    fn gateway_readiness_uses_backend_ports_only_when_pf_is_inactive() {
         let plan = runtime_plan();
 
         assert_eq!(
-            gateway_readiness_ports(&paths, &plan),
+            gateway_readiness_ports(&plan, GatewayPfRoutingState::Inactive),
             GatewayReadinessPorts {
                 http: plan.gateway.http_port,
                 https: plan.gateway.https_port,
             }
         );
+    }
 
-        Ok(())
+    #[test]
+    fn current_prepared_files_do_not_override_confirmed_inactive_rules() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), true, false),
+            GatewayPfRoutingState::Inactive
+        );
+    }
+
+    #[test]
+    fn matching_loaded_rules_are_active_only_with_current_files() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(
+                &expected,
+                Some(&expected),
+                &BTreeSet::new(),
+                true,
+                true,
+            ),
+            GatewayPfRoutingState::Active
+        );
+        assert_eq!(
+            classify_gateway_pf_routing_state(
+                &expected,
+                Some(&expected),
+                &BTreeSet::new(),
+                true,
+                false,
+            ),
+            GatewayPfRoutingState::Drifted
+        );
+    }
+
+    #[test]
+    fn redirects_targeting_backend_ports_are_drifted_not_inactive() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(
+                &expected,
+                None,
+                &[45080].into_iter().collect(),
+                true,
+                true,
+            ),
+            GatewayPfRoutingState::Drifted
+        );
+    }
+
+    #[test]
+    fn unavailable_rule_inspection_uses_bounded_advisory_public_readiness() {
+        let plan = runtime_plan();
+
+        let readiness = gateway_readiness_plan(
+            &plan,
+            Some("project.test".to_string()),
+            GatewayPfRoutingState::Unknown,
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(
+            readiness.failure_policy,
+            ReadinessFailurePolicy::PreserveRuntime
+        );
+        assert_eq!(readiness.timeout, Duration::from_secs(2));
+        assert_eq!(
+            readiness.check,
+            ReadinessCheck::GatewayIdentity {
+                http_host: "127.0.0.1".to_string(),
+                http_port: 80,
+                https_host: "127.0.0.1".to_string(),
+                https_port: 443,
+                server_name: "pv-gateway.localhost".to_string(),
+                path: "/__pv/health".to_string(),
+                expected_body: "pv-gateway-health-v1".to_string(),
+                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+    }
+
+    #[test]
+    fn unavailable_rule_inspection_is_unknown_only_when_files_are_current() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, true,),
+            GatewayPfRoutingState::Unknown
+        );
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, false,),
+            GatewayPfRoutingState::Drifted
+        );
     }
 
     #[test]

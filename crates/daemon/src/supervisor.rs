@@ -12,7 +12,7 @@ use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::time::{Instant, sleep, timeout};
@@ -129,6 +129,16 @@ pub enum ReadinessCheck {
         https_host: String,
         https_port: u16,
         server_name: String,
+        ca_certificate_path: Utf8PathBuf,
+    },
+    GatewayIdentity {
+        http_host: String,
+        http_port: u16,
+        https_host: String,
+        https_port: u16,
+        server_name: String,
+        path: String,
+        expected_body: String,
         ca_certificate_path: Utf8PathBuf,
     },
     RedisPing {
@@ -504,6 +514,19 @@ impl ReadinessCheck {
                     "gateway:https:{server_name}:{https_host}:{https_port};tcp:{http_host}:{http_port}"
                 )
             }
+            Self::GatewayIdentity {
+                http_host,
+                http_port,
+                https_host,
+                https_port,
+                server_name,
+                path,
+                ..
+            } => {
+                format!(
+                    "gateway-identity:https:{server_name}:{https_host}:{https_port}{path};http:{http_host}:{http_port}{path}"
+                )
+            }
             Self::RedisPing { host, port } => format!("redis-ping:{host}:{port}"),
             Self::Http { host, port, path } => format!("http:{host}:{port}{path}"),
         }
@@ -523,6 +546,32 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
         } => {
             check_tcp_once(http_host, *http_port).await?;
             check_https_once(https_host, *https_port, server_name, ca_certificate_path).await
+        }
+        ReadinessCheck::GatewayIdentity {
+            http_host,
+            http_port,
+            https_host,
+            https_port,
+            server_name,
+            path,
+            expected_body,
+            ca_certificate_path,
+        } => {
+            let http_stream = TcpStream::connect((http_host.as_str(), *http_port)).await?;
+            check_gateway_identity_response(http_stream, server_name, path, expected_body).await?;
+            let tcp_stream = TcpStream::connect((https_host.as_str(), *https_port)).await?;
+            let connector = TlsConnector::from(tls_client_config(ca_certificate_path)?);
+            let server_name_text = server_name.to_owned();
+            let tls_server_name =
+                ServerName::try_from(server_name_text.clone()).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid TLS server name `{server_name_text}`: {error}"),
+                    )
+                })?;
+            let tls_stream = connector.connect(tls_server_name, tcp_stream).await?;
+
+            check_gateway_identity_response(tls_stream, server_name, path, expected_body).await
         }
         ReadinessCheck::RedisPing { host, port } => {
             let url = format!("redis://{host}:{port}/");
@@ -552,6 +601,37 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
             Err(io::Error::other("HTTP readiness returned non-success status").into())
         }
     }
+}
+
+async fn check_gateway_identity_response<Stream>(
+    mut stream: Stream,
+    server_name: &str,
+    path: &str,
+    expected_body: &str,
+) -> Result<(), DaemonError>
+where
+    Stream: AsyncRead + AsyncWrite + Unpin,
+{
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {server_name}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut response = Vec::new();
+    stream.take(4096).read_to_end(&mut response).await?;
+    if http_response_has_success_body(&response, expected_body.as_bytes()) {
+        return Ok(());
+    }
+
+    Err(io::Error::other("Gateway identity readiness returned an unexpected response").into())
+}
+
+fn http_response_has_success_body(response: &[u8], expected_body: &[u8]) -> bool {
+    let Some(headers_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let body = &response[headers_end + 4..];
+
+    http_status_is_success(response, response.len()) && body == expected_body
 }
 
 async fn check_tcp_once(host: &str, port: u16) -> Result<(), DaemonError> {
