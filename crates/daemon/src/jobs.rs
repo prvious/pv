@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::io;
 
@@ -36,7 +37,7 @@ enum ForegroundJobEvent {
 
 struct CompletedUpdateJob {
     summary: String,
-    reconciled: bool,
+    coverage: Vec<JobDiagnosticSubject>,
 }
 
 #[derive(Debug)]
@@ -729,9 +730,7 @@ async fn complete_update_job_with_progress(
         Ok(completed) => {
             let mut database = Database::open(paths)?;
             let mut coverage = vec![JobDiagnosticSubject::UpdateAssessment];
-            if completed.reconciled {
-                coverage.push(JobDiagnosticSubject::SystemReconciliation);
-            }
+            coverage.extend(completed.coverage.iter().cloned());
             database.complete_job_with_coverage(job_id, &completed.summary, &coverage)?;
             structured_log::job_completed(paths, job_id, "update", "system", &completed.summary);
         }
@@ -772,7 +771,7 @@ async fn complete_update_job_inner(
     if report.updated_count == 0 {
         return Ok(CompletedUpdateJob {
             summary: unchanged_update_summary(&report),
-            reconciled: false,
+            coverage: Vec::new(),
         });
     }
 
@@ -781,13 +780,14 @@ async fn complete_update_job_inner(
             .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
+    let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
 
     Ok(CompletedUpdateJob {
         summary: format!(
             "updated {} artifact(s); reconciled: {reconciliation_summary}",
             report.updated_count
         ),
-        reconciled: true,
+        coverage,
     })
 }
 
@@ -816,12 +816,7 @@ async fn complete_managed_resource_reconciliation_with_progress(
         name: name.as_str().to_owned(),
         track: track.as_str().to_owned(),
     }];
-    coverage.extend(
-        database
-            .projects()?
-            .into_iter()
-            .map(|project| JobDiagnosticSubject::Project { id: project.id }),
-    );
+    coverage.extend(project_report.successful_project_coverage());
     database.complete_job_with_coverage(job_id, &summary, &coverage)?;
 
     Ok(summary)
@@ -925,12 +920,9 @@ async fn complete_system_reconciliation_with_progress(
             .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
+    let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
     let mut database = Database::open(paths)?;
-    database.complete_job_with_coverage(
-        job_id,
-        &summary,
-        &[JobDiagnosticSubject::SystemReconciliation],
-    )?;
+    database.complete_job_with_coverage(job_id, &summary, &coverage)?;
 
     Ok(summary)
 }
@@ -1033,8 +1025,18 @@ fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError
 struct SystemProjectReconciliationReport {
     total: usize,
     succeeded: usize,
+    successful_project_ids: Vec<String>,
     summaries: Vec<String>,
     failures: Vec<String>,
+}
+
+impl SystemProjectReconciliationReport {
+    fn successful_project_coverage(&self) -> impl Iterator<Item = JobDiagnosticSubject> + '_ {
+        self.successful_project_ids
+            .iter()
+            .cloned()
+            .map(|id| JobDiagnosticSubject::Project { id })
+    }
 }
 
 async fn reconcile_system_projects_with_progress(
@@ -1059,6 +1061,7 @@ async fn reconcile_system_projects_with_progress(
         {
             Ok(summary) => {
                 report.succeeded += 1;
+                report.successful_project_ids.push(project.id);
                 report.summaries.push(summary.as_str().to_owned());
             }
             Err(error) => {
@@ -1138,6 +1141,32 @@ fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
     let database = Database::open(paths)?;
 
     Ok(database.projects()?)
+}
+
+fn completed_system_reconciliation_coverage(
+    paths: &PvPaths,
+    project_report: &SystemProjectReconciliationReport,
+) -> Result<Vec<JobDiagnosticSubject>, DaemonError> {
+    let database = Database::open(paths)?;
+    let mut resource_subjects = BTreeSet::new();
+    for project_id in &project_report.successful_project_ids {
+        for resource in database.project_managed_resources(project_id)? {
+            resource_subjects.insert((resource.resource_name, resource.track));
+        }
+    }
+
+    let mut coverage = vec![
+        JobDiagnosticSubject::SystemReconciliation,
+        JobDiagnosticSubject::GatewayRuntime,
+    ];
+    coverage.extend(project_report.successful_project_coverage());
+    coverage.extend(
+        resource_subjects
+            .into_iter()
+            .map(|(name, track)| JobDiagnosticSubject::Resource { name, track }),
+    );
+
+    Ok(coverage)
 }
 
 fn system_reconciliation_summary(
@@ -1419,21 +1448,25 @@ mod tests {
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
     use futures_util::StreamExt;
+    use insta::{Settings, assert_debug_snapshot};
     use serde_json::json;
-    use state::{Database, JobStatus, LinkProjectInput, PvPaths, StateError, UpdateLock};
+    use state::{
+        Database, JobStatus, LinkProjectInput, ProjectManagedResourceInput, PvPaths, StateError,
+        UpdateLock,
+    };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
     use tokio::time::{Duration, timeout};
 
     use super::{
-        FOREGROUND_JOB_PROGRESS_BUFFER, ForegroundJobEvent,
+        FOREGROUND_JOB_PROGRESS_BUFFER, ForegroundJobEvent, SystemProjectReconciliationReport,
         complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
-        complete_streamed_job_with_heartbeat_and_events, enqueue_reconciliation_job,
-        foreground_reconciliation_result, reconcile_project_env_and_missing_resources,
-        reconcile_system_projects_and_resources, record_background_reconciliation_error,
-        run_background_reconciliation_job, start_reconciliation_job, start_update_job,
-        stream_started_reconciliation_job, stream_started_update_job,
-        write_coalesced_update_response,
+        complete_streamed_job_with_heartbeat_and_events, completed_system_reconciliation_coverage,
+        enqueue_reconciliation_job, foreground_reconciliation_result,
+        reconcile_project_env_and_missing_resources, reconcile_system_projects_and_resources,
+        record_background_reconciliation_error, run_background_reconciliation_job,
+        start_reconciliation_job, start_update_job, stream_started_reconciliation_job,
+        stream_started_update_job, write_coalesced_update_response,
     };
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
@@ -1448,6 +1481,63 @@ mod tests {
     const MAILPIT_TEST_TRACK: &str = "1.0";
     const MAILPIT_TEST_ARTIFACT_VERSION: &str = "1.0.0-pv1";
     const MAILPIT_TEST_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
+
+    #[test]
+    fn system_coverage_excludes_failed_projects_and_their_resources() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let successful_path = tempdir.path().join("successful");
+        let successful = database.link_project(LinkProjectInput {
+            path: successful_path.clone(),
+            original_path: successful_path.clone(),
+            primary_hostname: "successful.test".to_owned(),
+            config_path: successful_path.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        database.replace_project_managed_resources(
+            &successful.project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "redis".to_owned(),
+                track: "8.0".to_owned(),
+            }],
+        )?;
+        let failed_path = tempdir.path().join("failed");
+        let failed = database.link_project(LinkProjectInput {
+            path: failed_path.clone(),
+            original_path: failed_path.clone(),
+            primary_hostname: "failed.test".to_owned(),
+            config_path: failed_path.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        database.replace_project_managed_resources(
+            &failed.project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mailpit".to_owned(),
+                track: "1.0".to_owned(),
+            }],
+        )?;
+        drop(database);
+
+        let report = SystemProjectReconciliationReport {
+            total: 2,
+            succeeded: 1,
+            successful_project_ids: vec![successful.project.id],
+            summaries: vec!["Project env current".to_owned()],
+            failures: vec![format!("failed.test: {}", failed.project.id)],
+        };
+
+        let coverage = completed_system_reconciliation_coverage(&paths, &report)?;
+        let mut settings = Settings::clone_current();
+        settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+        settings.bind(|| {
+            assert_debug_snapshot!(coverage);
+        });
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn system_reconciliation_refreshes_php_extensions_after_missing_php_install()
