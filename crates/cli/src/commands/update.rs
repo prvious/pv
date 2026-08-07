@@ -338,6 +338,7 @@ fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
             message.contains("already unloaded")
                 || message.contains("not loaded")
                 || message.contains("not running")
+                || message.contains("no such process")
         }
         platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
         _ => false,
