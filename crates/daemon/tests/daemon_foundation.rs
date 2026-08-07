@@ -14,6 +14,7 @@ use state::{
 use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -868,32 +869,52 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 async fn project_config_watcher_survives_disappearing_database_side_files() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    drop(Database::open(&paths)?);
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "project_1",
+                project_path.as_str(),
+                "project.test",
+                config_path.as_str(),
+                "2026-05-24T00:00:00Z",
+                "2026-05-24T00:00:00Z",
+            ],
+        )?;
 
-    for name in ["pv.db-wal", "pv.db-shm"] {
-        let auxiliary_path = paths.root().join(name);
-        state::fs::write_sensitive_file(&auxiliary_path, "")?;
-        assert!(state::fs::path_exists(&auxiliary_path));
-        state::fs::remove_file(&auxiliary_path)?;
-    }
+        Ok(())
+    })?;
+    drop(database);
 
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     sleep(Duration::from_millis(250)).await;
+    let auxiliary_path = paths.root().join("pv.db-wal");
+    state::fs::write_sensitive_file(&auxiliary_path, "")?;
+    let removal = state::testing::remove_database_auxiliary_file_before_hardening(auxiliary_path);
 
-    let health_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "health",
-        }),
+    wait_for_database_auxiliary_hardening(removal).await?;
+    write_file_after_modified_time_tick(
+        &config_path,
+        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
     )
     .await?;
 
+    let job = wait_for_succeeded_job_scope(&paths, "project:project_1").await?;
+
     daemon.shutdown().await?;
 
-    assert_eq!(health_lines.len(), 1);
-    assert_eq!(health_lines[0]["status"], json!("ok"));
-    assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert!(
+        Database::open(&paths)?
+            .recent_jobs()?
+            .into_iter()
+            .all(|job| job.status != JobStatus::Failed)
+    );
 
     Ok(())
 }
@@ -1156,6 +1177,22 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
     Err(anyhow::anyhow!(
         "succeeded job with scope {scope:?} was not recorded"
     ))
+}
+
+async fn wait_for_database_auxiliary_hardening(removal: Receiver<()>) -> Result<()> {
+    for _attempt in 0..50 {
+        match removal.try_recv() {
+            Ok(()) => return Ok(()),
+            Err(TryRecvError::Empty) => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(TryRecvError::Disconnected) => {
+                return Err(anyhow!("database auxiliary hardening hook disconnected"));
+            }
+        }
+    }
+
+    Err(anyhow!("database auxiliary hardening hook did not run"))
 }
 
 async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &str) -> Result<()> {
