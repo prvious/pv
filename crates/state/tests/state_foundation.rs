@@ -3361,6 +3361,45 @@ fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
 }
 
 #[test]
+fn explicit_update_failure_subject_requires_matching_coverage() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("update", "system")?;
+    database.fail_job_with_subject(
+        &failure.id,
+        "System reconciliation failed",
+        &JobDiagnosticSubject::SystemReconciliation,
+    )?;
+    let no_op_update = database.start_job("update", "system")?;
+    database.complete_job_with_coverage(
+        &no_op_update.id,
+        "current",
+        &[JobDiagnosticSubject::UpdateAssessment],
+    )?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, failure.id);
+    assert_eq!(
+        unresolved[0].subject,
+        JobDiagnosticSubject::SystemReconciliation
+    );
+
+    let reconciliation = database.start_job("reconcile", "system")?;
+    database.complete_job_with_coverage(
+        &reconciliation.id,
+        "System reconciled",
+        &[JobDiagnosticSubject::SystemReconciliation],
+    )?;
+
+    assert!(database.unresolved_job_failures()?.is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn supersession_uses_outcome_order_for_overlapping_jobs() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

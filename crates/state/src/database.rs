@@ -685,6 +685,24 @@ impl Database {
     }
 
     pub fn fail_job(&mut self, id: &str, error: &str) -> Result<(), StateError> {
+        self.fail_job_with_optional_subject(id, error, None)
+    }
+
+    pub fn fail_job_with_subject(
+        &mut self,
+        id: &str,
+        error: &str,
+        subject: &JobDiagnosticSubject,
+    ) -> Result<(), StateError> {
+        self.fail_job_with_optional_subject(id, error, Some(subject))
+    }
+
+    fn fail_job_with_optional_subject(
+        &mut self,
+        id: &str,
+        error: &str,
+        subject: Option<&JobDiagnosticSubject>,
+    ) -> Result<(), StateError> {
         let finished_at = timestamp()?;
 
         let updated = self.transaction(|transaction| {
@@ -700,7 +718,9 @@ impl Database {
                 params![JobStatus::Failed.as_str(), finished_at, error, id],
             )?;
             if let Some((kind, scope)) = identity {
-                let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
+                let subject = subject
+                    .cloned()
+                    .unwrap_or_else(|| JobDiagnosticSubject::from_job_identity(&kind, &scope));
                 insert_job_diagnostic_outcome(transaction, id, &subject, "failure")?;
                 prune_old_jobs(transaction)?;
             }
