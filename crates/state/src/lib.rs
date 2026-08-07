@@ -28,6 +28,9 @@ pub use update_lock::UpdateLock;
 
 #[doc(hidden)]
 pub mod testing {
+    #[cfg(any(test, feature = "test-support"))]
+    use std::sync::mpsc::{Receiver, channel};
+
     use rusqlite::Transaction;
 
     use crate::fs::read_to_string as read_file_to_string;
@@ -47,6 +50,16 @@ pub mod testing {
 
     pub fn read_to_string(path: &camino::Utf8Path) -> Result<String, StateError> {
         read_file_to_string(path)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn remove_database_auxiliary_file_before_hardening(
+        path: camino::Utf8PathBuf,
+    ) -> Receiver<()> {
+        let (sender, receiver) = channel();
+        crate::fs::remove_database_auxiliary_file_before_hardening(path, sender);
+
+        receiver
     }
 
     pub fn transaction<T>(
