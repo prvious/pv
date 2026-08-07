@@ -21,7 +21,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Run read-only PV diagnostics\n\nUsage: pv doctor [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Run read-only PV diagnostics\n\nUsage: pv doctor [OPTIONS]\n\nOptions:\n      --json      Print diagnostics as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
