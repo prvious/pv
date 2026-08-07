@@ -40,6 +40,17 @@ struct CompletedUpdateJob {
     coverage: Vec<JobDiagnosticSubject>,
 }
 
+struct FailedUpdateJob {
+    error: DaemonError,
+    subject: JobDiagnosticSubject,
+}
+
+impl FailedUpdateJob {
+    const fn new(error: DaemonError, subject: JobDiagnosticSubject) -> Self {
+        Self { error, subject }
+    }
+}
+
 #[derive(Debug)]
 struct StreamedJobCompletion {
     result: Result<String, DaemonError>,
@@ -735,21 +746,23 @@ async fn complete_update_job_with_progress(
             structured_log::job_completed(paths, job_id, "update", "system", &completed.summary);
         }
         Err(error) => {
-            let error_message = error.to_string();
+            let error_message = error.error.to_string();
             let mut database = Database::open(paths)?;
-            database.fail_job(job_id, &error_message)?;
+            database.fail_job_with_subject(job_id, &error_message, &error.subject)?;
             structured_log::job_failed(paths, job_id, "update", "system", &error_message);
         }
     }
 
-    result.map(|completed| completed.summary)
+    result
+        .map(|completed| completed.summary)
+        .map_err(|failure| failure.error)
 }
 
 async fn complete_update_job_inner(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
-) -> Result<CompletedUpdateJob, DaemonError> {
+) -> Result<CompletedUpdateJob, FailedUpdateJob> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
@@ -760,14 +773,18 @@ async fn complete_update_job_inner(
                 &update_progress,
             )
         })
-        .await?
+        .await
+        .map_err(|error| {
+            FailedUpdateJob::new(error.into(), JobDiagnosticSubject::UpdateAssessment)
+        })?
     } else {
         crate::managed_resources::update_installed_with_progress(
             paths.clone(),
             runtime_catalog,
             &progress,
         )
-    }?;
+    }
+    .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::UpdateAssessment))?;
     if report.updated_count == 0 {
         return Ok(CompletedUpdateJob {
             summary: unchanged_update_summary(&report),
@@ -777,10 +794,16 @@ async fn complete_update_job_inner(
 
     let project_report =
         reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await?;
-    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+            .await
+            .map_err(|error| {
+                FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation)
+            })?;
+    let gateway_summary = reconcile_gateway_runtimes(paths)
+        .await
+        .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::GatewayRuntime))?;
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
-    let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
+    let coverage = completed_system_reconciliation_coverage(paths, &project_report)
+        .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation))?;
 
     Ok(CompletedUpdateJob {
         summary: format!(
