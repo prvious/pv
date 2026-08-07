@@ -167,19 +167,6 @@ impl JobDiagnosticSubject {
             },
         }
     }
-
-    fn covers(&self, failure: &Self) -> bool {
-        match self {
-            Self::SystemReconciliation => matches!(
-                failure,
-                Self::SystemReconciliation
-                    | Self::GatewayRuntime
-                    | Self::Project { .. }
-                    | Self::Resource { .. }
-            ),
-            _ => self == failure,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -833,7 +820,7 @@ impl Database {
             if !visited_failures.insert(outcome.subject.clone())
                 || newer_successes
                     .iter()
-                    .any(|coverage| coverage.covers(&outcome.subject))
+                    .any(|coverage| coverage == &outcome.subject)
                 || self.has_newer_healthy_observation(job, &outcome.subject, &runtime_states)?
             {
                 continue;
@@ -851,9 +838,7 @@ impl Database {
             }
             let subject = JobDiagnosticSubject::from_job_identity(&job.kind, &job.scope);
             if !visited_failures.insert(subject.clone())
-                || newer_successes
-                    .iter()
-                    .any(|coverage| coverage.covers(&subject))
+                || newer_successes.iter().any(|coverage| coverage == &subject)
                 || self.has_newer_healthy_observation(&job, &subject, &runtime_states)?
             {
                 continue;

@@ -3385,7 +3385,7 @@ fn supersession_uses_outcome_order_for_overlapping_jobs() -> Result<()> {
 }
 
 #[test]
-fn system_reconciliation_coverage_resolves_component_failures() -> Result<()> {
+fn system_reconciliation_subject_does_not_cover_component_failures() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -3396,6 +3396,21 @@ fn system_reconciliation_coverage_resolves_component_failures() -> Result<()> {
         &repair.id,
         "System reconciled",
         &[JobDiagnosticSubject::SystemReconciliation],
+    )?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, failure.id);
+
+    let component_repair = database.start_job("reconcile", "system")?;
+    database.complete_job_with_coverage(
+        &component_repair.id,
+        "MySQL reconciled",
+        &[JobDiagnosticSubject::Resource {
+            name: "mysql".to_owned(),
+            track: "8.4".to_owned(),
+        }],
     )?;
 
     assert!(database.unresolved_job_failures()?.is_empty());
@@ -3438,6 +3453,40 @@ fn matching_healthy_observation_resolves_only_its_job_subject() -> Result<()> {
         unresolved[0].subject,
         JobDiagnosticSubject::SystemReconciliation
     );
+
+    Ok(())
+}
+
+#[test]
+fn equal_timestamp_healthy_observation_does_not_resolve_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let gateway_failure = database.start_job("reconcile", "resource:php:8.4")?;
+    database.fail_job(&gateway_failure.id, "Gateway failed")?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Running,
+        Some("Gateway ready"),
+    )?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE jobs SET finished_at = ?1 WHERE id = ?2",
+            params!["2026-01-01T00:00:00Z", gateway_failure.id.as_str()],
+        )?;
+        transaction.execute(
+            "UPDATE observed_states SET observed_at = ?1
+            WHERE subject_kind = ?2 AND subject_id = ?3",
+            params!["2026-01-01T00:00:00Z", "runtime", "gateway"],
+        )?;
+
+        Ok(())
+    })?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].job.id, gateway_failure.id);
 
     Ok(())
 }
