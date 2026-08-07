@@ -365,48 +365,40 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
     let files_current = pf_files_current(paths, &expected);
 
     match platform::inspect_active_pf_redirects_unprivileged() {
-        Ok(inspection) => classify_gateway_pf_routing_state(
-            &expected,
-            inspection.pv_config.as_ref(),
-            &inspection.resolved_target_ports,
-            inspection.has_unresolved_redirect_targets,
-            true,
-            files_current,
-        ),
-        Err(_error) => classify_gateway_pf_routing_state(
-            &expected,
-            None,
-            &BTreeSet::new(),
-            false,
-            false,
-            files_current,
-        ),
+        Ok(inspection) => {
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+        }
+        Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
     }
 }
 
 fn classify_gateway_pf_routing_state(
     expected: &platform::PfRedirectConfig,
-    active: Option<&platform::PfRedirectConfig>,
-    resolved_target_ports: &BTreeSet<u16>,
-    has_unresolved_redirect_targets: bool,
-    inspection_available: bool,
+    inspection: Option<&platform::ActivePfRedirectInspection>,
     files_current: bool,
 ) -> GatewayPfRoutingState {
-    if !inspection_available {
+    let Some(inspection) = inspection else {
         return if files_current {
             GatewayPfRoutingState::Unknown
         } else {
             GatewayPfRoutingState::Drifted
         };
-    }
+    };
 
-    match active {
-        Some(active) if active == expected && files_current => GatewayPfRoutingState::Active,
+    match inspection.pv_config.as_ref() {
+        Some(active) if active == expected && inspection.pf_enabled && files_current => {
+            GatewayPfRoutingState::Active
+        }
         Some(active) if active == expected => GatewayPfRoutingState::Drifted,
         Some(_active) => GatewayPfRoutingState::Drifted,
-        None if has_unresolved_redirect_targets
-            || resolved_target_ports.contains(&expected.http_port)
-            || resolved_target_ports.contains(&expected.https_port) =>
+        None if inspection.pv_anchor_has_unparsed_rules
+            || inspection.has_unresolved_redirect_targets
+            || inspection
+                .resolved_target_ports
+                .contains(&expected.http_port)
+            || inspection
+                .resolved_target_ports
+                .contains(&expected.https_port) =>
         {
             GatewayPfRoutingState::Drifted
         }
@@ -1798,7 +1790,7 @@ mod tests {
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
-    use platform::PfRedirectConfig;
+    use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::PvPaths;
 
     use crate::ReadinessCheck;
@@ -1905,8 +1897,8 @@ mod tests {
     fn confirmed_inactive_evidence_selects_backend_readiness() {
         let plan = runtime_plan();
         let expected = PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-        let state =
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, true, true);
+        let inspection = pf_inspection(None, BTreeSet::new());
+        let state = classify_gateway_pf_routing_state(&expected, Some(&inspection), true);
         let readiness = gateway_readiness_plan(&plan, None, state, Duration::from_secs(60));
 
         assert_eq!(state, GatewayPfRoutingState::Inactive);
@@ -1922,27 +1914,14 @@ mod tests {
     #[test]
     fn matching_loaded_rules_are_active_only_with_current_files() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let inspection = pf_inspection(Some(expected.clone()), BTreeSet::new());
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                Some(&expected),
-                &BTreeSet::new(),
-                false,
-                true,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
             GatewayPfRoutingState::Active
         );
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                Some(&expected),
-                &BTreeSet::new(),
-                false,
-                true,
-                false,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), false),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1950,16 +1929,10 @@ mod tests {
     #[test]
     fn redirects_targeting_backend_ports_are_drifted_not_inactive() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let inspection = pf_inspection(None, BTreeSet::from([45080]));
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &[45080].into_iter().collect(),
-                false,
-                true,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1967,9 +1940,29 @@ mod tests {
     #[test]
     fn unresolved_redirect_targets_are_drifted_not_inactive() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let mut inspection = pf_inspection(None, BTreeSet::new());
+        inspection.has_unresolved_redirect_targets = true;
 
         assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), true, true, true,),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
+            GatewayPfRoutingState::Drifted
+        );
+    }
+
+    #[test]
+    fn disabled_pf_and_partial_pv_rules_are_drifted() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+        let mut disabled = pf_inspection(Some(expected.clone()), BTreeSet::from([45080, 45443]));
+        disabled.pf_enabled = false;
+        let mut partial = pf_inspection(None, BTreeSet::from([44080]));
+        partial.pv_anchor_has_unparsed_rules = true;
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, Some(&disabled), true),
+            GatewayPfRoutingState::Drifted
+        );
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, Some(&partial), true),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -2010,25 +2003,11 @@ mod tests {
         let expected = PfRedirectConfig::new(45080, 45443);
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &BTreeSet::new(),
-                false,
-                false,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, None, true),
             GatewayPfRoutingState::Unknown
         );
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &BTreeSet::new(),
-                false,
-                false,
-                false,
-            ),
+            classify_gateway_pf_routing_state(&expected, None, false),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -2075,6 +2054,19 @@ mod tests {
                 storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),
             },
             workers: Vec::new(),
+        }
+    }
+
+    fn pf_inspection(
+        pv_config: Option<PfRedirectConfig>,
+        resolved_target_ports: BTreeSet<u16>,
+    ) -> ActivePfRedirectInspection {
+        ActivePfRedirectInspection {
+            pf_enabled: true,
+            pv_config,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports,
+            has_unresolved_redirect_targets: false,
         }
     }
 }

@@ -109,8 +109,11 @@ impl Environment for TestEnvironment {
         &self,
     ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
         Ok(ActivePfRedirectInspection {
+            pf_enabled: true,
             pv_config: None,
-            loopback_target_ports: BTreeSet::new(),
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports: BTreeSet::new(),
+            has_unresolved_redirect_targets: false,
         })
     }
 

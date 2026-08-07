@@ -122,13 +122,16 @@ impl Environment for TestEnvironment {
         &self,
     ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
         let pv_config = self.active_pf_config.borrow().clone();
-        let loopback_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
+        let resolved_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
             BTreeSet::from([config.http_port, config.https_port])
         });
 
         Ok(ActivePfRedirectInspection {
+            pf_enabled: true,
             pv_config,
-            loopback_target_ports,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports,
+            has_unresolved_redirect_targets: false,
         })
     }
 

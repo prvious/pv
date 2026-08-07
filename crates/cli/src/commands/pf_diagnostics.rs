@@ -115,7 +115,7 @@ fn classify_pfctl(
         .map(|config| config.https_port);
 
     if inspection.pv_config.as_ref() == expected && expected.is_some() {
-        let state = if files_current {
+        let state = if inspection.pf_enabled && files_current {
             PfRoutingState::Active
         } else {
             PfRoutingState::Drifted
@@ -138,6 +138,15 @@ fn classify_pfctl(
         );
     }
 
+    if inspection.pv_anchor_has_unparsed_rules {
+        return (
+            PfRoutingState::Drifted,
+            PfRoutingEvidence::Pfctl,
+            active_http_port,
+            active_https_port,
+        );
+    }
+
     let Some(expected) = expected else {
         return (
             PfRoutingState::Inactive,
@@ -146,12 +155,20 @@ fn classify_pfctl(
             None,
         );
     };
+    if inspection.has_unresolved_redirect_targets {
+        return (
+            PfRoutingState::Drifted,
+            PfRoutingEvidence::Pfctl,
+            None,
+            None,
+        );
+    }
     let active_http_port = inspection
-        .loopback_target_ports
+        .resolved_target_ports
         .contains(&expected.http_port)
         .then_some(expected.http_port);
     let active_https_port = inspection
-        .loopback_target_ports
+        .resolved_target_ports
         .contains(&expected.https_port)
         .then_some(expected.https_port);
     let state = if active_http_port.is_some() || active_https_port.is_some() {
@@ -248,18 +265,9 @@ mod tests {
     #[test]
     fn readable_rules_classify_exact_absent_and_partial_redirects() {
         let expected = PfRedirectConfig::new(48080, 48443);
-        let exact = ActivePfRedirectInspection {
-            pv_config: Some(expected.clone()),
-            loopback_target_ports: BTreeSet::from([48080, 48443]),
-        };
-        let absent = ActivePfRedirectInspection {
-            pv_config: None,
-            loopback_target_ports: BTreeSet::new(),
-        };
-        let partial = ActivePfRedirectInspection {
-            pv_config: None,
-            loopback_target_ports: BTreeSet::from([48080]),
-        };
+        let exact = inspection(Some(expected.clone()), BTreeSet::from([48080, 48443]));
+        let absent = inspection(None, BTreeSet::new());
+        let partial = inspection(None, BTreeSet::from([48080]));
 
         assert_eq!(
             classify_pfctl(Some(&expected), true, &exact).0,
@@ -278,14 +286,42 @@ mod tests {
     #[test]
     fn exact_rules_with_stale_files_are_drifted() {
         let expected = PfRedirectConfig::new(48080, 48443);
-        let inspection = ActivePfRedirectInspection {
-            pv_config: Some(expected.clone()),
-            loopback_target_ports: BTreeSet::from([48080, 48443]),
-        };
+        let inspection = inspection(Some(expected.clone()), BTreeSet::from([48080, 48443]));
 
         assert_eq!(
             classify_pfctl(Some(&expected), false, &inspection).0,
             PfRoutingState::Drifted
         );
+    }
+
+    #[test]
+    fn disabled_pf_and_partial_stale_anchor_are_drifted() {
+        let expected = PfRedirectConfig::new(48080, 48443);
+        let mut disabled = inspection(Some(expected.clone()), BTreeSet::from([48080, 48443]));
+        disabled.pf_enabled = false;
+        let mut partial_stale = inspection(None, BTreeSet::from([45080]));
+        partial_stale.pv_anchor_has_unparsed_rules = true;
+
+        assert_eq!(
+            classify_pfctl(Some(&expected), true, &disabled).0,
+            PfRoutingState::Drifted
+        );
+        assert_eq!(
+            classify_pfctl(Some(&expected), true, &partial_stale).0,
+            PfRoutingState::Drifted
+        );
+    }
+
+    fn inspection(
+        pv_config: Option<PfRedirectConfig>,
+        resolved_target_ports: BTreeSet<u16>,
+    ) -> ActivePfRedirectInspection {
+        ActivePfRedirectInspection {
+            pf_enabled: true,
+            pv_config,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports,
+            has_unresolved_redirect_targets: false,
+        }
     }
 }
