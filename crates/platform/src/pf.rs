@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::io;
+use std::net::IpAddr;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use data_encoding::HEXLOWER;
@@ -29,6 +30,7 @@ pub struct PfRedirectConfig {
 pub struct ActivePfRedirectInspection {
     pub pv_config: Option<PfRedirectConfig>,
     pub loopback_target_ports: BTreeSet<u16>,
+    pub has_unresolved_redirect_targets: bool,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -278,25 +280,78 @@ fn inspect_active_pf_redirects_unprivileged_with_runner(
     };
     let recursive_nat_rules = run_system_output("/sbin/pfctl", &["-a", "*", "-s", "nat"])?;
 
+    let (loopback_target_ports, has_unresolved_redirect_targets) =
+        inspect_redirect_targets(&recursive_nat_rules);
+
     Ok(ActivePfRedirectInspection {
         pv_config,
-        loopback_target_ports: loopback_redirect_target_ports(&recursive_nat_rules),
+        loopback_target_ports,
+        has_unresolved_redirect_targets,
     })
 }
 
-fn loopback_redirect_target_ports(rules: &str) -> BTreeSet<u16> {
-    rules
+fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
+    let mut loopback_target_ports = BTreeSet::new();
+    let mut has_unresolved_redirect_targets = false;
+
+    for line in rules
         .lines()
         .filter_map(active_pf_line)
-        .filter_map(|line| line.rsplit_once("-> 127.0.0.1 port "))
-        .filter_map(|(_prefix, port)| {
-            port.strip_prefix("= ")
-                .unwrap_or(port)
-                .split_whitespace()
-                .next()
-        })
-        .filter_map(|port| port.parse::<u16>().ok())
-        .collect()
+        .filter(|line| line.starts_with("rdr "))
+    {
+        match redirect_target(line) {
+            RedirectTarget::LoopbackPort(port) => {
+                loopback_target_ports.insert(port);
+            }
+            RedirectTarget::Other => {}
+            RedirectTarget::Unresolved => has_unresolved_redirect_targets = true,
+        }
+    }
+
+    (loopback_target_ports, has_unresolved_redirect_targets)
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RedirectTarget {
+    LoopbackPort(u16),
+    Other,
+    Unresolved,
+}
+
+fn redirect_target(rule: &str) -> RedirectTarget {
+    let Some((_source, target)) = rule.rsplit_once(" -> ") else {
+        return RedirectTarget::Unresolved;
+    };
+    let mut components = target.split_whitespace();
+    let Some(address) = components.next() else {
+        return RedirectTarget::Unresolved;
+    };
+    if address != "127.0.0.1" {
+        return if address.parse::<IpAddr>().is_ok() {
+            RedirectTarget::Other
+        } else {
+            RedirectTarget::Unresolved
+        };
+    }
+    if components.next() != Some("port") {
+        return RedirectTarget::Unresolved;
+    }
+    let Some(port) = components.next() else {
+        return RedirectTarget::Unresolved;
+    };
+    let port = if port == "=" {
+        let Some(port) = components.next() else {
+            return RedirectTarget::Unresolved;
+        };
+        port
+    } else {
+        port
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        return RedirectTarget::Unresolved;
+    };
+
+    RedirectTarget::LoopbackPort(port)
 }
 
 fn active_pf_rules_with_runner(
@@ -853,6 +908,8 @@ fn write_temporary_file(path: &Utf8Path, content: &str) -> Result<(), PlatformEr
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
 
@@ -914,6 +971,7 @@ mod tests {
             ActivePfRedirectInspection {
                 pv_config: Some(PfRedirectConfig::new(48080, 48443)),
                 loopback_target_ports: [45080, 48080].into_iter().collect(),
+                has_unresolved_redirect_targets: false,
             }
         );
         assert_eq!(
@@ -923,6 +981,33 @@ mod tests {
                 "/sbin/pfctl -a com.prvious.pv -s nat",
                 "/sbin/pfctl -a * -s nat",
             ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_inspection_preserves_unresolved_targets() -> anyhow::Result<()> {
+        let inspection = inspect_active_pf_redirects_unprivileged_with_runner(
+            &mut |_program, args| {
+                if args == ["-s", "nat"] {
+                    return Ok(String::new());
+                }
+
+                Ok(
+                    "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> <backends> port 45080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 45443:45444\n"
+                        .to_string(),
+                )
+            },
+        )?;
+
+        assert_eq!(
+            inspection,
+            ActivePfRedirectInspection {
+                pv_config: None,
+                loopback_target_ports: BTreeSet::new(),
+                has_unresolved_redirect_targets: true,
+            }
         );
 
         Ok(())
