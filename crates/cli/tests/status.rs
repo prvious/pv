@@ -182,7 +182,12 @@ fn status_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()>
     database.complete_job_with_coverage(
         &repair.id,
         "System reconciled",
-        &[JobDiagnosticSubject::SystemReconciliation],
+        &[
+            JobDiagnosticSubject::SystemReconciliation,
+            JobDiagnosticSubject::Project {
+                id: "acme".to_owned(),
+            },
+        ],
     )?;
     let healthy = run_pv(&["status"], &environment)?;
 
