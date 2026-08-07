@@ -349,7 +349,7 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
         Ok(inspection) => classify_gateway_pf_routing_state(
             &expected,
             inspection.pv_config.as_ref(),
-            &inspection.loopback_target_ports,
+            &inspection.resolved_target_ports,
             inspection.has_unresolved_redirect_targets,
             true,
             files_current,
@@ -368,7 +368,7 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
 fn classify_gateway_pf_routing_state(
     expected: &platform::PfRedirectConfig,
     active: Option<&platform::PfRedirectConfig>,
-    loopback_target_ports: &BTreeSet<u16>,
+    resolved_target_ports: &BTreeSet<u16>,
     has_unresolved_redirect_targets: bool,
     inspection_available: bool,
     files_current: bool,
@@ -386,8 +386,8 @@ fn classify_gateway_pf_routing_state(
         Some(active) if active == expected => GatewayPfRoutingState::Drifted,
         Some(_active) => GatewayPfRoutingState::Drifted,
         None if has_unresolved_redirect_targets
-            || loopback_target_ports.contains(&expected.http_port)
-            || loopback_target_ports.contains(&expected.https_port) =>
+            || resolved_target_ports.contains(&expected.http_port)
+            || resolved_target_ports.contains(&expected.https_port) =>
         {
             GatewayPfRoutingState::Drifted
         }

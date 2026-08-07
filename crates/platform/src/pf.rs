@@ -29,7 +29,7 @@ pub struct PfRedirectConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActivePfRedirectInspection {
     pub pv_config: Option<PfRedirectConfig>,
-    pub loopback_target_ports: BTreeSet<u16>,
+    pub resolved_target_ports: BTreeSet<u16>,
     pub has_unresolved_redirect_targets: bool,
 }
 
@@ -280,18 +280,18 @@ fn inspect_active_pf_redirects_unprivileged_with_runner(
     };
     let recursive_nat_rules = run_system_output("/sbin/pfctl", &["-a", "*", "-s", "nat"])?;
 
-    let (loopback_target_ports, has_unresolved_redirect_targets) =
+    let (resolved_target_ports, has_unresolved_redirect_targets) =
         inspect_redirect_targets(&recursive_nat_rules);
 
     Ok(ActivePfRedirectInspection {
         pv_config,
-        loopback_target_ports,
+        resolved_target_ports,
         has_unresolved_redirect_targets,
     })
 }
 
 fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
-    let mut loopback_target_ports = BTreeSet::new();
+    let mut resolved_target_ports = BTreeSet::new();
     let mut has_unresolved_redirect_targets = false;
 
     for line in rules
@@ -300,21 +300,19 @@ fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
         .filter(|line| line.starts_with("rdr "))
     {
         match redirect_target(line) {
-            RedirectTarget::LoopbackPort(port) => {
-                loopback_target_ports.insert(port);
+            RedirectTarget::ResolvedPort(port) => {
+                resolved_target_ports.insert(port);
             }
-            RedirectTarget::Other => {}
             RedirectTarget::Unresolved => has_unresolved_redirect_targets = true,
         }
     }
 
-    (loopback_target_ports, has_unresolved_redirect_targets)
+    (resolved_target_ports, has_unresolved_redirect_targets)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum RedirectTarget {
-    LoopbackPort(u16),
-    Other,
+    ResolvedPort(u16),
     Unresolved,
 }
 
@@ -326,12 +324,8 @@ fn redirect_target(rule: &str) -> RedirectTarget {
     let Some(address) = components.next() else {
         return RedirectTarget::Unresolved;
     };
-    if address != "127.0.0.1" {
-        return if address.parse::<IpAddr>().is_ok() {
-            RedirectTarget::Other
-        } else {
-            RedirectTarget::Unresolved
-        };
+    if address.parse::<IpAddr>().is_err() {
+        return RedirectTarget::Unresolved;
     }
     if components.next() != Some("port") {
         return RedirectTarget::Unresolved;
@@ -351,7 +345,7 @@ fn redirect_target(rule: &str) -> RedirectTarget {
         return RedirectTarget::Unresolved;
     };
 
-    RedirectTarget::LoopbackPort(port)
+    RedirectTarget::ResolvedPort(port)
 }
 
 fn active_pf_rules_with_runner(
@@ -942,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn active_pf_redirect_inspection_reports_recursive_loopback_targets() -> anyhow::Result<()> {
+    fn active_pf_redirect_inspection_reports_recursive_resolved_targets() -> anyhow::Result<()> {
         let mut commands = Vec::new();
 
         let inspection = inspect_active_pf_redirects_unprivileged_with_runner(
@@ -959,7 +953,7 @@ mod tests {
                             .to_string(),
                     ),
                     _ => Ok(
-                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 8080 -> 127.0.0.1 port = 45080 round-robin\n"
+                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 8080 -> 127.0.0.1 port = 45080 round-robin\nrdr pass on lo0 inet6 proto tcp from any to ::1 port 8081 -> ::1 port 46080\n"
                             .to_string(),
                     ),
                 }
@@ -970,7 +964,7 @@ mod tests {
             inspection,
             ActivePfRedirectInspection {
                 pv_config: Some(PfRedirectConfig::new(48080, 48443)),
-                loopback_target_ports: [45080, 48080].into_iter().collect(),
+                resolved_target_ports: [45080, 46080, 48080].into_iter().collect(),
                 has_unresolved_redirect_targets: false,
             }
         );
@@ -1005,7 +999,7 @@ mod tests {
             inspection,
             ActivePfRedirectInspection {
                 pv_config: None,
-                loopback_target_ports: BTreeSet::new(),
+                resolved_target_ports: BTreeSet::new(),
                 has_unresolved_redirect_targets: true,
             }
         );
