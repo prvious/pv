@@ -131,6 +131,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (ports:status)
 _arguments "${_arguments_options[@]}" : \
+'--json[Print pf redirect status as JSON]' \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -241,6 +242,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (doctor)
 _arguments "${_arguments_options[@]}" : \
+'--json[Print diagnostics as JSON]' \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \

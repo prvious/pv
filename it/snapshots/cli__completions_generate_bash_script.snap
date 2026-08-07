@@ -462,7 +462,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__doctor)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -952,7 +952,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__ports:status)
-            opts="-h --no-color --help"
+            opts="-h --json --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
