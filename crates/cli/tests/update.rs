@@ -157,7 +157,7 @@ mod update_tests {
 
             if self.launch_agent_unloaded {
                 return Err(platform::PlatformError::LaunchAgent(
-                    "launch agent is not loaded".to_string(),
+                    "Boot-out failed: 3: No such process".to_string(),
                 ));
             }
 
@@ -712,8 +712,7 @@ mod update_tests {
     }
 
     #[test]
-    fn update_bootstraps_launch_agent_when_bootout_reports_already_unloaded() -> anyhow::Result<()>
-    {
+    fn update_bootstraps_launch_agent_when_bootout_reports_no_such_process() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
