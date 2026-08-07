@@ -350,6 +350,7 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
             &expected,
             inspection.pv_config.as_ref(),
             &inspection.loopback_target_ports,
+            inspection.has_unresolved_redirect_targets,
             true,
             files_current,
         ),
@@ -357,6 +358,7 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
             &expected,
             None,
             &BTreeSet::new(),
+            false,
             false,
             files_current,
         ),
@@ -367,6 +369,7 @@ fn classify_gateway_pf_routing_state(
     expected: &platform::PfRedirectConfig,
     active: Option<&platform::PfRedirectConfig>,
     loopback_target_ports: &BTreeSet<u16>,
+    has_unresolved_redirect_targets: bool,
     inspection_available: bool,
     files_current: bool,
 ) -> GatewayPfRoutingState {
@@ -382,7 +385,8 @@ fn classify_gateway_pf_routing_state(
         Some(active) if active == expected && files_current => GatewayPfRoutingState::Active,
         Some(active) if active == expected => GatewayPfRoutingState::Drifted,
         Some(_active) => GatewayPfRoutingState::Drifted,
-        None if loopback_target_ports.contains(&expected.http_port)
+        None if has_unresolved_redirect_targets
+            || loopback_target_ports.contains(&expected.http_port)
             || loopback_target_ports.contains(&expected.https_port) =>
         {
             GatewayPfRoutingState::Drifted
@@ -1863,12 +1867,20 @@ mod tests {
     }
 
     #[test]
-    fn current_prepared_files_do_not_override_confirmed_inactive_rules() {
-        let expected = PfRedirectConfig::new(45080, 45443);
+    fn confirmed_inactive_evidence_selects_backend_readiness() {
+        let plan = runtime_plan();
+        let expected = PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+        let state =
+            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, true, true);
+        let readiness = gateway_readiness_plan(&plan, None, state, Duration::from_secs(60));
 
+        assert_eq!(state, GatewayPfRoutingState::Inactive);
         assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), true, false),
-            GatewayPfRoutingState::Inactive
+            readiness.check,
+            ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: plan.gateway.http_port,
+            }
         );
     }
 
@@ -1881,6 +1893,7 @@ mod tests {
                 &expected,
                 Some(&expected),
                 &BTreeSet::new(),
+                false,
                 true,
                 true,
             ),
@@ -1891,6 +1904,7 @@ mod tests {
                 &expected,
                 Some(&expected),
                 &BTreeSet::new(),
+                false,
                 true,
                 false,
             ),
@@ -1907,9 +1921,20 @@ mod tests {
                 &expected,
                 None,
                 &[45080].into_iter().collect(),
+                false,
                 true,
                 true,
             ),
+            GatewayPfRoutingState::Drifted
+        );
+    }
+
+    #[test]
+    fn unresolved_redirect_targets_are_drifted_not_inactive() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), true, true, true,),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1950,11 +1975,25 @@ mod tests {
         let expected = PfRedirectConfig::new(45080, 45443);
 
         assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, true,),
+            classify_gateway_pf_routing_state(
+                &expected,
+                None,
+                &BTreeSet::new(),
+                false,
+                false,
+                true,
+            ),
             GatewayPfRoutingState::Unknown
         );
         assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, false,),
+            classify_gateway_pf_routing_state(
+                &expected,
+                None,
+                &BTreeSet::new(),
+                false,
+                false,
+                false,
+            ),
             GatewayPfRoutingState::Drifted
         );
     }
