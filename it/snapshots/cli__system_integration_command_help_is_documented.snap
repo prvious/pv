@@ -49,7 +49,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Show PV pf redirect status\n\nUsage: pv ports:status [OPTIONS]\n\nOptions:\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
+        stdout: "Show PV pf redirect status\n\nUsage: pv ports:status [OPTIONS]\n\nOptions:\n      --json      Print pf redirect status as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
     CommandOutput {
