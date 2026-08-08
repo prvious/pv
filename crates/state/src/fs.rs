@@ -1,5 +1,7 @@
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::{Mutex, mpsc::Sender};
 use std::time::SystemTime;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -12,6 +14,16 @@ const USER_ONLY_DIR_MODE: u32 = 0o700;
 const SENSITIVE_FILE_MODE: u32 = 0o600;
 const EXECUTABLE_FILE_MODE: u32 = 0o700;
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(any(test, feature = "test-support"))]
+struct DatabaseAuxiliaryHardeningTestHook {
+    path: Utf8PathBuf,
+    sender: Sender<()>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static DATABASE_AUXILIARY_HARDENING_TEST_HOOK: Mutex<Option<DatabaseAuxiliaryHardeningTestHook>> =
+    Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -160,12 +172,57 @@ pub(crate) fn database_exists(paths: &PvPaths) -> bool {
 }
 
 pub(crate) fn secure_database_files(paths: &PvPaths) -> Result<(), StateError> {
-    for (_, path) in database_files(paths) {
-        if !path_exists(&path) {
-            continue;
-        }
+    secure_sensitive_file(paths.db())?;
 
-        secure_sensitive_file(&path)?;
+    for path in database_auxiliary_files(paths) {
+        secure_database_auxiliary_file(&path)?;
+    }
+
+    Ok(())
+}
+
+fn secure_database_auxiliary_file(path: &Utf8Path) -> Result<(), StateError> {
+    #[cfg(any(test, feature = "test-support"))]
+    run_database_auxiliary_hardening_test_hook(path)?;
+
+    match secure_sensitive_file(path) {
+        Ok(()) => Ok(()),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn remove_database_auxiliary_file_before_hardening(
+    path: Utf8PathBuf,
+    sender: Sender<()>,
+) {
+    let mut hook = match DATABASE_AUXILIARY_HARDENING_TEST_HOOK.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *hook = Some(DatabaseAuxiliaryHardeningTestHook { path, sender });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn run_database_auxiliary_hardening_test_hook(path: &Utf8Path) -> Result<(), StateError> {
+    let hook = {
+        let mut hook = match DATABASE_AUXILIARY_HARDENING_TEST_HOOK.lock() {
+            Ok(hook) => hook,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if hook.as_ref().is_some_and(|hook| hook.path == path) {
+            hook.take()
+        } else {
+            None
+        }
+    };
+
+    if let Some(hook) = hook {
+        remove_file(path)?;
+        let _notification = hook.sender.send(());
     }
 
     Ok(())
@@ -190,6 +247,13 @@ fn database_files(paths: &PvPaths) -> [(&'static str, Utf8PathBuf); 3] {
         ("database", paths.db().to_path_buf()),
         ("wal", paths.root().join("pv.db-wal")),
         ("shared_memory", paths.root().join("pv.db-shm")),
+    ]
+}
+
+fn database_auxiliary_files(paths: &PvPaths) -> [Utf8PathBuf; 2] {
+    [
+        paths.root().join("pv.db-wal"),
+        paths.root().join("pv.db-shm"),
     ]
 }
 
@@ -604,14 +668,75 @@ fn require_owner_only_filesystem() -> Result<(), StateError> {
 #[cfg(test)]
 mod tests {
     use camino::Utf8Path;
-    #[cfg(windows)]
     use camino_tempfile::tempdir;
 
     use super::temporary_path_for;
     #[cfg(windows)]
     use super::{ensure_user_dir, path_exists};
+    #[cfg(unix)]
+    use super::{
+        path_exists, secure_database_auxiliary_file, secure_database_files, write_sensitive_file,
+    };
+    #[cfg(unix)]
+    use crate::PvPaths;
     #[cfg(windows)]
-    use crate::{StateCapability, StateError};
+    use crate::StateCapability;
+    use crate::StateError;
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_persistent_database_file_is_not_ignored() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        let result = secure_database_files(&paths);
+
+        assert!(matches!(
+            result,
+            Err(StateError::Filesystem { path, source })
+                if path == paths.db() && source.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disappearing_database_auxiliary_file_is_ignored() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let auxiliary_path = paths.root().join("pv.db-wal");
+        write_sensitive_file(paths.db(), "")?;
+        write_sensitive_file(&auxiliary_path, "")?;
+        let removal =
+            crate::testing::remove_database_auxiliary_file_before_hardening(auxiliary_path.clone());
+
+        secure_database_files(&paths)?;
+
+        removal.try_recv()?;
+        assert!(!path_exists(&auxiliary_path));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_auxiliary_file_security_errors_are_preserved() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let blocking_file = paths.root().join("blocking-file");
+        write_sensitive_file(&blocking_file, "")?;
+        let auxiliary_path = blocking_file.join("pv.db-wal");
+
+        let result = secure_database_auxiliary_file(&auxiliary_path);
+
+        assert!(matches!(
+            result,
+            Err(StateError::Filesystem { path, source })
+                if path == auxiliary_path && source.kind() == std::io::ErrorKind::NotADirectory
+        ));
+
+        Ok(())
+    }
 
     #[test]
     fn temporary_paths_keep_the_target_extension_in_the_derived_name() {

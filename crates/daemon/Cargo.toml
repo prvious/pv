@@ -44,4 +44,5 @@ insta = { workspace = true }
 rcgen = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+state = { path = "../state", features = ["test-support"] }
 tokio = { workspace = true }
