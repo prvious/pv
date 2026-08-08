@@ -163,6 +163,22 @@ PV v1 does not expose Projects on the LAN or through tunnels. LAN access or tunn
 
 If another process is already listening on loopback port `80` or `443`, `pv setup` and `pv ports:install` fail with a clear conflict instead of silently taking over traffic. When detectable, PV reports the process that owns the port.
 
+### PF Health and Recovery
+
+PV reports one canonical low-port routing state across readiness and diagnostics: `active`, `inactive`, `drifted`, or `unknown`. `active` means the expected redirects to the currently assigned Gateway ports were verified. `inactive` means authoritative inspection verified that no loaded redirect targets either assigned Gateway backend port. `drifted` means prepared files, installed system files, or loaded rules differ from the current expected redirect configuration, except when loaded-rule inspection proves the redirects are fully absent and therefore `inactive`. `unknown` is reserved for a current-looking file configuration whose loaded state cannot be inspected and whose behavior cannot be verified end to end. Prepared or installed files alone never prove that redirects are active.
+
+An unprivileged successful `pfctl` inspection is authoritative for loaded-rule state, with an exhaustive classification order. Confirmed absence of any loaded redirect targeting the assigned Gateway backend ports produces `inactive`, even when prepared or installed files are missing or stale. Otherwise, exact expected rules with current prepared and installed files produce `active`; exact rules with non-current files and all differing or partial loaded-rule configurations produce `drifted`. Therefore stale files plus exact loaded rules are `drifted`, while stale files plus confirmed complete loaded-rule absence are `inactive`. Background and read-only diagnostics do not invoke `sudo`, including noninteractive `sudo`; failure or denial from unprivileged `pfctl` falls back to end-to-end probes instead of being reported as inactive.
+
+The fallback probe sends short, bounded requests through both public loopback ports `80` and `443` and must verify that they reached the current PV Gateway, using a PV-owned response identity and the expected TLS identity where applicable. A generic TCP connection is insufficient. When prepared and installed PV configuration is current, successful HTTP and HTTPS probes provide authoritative behavioral evidence for `active`. If either probe is inconclusive or fails while loaded rules cannot be read, the state is `unknown`. When any prepared or installed file is non-current, the state is `drifted` whether the probes succeed or fail. A failed probe without readable loaded-rule evidence never proves `inactive`.
+
+Gateway readiness depends on that state. For `active`, readiness uses the public ports so the check exercises the real redirect path. For verified `inactive`, direct high-port readiness is allowed only after loaded-rule inspection also confirms that no active redirect targets either assigned backend port; low-port routing remains repair-required even if the Gateway process itself is ready. For `drifted`, readiness uses only bounded public probes because partially active rules may still target a backend port. A successful public probe may verify the Gateway runtime, but the integration remains `drifted`. For `unknown`, readiness retries the bounded public probes; success reclassifies the state as `active`, while failure preserves `unknown`. `drifted` or `unknown` readiness never falls back to direct backend connections and never turns routing uncertainty alone into a Gateway stop/restart loop. PV keeps an owned Gateway process running and records low-port repair-required state.
+
+macOS updates or restarts may unload active rules while leaving PV-owned prepared and system files intact. Readable loaded-rule evidence classifies this as `inactive`; unavailable inspection plus failed public probes classifies it as `unknown`. Both cases direct the user to foreground `pv ports:install`. The daemon and periodic health tick may inspect files, run unprivileged `pfctl`, and perform bounded probes, but they never prompt, call `sudo`, reload `pf`, or mutate privileged files.
+
+`pv ports:install` remains the only focused repair path. It may use interactive privilege, reloads the PV-owned rules, then verifies the exact loaded rules and public HTTP/HTTPS behavior before reporting success. If the running Gateway passes those probes, PV records a fresh healthy Gateway observation. If the Gateway is not running or cannot yet be verified, PV invalidates only stale PF-derived Gateway readiness observations to `pending` and requests reconciliation; it does not clear unrelated Gateway config, process, or TLS failures. `pv setup` may perform the same foreground repair as part of setup.
+
+`pv status`, `pv doctor`, and `pv ports:status` use the same four state values and the same `pv ports:install` repair advice. Their JSON forms expose the stable lowercase `state` value plus evidence (`pfctl`, `probe`, or `unavailable`), expected redirect ports, any readable active ports, and the observation timestamp; they do not infer `active` from file state. Plain output uses the same words. `pv ports:status` exits zero only for `active` and non-zero for `inactive`, `drifted`, or `unknown`. `pv doctor` treats every non-active state as a failed required check after setup. `pv status` treats a non-active state as a failure whenever low-port routing is required, while preserving the intentional-daemon-disabled behavior where installed integrations are reported but not considered broken.
+
 A friendly browser page for unknown Project hostnames is useful, but is post-v1 polish rather than required v1 scope.
 
 ## Setup
@@ -238,7 +254,7 @@ PV writes a small JSON runtime metadata file next to each pid file with the expe
 
 PV writes pid and runtime metadata files atomically by writing temporary files and renaming them into place after the child process starts successfully.
 
-PV uses resource-specific readiness checks after starting child processes instead of treating a running PID as ready. Examples: the Gateway responds on its high HTTP/HTTPS ports, the internal DNS resolver answers a `.test` query, MySQL/Postgres accept connections, Redis responds to ping, and Mailpit/RustFS respond on their HTTP ports.
+PV uses resource-specific readiness checks after starting child processes instead of treating a running PID as ready. The Gateway follows the state-selected readiness policy in PF Health and Recovery: public identity probes for `active`, `drifted`, and `unknown`, and direct high-port probes only for verified `inactive`. Other examples include the internal DNS resolver answering a `.test` query, MySQL/Postgres accepting connections, Redis responding to ping, and Mailpit/RustFS responding on their HTTP ports.
 
 PV uses a default 15-second readiness timeout per child process, with resource-specific overrides only if a Managed Resource consistently needs longer. If readiness fails, PV marks that runtime failed or degraded and includes the readiness failure in observed state and logs.
 
@@ -1415,7 +1431,7 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 
-Read/status commands support `--json` output in v1, including `pv status`, `pv list`, `pv project:env`, `pv jobs`, `pv update --check`, and Managed Resource list commands. `pv update --check --json` is valid, while bare `pv update --json` is invalid because update progress is not a JSON stream in v1. Mutating progress-stream commands do not need JSON output in v1 unless it is cheap to provide. JSON output should use minimal command-specific objects and arrays that map directly to the command output; v1 does not require envelope metadata such as `schema_version` or CLI version fields unless a later automation contract needs them.
+Read/status commands support `--json` output in v1, including `pv status`, `pv doctor`, `pv ports:status`, `pv list`, `pv project:env`, `pv jobs`, `pv update --check`, and Managed Resource list commands. `pv update --check --json` is valid, while bare `pv update --json` is invalid because update progress is not a JSON stream in v1. Mutating progress-stream commands do not need JSON output in v1 unless it is cheap to provide. JSON output should use minimal command-specific objects and arrays that map directly to the command output; v1 does not require envelope metadata such as `schema_version` or CLI version fields unless a later automation contract needs them.
 
 `pv update --check --json` belongs to the self-update and update-orchestration slice even though it is part of the v1 JSON surface. Diagnostics work should not change update-check behavior.
 
@@ -1460,7 +1476,7 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 
 | command   | what it does                                                                                  |
 | --------- | --------------------------------------------------------------------------------------------- |
-| pv doctor | Run read-only diagnostics for setup, DNS, ports, CA, daemon, Gateway, manifest cache, conflicts |
+| pv doctor [--json] | Run read-only diagnostics for setup, DNS, ports, CA, daemon, Gateway, manifest cache, conflicts |
 | pv jobs [--json] | List recent daemon jobs and their final status                                           |
 
 ## CA
@@ -1483,7 +1499,7 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 
 | command            | what it does                                          |
 | ------------------ | ----------------------------------------------------- |
-| pv ports:status    | Show PV `pf` redirect status for loopback `80`/`443`  |
+| pv ports:status [--json] | Show verified PV `pf` redirect state for loopback `80`/`443` |
 | pv ports:install   | Install or repair PV's `pf` redirect rules            |
 | pv ports:uninstall | Remove PV's `pf` redirect rules                       |
 
