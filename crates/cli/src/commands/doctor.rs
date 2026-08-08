@@ -7,7 +7,7 @@ use platform::{
     TrustDomainState,
 };
 use serde::Serialize;
-use state::{Database, JobStatus, PvPaths, RuntimeObservedStatus, StateError};
+use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::DoctorArgs;
 use crate::environment::Environment;
@@ -138,7 +138,7 @@ struct DoctorCheck {
     name: &'static str,
     message: String,
     detail: Option<String>,
-    repair: Option<&'static str>,
+    repair: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     routing: Option<PfRoutingDiagnostic>,
 }
@@ -161,18 +161,18 @@ impl DoctorCheck {
             name,
             message: message.into(),
             detail: None,
-            repair,
+            repair: repair.map(str::to_owned),
             routing: None,
         }
     }
 
-    fn fail(name: &'static str, message: impl Into<String>, repair: &'static str) -> Self {
+    fn fail(name: &'static str, message: impl Into<String>, repair: impl Into<String>) -> Self {
         Self {
             status: CheckStatus::Fail,
             name,
             message: message.into(),
             detail: None,
-            repair: Some(repair),
+            repair: Some(repair.into()),
             routing: None,
         }
     }
@@ -482,39 +482,60 @@ fn recent_jobs_check(database: Option<&Database>) -> Result<DoctorCheck, Execute
             Some("pv setup"),
         ));
     };
-    let failed = database
-        .recent_jobs()?
-        .into_iter()
-        .filter(|job| job.status == JobStatus::Failed)
-        .collect::<Vec<_>>();
+    let failed = database.unresolved_job_failures()?;
 
     if failed.is_empty() {
         return Ok(DoctorCheck::pass(
             "Recent jobs",
-            "no failed jobs in recent history",
+            "no unresolved failed jobs",
         ));
     }
 
+    let repair = repair_for_job_subject(&failed[0].subject);
     Ok(DoctorCheck::fail(
         "Recent jobs",
-        format!("{} failed job(s) in recent history", failed.len()),
-        "pv setup",
+        format!("{} unresolved failed job(s)", failed.len()),
+        repair,
     )
     .with_detail(
         failed
             .into_iter()
-            .map(|job| {
+            .map(|failure| {
+                let job = failure.job;
                 format!(
-                    "{} {} {}: {}",
+                    "{} {} {} at {}: {}",
                     job.id,
                     job.kind,
                     job.scope,
+                    job.finished_at.as_deref().unwrap_or(&job.started_at),
                     job.error.unwrap_or_else(|| "failed".to_string())
                 )
             })
             .collect::<Vec<_>>()
             .join("; "),
     ))
+}
+
+fn repair_for_job_subject(subject: &JobDiagnosticSubject) -> String {
+    match subject {
+        JobDiagnosticSubject::UpdateAssessment => "pv update".to_owned(),
+        JobDiagnosticSubject::Resource { name, track: _ } if name == "composer" => {
+            "pv composer:install".to_owned()
+        }
+        JobDiagnosticSubject::Resource { name, track }
+            if matches!(
+                name.as_str(),
+                "mailpit" | "mysql" | "postgres" | "redis" | "rustfs"
+            ) =>
+        {
+            format!("pv {name}:install {track}")
+        }
+        JobDiagnosticSubject::SystemReconciliation
+        | JobDiagnosticSubject::GatewayRuntime
+        | JobDiagnosticSubject::Project { .. }
+        | JobDiagnosticSubject::Resource { .. }
+        | JobDiagnosticSubject::Other { .. } => "pv daemon:restart".to_owned(),
+    }
 }
 
 fn runtime_states_check(database: Option<&Database>) -> Result<DoctorCheck, ExecuteError> {

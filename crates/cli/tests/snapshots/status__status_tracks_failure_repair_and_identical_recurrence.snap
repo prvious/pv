@@ -1,0 +1,33 @@
+---
+source: crates/cli/tests/status.rs
+expression: snapshot
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV status\nOverall: failed\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: inactive\n    repair: `pv ports:install`\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  job_000001 reconcile project:acme failed at <timestamp>: Gateway failed to start\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "PV status\nOverall: ok\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: inactive\n    repair: `pv ports:install`\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV status\nOverall: failed\nDaemon: disabled\n  LaunchAgent: missing\n  Socket: missing\nIntegrations:\n  DNS: missing\n  Ports: inactive\n    repair: `pv ports:install`\n  CA: missing\nLogs: <tempdir>/home/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  job_000003 reconcile project:acme failed at <timestamp>: Gateway failed to start\n",
+        stderr: "",
+    },
+)

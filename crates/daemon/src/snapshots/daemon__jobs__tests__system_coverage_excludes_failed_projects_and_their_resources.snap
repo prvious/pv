@@ -1,0 +1,15 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: coverage
+---
+[
+    SystemReconciliation,
+    GatewayRuntime,
+    Project {
+        id: "<project_id>",
+    },
+    Resource {
+        name: "redis",
+        track: "8.0",
+    },
+]

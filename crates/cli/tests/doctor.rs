@@ -15,7 +15,7 @@ use platform::{
     ActivePfRedirectInspection, KeychainCertificate, KeychainTrustResult, LaunchAgentConfig,
     PfConfReference, PfRedirectConfig, ResolverConfig,
 };
-use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject};
+use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -195,6 +195,49 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
 }
 
 #[test]
+fn doctor_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("reconcile", "project:project_1")?;
+    database.fail_job(&failure.id, "Gateway failed to start")?;
+
+    let failed = run_doctor_with_health(&paths, &environment)?;
+    let repair = database.start_job("reconcile", "project:project_1")?;
+    database.complete_job_with_coverage(
+        &repair.id,
+        "Project reconciled",
+        &[
+            JobDiagnosticSubject::Project {
+                id: "project_1".to_owned(),
+            },
+            JobDiagnosticSubject::GatewayRuntime,
+        ],
+    )?;
+    let healthy = run_doctor_with_health(&paths, &environment)?;
+    let recurrence = database.start_job("reconcile", "project:project_1")?;
+    database.fail_job(&recurrence.id, "Gateway failed to start")?;
+    let recurring = run_doctor_with_health(&paths, &environment)?;
+
+    assert_eq!(failed.exit_code, ExitCode::FAILURE);
+    assert_eq!(healthy.exit_code, ExitCode::SUCCESS);
+    assert_eq!(recurring.exit_code, ExitCode::FAILURE);
+    assert!(failed.stderr.is_empty());
+    assert!(healthy.stderr.is_empty());
+    assert!(recurring.stderr.is_empty());
+    assert_doctor_snapshot(
+        "doctor_tracks_failure_repair_and_identical_recurrence",
+        tempdir.path(),
+        (failed, healthy, recurring),
+    );
+
+    Ok(())
+}
+
+#[test]
 fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -346,6 +389,20 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+fn run_doctor_with_health(
+    paths: &PvPaths,
+    environment: &impl Environment,
+) -> anyhow::Result<RunOutput> {
+    if state::fs::path_exists(&paths.daemon_socket()) {
+        state::fs::delete_file(&paths.daemon_socket())?;
+    }
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+    let output = run_pv(&["doctor"], environment)?;
+    join_health_server(health_server)?;
+
+    Ok(output)
 }
 
 fn seed_required_checks(
