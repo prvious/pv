@@ -26,8 +26,9 @@ pub use launch_agent::{
 };
 pub use listener::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use pf::{
-    PfConfReference, PfFileState, PfRedirectConfig, SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH,
-    active_pf_redirect_config, active_pf_redirect_config_with_privilege_mode,
+    ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
+    SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
+    active_pf_redirect_config_with_privilege_mode, inspect_active_pf_redirects_unprivileged,
     inspect_pf_anchor_file, inspect_pf_conf_reference, install_pf_redirects, remove_pf_redirects,
 };
 pub use process::{

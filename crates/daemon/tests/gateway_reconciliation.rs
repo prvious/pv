@@ -3,9 +3,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::DaemonError;
 use daemon::gateway::{
-    FrankenphpCommand, build_runtime_plan, gateway_process_spec, promote_validated_config_for_test,
-    reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_readiness_timeout, validate_config,
-    worker_process_spec,
+    FrankenphpCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
+    promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
+    validate_config, worker_process_spec,
 };
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::process::Output;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
@@ -40,6 +40,27 @@ const FAKE_FRANKENPHP_HANGS_ON_PORT_SERVER_SCRIPT: &str = include_str!(concat!(
     "/test-fixtures/gateway/fake-frankenphp-hangs-on-port-server.py"
 ));
 const FAKE_FRANKENPHP_BLOCKED_PORT_SENTINEL: &str = "__PV_BLOCKED_PORT__";
+
+async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state_for_test(
+        paths,
+        Duration::from_secs(60),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+}
+
+async fn reconcile_gateway_runtimes_with_readiness_timeout(
+    paths: &PvPaths,
+    readiness_timeout: Duration,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state_for_test(
+        paths,
+        readiness_timeout,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+}
 
 #[expect(
     clippy::disallowed_types,
@@ -141,6 +162,67 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
     assert!(paths.gateway_pid().exists());
     assert!(!paths.worker_pid("8.4").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_pf_state_keeps_owned_gateway_running_after_bounded_public_probe() -> Result<()> {
+    assert_uncertain_pf_state_preserves_gateway(
+        GatewayPfRoutingState::Unknown,
+        "unknown_pf_state_keeps_owned_gateway_running_after_bounded_public_probe",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn drifted_pf_state_keeps_owned_gateway_running_after_bounded_public_probe() -> Result<()> {
+    assert_uncertain_pf_state_preserves_gateway(
+        GatewayPfRoutingState::Drifted,
+        "drifted_pf_state_keeps_owned_gateway_running_after_bounded_public_probe",
+    )
+    .await
+}
+
+async fn assert_uncertain_pf_state_preserves_gateway(
+    pf_routing_state: GatewayPfRoutingState,
+    snapshot_name: &str,
+) -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let started_at = Instant::now();
+    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
+        &paths,
+        Duration::from_millis(100),
+        pf_routing_state,
+    )
+    .await?;
+
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert!(paths.gateway_pid().exists());
+    assert_runtime_states_snapshot(
+        snapshot_name,
+        Database::open(&paths)?.runtime_observed_states()?,
+    )?;
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
@@ -2090,6 +2172,7 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
         "broken.test".to_owned(),
         "changed.acme.test".to_owned(),
         "other.test".to_owned(),
+        "pv-gateway.localhost".to_owned(),
     ])?;
     fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
     fs::write_sensitive_file(
