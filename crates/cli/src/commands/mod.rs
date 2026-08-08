@@ -301,7 +301,7 @@ fn command_blocked_during_update(command: &Command) -> bool {
 
 fn update_lock_error(error: StateError) -> ExecuteError {
     match error {
-        StateError::UpdateInProgress { path } => CliError::UpdateInProgress {
+        StateError::CoordinationLockHeld { path } => CliError::CoordinationLockHeld {
             path: path.to_string(),
         }
         .into(),

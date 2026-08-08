@@ -60,8 +60,8 @@ pub enum CliError {
     #[error("no installed {resource} tracks were found; pass --track explicitly")]
     MissingLogResourceTrack { resource: String },
 
-    #[error("PV update is already in progress; update lock is held at {path}")]
-    UpdateInProgress { path: String },
+    #[error("PV self-update/daemon mutation coordination is active; the OS lock is held on {path}")]
+    CoordinationLockHeld { path: String },
 
     #[error("PV application update requires an installed active release: {message}")]
     AppUpdateInvalidActiveRelease { message: String },

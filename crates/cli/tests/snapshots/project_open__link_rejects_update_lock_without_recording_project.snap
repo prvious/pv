@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: PV update is already in progress; update lock is held at <tempdir>/home/.pv/run/update.lock\n",
+    stderr: "error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/update.lock\n",
 }
