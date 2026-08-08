@@ -23,6 +23,7 @@ mod jobs;
 mod logs;
 mod mailpit;
 mod mysql;
+mod pf_diagnostics;
 mod php;
 mod ports;
 mod postgres;
@@ -69,7 +70,7 @@ where
         Command::DnsStatus => dns::status(environment, stdout),
         Command::DnsInstall => dns::install(environment, stdout),
         Command::DnsUninstall => dns::uninstall(environment, stdout),
-        Command::PortsStatus => ports::status(environment, stdout),
+        Command::PortsStatus(args) => ports::status(args, environment, stdout),
         Command::PortsInstall => ports::install(environment, stdout),
         Command::PortsUninstall => ports::uninstall(environment, stdout),
         Command::CaStatus => ca::status(environment, stdout),
@@ -165,7 +166,7 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         Command::DaemonRun | Command::Link(_) | Command::Unlink(_) => {
             Some(PlatformCapability::DaemonIpc)
         }
-        Command::PortsStatus | Command::PortsInstall | Command::PortsUninstall => {
+        Command::PortsStatus(_) | Command::PortsInstall | Command::PortsUninstall => {
             Some(PlatformCapability::LowPortFrontend)
         }
         Command::CaStatus | Command::CaTrust | Command::CaUntrust => {
@@ -395,7 +396,7 @@ mod tests {
                 Command::DaemonDisable,
                 Command::DaemonRestart,
                 Command::Status(StatusArgs { json: false }),
-                Command::Doctor(DoctorArgs {}),
+                Command::Doctor(DoctorArgs { json: false }),
                 Command::Update(UpdateArgs {
                     check: false,
                     json: false,
@@ -432,7 +433,7 @@ mod tests {
     fn required_capability_maps_low_port_frontend_commands() {
         assert_required_capability(
             &[
-                Command::PortsStatus,
+                Command::PortsStatus(crate::args::PortsStatusArgs { json: false }),
                 Command::PortsInstall,
                 Command::PortsUninstall,
             ],

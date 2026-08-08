@@ -23,7 +23,7 @@ expression: rendered
 
 http://pv-gateway.localhost {
     bind 127.0.0.1 ::1
-    respond /__pv/health "pv-gateway-health-v1" 200
+    respond /__pv/health "pv-gateway-health-v1:48080:48443" 200
 }
 
 https://pv-gateway.localhost {
@@ -33,7 +33,7 @@ https://pv-gateway.localhost {
             ca local
         }
     }
-    respond /__pv/health "pv-gateway-health-v1" 200
+    respond /__pv/health "pv-gateway-health-v1:48080:48443" 200
 }
 
 http://127.0.0.1:48080 {

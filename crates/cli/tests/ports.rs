@@ -9,7 +9,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use platform::{PfConfReference, PfRedirectConfig};
+use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
 use state::{Database, PortOwner, PvPaths, StateError};
 
 #[derive(Debug)]
@@ -22,6 +22,8 @@ struct TestEnvironment {
     active_pf_config: RefCell<Option<PfRedirectConfig>>,
     active_pf_privilege_modes: RefCell<Vec<platform::PrivilegeMode>>,
     active_pf_read_fails_when_unloaded: bool,
+    unprivileged_pf_inspection_fails: bool,
+    gateway_probe_succeeds: bool,
     operations: RefCell<Vec<String>>,
 }
 
@@ -41,6 +43,8 @@ impl TestEnvironment {
             active_pf_config: RefCell::new(None),
             active_pf_privilege_modes: RefCell::new(Vec::new()),
             active_pf_read_fails_when_unloaded: false,
+            unprivileged_pf_inspection_fails: false,
+            gateway_probe_succeeds: false,
             operations: RefCell::new(Vec::new()),
         }
     }
@@ -52,6 +56,16 @@ impl TestEnvironment {
 
     fn with_active_pf_read_failing_when_unloaded(mut self) -> Self {
         self.active_pf_read_fails_when_unloaded = true;
+        self
+    }
+
+    fn with_unprivileged_pf_inspection_failing(mut self) -> Self {
+        self.unprivileged_pf_inspection_fails = true;
+        self
+    }
+
+    fn with_gateway_probe_succeeding(mut self) -> Self {
+        self.gateway_probe_succeeds = true;
         self
     }
 }
@@ -141,6 +155,41 @@ impl Environment for TestEnvironment {
         }
 
         Ok(self.active_pf_config.borrow().clone())
+    }
+
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
+        if self.unprivileged_pf_inspection_fails {
+            return Err(platform::PlatformError::SystemIntegrationCommandStatus {
+                command: "/sbin/pfctl -s nat".to_owned(),
+                status: "exit status: 1".to_owned(),
+            });
+        }
+        let pv_config = self.active_pf_config.borrow().clone();
+        let resolved_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
+            BTreeSet::from([config.http_port, config.https_port])
+        });
+
+        Ok(ActivePfRedirectInspection {
+            pf_enabled: true,
+            pv_config,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports,
+            has_unresolved_redirect_targets: false,
+        })
+    }
+
+    fn probe_gateway_redirects(
+        &self,
+        _expected: &PfRedirectConfig,
+        _ca_certificate_path: &Utf8Path,
+    ) -> Result<(), String> {
+        if self.gateway_probe_succeeds {
+            Ok(())
+        } else {
+            Err("Gateway identity probe failed".to_owned())
+        }
     }
 
     fn remove_pf_redirects(
@@ -381,8 +430,7 @@ fn ports_install_fails_on_low_port_conflict_before_writing_prepared_artifacts() 
 }
 
 #[test]
-fn ports_status_reports_prepared_and_system_pf_states_without_mutating_state() -> anyhow::Result<()>
-{
+fn ports_status_reports_canonical_routing_states_without_mutating_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -404,28 +452,99 @@ fn ports_status_reports_prepared_and_system_pf_states_without_mutating_state() -
     let prepared_anchor_after_missing = read_optional_file(&paths.pf_anchor_config())?;
     let prepared_reference_after_missing = read_optional_file(&paths.pf_conf_reference_config())?;
 
+    let mut database = Database::open(&paths)?;
+    database.assign_gateway_ports(|port| port == 48080 || port == 48443)?;
+    drop(database);
     write_file(&paths.pf_anchor_config(), &current_anchor)?;
     write_file(&paths.pf_conf_reference_config(), &current_reference)?;
     let prepared_only = run_pv(&["ports:status"], &environment)?;
 
     write_file(&system_anchor_path, &current_anchor)?;
     write_file(&system_pf_conf_path, &current_reference)?;
+    *environment.active_pf_config.borrow_mut() = Some(PfRedirectConfig::new(48080, 48443));
     let current = run_pv(&["ports:status"], &environment)?;
+    let current_json = run_pv(&["ports:status", "--json"], &environment)?;
 
     write_file(&system_anchor_path, &stale_anchor)?;
     write_file(&system_pf_conf_path, "anchor \"com.prvious.pv\"\n")?;
     let stale_and_conflict = run_pv(&["ports:status"], &environment)?;
 
-    assert_eq!(missing.exit_code, ExitCode::SUCCESS);
-    assert_eq!(prepared_only.exit_code, ExitCode::SUCCESS);
+    assert_eq!(missing.exit_code, ExitCode::FAILURE);
+    assert_eq!(prepared_only.exit_code, ExitCode::FAILURE);
     assert_eq!(current.exit_code, ExitCode::SUCCESS);
-    assert_eq!(stale_and_conflict.exit_code, ExitCode::SUCCESS);
+    assert_eq!(current_json.exit_code, ExitCode::SUCCESS);
+    assert_eq!(stale_and_conflict.exit_code, ExitCode::FAILURE);
     assert!(database_after_missing.is_none());
     assert!(prepared_anchor_after_missing.is_none());
     assert!(prepared_reference_after_missing.is_none());
+    assert!(environment.active_pf_privilege_modes.borrow().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((missing, prepared_only, current, stale_and_conflict,));
+        assert_debug_snapshot!((
+            missing,
+            prepared_only,
+            current,
+            current_json,
+            stale_and_conflict,
+        ));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn ports_status_uses_gateway_identity_when_unprivileged_pfctl_is_denied() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let paths = pv_paths(&home);
+    let config = PfRedirectConfig::new(48080, 48443);
+    let mut database = Database::open(&paths)?;
+    database.assign_gateway_ports(|port| port == 48080 || port == 48443)?;
+    drop(database);
+    write_file(&paths.pf_anchor_config(), &config.render_anchor())?;
+    write_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
+    write_file(&system_anchor_path, &config.render_anchor())?;
+    write_file(&system_pf_conf_path, &PfConfReference.render())?;
+
+    let working_environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_unprivileged_pf_inspection_failing()
+    .with_gateway_probe_succeeding();
+    let broken_environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_unprivileged_pf_inspection_failing();
+
+    let working = run_pv(&["ports:status", "--json"], &working_environment)?;
+    let broken = run_pv(&["ports:status", "--json"], &broken_environment)?;
+
+    assert_eq!(working.exit_code, ExitCode::SUCCESS);
+    assert_eq!(broken.exit_code, ExitCode::FAILURE);
+    assert!(
+        working_environment
+            .active_pf_privilege_modes
+            .borrow()
+            .is_empty()
+    );
+    assert!(
+        broken_environment
+            .active_pf_privilege_modes
+            .borrow()
+            .is_empty()
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((working, broken));
     });
 
     Ok(())
@@ -622,5 +741,6 @@ fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.bind(assertion);
 }

@@ -9,7 +9,10 @@ use crate::DaemonError;
 static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) const GATEWAY_HEALTH_HOSTNAME: &str = "pv-gateway.localhost";
 pub(crate) const GATEWAY_HEALTH_PATH: &str = "/__pv/health";
-pub(crate) const GATEWAY_HEALTH_RESPONSE: &str = "pv-gateway-health-v1";
+
+pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String {
+    format!("pv-gateway-health-v1:{http_port}:{https_port}")
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayConfigInput {
@@ -49,6 +52,7 @@ pub struct PhpWorkerProject {
 
 pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
+    let health_response = gateway_health_response(input.http_port, input.https_port);
     output.push_str(&format!("# PV_FAKE_PORT {}\n", input.http_port));
     output.push_str("{\n");
     output.push_str("    admin off\n");
@@ -77,10 +81,10 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
     output.push_str(&format!(
-        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    respond {GATEWAY_HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
     output.push_str(&format!(
-        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    tls {{\n        issuer internal {{\n            ca local\n        }}\n    }}\n    respond {GATEWAY_HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    tls {{\n        issuer internal {{\n            ca local\n        }}\n    }}\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
 
     if input.import_project_configs {

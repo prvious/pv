@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -8,7 +8,10 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
-use platform::{KeychainCertificate, PfConfReference, PfRedirectConfig, ResolverConfig};
+use platform::{
+    ActivePfRedirectInspection, KeychainCertificate, PfConfReference, PfRedirectConfig,
+    ResolverConfig,
+};
 use platform::{KeychainTrustResult, LaunchAgentConfig};
 use state::{
     Database, LinkProjectInput, ManagedResourceTrackInstallInput, ProjectEnvObservedStatus,
@@ -100,6 +103,18 @@ impl Environment for TestEnvironment {
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
         Ok(None)
+    }
+
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
+        Ok(ActivePfRedirectInspection {
+            pf_enabled: true,
+            pv_config: None,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports: BTreeSet::new(),
+            has_unresolved_redirect_targets: false,
+        })
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {

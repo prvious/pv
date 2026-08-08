@@ -20,9 +20,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::timeout;
 
 use crate::gateway_config::{
-    GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GATEWAY_HEALTH_RESPONSE, GatewayConfigInput,
-    GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigDir,
-    PromotedConfigTree, promote_config_dir, promote_validated_config_tree_async,
+    GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GatewayConfigInput, GatewayProjectRoute,
+    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigDir, PromotedConfigTree,
+    gateway_health_response, promote_config_dir, promote_validated_config_tree_async,
     render_gateway_config, render_gateway_project_config, render_php_worker_config,
     render_php_worker_project_config,
 };
@@ -135,6 +135,25 @@ pub fn promote_validated_config_for_test(
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
     reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
+}
+
+pub fn probe_gateway_identity_blocking(
+    expected: &platform::PfRedirectConfig,
+    ca_certificate_path: &Utf8Path,
+) -> Result<(), DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+    let check = gateway_identity_readiness_check(
+        expected.http_port,
+        expected.https_port,
+        PUBLIC_HTTP_PORT,
+        PUBLIC_HTTPS_PORT,
+        ca_certificate_path,
+    );
+
+    runtime.block_on(wait_for_readiness(check, Duration::from_secs(1)))
 }
 
 #[doc(hidden)]
@@ -346,48 +365,40 @@ fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRou
     let files_current = pf_files_current(paths, &expected);
 
     match platform::inspect_active_pf_redirects_unprivileged() {
-        Ok(inspection) => classify_gateway_pf_routing_state(
-            &expected,
-            inspection.pv_config.as_ref(),
-            &inspection.resolved_target_ports,
-            inspection.has_unresolved_redirect_targets,
-            true,
-            files_current,
-        ),
-        Err(_error) => classify_gateway_pf_routing_state(
-            &expected,
-            None,
-            &BTreeSet::new(),
-            false,
-            false,
-            files_current,
-        ),
+        Ok(inspection) => {
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+        }
+        Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
     }
 }
 
 fn classify_gateway_pf_routing_state(
     expected: &platform::PfRedirectConfig,
-    active: Option<&platform::PfRedirectConfig>,
-    resolved_target_ports: &BTreeSet<u16>,
-    has_unresolved_redirect_targets: bool,
-    inspection_available: bool,
+    inspection: Option<&platform::ActivePfRedirectInspection>,
     files_current: bool,
 ) -> GatewayPfRoutingState {
-    if !inspection_available {
+    let Some(inspection) = inspection else {
         return if files_current {
             GatewayPfRoutingState::Unknown
         } else {
             GatewayPfRoutingState::Drifted
         };
-    }
+    };
 
-    match active {
-        Some(active) if active == expected && files_current => GatewayPfRoutingState::Active,
+    match inspection.pv_config.as_ref() {
+        Some(active) if active == expected && inspection.pf_enabled && files_current => {
+            GatewayPfRoutingState::Active
+        }
         Some(active) if active == expected => GatewayPfRoutingState::Drifted,
         Some(_active) => GatewayPfRoutingState::Drifted,
-        None if has_unresolved_redirect_targets
-            || resolved_target_ports.contains(&expected.http_port)
-            || resolved_target_ports.contains(&expected.https_port) =>
+        None if inspection.pv_anchor_has_unparsed_rules
+            || inspection.has_unresolved_redirect_targets
+            || inspection
+                .resolved_target_ports
+                .contains(&expected.http_port)
+            || inspection
+                .resolved_target_ports
+                .contains(&expected.https_port) =>
         {
             GatewayPfRoutingState::Drifted
         }
@@ -442,15 +453,31 @@ fn gateway_public_readiness_check(
     plan: &RuntimePlan,
     ports: GatewayReadinessPorts,
 ) -> ReadinessCheck {
+    gateway_identity_readiness_check(
+        plan.gateway.http_port,
+        plan.gateway.https_port,
+        ports.http,
+        ports.https,
+        &plan.gateway.ca_certificate_path,
+    )
+}
+
+fn gateway_identity_readiness_check(
+    expected_http_port: u16,
+    expected_https_port: u16,
+    probe_http_port: u16,
+    probe_https_port: u16,
+    ca_certificate_path: &Utf8Path,
+) -> ReadinessCheck {
     ReadinessCheck::GatewayIdentity {
         http_host: "127.0.0.1".to_owned(),
-        http_port: ports.http,
+        http_port: probe_http_port,
         https_host: "127.0.0.1".to_owned(),
-        https_port: ports.https,
+        https_port: probe_https_port,
         server_name: GATEWAY_HEALTH_HOSTNAME.to_owned(),
         path: GATEWAY_HEALTH_PATH.to_owned(),
-        expected_body: GATEWAY_HEALTH_RESPONSE.to_owned(),
-        ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
+        expected_body: gateway_health_response(expected_http_port, expected_https_port),
+        ca_certificate_path: ca_certificate_path.to_path_buf(),
     }
 }
 
@@ -1763,7 +1790,7 @@ mod tests {
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
-    use platform::PfRedirectConfig;
+    use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::PvPaths;
 
     use crate::ReadinessCheck;
@@ -1826,7 +1853,7 @@ mod tests {
                 https_port: 443,
                 server_name: "pv-gateway.localhost".to_string(),
                 path: "/__pv/health".to_string(),
-                expected_body: "pv-gateway-health-v1".to_string(),
+                expected_body: "pv-gateway-health-v1:45080:45443".to_string(),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
             }
         );
@@ -1870,8 +1897,8 @@ mod tests {
     fn confirmed_inactive_evidence_selects_backend_readiness() {
         let plan = runtime_plan();
         let expected = PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-        let state =
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), false, true, true);
+        let inspection = pf_inspection(None, BTreeSet::new());
+        let state = classify_gateway_pf_routing_state(&expected, Some(&inspection), true);
         let readiness = gateway_readiness_plan(&plan, None, state, Duration::from_secs(60));
 
         assert_eq!(state, GatewayPfRoutingState::Inactive);
@@ -1887,27 +1914,14 @@ mod tests {
     #[test]
     fn matching_loaded_rules_are_active_only_with_current_files() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let inspection = pf_inspection(Some(expected.clone()), BTreeSet::new());
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                Some(&expected),
-                &BTreeSet::new(),
-                false,
-                true,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
             GatewayPfRoutingState::Active
         );
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                Some(&expected),
-                &BTreeSet::new(),
-                false,
-                true,
-                false,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), false),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1915,16 +1929,10 @@ mod tests {
     #[test]
     fn redirects_targeting_backend_ports_are_drifted_not_inactive() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let inspection = pf_inspection(None, BTreeSet::from([45080]));
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &[45080].into_iter().collect(),
-                false,
-                true,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1932,9 +1940,29 @@ mod tests {
     #[test]
     fn unresolved_redirect_targets_are_drifted_not_inactive() {
         let expected = PfRedirectConfig::new(45080, 45443);
+        let mut inspection = pf_inspection(None, BTreeSet::new());
+        inspection.has_unresolved_redirect_targets = true;
 
         assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, &BTreeSet::new(), true, true, true,),
+            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
+            GatewayPfRoutingState::Drifted
+        );
+    }
+
+    #[test]
+    fn disabled_pf_and_partial_pv_rules_are_drifted() {
+        let expected = PfRedirectConfig::new(45080, 45443);
+        let mut disabled = pf_inspection(Some(expected.clone()), BTreeSet::from([45080, 45443]));
+        disabled.pf_enabled = false;
+        let mut partial = pf_inspection(None, BTreeSet::from([44080]));
+        partial.pv_anchor_has_unparsed_rules = true;
+
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, Some(&disabled), true),
+            GatewayPfRoutingState::Drifted
+        );
+        assert_eq!(
+            classify_gateway_pf_routing_state(&expected, Some(&partial), true),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -1964,7 +1992,7 @@ mod tests {
                 https_port: 443,
                 server_name: "pv-gateway.localhost".to_string(),
                 path: "/__pv/health".to_string(),
-                expected_body: "pv-gateway-health-v1".to_string(),
+                expected_body: "pv-gateway-health-v1:45080:45443".to_string(),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
             }
         );
@@ -1975,25 +2003,11 @@ mod tests {
         let expected = PfRedirectConfig::new(45080, 45443);
 
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &BTreeSet::new(),
-                false,
-                false,
-                true,
-            ),
+            classify_gateway_pf_routing_state(&expected, None, true),
             GatewayPfRoutingState::Unknown
         );
         assert_eq!(
-            classify_gateway_pf_routing_state(
-                &expected,
-                None,
-                &BTreeSet::new(),
-                false,
-                false,
-                false,
-            ),
+            classify_gateway_pf_routing_state(&expected, None, false),
             GatewayPfRoutingState::Drifted
         );
     }
@@ -2040,6 +2054,19 @@ mod tests {
                 storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),
             },
             workers: Vec::new(),
+        }
+    }
+
+    fn pf_inspection(
+        pv_config: Option<PfRedirectConfig>,
+        resolved_target_ports: BTreeSet<u16>,
+    ) -> ActivePfRedirectInspection {
+        ActivePfRedirectInspection {
+            pf_enabled: true,
+            pv_config,
+            pv_anchor_has_unparsed_rules: false,
+            resolved_target_ports,
+            has_unresolved_redirect_targets: false,
         }
     }
 }

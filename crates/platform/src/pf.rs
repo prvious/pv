@@ -28,7 +28,9 @@ pub struct PfRedirectConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActivePfRedirectInspection {
+    pub pf_enabled: bool,
     pub pv_config: Option<PfRedirectConfig>,
+    pub pv_anchor_has_unparsed_rules: bool,
     pub resolved_target_ports: BTreeSet<u16>,
     pub has_unresolved_redirect_targets: bool,
 }
@@ -269,25 +271,52 @@ fn active_pf_redirect_config_with_runner(
 fn inspect_active_pf_redirects_unprivileged_with_runner(
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<ActivePfRedirectInspection, PlatformError> {
+    let pf_info = run_system_output("/sbin/pfctl", &["-s", "info"])?;
+    let pf_enabled = parse_pf_enabled(&pf_info)?;
     let main_nat_rules = run_system_output("/sbin/pfctl", &["-s", "nat"])?;
-    let pv_config = if main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
-        let anchor_nat_rules =
-            run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
+    let (pv_config, pv_anchor_has_unparsed_rules) =
+        if main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
+            let anchor_nat_rules =
+                run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
+            let pv_config = PfRedirectConfig::parse_active_rules(&anchor_nat_rules);
+            let has_rules = anchor_nat_rules
+                .lines()
+                .any(|line| active_pf_line(line).is_some());
+            let has_unparsed_rules = pv_config.is_none() && has_rules;
 
-        PfRedirectConfig::parse_active_rules(&anchor_nat_rules)
-    } else {
-        None
-    };
+            (pv_config, has_unparsed_rules)
+        } else {
+            (None, false)
+        };
     let recursive_nat_rules = run_system_output("/sbin/pfctl", &["-a", "*", "-s", "nat"])?;
 
     let (resolved_target_ports, has_unresolved_redirect_targets) =
         inspect_redirect_targets(&recursive_nat_rules);
 
     Ok(ActivePfRedirectInspection {
+        pf_enabled,
         pv_config,
+        pv_anchor_has_unparsed_rules,
         resolved_target_ports,
         has_unresolved_redirect_targets,
     })
+}
+
+fn parse_pf_enabled(info: &str) -> Result<bool, PlatformError> {
+    for line in info.lines().filter_map(active_pf_line) {
+        let Some(status) = line.strip_prefix("Status:") else {
+            continue;
+        };
+        match status.split_whitespace().next() {
+            Some("Enabled") => return Ok(true),
+            Some("Disabled") => return Ok(false),
+            _ => break,
+        }
+    }
+
+    Err(PlatformError::SystemIntegration(
+        "pfctl status did not report whether PF is enabled".to_string(),
+    ))
 }
 
 fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
@@ -932,7 +961,7 @@ mod tests {
             result,
             Err(crate::PlatformError::SystemIntegrationCommandStatus { .. })
         ));
-        assert_eq!(commands, ["/sbin/pfctl -s nat"]);
+        assert_eq!(commands, ["/sbin/pfctl -s info"]);
     }
 
     #[test]
@@ -945,6 +974,9 @@ mod tests {
                 commands.push(command.clone());
 
                 match command.as_str() {
+                    "/sbin/pfctl -s info" => {
+                        Ok("Status: Enabled for 0 days 00:00:01\n".to_string())
+                    }
                     "/sbin/pfctl -s nat" => Ok(
                         "rdr-anchor \"com.prvious.pv\" all\nrdr-anchor \"other\" all\n".to_string(),
                     ),
@@ -963,7 +995,9 @@ mod tests {
         assert_eq!(
             inspection,
             ActivePfRedirectInspection {
+                pf_enabled: true,
                 pv_config: Some(PfRedirectConfig::new(48080, 48443)),
+                pv_anchor_has_unparsed_rules: false,
                 resolved_target_ports: [45080, 46080, 48080].into_iter().collect(),
                 has_unresolved_redirect_targets: false,
             }
@@ -971,6 +1005,7 @@ mod tests {
         assert_eq!(
             commands,
             [
+                "/sbin/pfctl -s info",
                 "/sbin/pfctl -s nat",
                 "/sbin/pfctl -a com.prvious.pv -s nat",
                 "/sbin/pfctl -a * -s nat",
@@ -984,6 +1019,9 @@ mod tests {
     fn active_pf_redirect_inspection_preserves_unresolved_targets() -> anyhow::Result<()> {
         let inspection = inspect_active_pf_redirects_unprivileged_with_runner(
             &mut |_program, args| {
+                if args == ["-s", "info"] {
+                    return Ok("Status: Enabled for 0 days 00:00:01\n".to_string());
+                }
                 if args == ["-s", "nat"] {
                     return Ok(String::new());
                 }
@@ -998,9 +1036,36 @@ mod tests {
         assert_eq!(
             inspection,
             ActivePfRedirectInspection {
+                pf_enabled: true,
                 pv_config: None,
+                pv_anchor_has_unparsed_rules: false,
                 resolved_target_ports: BTreeSet::new(),
                 has_unresolved_redirect_targets: true,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_pf_redirect_inspection_preserves_disabled_partial_anchor() -> anyhow::Result<()> {
+        let partial_rule = "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 45080\n";
+        let inspection = inspect_active_pf_redirects_unprivileged_with_runner(
+            &mut |_program, args| match args {
+                ["-s", "info"] => Ok("Status: Disabled\n".to_string()),
+                ["-s", "nat"] => Ok("rdr-anchor \"com.prvious.pv\" all\n".to_string()),
+                _ => Ok(partial_rule.to_string()),
+            },
+        )?;
+
+        assert_eq!(
+            inspection,
+            ActivePfRedirectInspection {
+                pf_enabled: false,
+                pv_config: None,
+                pv_anchor_has_unparsed_rules: true,
+                resolved_target_ports: BTreeSet::from([45080]),
+                has_unresolved_redirect_targets: false,
             }
         );
 

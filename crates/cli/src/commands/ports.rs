@@ -6,47 +6,61 @@ use camino::{Utf8Path, Utf8PathBuf};
 use platform::{PfConfReference, PfFileState, PfRedirectConfig};
 use state::{Database, GatewayPort, GatewayPortAssignments, PortOwner, PvPaths, StateError};
 
+use crate::args::PortsStatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, OutputMode};
 
+use super::pf_diagnostics::PfRoutingDiagnostic;
+
 const LOW_PORTS: [u16; 2] = [80, 443];
 
 pub(crate) fn status(
+    args: PortsStatusArgs,
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let prepared_anchor_path = paths.pf_anchor_config();
-    let prepared_reference_path = paths.pf_conf_reference_config();
-    let system_anchor_path = pf_anchor_path(environment)?;
-    let system_pf_conf_path = pf_conf_path(environment)?;
-    let prepared_anchor_state = platform::inspect_pf_anchor_file(&prepared_anchor_path, None);
-    let prepared_reference_state =
-        platform::inspect_pf_conf_reference(&prepared_reference_path, None);
-    let expected_anchor = pf_config_from_anchor_state(&prepared_anchor_state);
-    let expected_reference = pf_reference_from_state(&prepared_reference_state);
-    let system_anchor_state =
-        platform::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
-    let system_reference_state =
-        platform::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
+    let database = Database::open_read_only(&paths)?;
+    let diagnostic = PfRoutingDiagnostic::read(environment, &paths, database.as_ref())?;
+    let exit_code = if diagnostic.is_active() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+
+    if args.json {
+        serde_json::to_writer(&mut *stdout, &diagnostic)?;
+        writeln!(stdout)?;
+
+        return Ok(exit_code);
+    }
+
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line("Port redirect status")?;
-    write_pf_anchor_state(&mut output, "Prepared pf anchor", &prepared_anchor_state)?;
-    write_pf_reference_state(
-        &mut output,
-        "Prepared pf.conf reference",
-        &prepared_reference_state,
-    )?;
-    write_pf_anchor_state(&mut output, "System pf anchor", &system_anchor_state)?;
-    write_pf_reference_state(
-        &mut output,
-        "System pf.conf reference",
-        &system_reference_state,
-    )?;
+    output.line(&format!("State: {}", diagnostic.state.as_str()))?;
+    output.line(&format!("Evidence: {}", diagnostic.evidence.as_str()))?;
+    output.line(&format!(
+        "Expected redirects: HTTP {}, HTTPS {}",
+        display_port(diagnostic.expected_http_port),
+        display_port(diagnostic.expected_https_port),
+    ))?;
+    output.line(&format!(
+        "Active redirects: HTTP {}, HTTPS {}",
+        display_port(diagnostic.active_http_port),
+        display_port(diagnostic.active_https_port),
+    ))?;
+    output.line(&format!("Observed: {}", diagnostic.observed_at))?;
+    if !diagnostic.is_active() {
+        output.line("Repair: `pv ports:install`")?;
+    }
 
-    Ok(ExitCode::SUCCESS)
+    Ok(exit_code)
+}
+
+fn display_port(port: Option<u16>) -> String {
+    port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
 pub(crate) fn install(
@@ -279,124 +293,6 @@ fn low_port_conflicts(listening_ports: &std::collections::BTreeSet<u16>) -> Vec<
 
 fn pf_config_from_assignments(assignments: &GatewayPortAssignments) -> PfRedirectConfig {
     PfRedirectConfig::new(assignments.http.port, assignments.https.port)
-}
-
-fn pf_config_from_anchor_state(state: &PfFileState<PfRedirectConfig>) -> Option<PfRedirectConfig> {
-    match state {
-        PfFileState::Current { value, .. }
-        | PfFileState::Stale {
-            actual: Some(value),
-            ..
-        } => Some(value.clone()),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { actual: None, .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn pf_reference_from_state(state: &PfFileState<PfConfReference>) -> Option<PfConfReference> {
-    match state {
-        PfFileState::Current { value, .. }
-        | PfFileState::Stale {
-            actual: Some(value),
-            ..
-        } => Some(*value),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { actual: None, .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn write_pf_anchor_state(
-    output: &mut Output<'_, impl Write>,
-    label: &str,
-    state: &PfFileState<PfRedirectConfig>,
-) -> io::Result<()> {
-    match state {
-        PfFileState::Missing { path } => {
-            output.line(&format!("{label}: missing"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        PfFileState::Current { path, value } => {
-            output.line(&format!("{label}: current"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!(
-                "  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:{}",
-                value.http_port
-            ))?;
-            output.line(&format!(
-                "  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:{}",
-                value.https_port
-            ))
-        }
-        PfFileState::Stale {
-            path,
-            expected,
-            actual,
-        } => {
-            output.line(&format!("{label}: stale"))?;
-            output.line(&format!("  path: {path}"))?;
-            write_optional_pf_config(output, "expected", expected.as_ref())?;
-            write_optional_pf_config(output, "actual", actual.as_ref())
-        }
-        PfFileState::Conflict { path } => {
-            output.line(&format!("{label}: not PV-owned"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!("{label}: unreadable"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!("  {message}"))
-        }
-    }
-}
-
-fn write_pf_reference_state(
-    output: &mut Output<'_, impl Write>,
-    label: &str,
-    state: &PfFileState<PfConfReference>,
-) -> io::Result<()> {
-    match state {
-        PfFileState::Missing { path } => {
-            output.line(&format!("{label}: missing"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        PfFileState::Current { path, .. } => {
-            output.line(&format!("{label}: current"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line("  anchor: com.prvious.pv")
-        }
-        PfFileState::Stale { path, .. } => {
-            output.line(&format!("{label}: stale"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line("  anchor: com.prvious.pv")
-        }
-        PfFileState::Conflict { path } => {
-            output.line(&format!("{label}: not PV-owned"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!("{label}: unreadable"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!("  {message}"))
-        }
-    }
-}
-
-fn write_optional_pf_config(
-    output: &mut Output<'_, impl Write>,
-    label: &str,
-    config: Option<&PfRedirectConfig>,
-) -> io::Result<()> {
-    match config {
-        Some(config) => {
-            output.line(&format!("  {label} HTTP port: {}", config.http_port))?;
-            output.line(&format!("  {label} HTTPS port: {}", config.https_port))
-        }
-        None => output.line(&format!("  {label}: unparseable")),
-    }
 }
 
 fn write_pf_install_blocker(
