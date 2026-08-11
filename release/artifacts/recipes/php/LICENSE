@@ -74,6 +74,14 @@ PHP includes the Zend Engine, freely available at
 <http://www.zend.com>.
 
 
+RAR Extension License
+=====================
+
+The bundled optional RAR extension is distributed under the PHP License,
+version 3.01. Copyright (c) 1999 - 2010 The PHP Group. The PHP License terms
+above apply to the RAR extension.
+
+
 FrankenPHP License
 ==================
 

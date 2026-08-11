@@ -3,7 +3,7 @@ resources = ["php", "frankenphp"]
 default_track = "8.5"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv5"
+pv_build_revision = "pv6"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
 
@@ -16,6 +16,8 @@ default_extensions = [
   "dom",
   "fileinfo",
   "filter",
+  "ftp",
+  "gd",
   "iconv",
   "intl",
   "libxml",
@@ -50,6 +52,7 @@ optional_extensions = [
   "imagick",
   "mongodb",
   "yaml",
+  "rar",
 ]
 expected_extensions = [
   "bcmath",
@@ -58,6 +61,8 @@ expected_extensions = [
   "dom",
   "fileinfo",
   "filter",
+  "ftp",
+  "gd",
   "hash",
   "iconv",
   "intl",
