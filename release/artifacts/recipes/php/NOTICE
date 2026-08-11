@@ -16,6 +16,9 @@ https://github.com/php/frankenphp
 The optional RAR extension is built from the static-php/php-rar project:
 https://github.com/static-php/php-rar
 RAR extension credits: Antony Dovgal and Gustavo Lopes.
+The bundled UnRAR code is copyright Alexander L. Roshal.
+It cannot be used to develop a RAR (WinRAR) compatible archiver.
+It cannot be used to re-create the RAR compression algorithm.
 
 Artifact-specific resource, track, version, source URL, and source checksum
 fields are appended by build.sh when the archive is produced.

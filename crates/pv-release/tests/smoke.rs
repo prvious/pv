@@ -885,7 +885,24 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
         build_recipe_record_php_extension_names(run.php_record_json.as_deref())?,
         vec!["imagick", "rar", "redis", "xdebug"]
     );
-    assert!(run.php_notice.is_some(), "PHP NOTICE was not written");
+    for (resource, notice) in [
+        ("PHP", run.php_notice.as_deref()),
+        ("FrankenPHP", run.frankenphp_notice.as_deref()),
+    ] {
+        let notice = notice.ok_or_else(|| anyhow::anyhow!("{resource} NOTICE was not written"))?;
+        assert!(
+            notice.contains("UnRAR code is copyright Alexander L. Roshal"),
+            "{resource} NOTICE omitted the UnRAR attribution"
+        );
+        assert!(
+            notice.contains("develop a RAR (WinRAR) compatible archiver"),
+            "{resource} NOTICE omitted the RAR-compatible archiver restriction"
+        );
+        assert!(
+            notice.contains("re-create the RAR compression algorithm"),
+            "{resource} NOTICE omitted the RAR compression restriction"
+        );
+    }
     assert!(
         run.frankenphp_record_json.is_some(),
         "FrankenPHP record was not written"
