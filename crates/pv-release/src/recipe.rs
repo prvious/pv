@@ -109,6 +109,9 @@ pub struct PhpSettings {
     default_extensions: Vec<String>,
     optional_extensions: Vec<String>,
     expected_extensions: Vec<String>,
+    rar_source_revision: String,
+    rar_source_url: String,
+    rar_source_sha256: Sha256Digest,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +198,9 @@ struct RawPhpSettings {
     default_extensions: Vec<String>,
     optional_extensions: Vec<String>,
     expected_extensions: Vec<String>,
+    rar_source_revision: String,
+    rar_source_url: String,
+    rar_source_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -523,6 +529,18 @@ impl PhpRecipe {
         &self.php.expected_extensions
     }
 
+    pub fn rar_source_revision(&self) -> &str {
+        &self.php.rar_source_revision
+    }
+
+    pub fn rar_source_url(&self) -> &str {
+        &self.php.rar_source_url
+    }
+
+    pub fn rar_source_sha256(&self) -> &Sha256Digest {
+        &self.php.rar_source_sha256
+    }
+
     pub fn frankenphp_version(&self) -> &str {
         &self.frankenphp.version
     }
@@ -622,12 +640,21 @@ impl PhpSettings {
             "php.optional_extensions",
             &raw.optional_extensions,
         )?;
+        let rar_source_revision =
+            require_non_empty(path, "php.rar_source_revision", &raw.rar_source_revision)?
+                .to_string();
+        let rar_source_url = parse_https_url(path, "php.rar_source_url", raw.rar_source_url)?;
+        let rar_source_sha256 = Sha256Digest::new(raw.rar_source_sha256)
+            .map_err(|error| invalid_identity(path, "php.rar_source_sha256", error))?;
 
         Ok(Self {
             deployment_target: raw.deployment_target,
             default_extensions: raw.default_extensions,
             optional_extensions: raw.optional_extensions,
             expected_extensions: raw.expected_extensions,
+            rar_source_revision,
+            rar_source_url,
+            rar_source_sha256,
         })
     }
 }
@@ -950,6 +977,21 @@ pub fn php_recipe_env(
     }
 
     assignments.extend([
+        (
+            "PV_RAR_SOURCE_REVISION",
+            "rar_source_revision",
+            recipe.rar_source_revision(),
+        ),
+        (
+            "PV_RAR_SOURCE_URL",
+            "rar_source_url",
+            recipe.rar_source_url(),
+        ),
+        (
+            "PV_RAR_SOURCE_SHA256",
+            "rar_source_sha256",
+            recipe.rar_source_sha256().as_str(),
+        ),
         (
             "PV_DEPLOYMENT_TARGET",
             "deployment_target",

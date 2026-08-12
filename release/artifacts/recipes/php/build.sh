@@ -294,6 +294,9 @@ print_php_env php "$php_env_file"
   PHP_OPTIONAL_EXTENSIONS=$PV_OPTIONAL_EXTENSIONS
   PHP_BUILD_EXTENSIONS=$PV_BUILD_EXTENSIONS
   PHP_EXPECTED_EXTENSIONS=$PV_EXPECTED_EXTENSIONS
+  PHP_RAR_SOURCE_REVISION=$PV_RAR_SOURCE_REVISION
+  PHP_RAR_SOURCE_URL=$PV_RAR_SOURCE_URL
+  PHP_RAR_SOURCE_SHA256=$PV_RAR_SOURCE_SHA256
   PHP_DEPLOYMENT_TARGET=$PV_DEPLOYMENT_TARGET
   PHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
   PHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
@@ -309,6 +312,9 @@ print_php_env frankenphp "$frankenphp_env_file"
   FRANKENPHP_ARTIFACT_VERSION=$PV_ARTIFACT_VERSION
   FRANKENPHP_SOURCE_URL=$PV_SOURCE_URL
   FRANKENPHP_SOURCE_SHA256=$PV_SOURCE_SHA256
+  FRANKENPHP_RAR_SOURCE_REVISION=$PV_RAR_SOURCE_REVISION
+  FRANKENPHP_RAR_SOURCE_URL=$PV_RAR_SOURCE_URL
+  FRANKENPHP_RAR_SOURCE_SHA256=$PV_RAR_SOURCE_SHA256
   FRANKENPHP_MINIMUM_PV_VERSION=$PV_MINIMUM_PV_VERSION
   FRANKENPHP_PV_BUILD_REVISION=$PV_PV_BUILD_REVISION
 }
@@ -320,6 +326,9 @@ print_php_env frankenphp "$frankenphp_env_file"
   [ "$PV_OPTIONAL_EXTENSIONS" = "$PHP_OPTIONAL_EXTENSIONS" ] || die "PHP pair metadata mismatch: optional extension sets differ"
   [ "$PV_BUILD_EXTENSIONS" = "$PHP_BUILD_EXTENSIONS" ] || die "PHP pair metadata mismatch: extension build sets differ"
   [ "$PV_EXPECTED_EXTENSIONS" = "$PHP_EXPECTED_EXTENSIONS" ] || die "PHP pair metadata mismatch: expected extension sets differ"
+  [ "$FRANKENPHP_RAR_SOURCE_REVISION" = "$PHP_RAR_SOURCE_REVISION" ] || die "PHP pair metadata mismatch: RAR source revisions differ"
+  [ "$FRANKENPHP_RAR_SOURCE_URL" = "$PHP_RAR_SOURCE_URL" ] || die "PHP pair metadata mismatch: RAR source URLs differ"
+  [ "$FRANKENPHP_RAR_SOURCE_SHA256" = "$PHP_RAR_SOURCE_SHA256" ] || die "PHP pair metadata mismatch: RAR source checksums differ"
   [ "$PV_DEPLOYMENT_TARGET" = "$PHP_DEPLOYMENT_TARGET" ] || die "PHP pair metadata mismatch: deployment targets differ"
 }
 
@@ -332,10 +341,18 @@ export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
 
 php_source_dir=$(download_source php "$PHP_PHP_VERSION" "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256")
 frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION" "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256")
+rar_source_dir=
+if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
+  rar_source_dir=$(download_source php-rar "$PHP_RAR_SOURCE_REVISION" "$PHP_RAR_SOURCE_URL" "$PHP_RAR_SOURCE_SHA256")
+fi
 prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
 
 (
   cd "$spc_work_dir"
+  set --
+  if [ -n "$rar_source_dir" ]; then
+    set -- --dl-custom-local "ext-rar:$rar_source_dir"
+  fi
   # StaticPHP dependency downloads default to no retries; GNU mirrors can return transient 5xxs.
   optional_shared_args=
   if [ -n "$PHP_OPTIONAL_EXTENSIONS" ]; then
@@ -361,6 +378,7 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     --with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d \
     --dl-with-php="$PHP_PHP_VERSION" \
     --dl-retry=3 \
+    "$@" \
     --dl-custom-local "php-src:$php_source_dir" \
     --dl-custom-local "frankenphp:$frankenphp_source_dir"
 )
@@ -460,6 +478,10 @@ write_staged_artifact() {
     set -- "$@" --php-extension "$extension" "$load_kind" "lib/php/extensions/$extension.so"
   done
   IFS=$old_ifs
+
+  if csv_contains "$optional_extensions" rar; then
+    set -- "$@" --source-input rar "$PHP_RAR_SOURCE_URL" "$PHP_RAR_SOURCE_SHA256"
+  fi
 
   write_record "$record" "$resource" "$TRACK" "$upstream_version" "$pv_build_revision" "$PLATFORM" "$object_key" "$archive" "$source_url" "$source_sha256" release/artifacts/recipes/php/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$minimum_pv_version" "$@"
 

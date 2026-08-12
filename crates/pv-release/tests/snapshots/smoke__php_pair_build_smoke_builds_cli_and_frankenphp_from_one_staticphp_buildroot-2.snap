@@ -17,6 +17,11 @@ Object {
             "source_sha256": String("bdb89561cd7fc76f85811f972deb34bde88e335be6e19bcc6983fb364195b36d"),
             "source_url": String("https://sources.example.test/php.tar.gz"),
         },
+        Object {
+            "name": String("rar"),
+            "source_sha256": String("fc616f8f12c5e5e8f19778c8260fbc5388b04870da969162077c197c5c1cca37"),
+            "source_url": String("https://sources.example.test/php-rar.tar.gz"),
+        },
     ],
     "source_sha256": String("9944cd74d8e9635698f4412a3d26600c34fe237ff01d4638d7d83a21ef576169"),
     "source_url": String("https://sources.example.test/frankenphp.tar.gz"),

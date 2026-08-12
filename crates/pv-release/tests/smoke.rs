@@ -845,6 +845,10 @@ fn php_build_recipe_smoke() -> Result<()> {
         "{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source/frankenphp-source",
         run.out_dir
     );
+    let rar_source_dir = format!(
+        "{}/sources/php-rar-0123456789abcdef0123456789abcdef01234567-source/php-rar-source",
+        run.out_dir
+    );
     let imagick_include = format!(
         "{}/work/php-pair-8.4-darwin-arm64/staticphp/buildroot/include/ImageMagick-7",
         run.out_dir
@@ -859,7 +863,7 @@ spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
-argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][ext-rar:{rar_source_dir}][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -876,8 +880,9 @@ argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-l
     );
     let expected_curl_log = format!(
         "argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/php.tar.gz][-o][{}/sources/php-8.4.20-source.tar.gz]\n\
-argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/frankenphp.tar.gz][-o][{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source.tar.gz]\n",
-        run.out_dir, run.out_dir
+argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/frankenphp.tar.gz][-o][{}/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source.tar.gz]\n\
+argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-all-errors][--connect-timeout][20][--max-time][600][https://sources.example.test/php-rar.tar.gz][-o][{}/sources/php-rar-0123456789abcdef0123456789abcdef01234567-source.tar.gz]\n",
+        run.out_dir, run.out_dir, run.out_dir
     );
     assert_eq!(run.curl_log, expected_curl_log);
     assert!(run.php_record_json.is_some(), "PHP record was not written");
@@ -2903,6 +2908,7 @@ fn run_php_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("source.tar.gz");
     let php_source_archive = tempdir.path().join("php-source.tar.gz");
+    let rar_source_archive = tempdir.path().join("php-rar-source.tar.gz");
     let curl_log = tempdir.path().join("curl.log");
     let spc_log = tempdir.path().join("spc.log");
     let validate_log = tempdir.path().join("validate.log");
@@ -2917,6 +2923,7 @@ fn run_php_build_recipe_smoke_with_options(
     } else {
         write_source_archive(&php_source_archive, "php-source")?;
     }
+    write_source_archive(&rar_source_archive, "php-rar-source")?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
@@ -2979,6 +2986,11 @@ fn run_php_build_recipe_smoke_with_options(
         .env(
             "PV_TEST_PHP_SOURCE_SHA256",
             file_sha256(&php_source_archive)?,
+        )
+        .env("PV_TEST_RAR_SOURCE_ARCHIVE", &rar_source_archive)
+        .env(
+            "PV_TEST_RAR_SOURCE_SHA256",
+            file_sha256(&rar_source_archive)?,
         )
         .env("PV_TEST_PHP_VERSION", options.php_version)
         .env(
@@ -3182,6 +3194,9 @@ PV_ARTIFACT_VERSION=$artifact_version
 PV_SOURCE_URL=$source_url
 PV_SOURCE_SHA256=$source_sha256
 $php_source_env
+PV_RAR_SOURCE_REVISION=0123456789abcdef0123456789abcdef01234567
+PV_RAR_SOURCE_URL=https://sources.example.test/php-rar.tar.gz
+PV_RAR_SOURCE_SHA256=$PV_TEST_RAR_SOURCE_SHA256
 PV_EXPECTED_EXTENSIONS=json
 PV_DEFAULT_EXTENSIONS=json
 PV_OPTIONAL_EXTENSIONS=${PV_TEST_PHP_OPTIONAL_EXTENSIONS:-redis,xdebug}
@@ -3748,6 +3763,9 @@ done
 case "$url" in
   https://sources.example.test/php.tar.gz)
     cp "$PV_TEST_PHP_SOURCE_ARCHIVE" "$output"
+    ;;
+  https://sources.example.test/php-rar.tar.gz)
+    cp "$PV_TEST_RAR_SOURCE_ARCHIVE" "$output"
     ;;
   https://sources.example.test/openssl.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"

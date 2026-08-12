@@ -9,6 +9,9 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
+rar_source_revision = "9c8fcd9ebc9feaf36f945d6d7407fdcd57b7136f"
+rar_source_url = "https://github.com/static-php/php-rar/archive/9c8fcd9ebc9feaf36f945d6d7407fdcd57b7136f.tar.gz"
+rar_source_sha256 = "5198de458e029950fb3462d83262345f0a3862c4e39125b3abca5d5c9b0b166b"
 default_extensions = [
   "bcmath",
   "ctype",
