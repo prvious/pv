@@ -353,6 +353,7 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
   # shellcheck disable=SC2086
   spc build:php "$PHP_BUILD_EXTENSIONS,mbregex" \
     $optional_shared_args \
+    --with-libs=freetype,libjpeg,libavif,libwebp \
     --build-cli \
     --build-frankenphp \
     --enable-zts \

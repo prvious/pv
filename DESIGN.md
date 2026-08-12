@@ -387,9 +387,9 @@ PV builds standalone PHP and FrankenPHP as single-binary/static-style artifacts 
 
 Standalone PHP artifacts include the `php` executable and runtime files needed by that build. They do not include `phpize` or `php-config` in v1 because user-built extensions are not supported.
 
-The default loaded PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `phar`, `posix`, `session`, `simplexml`, `sockets`, `sodium`, `sqlite3`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`.
+The default loaded PHP extension set is Laravel-first and shared across supported PHP tracks: `bcmath`, `ctype`, `curl`, `dom`, `fileinfo`, `filter`, `ftp`, `gd`, `hash`, `iconv`, `intl`, `json`, `libxml`, `mbstring`, `openssl`, `pcntl`, `pcre`, `pdo`, `pdo_mysql`, `pdo_pgsql`, `pdo_sqlite`, `phar`, `posix`, `session`, `simplexml`, `sockets`, `sodium`, `sqlite3`, `tokenizer`, `xml`, `xmlreader`, `xmlwriter`, `zip`, and `zlib`. GD includes FreeType, JPEG, AVIF, and WebP support.
 
-The initial bundled optional extension catalog is `redis`, `sqlsrv`, `pdo_sqlsrv`, `xdebug`, `apcu`, `pcov`, `imagick`, `mongodb`, and `yaml`. Future optional extensions should be added only when users ask for them and PV can build, smoke-test, license, and support them across the intended PHP track and platform matrix.
+The initial bundled optional extension catalog is `redis`, `sqlsrv`, `pdo_sqlsrv`, `xdebug`, `apcu`, `pcov`, `imagick`, `mongodb`, `yaml`, and `rar`. Future optional extensions should be added only when users ask for them and PV can build, smoke-test, license, and support them across the intended PHP track and platform matrix.
 
 For a given PHP runtime identity, standalone PHP and FrankenPHP must expose the same loaded PHP extension set so CLI and browser execution do not drift.
 

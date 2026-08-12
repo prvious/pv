@@ -101,6 +101,8 @@ case "${1:-}" in
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'php-cli -r extensions' >>"$PV_FRANKENPHP_LOG"
       printf '%s\n' 'json'
+    elif printf '%s' "$code" | grep -F 'gd_info()' >/dev/null; then
+      printf '%s\n' 'php-cli -r capabilities' >>"$PV_FRANKENPHP_LOG"
     else
       exit 99
     fi
@@ -168,7 +170,7 @@ exit 28
     assert!(status.success(), "smoke hook exited with {status}");
     let frankenphp_log = read_file(&frankenphp_log)?;
     assert!(frankenphp_log.starts_with(
-        "php-cli -r version\nphp-cli -r extensions\nphp-cli -r mbregex\nphp-server 127.0.0.1:"
+        "php-cli -r version\nphp-cli -r extensions\nphp-cli -r mbregex\nphp-cli -r capabilities\nphp-server 127.0.0.1:"
     ));
     assert!(
         frankenphp_log.contains(" phpinfo\n"),
@@ -223,6 +225,8 @@ case "${1:-}" in
       exit 0
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'json'
+    elif printf '%s' "$code" | grep -F 'gd_info()' >/dev/null; then
+      exit 0
     else
       exit 99
     fi
@@ -370,6 +374,116 @@ esac
 }
 
 #[test]
+fn php_smoke_requires_default_runtime_capabilities() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+
+    create_dir_all(&artifact_bin)?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  -m) printf '%s\n' 'json' ;;
+  -r)
+    [ "${2:-}" = 'exit(function_exists("mb_split") ? 0 : 1);' ] || exit 1
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require default runtime capabilities: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(48));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("missing required PHP runtime capability: SQLite3, FTP, or GD codecs"),
+        "smoke hook should identify the missing runtime capability: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn php_smoke_requires_rar_archive_capability() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let metadata_dir = artifact_root.join("share/pv");
+    let extension_dir = artifact_root.join("lib/php/extensions");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&metadata_dir)?;
+    create_dir_all(&extension_dir)?;
+    write_file(
+        &artifact_root.join("share/pv/php-extensions.json"),
+        r#"[{"name":"rar","load_kind":"extension","path":"lib/php/extensions/rar.so"}]"#,
+    )?;
+    write_file(
+        &artifact_root.join("lib/php/extensions/rar.so"),
+        "rar module\n",
+    )?;
+    write_executable(
+        &artifact_bin.join("php"),
+        r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf '%s\n' 'PHP 8.4.20 (cli)' ;;
+  -m) printf '%s\n' 'json' ;;
+  -r)
+    code=${2:-}
+    case "$code" in
+      'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }')
+        printf '%s\n' 'json' 'rar'
+        ;;
+      'exit(class_exists("RarArchive") ? 0 : 1);')
+        exit 1
+        ;;
+    esac
+    ;;
+  *) exit 99 ;;
+esac
+"#,
+    )?;
+
+    let output = StdCommand::new(php_smoke_hook())
+        .arg(&artifact_root)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("PV_EXPECTED_EXTENSIONS", "json")
+        .env("PV_UPSTREAM_VERSION", "8.4.20")
+        .output()?;
+
+    assert!(
+        !output.status.success(),
+        "smoke hook should require RarArchive: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(output.status.code(), Some(49));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("missing optional PHP runtime capability: RarArchive"),
+        "smoke hook should identify the missing RAR capability: {}",
+        command_output_debug(&output)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_allows_extra_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -461,7 +575,14 @@ case "$1" in
       printf '%s\n' 'json'
     fi
     ;;
-  -r) exit 0 ;;
+  -r)
+    if [ -n "${PHP_INI_SCAN_DIR:-}" ] \
+      && grep -R -F "extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/redis.so" "$PHP_INI_SCAN_DIR" >/dev/null \
+      && grep -R -F "zend_extension=$PV_TEST_ARTIFACT_ROOT/lib/php/extensions/xdebug.so" "$PHP_INI_SCAN_DIR" >/dev/null; then
+      printf '%s\n' optional >>"$PV_TEST_PHP_SMOKE_LOG"
+      printf '%s\n' 'json' 'redis' 'xdebug'
+    fi
+    ;;
   *) exit 99 ;;
 esac
 "#,
@@ -612,6 +733,8 @@ case "${1:-}" in
       exit 0
     elif [ "$code" = 'foreach (get_loaded_extensions() as $extension) { echo $extension, PHP_EOL; }' ]; then
       printf '%s\n' 'json'
+    elif printf '%s' "$code" | grep -F 'gd_info()' >/dev/null; then
+      exit 0
     else
       exit 99
     fi
@@ -714,7 +837,7 @@ printf '%s\n' 'Composer version 2.10.10 2026-01-01 00:00:00'
 #[test]
 fn php_build_recipe_smoke() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
-        php_optional_extensions: "redis,xdebug,imagick",
+        php_optional_extensions: "redis,xdebug,imagick,rar",
         ..default_build_recipe_options()
     })?;
     let php_source_dir = format!("{}/sources/php-8.4.20-source/php-source", run.out_dir);
@@ -736,7 +859,7 @@ spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
-argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
+argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
         run.out_dir
     );
 
@@ -758,10 +881,35 @@ argv=[-L][--fail][--show-error][--silent][--retry][3][--retry-delay][2][--retry-
     );
     assert_eq!(run.curl_log, expected_curl_log);
     assert!(run.php_record_json.is_some(), "PHP record was not written");
-    assert!(run.php_notice.is_some(), "PHP NOTICE was not written");
+    assert_eq!(
+        build_recipe_record_php_extension_names(run.php_record_json.as_deref())?,
+        vec!["imagick", "rar", "redis", "xdebug"]
+    );
+    for (resource, notice) in [
+        ("PHP", run.php_notice.as_deref()),
+        ("FrankenPHP", run.frankenphp_notice.as_deref()),
+    ] {
+        let notice = notice.ok_or_else(|| anyhow::anyhow!("{resource} NOTICE was not written"))?;
+        assert!(
+            notice.contains("UnRAR code is copyright Alexander L. Roshal"),
+            "{resource} NOTICE omitted the UnRAR attribution"
+        );
+        assert!(
+            notice.contains("develop a RAR (WinRAR) compatible archiver"),
+            "{resource} NOTICE omitted the RAR-compatible archiver restriction"
+        );
+        assert!(
+            notice.contains("re-create the RAR compression algorithm"),
+            "{resource} NOTICE omitted the RAR compression restriction"
+        );
+    }
     assert!(
         run.frankenphp_record_json.is_some(),
         "FrankenPHP record was not written"
+    );
+    assert_eq!(
+        build_recipe_record_php_extension_names(run.frankenphp_record_json.as_deref())?,
+        vec!["imagick", "rar", "redis", "xdebug"]
     );
     assert!(run.php_archive_exists, "PHP archive was not written");
     assert!(

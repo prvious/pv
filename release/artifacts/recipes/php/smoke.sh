@@ -64,6 +64,31 @@ check_mbregex() {
   }
 }
 
+check_default_capabilities() {
+  # shellcheck disable=SC2016
+  "$@" -r '
+$gd = gd_info();
+$gdCodecs = ["FreeType Support", "JPEG Support", "AVIF Support", "WebP Support"];
+$valid = function_exists("ftp_connect");
+try {
+  $sqlite = new SQLite3(":memory:");
+  $image = imagecreatetruecolor(1, 1);
+  $valid = $valid
+    && $sqlite->querySingle("SELECT 1") === 1
+    && $image instanceof GdImage;
+} catch (Throwable) {
+  $valid = false;
+}
+foreach ($gdCodecs as $codec) {
+  $valid = $valid && !empty($gd[$codec]);
+}
+exit($valid ? 0 : 1);
+' || {
+    printf '%s\n' "missing required PHP runtime capability: SQLite3, FTP, or GD codecs" >&2
+    exit 48
+  }
+}
+
 check_optional_extensions() {
   metadata="$artifact_root/share/pv/php-extensions.json"
   [ -f "$metadata" ] || return 0
@@ -90,7 +115,15 @@ PY
   if (
     PHP_INI_SCAN_DIR=$scan_dir
     export PHP_INI_SCAN_DIR
-    check_extensions "$optional_extensions" "$@"
+    check_extensions "$optional_extensions" "$@" -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
+    case ",$optional_extensions," in
+      *,rar,*)
+        "$@" -r 'exit(class_exists("RarArchive") ? 0 : 1);' || {
+          printf '%s\n' "missing optional PHP runtime capability: RarArchive" >&2
+          exit 49
+        }
+        ;;
+    esac
   ); then
     rm -rf "$scan_dir"
   else
@@ -133,7 +166,8 @@ if [ -x "$artifact_root/bin/frankenphp" ]; then
   "$frankenphp_binary" php-cli -r 'printf("PHP %s\n", PHP_VERSION);' | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$expected_extensions" "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
   check_mbregex "$frankenphp_binary" php-cli
-  check_optional_extensions "$frankenphp_binary" php-cli -r "foreach (get_loaded_extensions() as \$extension) { echo \$extension, PHP_EOL; }"
+  check_default_capabilities "$frankenphp_binary" php-cli
+  check_optional_extensions "$frankenphp_binary" php-cli
 
   need python3
   site_dir=$(mktemp -d)
@@ -166,7 +200,8 @@ if [ -x "$artifact_root/bin/php" ]; then
   "$php_binary" -v | grep -F "PHP $expected_version" >/dev/null
   check_extensions "$expected_extensions" "$php_binary" -m
   check_mbregex "$php_binary"
-  check_optional_extensions "$php_binary" -m
+  check_default_capabilities "$php_binary"
+  check_optional_extensions "$php_binary"
   if "$php_binary" --ini 2>&1 | grep -F '/usr/local/etc/php' >/dev/null; then
     printf '%s\n' "PHP artifact reports unsafe /usr/local/etc/php ini fallback" >&2
     exit 46

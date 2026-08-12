@@ -114,7 +114,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
     assert_eq!(php.default_track().as_str(), "8.5");
-    assert_eq!(php.pv_build_revision(), "pv5");
+    assert_eq!(php.pv_build_revision(), "pv6");
     assert_eq!(php.tracks().len(), 3);
     assert_eq!(
         php.tracks()
@@ -185,11 +185,10 @@ fn php_recipe_splits_default_and_optional_extensions() -> Result<()> {
     let php = write_php_recipe(&tempdir)?;
     let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
 
-    let default_extensions =
-        "bcmath,curl,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip";
+    let default_extensions = "bcmath,curl,ftp,gd,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip";
     assert!(env.contains(&format!("PV_DEFAULT_EXTENSIONS='{default_extensions}'")));
     assert!(env.contains(
-        "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml'"
+        "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml,rar'"
     ));
     assert!(env.contains(&format!("PV_BUILD_EXTENSIONS='{default_extensions}'")));
     assert!(env.contains("PV_EXPECTED_EXTENSIONS='bcmath,ctype,curl"));
@@ -803,6 +802,8 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "dom",
         "fileinfo",
         "filter",
+        "ftp",
+        "gd",
         "iconv",
         "intl",
         "libxml",
@@ -896,9 +897,9 @@ notice_files = ["NOTICE"]
 
 [php]
 deployment_target = "13.0"
-default_extensions = ["bcmath", "curl", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sockets", "sodium", "zip"]
-optional_extensions = ["redis", "sqlsrv", "pdo_sqlsrv", "xdebug", "apcu", "pcov", "imagick", "mongodb", "yaml"]
-expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sockets", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+default_extensions = ["bcmath", "curl", "ftp", "gd", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sockets", "sodium", "zip"]
+optional_extensions = ["redis", "sqlsrv", "pdo_sqlsrv", "xdebug", "apcu", "pcov", "imagick", "mongodb", "yaml", "rar"]
+expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "ftp", "gd", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sockets", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]
 version = "1.12.3"

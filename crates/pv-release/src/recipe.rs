@@ -13,6 +13,8 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
     "dom",
     "fileinfo",
     "filter",
+    "ftp",
+    "gd",
     "hash",
     "iconv",
     "intl",
