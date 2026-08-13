@@ -860,7 +860,7 @@ fn php_build_recipe_smoke() -> Result<()> {
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
-spc-cxxflags=-I{imagick_include}\n\
+spc-cxxflags=-I{imagick_include} -std=c++11\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
 argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][ext-rar:{rar_source_dir}][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",

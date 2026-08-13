@@ -381,6 +381,12 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
     export CFLAGS CXXFLAGS
   fi
+  if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
+    # The bundled UnRAR sources require C++11, but php-rar does not select a
+    # language standard and Apple Clang otherwise compiles them as GNU++98.
+    CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-std=c++11"
+    export CXXFLAGS
+  fi
   # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().
   # shellcheck disable=SC2086
   spc build:php "$PHP_BUILD_EXTENSIONS,mbregex" \
