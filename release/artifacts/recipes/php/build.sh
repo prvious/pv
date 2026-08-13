@@ -90,6 +90,20 @@ prepare_staticphp_xdebug_m4_context() {
   ln -s ext/xdebug/m4 "$php_m4_dir"
 }
 
+prepare_staticphp_rar_source() {
+  rar_source_dir=$1
+  rar_config="$rar_source_dir/config.m4"
+  original_cxxflags="extra_cxxflags=\"-Wall \$cxxflags_null\""
+  patched_cxxflags="extra_cxxflags=\"-std=c++11 -Wall \$cxxflags_null\""
+
+  [ -f "$rar_config" ] || die "php-rar source is missing $rar_config"
+  [ "$(grep -F -x -c "$original_cxxflags" "$rar_config")" -eq 1 ] || die "php-rar config does not contain the expected C++ flags"
+
+  sed "s/^extra_cxxflags=\"-Wall \\\$cxxflags_null\"\$/extra_cxxflags=\"-std=c++11 -Wall \\\$cxxflags_null\"/" "$rar_config" >"$rar_config.pv"
+  mv "$rar_config.pv" "$rar_config"
+  grep -F -x "$patched_cxxflags" "$rar_config" >/dev/null || die "failed to select C++11 for php-rar"
+}
+
 csv_contains() {
   list=$1
   item=$2
@@ -358,6 +372,7 @@ frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION
 rar_source_dir=
 if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
   rar_source_dir=$(download_source php-rar "$PHP_RAR_SOURCE_REVISION" "$PHP_RAR_SOURCE_URL" "$PHP_RAR_SOURCE_SHA256")
+  prepare_staticphp_rar_source "$rar_source_dir"
 fi
 prepare_staticphp_xdebug_m4_context "$php_source_dir"
 prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
@@ -380,12 +395,6 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     CFLAGS="${CFLAGS:+$CFLAGS }$imagick_include"
     CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
     export CFLAGS CXXFLAGS
-  fi
-  if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
-    # The bundled UnRAR sources require C++11, but php-rar does not select a
-    # language standard and Apple Clang otherwise compiles them as GNU++98.
-    CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-std=c++11"
-    export CXXFLAGS
   fi
   # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().
   # shellcheck disable=SC2086

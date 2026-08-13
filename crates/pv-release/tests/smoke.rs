@@ -860,7 +860,7 @@ fn php_build_recipe_smoke() -> Result<()> {
     let expected_log = format!(
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
-spc-cxxflags=-I{imagick_include} -std=c++11\n\
+spc-cxxflags=-I{imagick_include}\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
 argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][ext-rar:{rar_source_dir}][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
@@ -2923,7 +2923,7 @@ fn run_php_build_recipe_smoke_with_options(
     } else {
         write_source_archive(&php_source_archive, "php-source")?;
     }
-    write_source_archive(&rar_source_archive, "php-rar-source")?;
+    write_rar_source_archive(&rar_source_archive)?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
@@ -4588,6 +4588,26 @@ case " $* " in
     ;;
 esac
 
+case " $* " in
+  *" --build-shared="*rar*)
+    rar_source_dir=
+    previous_arg=
+    for arg in "$@"; do
+      if [ "$previous_arg" = "--dl-custom-local" ]; then
+        case "$arg" in
+          ext-rar:*)
+            rar_source_dir=${arg#ext-rar:}
+            ;;
+        esac
+      fi
+      previous_arg=$arg
+    done
+
+    [ -n "$rar_source_dir" ] || exit 85
+    grep -F -x 'extra_cxxflags="-std=c++11 -Wall $cxxflags_null"' "$rar_source_dir/config.m4" >/dev/null || exit 86
+    ;;
+esac
+
 mkdir -p buildroot/bin
 built_target=
 case " $* " in
@@ -4686,6 +4706,25 @@ fn write_php_source_archive(path: &Utf8Path) -> Result<()> {
         &mut builder,
         "php-source/build/php.m4",
         PHP_83_AVX512_ORIGINAL_M4.as_bytes(),
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
+fn write_rar_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    append_archive_file(
+        &mut builder,
+        "php-rar-source/config.m4",
+        b"extra_cxxflags=\"-Wall $cxxflags_null\"\n",
     )?;
 
     let encoder = builder.into_inner()?;
