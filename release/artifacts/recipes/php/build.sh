@@ -396,6 +396,11 @@ prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_
     CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
     export CFLAGS CXXFLAGS
   fi
+  # StaticPHP's macOS dead-strip defaults remove PHP API symbols that shared
+  # extensions resolve at load time. Export them only from the shipped SAPIs.
+  SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,-export_dynamic"
+  frankenphp_LDFLAGS="-Wl,-export_dynamic"
+  export SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS frankenphp_LDFLAGS
   # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().
   # shellcheck disable=SC2086
   spc build:php "$PHP_BUILD_EXTENSIONS,mbregex" \

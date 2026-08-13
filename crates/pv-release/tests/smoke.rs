@@ -861,6 +861,8 @@ fn php_build_recipe_smoke() -> Result<()> {
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
+spc-php-extra-ldflags=-Wl,-export_dynamic\n\
+spc-frankenphp-ldflags=-Wl,-export_dynamic\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
 argv=[build:php][json,mbregex][--build-shared=redis,xdebug,imagick,rar][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][ext-rar:{rar_source_dir}][--dl-custom-local][php-src:{php_source_dir}][--dl-custom-local][frankenphp:{frankenphp_source_dir}]\n",
@@ -4530,6 +4532,8 @@ set -eu
 printf 'pwd=%s\n' "$(pwd)" >>"$PV_TEST_SPC_LOG"
 printf 'spc-cflags=%s\n' "${CFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 printf 'spc-cxxflags=%s\n' "${CXXFLAGS:-}" >>"$PV_TEST_SPC_LOG"
+printf 'spc-php-extra-ldflags=%s\n' "${SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS:-}" >>"$PV_TEST_SPC_LOG"
+printf 'spc-frankenphp-ldflags=%s\n' "${frankenphp_LDFLAGS:-}" >>"$PV_TEST_SPC_LOG"
 if [ -n "${PKG_CONFIG:-}" ]; then
   printf 'spc-pkg-config=%s\n' "$PKG_CONFIG" >>"$PV_TEST_SPC_LOG"
 fi
