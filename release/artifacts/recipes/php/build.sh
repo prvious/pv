@@ -76,6 +76,20 @@ prepare_staticphp_php83_frankenphp_patch_context() {
   esac
 }
 
+prepare_staticphp_xdebug_m4_context() {
+  php_source_dir=$1
+
+  csv_contains "$PHP_OPTIONAL_EXTENSIONS" xdebug || return 0
+
+  php_m4_dir="$php_source_dir/m4"
+  [ ! -e "$php_m4_dir" ] && [ ! -L "$php_m4_dir" ] || die "PHP source already contains an m4 path at $php_m4_dir"
+
+  # StaticPHP links Xdebug into php-src/ext before buildconf, while Xdebug 3.5
+  # resolves these macros relative to php-src. Keep the same macros available
+  # to Xdebug's later standalone build through its original m4 directory.
+  ln -s ext/xdebug/m4 "$php_m4_dir"
+}
+
 csv_contains() {
   list=$1
   item=$2
@@ -345,6 +359,7 @@ rar_source_dir=
 if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
   rar_source_dir=$(download_source php-rar "$PHP_RAR_SOURCE_REVISION" "$PHP_RAR_SOURCE_URL" "$PHP_RAR_SOURCE_SHA256")
 fi
+prepare_staticphp_xdebug_m4_context "$php_source_dir"
 prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
 
 (

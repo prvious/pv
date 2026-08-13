@@ -4567,6 +4567,27 @@ if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
     <"$PV_TEST_STATICPHP_PHP83_AVX512_PATCH" >/dev/null || exit 81
 fi
 
+case " $* " in
+  *" --build-shared="*xdebug*)
+    php_source_dir=
+    previous_arg=
+    for arg in "$@"; do
+      if [ "$previous_arg" = "--dl-custom-local" ]; then
+        case "$arg" in
+          php-src:*)
+            php_source_dir=${arg#php-src:}
+            ;;
+        esac
+      fi
+      previous_arg=$arg
+    done
+
+    [ -n "$php_source_dir" ] || exit 82
+    [ -L "$php_source_dir/m4" ] || exit 83
+    [ "$(readlink "$php_source_dir/m4")" = "ext/xdebug/m4" ] || exit 84
+    ;;
+esac
+
 mkdir -p buildroot/bin
 built_target=
 case " $* " in
