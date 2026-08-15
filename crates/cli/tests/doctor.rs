@@ -15,7 +15,11 @@ use platform::{
     ActivePfRedirectInspection, KeychainCertificate, KeychainTrustResult, LaunchAgentConfig,
     PfConfReference, PfRedirectConfig, ResolverConfig,
 };
-use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, RuntimeSubject};
+use state::{
+    Database, GATEWAY_ADMIN_PREFERRED_PORT, GATEWAY_HTTP_PREFERRED_PORT,
+    GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus,
+    RuntimeSubject,
+};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -411,7 +415,11 @@ fn seed_required_checks(
     include_manifest_cache: bool,
 ) -> anyhow::Result<()> {
     let mut database = Database::open(paths)?;
-    database.assign_gateway_ports(|port| port == 48080 || port == 48443)?;
+    database.assign_gateway_ports(|port| {
+        port == GATEWAY_HTTP_PREFERRED_PORT
+            || port == GATEWAY_HTTPS_PREFERRED_PORT
+            || port == GATEWAY_ADMIN_PREFERRED_PORT
+    })?;
 
     let launch_agent = LaunchAgentConfig::new(
         "/bin/pv",

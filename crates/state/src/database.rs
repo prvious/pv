@@ -13,6 +13,7 @@ const RECENT_JOB_LIMIT: i64 = 100;
 pub const DNS_PREFERRED_PORT: u16 = 35353;
 pub const GATEWAY_HTTP_PREFERRED_PORT: u16 = 48080;
 pub const GATEWAY_HTTPS_PREFERRED_PORT: u16 = 48443;
+pub const GATEWAY_ADMIN_PREFERRED_PORT: u16 = 2019;
 pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
 pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
 const PROJECT_ID_LENGTH: usize = 10;
@@ -115,7 +116,7 @@ impl JobDiagnosticSubject {
             ["project", id] if !id.is_empty() => Self::Project {
                 id: (*id).to_owned(),
             },
-            ["resource", name, _track] if matches!(*name, "php" | "frankenphp") => {
+            ["resource", name, _track] if matches!(*name, "caddy" | "php" | "frankenphp") => {
                 Self::GatewayRuntime
             }
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
@@ -181,6 +182,7 @@ pub struct PortRequest {
 pub enum GatewayPort {
     Http,
     Https,
+    Admin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +190,9 @@ pub enum PortOwner {
     Dns,
     Gateway(GatewayPort),
     PhpWorker {
+        php_runtime_key: String,
+    },
+    PhpWorkerAdmin {
         php_runtime_key: String,
     },
     Resource {
@@ -208,6 +213,13 @@ pub struct PortAssignment {
 pub struct GatewayPortAssignments {
     pub http: PortAssignment,
     pub https: PortAssignment,
+    pub admin: PortAssignment,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpWorkerPortAssignments {
+    pub service: PortAssignment,
+    pub admin: PortAssignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2076,10 +2088,54 @@ impl Database {
             &mut assigned_ports,
             &mut is_available,
         )?;
+        let admin = assign_port_in_transaction(
+            &transaction,
+            PortRequest::pv_gateway_admin(),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
 
         transaction.commit()?;
 
-        Ok(GatewayPortAssignments { http, https })
+        Ok(GatewayPortAssignments { http, https, admin })
+    }
+
+    pub fn assign_php_worker_ports(
+        &mut self,
+        php_runtime_key: impl Into<String>,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<PhpWorkerPortAssignments, StateError> {
+        let php_runtime_key = php_runtime_key.into();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
+        let service = assign_port_in_transaction(
+            &transaction,
+            PortRequest::php_worker(
+                php_runtime_key.clone(),
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+        let admin = assign_port_in_transaction(
+            &transaction,
+            PortRequest::php_worker_admin(
+                php_runtime_key,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+
+        transaction.commit()?;
+
+        Ok(PhpWorkerPortAssignments { service, admin })
     }
 
     pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {
@@ -2420,6 +2476,15 @@ impl PortRequest {
         )
     }
 
+    pub fn pv_gateway_admin() -> Self {
+        Self::gateway(
+            GatewayPort::Admin,
+            GATEWAY_ADMIN_PREFERRED_PORT,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
+        )
+    }
+
     pub fn php_worker(
         php_runtime_key: impl Into<String>,
         preferred_port: u16,
@@ -2428,6 +2493,22 @@ impl PortRequest {
     ) -> Self {
         Self::new(
             PortOwner::PhpWorker {
+                php_runtime_key: php_runtime_key.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn php_worker_admin(
+        php_runtime_key: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::PhpWorkerAdmin {
                 php_runtime_key: php_runtime_key.into(),
             },
             preferred_port,
@@ -2529,6 +2610,16 @@ impl PortOwner {
                     owner_port: String::new(),
                 })
             }
+            Self::PhpWorkerAdmin { php_runtime_key } => {
+                validate_php_runtime_key(php_runtime_key)?;
+
+                Ok(PortIdentity {
+                    owner_kind: "php_worker_admin",
+                    owner_id: "php".to_string(),
+                    owner_track: php_runtime_key.clone(),
+                    owner_port: String::new(),
+                })
+            }
             Self::Resource { name, track, port } => {
                 validate_managed_resource_identity("name", name)?;
                 validate_concrete_track(track)?;
@@ -2563,7 +2654,7 @@ impl PortOwner {
             }
             "gateway" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
-                reason: "gateway ports must use owner id `http` or `https` with empty owner track and port",
+                reason: "gateway ports must use owner id `http`, `https`, or `admin` with empty owner track and port",
             }),
             "php_worker"
                 if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
@@ -2578,6 +2669,20 @@ impl PortOwner {
             "php_worker" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
                 reason: "php worker ports must use owner id `php`, include a php runtime key, and use an empty owner port",
+            }),
+            "php_worker_admin"
+                if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
+            {
+                let owner = Self::PhpWorkerAdmin {
+                    php_runtime_key: owner_track,
+                };
+                owner.identity()?;
+
+                Ok(owner)
+            }
+            "php_worker_admin" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
+                reason: "php worker admin ports must use owner id `php`, include a php runtime key, and use an empty owner port",
             }),
             "resource"
                 if !owner_id.is_empty() && !owner_track.is_empty() && !owner_port.is_empty() =>
@@ -2606,6 +2711,9 @@ impl PortOwner {
             Self::PhpWorker { php_runtime_key } => {
                 format!("php worker {php_runtime_key:?}")
             }
+            Self::PhpWorkerAdmin { php_runtime_key } => {
+                format!("php worker admin {php_runtime_key:?}")
+            }
             Self::Resource { name, track, port } => {
                 format!("resource {name:?} track {track:?} port {port:?}")
             }
@@ -2618,6 +2726,7 @@ impl GatewayPort {
         match self {
             Self::Http => "http",
             Self::Https => "https",
+            Self::Admin => "admin",
         }
     }
 
@@ -2625,9 +2734,10 @@ impl GatewayPort {
         match owner_id {
             "http" => Ok(Self::Http),
             "https" => Ok(Self::Https),
+            "admin" => Ok(Self::Admin),
             _ => Err(StateError::InvalidPortOwner {
                 owner: format!("gateway:{owner_id}:"),
-                reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
+                reason: "gateway ports must use owner id `http`, `https`, or `admin` and an empty owner track",
             }),
         }
     }

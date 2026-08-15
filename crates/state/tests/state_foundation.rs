@@ -8,9 +8,9 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
-    AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject, JobStatus,
-    ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    AppReleaseLayout, Database, EnvContextValues, GATEWAY_ADMIN_PREFERRED_PORT,
+    GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject,
+    JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode, ProjectRecord,
     PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
@@ -3070,16 +3070,21 @@ fn gateway_port_allocator_persists_distinct_http_and_https_assignments() -> Resu
     let mut database = Database::open(&paths)?;
 
     let assigned = database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT
+            || port == GATEWAY_HTTPS_PREFERRED_PORT
+            || port == GATEWAY_ADMIN_PREFERRED_PORT
     })?;
     let reused = database.assign_gateway_ports(|_port| false)?;
 
     assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
     assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
+    assert_eq!(assigned.admin.port, GATEWAY_ADMIN_PREFERRED_PORT);
     assert_eq!(assigned.http.owner, PortOwner::Gateway(GatewayPort::Http));
     assert_eq!(assigned.https.owner, PortOwner::Gateway(GatewayPort::Https));
+    assert_eq!(assigned.admin.owner, PortOwner::Gateway(GatewayPort::Admin));
     assert_eq!(reused.http.port, assigned.http.port);
     assert_eq!(reused.https.port, assigned.https.port);
+    assert_eq!(reused.admin.port, assigned.admin.port);
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!((assigned, reused, database.assigned_ports()?));
@@ -3101,6 +3106,65 @@ fn gateway_port_allocator_uses_fallbacks_when_preferred_ports_are_unavailable() 
 
     assert_eq!(assigned.http.port, RUNTIME_PORT_FALLBACK_START);
     assert_eq!(assigned.https.port, RUNTIME_PORT_FALLBACK_START + 1);
+    assert_eq!(assigned.admin.port, GATEWAY_ADMIN_PREFERRED_PORT);
+
+    Ok(())
+}
+
+#[test]
+fn gateway_port_allocator_falls_back_for_occupied_admin_preference_without_collisions() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    database.assign_port(
+        PortRequest::resource(
+            "mysql",
+            "8.4",
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
+        ),
+        |_port| true,
+    )?;
+    let assigned = database.assign_gateway_ports(|port| port != GATEWAY_ADMIN_PREFERRED_PORT)?;
+
+    assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
+    assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
+    assert_eq!(assigned.admin.port, RUNTIME_PORT_FALLBACK_START + 1);
+
+    Ok(())
+}
+
+#[test]
+fn gateway_port_allocator_rolls_back_when_admin_cannot_be_assigned() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let error = match database.assign_gateway_ports(|port| {
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
+    }) {
+        Ok(assignments) => {
+            return Err(anyhow!(
+                "admin assignment should fail, but assigned {assignments:?}"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        StateError::NoAvailablePort {
+            name,
+            preferred_port: GATEWAY_ADMIN_PREFERRED_PORT,
+            fallback_start: RUNTIME_PORT_FALLBACK_START,
+            fallback_end: RUNTIME_PORT_FALLBACK_END,
+            ..
+        } if name == "gateway admin"
+    ));
+    assert!(database.assigned_ports()?.is_empty());
 
     Ok(())
 }
@@ -3184,6 +3248,63 @@ fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
             php_runtime_key: "8.4+redis".to_string()
         }
     );
+
+    Ok(())
+}
+
+#[test]
+fn php_worker_port_allocator_persists_distinct_service_and_admin_pair() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let assigned = database.assign_php_worker_ports("8.4", |_port| true)?;
+    drop(database);
+    let mut reopened = Database::open(&paths)?;
+    let reused = reopened.assign_php_worker_ports("8.4", |_port| false)?;
+
+    assert_eq!(assigned.service.port, RUNTIME_PORT_FALLBACK_START);
+    assert_eq!(assigned.admin.port, RUNTIME_PORT_FALLBACK_START + 1);
+    assert_ne!(assigned.service.port, assigned.admin.port);
+    assert_eq!(
+        assigned.service.owner,
+        PortOwner::PhpWorker {
+            php_runtime_key: "8.4".to_owned(),
+        }
+    );
+    assert_eq!(
+        assigned.admin.owner,
+        PortOwner::PhpWorkerAdmin {
+            php_runtime_key: "8.4".to_owned(),
+        }
+    );
+    assert_eq!(reused, assigned);
+
+    Ok(())
+}
+
+#[test]
+fn php_worker_port_allocator_rolls_back_when_admin_pair_member_cannot_be_assigned() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let error = match database
+        .assign_php_worker_ports("8.4", |port| port == RUNTIME_PORT_FALLBACK_START)
+    {
+        Ok(assignments) => {
+            return Err(anyhow!(
+                "admin assignment should fail after service assignment, but assigned {assignments:?}"
+            ));
+        }
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        StateError::NoAvailablePort { name, .. } if name == "php worker admin \"8.4\""
+    ));
+    assert!(database.assigned_ports()?.is_empty());
 
     Ok(())
 }
@@ -3355,6 +3476,22 @@ fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
 
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].job.id, failure.id);
+    assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
+
+    Ok(())
+}
+
+#[test]
+fn caddy_resource_failure_resolves_as_gateway_diagnostic() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("reconcile", "resource:caddy:2")?;
+    database.fail_job(&failure.id, "Caddy failed")?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
 
     Ok(())
