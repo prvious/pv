@@ -2,5 +2,9 @@
 source: crates/daemon/tests/gateway_config.rs
 expression: render_php_worker_config(&input)?
 ---
-# PV_FAKE_PORT 45001
+{
+    admin 127.0.0.1:45002
+    persist_config off
+}
+
 import "/Users/alice/.pv/config/workers/php-8.4/projects/*.Caddyfile"

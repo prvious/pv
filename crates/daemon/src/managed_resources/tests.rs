@@ -23,8 +23,8 @@ use resources::{
 };
 use serde::Deserialize;
 use state::{
-    Database, EnvContextValues, JobStatus, LinkProjectInput, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
+    Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
+    PortRequest, ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
     RuntimeObservedStatus, RuntimeSubject, StateError,
 };
@@ -48,6 +48,8 @@ const POSTGRES_ARTIFACT_VERSION: &str = "16.0-pv1";
 const POSTGRES_ARCHIVE_FILE_NAME: &str = "postgres-16.0-pv1-any.tar.gz";
 const SETUP_DEFAULT_PHP_TRACK: &str = "8.5";
 const SETUP_DEFAULT_PHP_ARTIFACT_VERSION: &str = "8.5.0-pv1";
+const SETUP_DEFAULT_CADDY_TRACK: &str = "2";
+const SETUP_DEFAULT_CADDY_ARTIFACT_VERSION: &str = "2.11.4-pv1";
 const SETUP_DEFAULT_COMPOSER_TRACK: &str = "2";
 const SETUP_DEFAULT_COMPOSER_ARTIFACT_VERSION: &str = "2.8.0-pv1";
 const SETUP_DEFAULT_MYSQL_TRACK: &str = "8.4";
@@ -121,6 +123,14 @@ const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("share/postgres.bki", "postgres catalog"),
 ];
 const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
+    SetupDefaultFixture {
+        resource_name: "caddy",
+        track: SETUP_DEFAULT_CADDY_TRACK,
+        artifact_version: SETUP_DEFAULT_CADDY_ARTIFACT_VERSION,
+        archive_file_name: "caddy-2.11.4-pv1-any.tar.gz",
+        executable_relative_path: "bin/caddy",
+        support_files: &[],
+    },
     SetupDefaultFixture {
         resource_name: "composer",
         track: SETUP_DEFAULT_COMPOSER_TRACK,
@@ -941,11 +951,14 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
     let stale_port_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
     drop(stale_port_guard);
+    let caddy_fixture = setup_default_fixture("caddy")?;
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
 
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
         database.unlink_project(&project.id)?;
-        let catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
+        let mut catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
+        catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
@@ -1061,13 +1074,104 @@ async fn system_reconciliation_installs_desired_setup_defaults_without_starting_
 }
 
 #[tokio::test]
+async fn system_reconciliation_upserts_and_installs_caddy_for_existing_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_fixture = setup_default_fixture("caddy")?;
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
+    let mut database = Database::open(&paths)?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+    super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
+
+    let record = database.managed_resource_track("caddy", SETUP_DEFAULT_CADDY_TRACK)?;
+    assert_eq!(
+        record.desired_state,
+        state::ManagedResourceDesiredState::Installed
+    );
+    assert_eq!(
+        record.installed_version.as_deref(),
+        Some(SETUP_DEFAULT_CADDY_ARTIFACT_VERSION)
+    );
+    let Some(current_artifact_path) = record.current_artifact_path else {
+        bail!("expected Caddy to record a current artifact path");
+    };
+    assert!(path_exists(&current_artifact_path)?);
+    assert!(database.assigned_ports()?.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[])?;
+
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+    let result = crate::jobs::run_background_reconciliation_job(
+        paths.clone(),
+        ReconciliationQueue::new(),
+        ReconciliationScope::System,
+        Some(&catalog),
+    )
+    .await;
+    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+        ResourcesError::ResourceNotInManifest { resource },
+    ))) = result
+    else {
+        bail!("expected missing Caddy manifest entry to fail system reconciliation job");
+    };
+
+    assert_eq!(resource, "caddy");
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.scope == "system")
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(
+        job.error.as_deref(),
+        Some(
+            "Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`"
+        )
+    );
+
+    let caddy_record = database.managed_resource_track("caddy", SETUP_DEFAULT_CADDY_TRACK)?;
+    assert_eq!(
+        caddy_record.desired_state,
+        state::ManagedResourceDesiredState::Installed
+    );
+    assert!(caddy_record.installed_version.is_none());
+    assert!(caddy_record.current_artifact_path.is_none());
+    assert!(database.runtime_observed_states()?.is_empty());
+    assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
+    assert_eq!(
+        database.unresolved_job_failures()?,
+        vec![state::UnresolvedJobFailure {
+            job,
+            subject: JobDiagnosticSubject::SystemReconciliation,
+        }]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn system_reconciliation_rejects_incomplete_php_default_pair_without_partial_install()
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let php_fixture = setup_default_fixture("php")?;
 
-    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[php_fixture])?;
+    let caddy_fixture = setup_default_fixture("caddy")?;
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture, php_fixture])?;
     let mut database = Database::open(&paths)?;
     record_desired_setup_tracks(
         &mut database,
@@ -1123,11 +1227,14 @@ async fn system_reconciliation_rejects_unsupported_composer_default_track_withou
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_fixture = setup_default_fixture("caddy")?;
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
     let mut database = Database::open(&paths)?;
     let unsupported_track = "1";
 
     record_desired_setup_tracks(&mut database, &[("composer", unsupported_track)])?;
-    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
 
     let result =
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await;
@@ -1163,7 +1270,8 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
     let mysql_fixture = setup_default_fixture("mysql")?;
     let unsupported_track = "9.9";
 
-    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture])?;
+    let caddy_fixture = setup_default_fixture("caddy")?;
+    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture, mysql_fixture])?;
     let mut database = Database::open(&paths)?;
     record_desired_setup_tracks(&mut database, &[("mysql", unsupported_track)])?;
     drop(database);
@@ -1229,7 +1337,12 @@ async fn system_reconciliation_continues_independent_setup_defaults_after_failur
     let unsupported_track = "1";
     let missing_mysql_track = "9.9";
 
-    seed_setup_default_cached_fixture(&paths, tempdir.path(), &[mysql_fixture, redis_fixture])?;
+    let caddy_fixture = setup_default_fixture("caddy")?;
+    seed_setup_default_cached_fixture(
+        &paths,
+        tempdir.path(),
+        &[caddy_fixture, mysql_fixture, redis_fixture],
+    )?;
     let mut database = Database::open(&paths)?;
     record_desired_setup_tracks(
         &mut database,

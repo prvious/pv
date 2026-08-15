@@ -784,19 +784,19 @@ impl ManagedResourceCommands {
 
     pub fn update_all_installed(
         &self,
-        backing_adapters: &[&dyn ResourceAdapter],
+        resource_adapters: &[&dyn ResourceAdapter],
         client: &(impl ResourceHttpClient + ?Sized),
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
-        self.update_all_installed_with_progress(backing_adapters, client, &NoDownloadProgress)
+        self.update_all_installed_with_progress(resource_adapters, client, &NoDownloadProgress)
     }
 
     pub fn update_all_installed_with_progress(
         &self,
-        backing_adapters: &[&dyn ResourceAdapter],
+        resource_adapters: &[&dyn ResourceAdapter],
         client: &(impl ResourceHttpClient + ?Sized),
         progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
-        for adapter in backing_adapters {
+        for adapter in resource_adapters {
             registry::resolve_canonical(adapter.resource_name().as_str())?;
         }
 
@@ -813,9 +813,9 @@ impl ManagedResourceCommands {
 
         self.update_installed_php_pairs(&installed_tracks, manifest, &mut installs, context)?;
         self.update_installed_composer(&installed_tracks, manifest, &mut installs, context)?;
-        self.update_installed_backing_resources(
+        self.update_installed_resources(
             &installed_tracks,
-            backing_adapters,
+            resource_adapters,
             manifest,
             &mut installs,
             context,
@@ -908,10 +908,10 @@ impl ManagedResourceCommands {
         Ok(())
     }
 
-    fn update_installed_backing_resources<Client, Progress>(
+    fn update_installed_resources<Client, Progress>(
         &self,
         installed_tracks: &[ManagedResourceTrack],
-        backing_adapters: &[&dyn ResourceAdapter],
+        resource_adapters: &[&dyn ResourceAdapter],
         manifest: &ArtifactManifest,
         installs: &mut Vec<ManagedResourceInstall>,
         context: ArtifactInstallContext<'_, Client, Progress>,
@@ -920,7 +920,7 @@ impl ManagedResourceCommands {
         Client: ResourceHttpClient + ?Sized,
         Progress: DownloadProgress,
     {
-        for adapter in backing_adapters {
+        for adapter in resource_adapters {
             for installed in installed_tracks
                 .iter()
                 .filter(|track| track.resource_name() == adapter.resource_name())

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import http.server
-import glob
 import re
 import socketserver
 import ssl
@@ -15,7 +14,7 @@ with open(sys.argv[1], encoding="utf-8") as config_file:
 def required(pattern):
     match = re.search(pattern, config, re.MULTILINE)
     if not match:
-        raise SystemExit(f"missing fake runtime setting: {pattern}")
+        raise SystemExit(f"missing fake Caddy setting: {pattern}")
     return match.group(1)
 
 
@@ -35,6 +34,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = b"{}\n"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-PV-Fake-Runtime", "caddy")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -43,6 +43,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = gateway_health_response.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-PV-Fake-Runtime", "caddy")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -58,6 +59,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.rfile.read(content_length)
         self.send_response(200)
         self.send_header("Content-Length", "0")
+        self.send_header("X-PV-Fake-Runtime", "caddy")
         self.end_headers()
 
 
@@ -68,21 +70,7 @@ class Server(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-http_port = None
-http_port_setting = optional(r"^\s*http_port (\d+)$")
-if http_port_setting is not None:
-    http_port = int(http_port_setting)
-else:
-    import_path = required(r'^\s*import\s+"([^"]+)"$')
-    for fragment_path in glob.glob(import_path):
-        with open(fragment_path, encoding="utf-8") as fragment_file:
-            fragment = fragment_file.read()
-        match = re.search(r"\bhttp://[^\s,]+:(\d+)\b", fragment)
-        if match:
-            http_port = int(match.group(1))
-            break
-if http_port is None:
-    raise SystemExit("missing fake worker service port")
+http_port = int(required(r"^\s*http_port (\d+)$"))
 admin_port = int(required(r"^\s*admin 127\.0\.0\.1:(\d+)$"))
 https_port = optional(r"^\s*https_port (\d+)$")
 gateway_health_response = f"pv-gateway-health-v1:{http_port}:{https_port}"

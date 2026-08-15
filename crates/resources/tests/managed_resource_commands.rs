@@ -14,8 +14,8 @@ use resources::{
     ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
     ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI,
     ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
-    TrackSelector, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
-    php_track_defaults, redis_adapter,
+    TrackSelector, caddy_adapter, composer_adapter, frankenphp_adapter, mailpit_adapter,
+    php_adapter, php_track_defaults, redis_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths, fs};
@@ -1463,6 +1463,10 @@ fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refre
         runtime_fixture_artifact("redis", "7.2.5-pv1", "bin/redis-server", "redis first")?;
     let redis_update_artifact =
         runtime_fixture_artifact("redis", "7.2.6-pv1", "bin/redis-server", "redis update")?;
+    let caddy_artifact =
+        runtime_fixture_artifact("caddy", "2.11.4-pv1", "bin/caddy", "caddy first")?;
+    let caddy_update_artifact =
+        runtime_fixture_artifact("caddy", "2.11.5-pv1", "bin/caddy", "caddy update")?;
     let mailpit_default_artifact =
         runtime_fixture_artifact("mailpit", "1.0.0-pv1", "bin/mailpit", "mailpit default")?;
     let initial_manifest = manifest_with_resources(&[
@@ -1490,6 +1494,11 @@ fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refre
             "mailpit",
             "1",
             vec![manifest_track("1", vec![&mailpit_default_artifact])],
+        ),
+        manifest_resource(
+            "caddy",
+            "2",
+            vec![manifest_track("2", vec![&caddy_artifact])],
         ),
     ]);
     let update_manifest = manifest_with_resources(&[
@@ -1530,6 +1539,14 @@ fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refre
             "1",
             vec![manifest_track("1", vec![&mailpit_default_artifact])],
         ),
+        manifest_resource(
+            "caddy",
+            "2",
+            vec![manifest_track(
+                "2",
+                vec![&caddy_artifact, &caddy_update_artifact],
+            )],
+        ),
     ]);
     let client = ScriptedClient::new()
         .with_text(&initial_manifest)
@@ -1539,18 +1556,23 @@ fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refre
         .with_bytes(composer_artifact.bytes())
         .with_text(&initial_manifest)
         .with_bytes(redis_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(caddy_artifact.bytes())
         .with_text(&update_manifest)
         .with_bytes(php_update_artifact.bytes())
         .with_bytes(frankenphp_update_artifact.bytes())
         .with_bytes(composer_update_artifact.bytes())
+        .with_bytes(caddy_update_artifact.bytes())
         .with_bytes(redis_update_artifact.bytes());
 
     commands.install_php_pair(TrackSelector::Latest, &client)?;
     commands.install_composer(&client)?;
     commands.install(&redis, TrackSelector::Latest, &client)?;
+    let caddy = caddy_adapter()?;
+    commands.install(&caddy, TrackSelector::Latest, &client)?;
     let manifest_requests_before_update = client.text_request_count();
-    let backing_adapters: [&dyn ResourceAdapter; 2] = [&mailpit, &redis];
-    let updated = commands.update_all_installed(&backing_adapters, &client)?;
+    let resource_adapters: [&dyn ResourceAdapter; 3] = [&caddy, &mailpit, &redis];
+    let updated = commands.update_all_installed(&resource_adapters, &client)?;
     let listed_after_update = commands.list(None)?;
     let manifest_refreshes_during_update =
         client.text_request_count() - manifest_requests_before_update;
@@ -1573,9 +1595,9 @@ fn managed_resource_commands_update_all_installed_refreshes_manifest_without_ins
     let commands =
         ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
     let client = ScriptedClient::new().with_text(&manifest_with_resources(&[]));
-    let backing_adapters: [&dyn ResourceAdapter; 0] = [];
+    let resource_adapters: [&dyn ResourceAdapter; 0] = [];
 
-    let updated = commands.update_all_installed(&backing_adapters, &client)?;
+    let updated = commands.update_all_installed(&resource_adapters, &client)?;
 
     assert_debug_snapshot!((
         update_summary(&updated, tempdir.path())?,
@@ -2520,6 +2542,8 @@ fn published_at_for(version: &str) -> &'static str {
         "1.0.1-pv1" => "2026-05-26T16:00:00Z",
         "2.8.0-pv1" => "2026-05-26T16:30:00Z",
         "2.8.1-pv1" => "2026-05-27T16:30:00Z",
+        "2.11.4-pv1" => "2026-05-26T17:30:00Z",
+        "2.11.5-pv1" => "2026-05-27T17:30:00Z",
         "8.3.22-pv1" => "2026-05-25T12:30:00Z",
         "8.3.23-pv1" => "2026-05-26T12:30:00Z",
         "8.3.24-pv1" => "2026-05-27T12:30:00Z",

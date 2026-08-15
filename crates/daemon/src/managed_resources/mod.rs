@@ -370,17 +370,18 @@ fn update_installed_with_catalog(
         catalog.install_options.target_platform,
     );
     let installed_count = commands.list(None)?.len();
-    let artifact_adapters = catalog.artifact_adapters()?;
-    let backing_adapters = artifact_adapters
+    let mut artifact_adapters = catalog.artifact_adapters()?;
+    artifact_adapters.insert(0, resources::caddy_adapter()?);
+    let resource_adapters = artifact_adapters
         .iter()
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
     let update = if let Some(client) = catalog.http_client.as_deref() {
-        commands.update_all_installed_with_progress(&backing_adapters, client, progress)?
+        commands.update_all_installed_with_progress(&resource_adapters, client, progress)?
     } else {
         let client = resources::UreqResourceHttpClient::default();
 
-        commands.update_all_installed_with_progress(&backing_adapters, &client, progress)?
+        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)?
     };
 
     Ok(ManagedResourceUpdateReport {
@@ -416,6 +417,11 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     catalog: &ManagedResourceRuntimeCatalog,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
+    database.record_managed_resource_track_desired(
+        "caddy",
+        "2",
+        ManagedResourceDesiredState::Installed,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let demanded_tracks = BTreeSet::new();
 
@@ -460,6 +466,9 @@ async fn install_missing_desired_resource_tracks(
 
 #[derive(Debug)]
 enum DesiredResourceInstall {
+    Caddy {
+        track: String,
+    },
     PhpPair {
         track: String,
     },
@@ -502,6 +511,7 @@ impl DesiredResourceInstallFailure {
 impl DesiredResourceInstall {
     fn label(&self) -> String {
         match self {
+            DesiredResourceInstall::Caddy { track } => format!("caddy {track}"),
             DesiredResourceInstall::PhpPair { track } => {
                 format!("php/frankenphp {track}")
             }
@@ -522,6 +532,7 @@ fn missing_desired_resource_installs(
     catalog: &ManagedResourceRuntimeCatalog,
 ) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
+    let mut caddy_tracks = BTreeSet::new();
     let mut composer_missing = false;
     let mut runtime_installs = Vec::new();
     let mut failures = Vec::new();
@@ -534,6 +545,9 @@ fn missing_desired_resource_installs(
         }
 
         match record.resource_name.as_str() {
+            "caddy" => {
+                caddy_tracks.insert(record.track);
+            }
             "php" | "frankenphp" => {
                 php_pair_tracks.insert(record.track);
             }
@@ -583,10 +597,16 @@ fn missing_desired_resource_installs(
         }
     }
 
-    let mut installs = php_pair_tracks
+    let mut installs = caddy_tracks
         .into_iter()
-        .map(|track| DesiredResourceInstall::PhpPair { track })
+        .map(|track| DesiredResourceInstall::Caddy { track })
         .collect::<Vec<_>>();
+    installs.extend(
+        php_pair_tracks
+            .into_iter()
+            .map(|track| DesiredResourceInstall::PhpPair { track })
+            .collect::<Vec<_>>(),
+    );
     if composer_missing {
         installs.push(DesiredResourceInstall::Composer);
     }
@@ -618,6 +638,16 @@ fn install_missing_desired_resource_tracks_blocking(
     for install in installs {
         let label = install.label();
         let result = match install {
+            DesiredResourceInstall::Caddy { track } => {
+                let adapter = resources::caddy_adapter()?;
+                TrackName::new(track)
+                    .map_err(DaemonError::from)
+                    .and_then(|track| {
+                        install_runtime_resource_track_with_progress(
+                            &commands, client, &adapter, "caddy", track, &progress,
+                        )
+                    })
+            }
             DesiredResourceInstall::PhpPair { track } => TrackName::new(track)
                 .map_err(DaemonError::from)
                 .and_then(|track| {

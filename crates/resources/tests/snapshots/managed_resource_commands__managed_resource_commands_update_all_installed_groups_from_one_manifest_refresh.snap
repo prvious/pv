@@ -1,5 +1,6 @@
 ---
 source: crates/resources/tests/managed_resource_commands.rs
+assertion_line: 1580
 expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(&listed_after_update, tempdir.path())?,\nmanifest_refreshes_during_update, client.byte_request_count(),)"
 ---
 (
@@ -32,6 +33,15 @@ expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(
             downloaded_from_cache: false,
         },
         InstallSnapshot {
+            resource_name: "caddy",
+            track: "2",
+            artifact_version: "2.11.5-pv1",
+            current_artifact_path: "home/.pv/resources/caddy/2/releases/2.11.5-pv1",
+            manifest_source: "Latest",
+            revoked_latest: None,
+            downloaded_from_cache: false,
+        },
+        InstallSnapshot {
             resource_name: "redis",
             track: "8.8",
             artifact_version: "7.2.6-pv1",
@@ -42,6 +52,13 @@ expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(
         },
     ],
     [
+        TrackRecordSnapshot {
+            resource_name: "caddy",
+            track: "2",
+            installed_version: "2.11.5-pv1",
+            current_artifact_path: "home/.pv/resources/caddy/2/releases/2.11.5-pv1",
+            usage_count: 0,
+        },
         TrackRecordSnapshot {
             resource_name: "composer",
             track: "2",
@@ -72,5 +89,5 @@ expression: "(update_summary(&updated, tempdir.path())?,\ntrack_records_summary(
         },
     ],
     1,
-    8,
+    10,
 )

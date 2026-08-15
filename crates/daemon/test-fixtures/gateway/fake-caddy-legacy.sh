@@ -7,7 +7,7 @@ if [ "$1" = "validate" ]; then
 fi
 
 if [ "$1" = "run" ]; then
-  python3 - "$3" < "$0.server.py" &
+  python3 "$0.server.py" "$3" &
   child="$!"
   trap 'kill "$child"; wait "$child"; exit 0' TERM INT
   while true; do

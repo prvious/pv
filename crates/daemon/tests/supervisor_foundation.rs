@@ -696,36 +696,6 @@ while true; do sleep 1; done
 }
 
 #[tokio::test]
-async fn supervisor_sends_reload_signal_to_owned_runtime() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let marker = paths.run().join("reload-marker");
-    let ready = paths.run().join("reload-ready");
-    let spec = process_spec(
-        &paths,
-        "reloadable-runtime",
-        "/bin/sh",
-        vec![
-            "-c".to_string(),
-            format!(
-                "trap 'touch \"{marker}\"' USR1; touch \"{ready}\"; while true; do sleep 1; done"
-            ),
-        ],
-    );
-    let process = ProcessSupervisor::new(paths.clone())
-        .start(spec.clone())
-        .await?;
-
-    wait_for_path(&ready).await?;
-    ProcessSupervisor::new(paths.clone()).reload(&spec)?;
-    wait_for_path(&marker).await?;
-    process.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1176,46 +1146,6 @@ async fn supervisor_fails_closed_for_missing_and_malformed_process_start_identit
         supervisor.verify_ownership(&spec),
         Err(daemon::DaemonError::Json(_))
     ));
-
-    process.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_forged_process_start_identity_before_signalling() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let marker = paths.run().join("forged-start-signal-marker");
-    let ready = paths.run().join("forged-start-signal-ready");
-    let spec = process_spec(
-        &paths,
-        "forged-start-identity-runtime",
-        "/bin/sh",
-        vec![
-            "-c".to_string(),
-            format!(
-                "trap 'touch \"{marker}\"' USR1; touch \"{ready}\"; while true; do sleep 1; done"
-            ),
-        ],
-    );
-    let process = supervisor.start(spec.clone()).await?;
-    wait_for_path(&ready).await?;
-    let mut metadata = runtime_metadata(process.metadata_path())?;
-    let seconds = metadata["process_start_identity"]["seconds"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("process-start seconds were missing"))?;
-    let forged_seconds = seconds
-        .checked_add(1)
-        .ok_or_else(|| anyhow!("process-start seconds could not be incremented"))?;
-    metadata["process_start_identity"]["seconds"] = json!(forged_seconds);
-    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
-
-    assert!(!supervisor.reload(&spec)?);
-    sleep(Duration::from_millis(50)).await;
-    assert!(!marker.exists());
 
     process.stop(Duration::from_secs(1)).await?;
 

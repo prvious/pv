@@ -2,9 +2,9 @@
 source: crates/daemon/tests/gateway_config.rs
 expression: render_gateway_config(&input)?
 ---
-# PV_FAKE_PORT 48080
 {
-    admin off
+    admin 127.0.0.1:42019
+    persist_config off
     storage file_system {
         root "/Users/alice/.pv/certificates/caddy"
     }

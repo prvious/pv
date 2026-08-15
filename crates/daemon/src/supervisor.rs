@@ -31,7 +31,6 @@ const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
-    Reload,
     Terminate,
     Kill,
 }
@@ -318,15 +317,6 @@ impl ProcessSupervisor {
 
         Ok(None)
     }
-
-    pub fn reload(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        require_process_containment()?;
-        let Some(owned) = self.verify_ownership(spec)? else {
-            return Ok(false);
-        };
-
-        owned.signal(ProcessSignal::Reload)
-    }
 }
 
 impl ManagedProcess {
@@ -399,16 +389,6 @@ impl OwnedRuntime {
             self.process_start_identity,
             self.process_executable_identity.as_ref(),
         )
-    }
-
-    fn signal(&self, signal: ProcessSignal) -> Result<bool, DaemonError> {
-        if !self.matches_live()? {
-            return Ok(false);
-        }
-
-        signal_process_group(self.pid, signal)?;
-
-        Ok(true)
     }
 }
 
@@ -713,7 +693,6 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
 fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
     let process_group = process_group_pid(pid)?;
     let signal = match signal {
-        ProcessSignal::Reload => Signal::USR1,
         ProcessSignal::Terminate => Signal::TERM,
         ProcessSignal::Kill => Signal::KILL,
     };

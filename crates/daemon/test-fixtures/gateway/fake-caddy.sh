@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+# This fixture deliberately has a standalone Caddy identity. It is not the
+# FrankenPHP fixture with a renamed executable.
 if [ "$1" = "validate" ]; then
   test -f "$3"
   exit 0

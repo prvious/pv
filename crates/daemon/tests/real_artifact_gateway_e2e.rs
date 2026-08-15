@@ -5,10 +5,11 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use daemon::ProcessSupervisor;
 use daemon::gateway::{
-    FrankenphpCommand, PhpWorkerRuntimePlan, gateway_process_spec, worker_process_spec,
+    CaddyCliCommand, PhpWorkerRuntimePlan, gateway_process_spec, worker_process_spec,
 };
 use resources::{
-    ManagedResourceCommands, TargetPlatform, TrackSelector, frankenphp_adapter, php_adapter,
+    ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
+    php_adapter,
 };
 use state::{Database, LinkProjectInput, PvPaths};
 
@@ -32,6 +33,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
     let client = resources::UreqResourceHttpClient::new();
 
+    let caddy_install = commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let php_install = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
     let frankenphp_install = commands.install(
         &frankenphp_adapter()?,
@@ -57,14 +59,23 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     })?;
     drop(database);
 
-    let frankenphp_command = FrankenphpCommand::new(
+    let caddy_command =
+        CaddyCliCommand::caddy(caddy_install.current_artifact_path().join("bin/caddy"));
+    let frankenphp_command = CaddyCliCommand::frankenphp(
         frankenphp_install
             .current_artifact_path()
             .join("bin/frankenphp"),
     );
     let response = preserve_gateway_request_result(
         request_real_artifact_project(&paths).await,
-        stop_gateway_runtimes(&paths, php_install.track().as_str(), &frankenphp_command).await,
+        stop_gateway_runtimes(
+            &paths,
+            php_install.track().as_str(),
+            &caddy_command,
+            &frankenphp_command,
+            frankenphp_install.current_artifact_path(),
+        )
+        .await,
         || real_artifact_diagnostics(&paths, php_install.track().as_str()),
     )?;
 
@@ -161,20 +172,21 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
 async fn stop_gateway_runtimes(
     paths: &PvPaths,
     php_track: &str,
-    command: &FrankenphpCommand,
+    gateway_command: &CaddyCliCommand,
+    worker_command: &CaddyCliCommand,
+    worker_artifact_root: &Utf8Path,
 ) -> Result<()> {
     let supervisor = ProcessSupervisor::new(paths.clone());
 
-    if let Some(gateway) = supervisor.adopt(&gateway_process_spec(paths, command))? {
+    if let Some(gateway) = supervisor.adopt(&gateway_process_spec(paths, gateway_command))? {
         gateway.stop(Duration::from_secs(1)).await?;
     }
     let worker_plan = default_worker_plan(php_track);
-    let artifact_root = frankenphp_artifact_root(command)?;
     if let Some(worker) = supervisor.adopt(&worker_process_spec(
         paths,
         &worker_plan,
-        command,
-        artifact_root,
+        worker_command,
+        worker_artifact_root,
     )?)? {
         worker.stop(Duration::from_secs(1)).await?;
     }
@@ -188,20 +200,9 @@ fn default_worker_plan(php_track: &str) -> PhpWorkerRuntimePlan {
         runtime_key: php_track.to_owned(),
         loaded_modules: Vec::new(),
         port: 0,
+        admin_port: 0,
         projects: Vec::new(),
     }
-}
-
-fn frankenphp_artifact_root(command: &FrankenphpCommand) -> Result<&Utf8Path> {
-    let bin_dir = command
-        .executable()
-        .parent()
-        .ok_or_else(|| anyhow!("FrankenPHP command is missing a bin directory"))?;
-    let artifact_root = bin_dir
-        .parent()
-        .ok_or_else(|| anyhow!("FrankenPHP command is missing an artifact root"))?;
-
-    Ok(artifact_root)
 }
 
 #[expect(

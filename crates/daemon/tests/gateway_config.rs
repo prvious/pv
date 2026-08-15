@@ -13,6 +13,7 @@ fn gateway_config_renderer_outputs_gateway_caddyfile() -> Result<()> {
     let input = GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
+        admin_port: 42019,
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
@@ -22,7 +23,9 @@ fn gateway_config_renderer_outputs_gateway_caddyfile() -> Result<()> {
         import_project_configs: true,
     };
 
-    assert_snapshot!(render_gateway_config(&input)?);
+    let rendered = render_gateway_config(&input)?;
+    assert_admin_directives(&rendered, 42019);
+    assert_snapshot!(rendered);
 
     Ok(())
 }
@@ -32,6 +35,7 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
     let input = PhpWorkerConfigInput {
         php_track: "8.4".to_owned(),
         port: 45001,
+        admin_port: 45002,
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/workers/php-8.4/projects/*.Caddyfile",
         ),
@@ -45,6 +49,7 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
 
     let rendered = render_php_worker_config(&input)?;
 
+    assert_admin_directives(&rendered, 45002);
     assert!(!rendered.contains("php_ini"));
     assert_snapshot!(rendered);
 
@@ -56,6 +61,7 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
     let gateway = render_gateway_config(&GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
+        admin_port: 42019,
         ca_certificate_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/caddy"),
@@ -67,6 +73,7 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
     let worker = render_php_worker_config(&PhpWorkerConfigInput {
         php_track: "8.4".to_owned(),
         port: 45001,
+        admin_port: 45002,
         projects_config_glob: Utf8PathBuf::from(
             "/Users/Alice Smith/.pv/config/workers/php-8.4/projects/*.Caddyfile",
         ),
@@ -88,6 +95,7 @@ fn config_renderers_reject_control_characters_in_path_tokens() {
     let result = render_gateway_config(&GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
+        admin_port: 42019,
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca\n.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
@@ -109,6 +117,7 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
     let input = GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
+        admin_port: 42019,
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
@@ -120,6 +129,7 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
 
     let rendered = render_gateway_config(&input)?;
 
+    assert_admin_directives(&rendered, 42019);
     assert!(
         rendered
             .lines()
@@ -136,6 +146,7 @@ fn gateway_config_renderer_imports_project_configs_when_requested() -> Result<()
     let input = GatewayConfigInput {
         http_port: 48080,
         https_port: 48443,
+        admin_port: 42019,
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
@@ -145,7 +156,9 @@ fn gateway_config_renderer_imports_project_configs_when_requested() -> Result<()
         import_project_configs: true,
     };
 
-    assert_snapshot!(render_gateway_config(&input)?);
+    let rendered = render_gateway_config(&input)?;
+    assert_admin_directives(&rendered, 42019);
+    assert_snapshot!(rendered);
 
     Ok(())
 }
@@ -177,4 +190,17 @@ fn worker_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
     assert_snapshot!(render_php_worker_project_config(&project, 45001)?);
 
     Ok(())
+}
+
+fn assert_admin_directives(rendered: &str, admin_port: u16) {
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("    admin "))
+            .count(),
+        1
+    );
+    assert!(rendered.contains(&format!("    admin 127.0.0.1:{admin_port}")));
+    assert_eq!(rendered.matches("    persist_config off").count(), 1);
+    assert!(!rendered.contains("admin off"));
 }

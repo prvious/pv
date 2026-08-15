@@ -1,0 +1,21 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 1153
+expression: snapshot
+---
+(
+    "current; reconciled: Gateway runtime reconciled",
+    "update",
+    "system",
+    Succeeded,
+    Some(
+        "current; reconciled: Gateway runtime reconciled",
+    ),
+    1,
+    Installed,
+    Some(
+        "2.11.4-pv1",
+    ),
+    true,
+    1,
+)

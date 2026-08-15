@@ -3,9 +3,9 @@ source: crates/daemon/tests/gateway_config.rs
 expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
 ---
 Gateway:
-# PV_FAKE_PORT 48080
 {
-    admin off
+    admin 127.0.0.1:42019
+    persist_config off
     storage file_system {
         root "/Users/Alice Smith/.pv/certificates/caddy"
     }
@@ -40,5 +40,9 @@ https://pv-gateway.localhost {
 import "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile"
 
 Worker:
-# PV_FAKE_PORT 45001
+{
+    admin 127.0.0.1:45002
+    persist_config off
+}
+
 import "/Users/Alice Smith/.pv/config/workers/php-8.4/projects/*.Caddyfile"

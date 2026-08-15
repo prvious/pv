@@ -25,6 +25,7 @@ const PV_ENV_END: &str = "# <<< PV ENV";
 const SHIM_FILE_MODE: u32 = 0o700;
 
 const DEFAULT_SETUP_RESOURCES: &[SetupResourceDefault] = &[
+    SetupResourceDefault::concrete("caddy", "2"),
     SetupResourceDefault::manifest_default("frankenphp"),
     SetupResourceDefault::manifest_default("php"),
     SetupResourceDefault::manifest_default("mysql"),

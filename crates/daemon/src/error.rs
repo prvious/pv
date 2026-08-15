@@ -11,6 +11,8 @@ use thiserror::Error;
 use tokio::task::JoinError;
 use tokio_util::codec::LinesCodecError;
 
+use crate::caddy_admin::CaddyAdminError;
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("I/O error: {0}")]
@@ -48,6 +50,9 @@ pub enum DaemonError {
 
     #[error("daemon protocol error: {message}")]
     DaemonRejected { message: String },
+
+    #[error("Caddy admin error: {0}")]
+    CaddyAdmin(#[from] CaddyAdminError),
 
     #[error("DNS request decode error: {0}")]
     DnsDecode(#[from] DecodeError),

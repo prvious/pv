@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io;
 
 use crate::DaemonError;
-use crate::gateway::{FRANKENPHP_NOT_INSTALLED, reconcile_gateway_runtimes};
+use crate::gateway::{CADDY_NOT_INSTALLED, reconcile_gateway_runtimes};
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
     ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
@@ -785,13 +785,6 @@ async fn complete_update_job_inner(
         )
     }
     .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::UpdateAssessment))?;
-    if report.updated_count == 0 {
-        return Ok(CompletedUpdateJob {
-            summary: unchanged_update_summary(&report),
-            coverage: Vec::new(),
-        });
-    }
-
     let project_report =
         reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
             .await
@@ -802,16 +795,27 @@ async fn complete_update_job_inner(
         .await
         .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::GatewayRuntime))?;
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
-    let coverage = completed_system_reconciliation_coverage(paths, &project_report)
-        .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation))?;
+    let coverage = if report.updated_count == 0 {
+        Vec::new()
+    } else {
+        completed_system_reconciliation_coverage(paths, &project_report).map_err(|error| {
+            FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation)
+        })?
+    };
 
-    Ok(CompletedUpdateJob {
-        summary: format!(
+    let summary = if report.updated_count == 0 {
+        format!(
+            "{}; reconciled: {reconciliation_summary}",
+            unchanged_update_summary(&report)
+        )
+    } else {
+        format!(
             "updated {} artifact(s); reconciled: {reconciliation_summary}",
             report.updated_count
-        ),
-        coverage,
-    })
+        )
+    };
+
+    Ok(CompletedUpdateJob { summary, coverage })
 }
 
 fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
@@ -965,7 +969,7 @@ async fn complete_project_reconciliation_with_progress(
     )
     .await?;
     let gateway_summary = reconcile_gateway_runtimes(paths).await?;
-    let summary = if gateway_summary == FRANKENPHP_NOT_INSTALLED {
+    let summary = if gateway_summary == CADDY_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
     } else {
         format!("{}; {gateway_summary}", project_env_summary.as_str())
@@ -1200,7 +1204,7 @@ fn system_reconciliation_summary(
         return gateway_summary.to_owned();
     };
 
-    if gateway_summary == FRANKENPHP_NOT_INSTALLED {
+    if gateway_summary == CADDY_NOT_INSTALLED {
         project_summary
     } else {
         format!("{project_summary}; {gateway_summary}")
@@ -1267,7 +1271,7 @@ fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
 }
 
 fn gateway_runtime_resource(resource_name: &str) -> bool {
-    matches!(resource_name, "php" | "frankenphp")
+    matches!(resource_name, "caddy" | "php" | "frankenphp")
 }
 
 #[cfg(test)]
@@ -1466,12 +1470,15 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
+    use std::sync::Arc;
     use std::task::{Context, Poll};
+    use std::time::Instant;
 
-    use camino::Utf8Path;
+    use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use futures_util::StreamExt;
     use insta::{Settings, assert_debug_snapshot};
+    use rcgen::generate_simple_self_signed;
     use serde_json::json;
     use state::{
         Database, JobStatus, LinkProjectInput, ProjectManagedResourceInput, PvPaths, StateError,
@@ -1482,18 +1489,23 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::{
-        FOREGROUND_JOB_PROGRESS_BUFFER, ForegroundJobEvent, SystemProjectReconciliationReport,
-        complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
-        complete_streamed_job_with_heartbeat_and_events, completed_system_reconciliation_coverage,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
-        reconcile_project_env_and_missing_resources, reconcile_system_projects_and_resources,
-        record_background_reconciliation_error, run_background_reconciliation_job,
-        start_reconciliation_job, start_update_job, stream_started_reconciliation_job,
-        stream_started_update_job, write_coalesced_update_response,
+        FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
+        SystemProjectReconciliationReport, complete_or_fail_background_reconciliation,
+        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
+        complete_update_job, completed_system_reconciliation_coverage, enqueue_reconciliation_job,
+        foreground_reconciliation_result, reconcile_project_env_and_missing_resources,
+        reconcile_system_projects_and_resources, record_background_reconciliation_error,
+        run_background_reconciliation_job, start_reconciliation_job, start_update_job,
+        stream_started_reconciliation_job, stream_started_update_job,
+        write_coalesced_update_response,
     };
+    use crate::ProcessSupervisor;
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 
     const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+    const CADDY_TEST_TRACK: &str = "2";
+    const CADDY_TEST_ARTIFACT_VERSION: &str = "2.11.4-pv1";
+    const CADDY_TEST_ARCHIVE_FILE_NAME: &str = "caddy-2.11.4-pv1-any.tar.gz";
     const PHP_TEST_TRACK: &str = "8.5";
     const PHP_TEST_ARTIFACT_VERSION: &str = "8.5.0-pv1";
     const PHP_TEST_ARCHIVE_FILE_NAME: &str = "php-8.5.0-pv1-any.tar.gz";
@@ -1501,9 +1513,19 @@ mod tests {
     const COMPOSER_TEST_TRACK: &str = "2";
     const COMPOSER_TEST_ARTIFACT_VERSION: &str = "2.8.0-pv1";
     const COMPOSER_TEST_ARCHIVE_FILE_NAME: &str = "composer-2.8.0-pv1-any.tar.gz";
+    const STREAMED_RECONCILIATION_PROGRESS_SETUP_TIMEOUT: Duration = Duration::from_secs(3);
+    const STREAMED_RECONCILIATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
     const MAILPIT_TEST_TRACK: &str = "1.0";
     const MAILPIT_TEST_ARTIFACT_VERSION: &str = "1.0.0-pv1";
     const MAILPIT_TEST_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
+    const FAKE_CADDY_SCRIPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test-fixtures/gateway/fake-caddy.sh"
+    ));
+    const FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test-fixtures/gateway/fake-caddy-server.py"
+    ));
 
     #[test]
     fn system_coverage_excludes_failed_projects_and_their_resources() -> anyhow::Result<()> {
@@ -1656,6 +1678,8 @@ mod tests {
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths, tempdir.path())?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
         let job_id = start_reconciliation_job(&paths, "system")?;
         let (client, server) = duplex(64);
         drop(client);
@@ -1683,10 +1707,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_op_update_preserves_prior_reconciliation_failure_coverage() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        seed_installed_caddy(&paths, tempdir.path())?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+
+        let prior_failure_id = {
+            let mut database = Database::open(&paths)?;
+            let failure = database.start_job("reconcile", "system")?;
+            database.fail_job_with_subject(
+                &failure.id,
+                "prior system reconciliation failure",
+                &state::JobDiagnosticSubject::SystemReconciliation,
+            )?;
+            failure.id
+        };
+        let manifest = state::fs::read_to_string(&paths.downloads().join("manifest.json"))?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            MultiArtifactClient {
+                manifest,
+                archives: BTreeMap::new(),
+            },
+        )?;
+        let job_id = start_update_job(&paths)?;
+
+        let summary = complete_update_job(&paths, &job_id, Some(&catalog)).await?;
+
+        assert_eq!(summary, "current; reconciled: Gateway runtime reconciled");
+        let database = Database::open(&paths)?;
+        let unresolved = database.unresolved_job_failures()?;
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].job.id, prior_failure_id);
+        assert_eq!(
+            unresolved[0].subject,
+            state::JobDiagnosticSubject::SystemReconciliation
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streamed_reconciliation_returns_after_progress_write_times_out() -> anyhow::Result<()>
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths, tempdir.path())?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
         let (client, _total_bytes) = scripted_artifact_client(
             tempdir.path(),
             "composer",
@@ -1703,29 +1772,59 @@ mod tests {
         )?;
         drop(database);
         let job_id = start_reconciliation_job(&paths, "system")?;
-        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-            OFFLINE_TEST_MANIFEST_URL,
-            DelayedScriptedArtifactClient::new(client, Duration::from_millis(200)),
-        )?;
-
-        let result = timeout(
-            Duration::from_millis(500),
+        let catalog = Arc::new(
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                OFFLINE_TEST_MANIFEST_URL,
+                DelayedScriptedArtifactClient::new(client, Duration::from_millis(200)),
+            )?,
+        );
+        let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
+        let task_catalog = Arc::clone(&catalog);
+        let task_paths = paths.clone();
+        let task_job_id = job_id.clone();
+        let mut task = tokio::spawn(async move {
             stream_started_reconciliation_job(
-                paths.clone(),
-                protocol::transport(InitiallyWritableStream::new(2)),
+                task_paths,
+                protocol::transport(InitiallyWritableStream::with_blocked_write_signal(
+                    2,
+                    blocked_write_sender,
+                )),
                 true,
-                &job_id,
+                &task_job_id,
                 ReconciliationScope::System,
-                Some(&catalog),
-            ),
+                Some(task_catalog.as_ref()),
+            )
+            .await
+        });
+
+        let blocked_write_result = timeout(
+            STREAMED_RECONCILIATION_PROGRESS_SETUP_TIMEOUT,
+            blocked_write_receiver,
         )
         .await;
-
-        let result =
-            result.map_err(|_error| anyhow::anyhow!("streamed reconciliation timed out"))?;
+        let completion_result =
+            timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, &mut task).await;
+        let task_result = match completion_result {
+            Ok(result) => result,
+            Err(_error) => {
+                let cleanup_result = task.await;
+                return Err(anyhow::anyhow!(
+                    "streamed reconciliation exceeded the progress-write assertion budget; completion cleanup result: {cleanup_result:?}"
+                ));
+            }
+        };
+        task_result??;
+        let blocked_write_started_at = blocked_write_result
+            .map_err(|_error| {
+                anyhow::anyhow!(
+                    "streamed reconciliation did not reach the blocked progress write during setup"
+                )
+            })?
+            .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
+        let progress_write_elapsed = blocked_write_started_at.elapsed();
         assert!(
-            result.is_ok(),
-            "streamed reconciliation returned {result:#?}"
+            progress_write_elapsed >= FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+            "progress write returned before its timeout budget: {progress_write_elapsed:?}"
         );
         let database = Database::open(&paths)?;
         let job = database
@@ -2215,11 +2314,18 @@ mod tests {
 
     struct InitiallyWritableStream {
         remaining_writes: usize,
+        blocked_write_sender: Option<oneshot::Sender<Instant>>,
     }
 
     impl InitiallyWritableStream {
-        fn new(remaining_writes: usize) -> Self {
-            Self { remaining_writes }
+        fn with_blocked_write_signal(
+            remaining_writes: usize,
+            blocked_write_sender: oneshot::Sender<Instant>,
+        ) -> Self {
+            Self {
+                remaining_writes,
+                blocked_write_sender: Some(blocked_write_sender),
+            }
         }
     }
 
@@ -2240,6 +2346,10 @@ mod tests {
             buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
             if self.remaining_writes == 0 {
+                if let Some(sender) = self.blocked_write_sender.take() {
+                    let _send_result = sender.send(Instant::now());
+                }
+
                 return Poll::Pending;
             }
 
@@ -2692,6 +2802,12 @@ mod tests {
     }
 
     fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
+        let caddy = CachedArtifact::new(
+            "caddy",
+            CADDY_TEST_ARCHIVE_FILE_NAME,
+            CADDY_TEST_ARTIFACT_VERSION,
+            seed_caddy_archive,
+        );
         let php = CachedArtifact::new(
             "php",
             PHP_TEST_ARCHIVE_FILE_NAME,
@@ -2704,11 +2820,92 @@ mod tests {
             PHP_TEST_ARTIFACT_VERSION,
             seed_frankenphp_archive,
         );
+        let caddy = cache_artifact(paths, tempdir, caddy)?;
         let php = cache_artifact(paths, tempdir, php)?;
         let frankenphp = cache_artifact(paths, tempdir, frankenphp)?;
-        let manifest = php_pair_manifest(&[php, frankenphp]);
+        let manifest = php_pair_manifest(&[caddy, php, frankenphp]);
 
         state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
+
+        Ok(())
+    }
+
+    fn seed_caddy_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> anyhow::Result<()> {
+        let archive_parent = tempdir.join("caddy-archive");
+        let root_name = format!("caddy-{CADDY_TEST_ARTIFACT_VERSION}");
+        let executable = archive_parent.join(&root_name).join("bin/caddy");
+
+        write_caddy_fixture(&executable)?;
+        create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    fn seed_installed_caddy(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
+        let release_path = tempdir.join("installed-caddy");
+        write_caddy_fixture(&release_path.join("bin/caddy"))?;
+
+        let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+        state::fs::write_sensitive_file(
+            &paths.ca_private_key(),
+            &certified_key.signing_key.serialize_pem(),
+        )?;
+
+        let mut database = Database::open(paths)?;
+        database.record_managed_resource_track_installed(
+            "caddy",
+            CADDY_TEST_TRACK,
+            CADDY_TEST_ARTIFACT_VERSION,
+            &release_path,
+        )?;
+
+        Ok(())
+    }
+
+    fn write_caddy_fixture(executable: &Utf8Path) -> anyhow::Result<()> {
+        state::fs::write_sensitive_file(executable, FAKE_CADDY_SCRIPT)?;
+        state::fs::write_sensitive_file(
+            &Utf8PathBuf::from(format!("{executable}.server.py")),
+            FAKE_CADDY_SERVER_SCRIPT,
+        )?;
+        set_executable(executable)
+    }
+
+    struct SeededCaddyGuard {
+        paths: PvPaths,
+    }
+
+    impl SeededCaddyGuard {
+        fn new(paths: PvPaths) -> Self {
+            Self { paths }
+        }
+    }
+
+    impl Drop for SeededCaddyGuard {
+        fn drop(&mut self) {
+            let paths = self.paths.clone();
+            std::thread::scope(|scope| {
+                let cleanup_thread = scope.spawn(move || {
+                    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    else {
+                        return;
+                    };
+
+                    let _cleanup_result = runtime.block_on(stop_seeded_caddy(&paths));
+                });
+                let _join_result = cleanup_thread.join();
+            });
+        }
+    }
+
+    async fn stop_seeded_caddy(paths: &PvPaths) -> anyhow::Result<()> {
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        if let Some(caddy) =
+            supervisor.adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        {
+            caddy.stop(Duration::from_secs(1)).await?;
+        }
 
         Ok(())
     }
@@ -2969,6 +3166,15 @@ mod tests {
 
     fn php_pair_manifest_resource(cached: &CachedManifestArtifact) -> String {
         let artifact = cached.artifact;
+        let track = if artifact.resource_name == "caddy" {
+            CADDY_TEST_TRACK
+        } else {
+            PHP_TEST_TRACK
+        };
+        let upstream_version = artifact
+            .artifact_version
+            .strip_suffix("-pv1")
+            .unwrap_or(artifact.artifact_version);
 
         format!(
             r#"    {{
@@ -2980,7 +3186,7 @@ mod tests {
           "artifacts": [
             {{
               "artifact_version": "{artifact_version}",
-              "upstream_version": "{track}",
+              "upstream_version": "{upstream_version}",
               "pv_build_revision": "1",
               "platform": "any",
               "url": "https://artifacts.example.test/{archive_file_name}",
@@ -2991,10 +3197,11 @@ mod tests {
           ]
         }}
       ]
-    }}"#,
+            }}"#,
             resource_name = artifact.resource_name,
-            track = PHP_TEST_TRACK,
+            track = track,
             artifact_version = artifact.artifact_version,
+            upstream_version = upstream_version,
             archive_file_name = artifact.archive_file_name,
             sha256 = cached.sha256,
             size = cached.size,

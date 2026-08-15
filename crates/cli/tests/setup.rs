@@ -1189,6 +1189,7 @@ fn script_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
 
 fn setup_manifest_json() -> anyhow::Result<String> {
     setup_manifest_json_with_resources([
+        setup_manifest_resource("caddy", "2"),
         setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
         setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
         setup_manifest_resource("mysql", "8.4"),
@@ -1202,6 +1203,7 @@ fn setup_manifest_json() -> anyhow::Result<String> {
 
 fn setup_manifest_json_without(resource_name: &str) -> anyhow::Result<String> {
     let resources = [
+        setup_manifest_resource("caddy", "2"),
         setup_manifest_resource_with_tracks("frankenphp", "8.5", &["8.3", "8.4", "8.5"]),
         setup_manifest_resource_with_tracks("php", "8.5", &["8.3", "8.4", "8.5"]),
         setup_manifest_resource("mysql", "8.4"),
@@ -1229,6 +1231,7 @@ fn setup_manifest_json_with_amd64_gap(resource_name: &str) -> anyhow::Result<Str
     };
 
     setup_manifest_json_with_resources([
+        setup_manifest_resource_with_platforms("caddy", "2", &resource_platforms("caddy")),
         setup_manifest_resource_with_tracks_and_platforms(
             "frankenphp",
             "8.5",
@@ -1320,6 +1323,7 @@ fn setup_manifest_resource_with_tracks_and_platforms(
 
 fn expected_setup_tracks() -> Vec<(&'static str, &'static str, ManagedResourceDesiredState)> {
     vec![
+        ("caddy", "2", ManagedResourceDesiredState::Installed),
         ("composer", "2", ManagedResourceDesiredState::Installed),
         ("frankenphp", "8.5", ManagedResourceDesiredState::Installed),
         ("mailpit", "1", ManagedResourceDesiredState::Installed),
