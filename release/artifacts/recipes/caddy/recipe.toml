@@ -1,0 +1,31 @@
+[recipe]
+resources = ["caddy"]
+default_track = "2"
+platforms = ["darwin-arm64", "darwin-amd64"]
+minimum_pv_version = "0.1.0"
+pv_build_revision = "pv1"
+license_files = ["LICENSE"]
+notice_files = ["NOTICE"]
+
+[artifact]
+payload_paths = ["bin/caddy"]
+
+[[tracks]]
+name = "2"
+upstream_version = "2.11.4"
+
+[[tracks.sources]]
+platform = "darwin-arm64"
+source_url = "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_arm64.tar.gz"
+# SHA-256 verified against the downloaded archive and GitHub's official release asset digest.
+# GitHub's signed checksum asset (SHA-512) records:
+# 3190ae0df98b59ab4b6021556fa35adc3c526a4f3e138776b0eaec8a037cc26121cbbb1ad53453f565551b47d37d5ba4755e2c2c3652256737fe2ce9e53c8ec0
+source_sha256 = "9efb0af2d6cf09cfb5053c0e51721b9b3d4956d346234f39368d943d25a3c9a7"
+
+[[tracks.sources]]
+platform = "darwin-amd64"
+source_url = "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_amd64.tar.gz"
+# SHA-256 verified against the downloaded archive and GitHub's official release asset digest.
+# GitHub's signed checksum asset (SHA-512) records:
+# e04eb10f9ce7e2e079bc9bff1bd5d3a3164888d1edbb1a49e5d15be4eab691b57e89ed36bb29c65ba43f1ba8d9279e0967b1003991c13fe4cb78384c3caf25de
+source_sha256 = "34bc9e5cceee8d67844ef51da624f5b79e8d070f27236e050c3f0066a2dba534"

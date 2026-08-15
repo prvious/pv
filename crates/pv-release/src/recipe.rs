@@ -52,6 +52,7 @@ pub enum BackingRecipeKind {
     Postgres,
     Mailpit,
     Rustfs,
+    Caddy,
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +263,7 @@ impl BackingRecipeKind {
             Self::Postgres => "postgres",
             Self::Mailpit => "mailpit",
             Self::Rustfs => "rustfs",
+            Self::Caddy => "caddy",
         }
     }
 
@@ -272,6 +274,7 @@ impl BackingRecipeKind {
             Self::Postgres => "Postgres recipe",
             Self::Mailpit => "Mailpit recipe",
             Self::Rustfs => "RustFS recipe",
+            Self::Caddy => "Caddy recipe",
         }
     }
 }

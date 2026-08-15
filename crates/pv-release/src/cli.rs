@@ -106,6 +106,8 @@ enum Command {
         #[arg(long)]
         mailpit: Option<Utf8PathBuf>,
         #[arg(long)]
+        caddy: Option<Utf8PathBuf>,
+        #[arg(long)]
         rustfs: Option<Utf8PathBuf>,
         #[arg(long)]
         archives: Utf8PathBuf,
@@ -204,6 +206,8 @@ enum Command {
         #[arg(long)]
         mailpit: Option<Utf8PathBuf>,
         #[arg(long)]
+        caddy: Option<Utf8PathBuf>,
+        #[arg(long)]
         rustfs: Option<Utf8PathBuf>,
         #[arg(long)]
         resource: String,
@@ -292,6 +296,7 @@ pub fn run() -> anyhow::Result<()> {
             mysql,
             postgres,
             mailpit,
+            caddy,
             rustfs,
             archives,
             records,
@@ -300,7 +305,7 @@ pub fn run() -> anyhow::Result<()> {
         } => crate::fixture::generate_recipe_fixtures_with_backing(
             &php,
             &composer,
-            &backing_recipe_paths(redis, mysql, postgres, mailpit, rustfs),
+            &backing_recipe_paths(redis, mysql, postgres, mailpit, caddy, rustfs),
             &archives,
             &records,
             &pv_commit,
@@ -401,6 +406,7 @@ pub fn run() -> anyhow::Result<()> {
             mysql,
             postgres,
             mailpit,
+            caddy,
             rustfs,
             resource,
             track,
@@ -414,6 +420,7 @@ pub fn run() -> anyhow::Result<()> {
                     mysql: mysql.as_deref(),
                     postgres: postgres.as_deref(),
                     mailpit: mailpit.as_deref(),
+                    caddy: caddy.as_deref(),
                     rustfs: rustfs.as_deref(),
                 },
                 &resource,
@@ -436,6 +443,7 @@ struct RecipeEnvPaths<'a> {
     mysql: Option<&'a Utf8Path>,
     postgres: Option<&'a Utf8Path>,
     mailpit: Option<&'a Utf8Path>,
+    caddy: Option<&'a Utf8Path>,
     rustfs: Option<&'a Utf8Path>,
 }
 
@@ -504,6 +512,7 @@ fn backing_recipe_paths(
     mysql: Option<Utf8PathBuf>,
     postgres: Option<Utf8PathBuf>,
     mailpit: Option<Utf8PathBuf>,
+    caddy: Option<Utf8PathBuf>,
     rustfs: Option<Utf8PathBuf>,
 ) -> Vec<(BackingRecipeKind, Utf8PathBuf)> {
     let mut paths = Vec::new();
@@ -518,6 +527,9 @@ fn backing_recipe_paths(
     }
     if let Some(path) = mailpit {
         paths.push((BackingRecipeKind::Mailpit, path));
+    }
+    if let Some(path) = caddy {
+        paths.push((BackingRecipeKind::Caddy, path));
     }
     if let Some(path) = rustfs {
         paths.push((BackingRecipeKind::Rustfs, path));
@@ -549,6 +561,9 @@ fn print_recipe_env(
     }
     if let Some(path) = paths.mailpit {
         metadata_paths.push(("mailpit", path));
+    }
+    if let Some(path) = paths.caddy {
+        metadata_paths.push(("caddy", path));
     }
     if let Some(path) = paths.rustfs {
         metadata_paths.push(("rustfs", path));
@@ -611,6 +626,17 @@ fn print_recipe_env(
             )
             .context(context)
         }
+        "caddy" => {
+            let context = format!("failed to print Caddy recipe environment for `{path}`");
+            crate::recipe::backing_recipe_env(
+                path,
+                BackingRecipeKind::Caddy,
+                resource,
+                track,
+                platform,
+            )
+            .context(context)
+        }
         "rustfs" => {
             let context = format!("failed to print RustFS recipe environment for `{path}`");
             crate::recipe::backing_recipe_env(
@@ -659,6 +685,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 archives,
                 records,
@@ -677,6 +704,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(archives, Utf8PathBuf::from("archives"));
                 assert_eq!(records, Utf8PathBuf::from("records"));
@@ -705,6 +733,8 @@ mod tests {
             "release/artifacts/recipes/postgres/recipe.toml",
             "--mailpit",
             "release/artifacts/recipes/mailpit/recipe.toml",
+            "--caddy",
+            "release/artifacts/recipes/caddy/recipe.toml",
             "--rustfs",
             "release/artifacts/recipes/rustfs/recipe.toml",
             "--archives",
@@ -725,6 +755,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 archives,
                 records,
@@ -761,6 +792,12 @@ mod tests {
                     mailpit,
                     Some(Utf8PathBuf::from(
                         "release/artifacts/recipes/mailpit/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    caddy,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/caddy/recipe.toml"
                     ))
                 );
                 assert_eq!(
@@ -1159,6 +1196,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1175,6 +1213,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "composer");
                 assert_eq!(track, "2");
@@ -1208,6 +1247,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1224,6 +1264,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "php");
                 assert_eq!(track, "8.4");
@@ -1257,6 +1298,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1273,6 +1315,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "redis");
                 assert_eq!(track, "8.2");
@@ -1306,6 +1349,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1322,6 +1366,7 @@ mod tests {
                 );
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "mysql");
                 assert_eq!(track, "8.4");
@@ -1355,6 +1400,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1371,6 +1417,7 @@ mod tests {
                     ))
                 );
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "postgres");
                 assert_eq!(track, "18");
@@ -1404,6 +1451,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1420,6 +1468,7 @@ mod tests {
                         "release/artifacts/recipes/mailpit/recipe.toml"
                     ))
                 );
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "mailpit");
                 assert_eq!(track, "1");
@@ -1453,6 +1502,58 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
+                rustfs,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(php, None);
+                assert_eq!(composer, None);
+                assert_eq!(redis, None);
+                assert_eq!(mysql, None);
+                assert_eq!(postgres, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
+                assert_eq!(
+                    rustfs,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/rustfs/recipe.toml"
+                    ))
+                );
+                assert_eq!(resource, "rustfs");
+                assert_eq!(track, "1");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_caddy_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--caddy",
+            "release/artifacts/recipes/caddy/recipe.toml",
+            "--resource",
+            "caddy",
+            "--track",
+            "2",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                redis,
+                mysql,
+                postgres,
+                mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1465,13 +1566,14 @@ mod tests {
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
                 assert_eq!(
-                    rustfs,
+                    caddy,
                     Some(Utf8PathBuf::from(
-                        "release/artifacts/recipes/rustfs/recipe.toml"
+                        "release/artifacts/recipes/caddy/recipe.toml"
                     ))
                 );
-                assert_eq!(resource, "rustfs");
-                assert_eq!(track, "1");
+                assert_eq!(rustfs, None);
+                assert_eq!(resource, "caddy");
+                assert_eq!(track, "2");
                 assert_eq!(platform, "darwin-arm64");
                 Ok(())
             }

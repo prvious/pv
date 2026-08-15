@@ -2360,7 +2360,7 @@ AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
 "#;
 
 impl BackingBuildRecipe {
-    fn all() -> [Self; 3] {
+    fn all() -> [Self; 4] {
         [
             Self {
                 resource: "redis",
@@ -2379,6 +2379,15 @@ impl BackingBuildRecipe {
                 platform: "darwin-arm64",
                 source_kind: BackingSourceKind::TarGzBinary,
                 signed_files: &["mailpit"],
+            },
+            Self {
+                resource: "caddy",
+                track: "2",
+                upstream_version: "2.11.4",
+                artifact_version: "2.11.4-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::TarGzBinary,
+                signed_files: &["caddy"],
             },
             Self {
                 resource: "rustfs",

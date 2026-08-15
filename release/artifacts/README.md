@@ -40,9 +40,9 @@ Recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-spe
 
 `recipes/composer/composer.toml` is the data source for Composer track `2`. Composer is packaged as a `platform: "any"` artifact.
 
-The backing resource recipes cover MySQL tracks `8.0`, `8.4`, and `9.7`; Postgres tracks `17` and `18`; Redis track `8.8`; Mailpit track `1`; and RustFS track `1`.
+The native downloaded-binary recipes cover the PV-managed Caddy track `2` plus MySQL tracks `8.0`, `8.4`, and `9.7`; Postgres tracks `17` and `18`; Redis track `8.8`; Mailpit track `1`; and RustFS track `1`.
 
-`default-tracks.toml` gives the manifest generator explicit default tracks for generated resources: PHP/FrankenPHP `8.5`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only.
+`default-tracks.toml` gives the manifest generator explicit default tracks for generated resources: PHP/FrankenPHP `8.5`, Caddy `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only.
 
 ## Local Validation
 
@@ -61,6 +61,7 @@ cargo run -p pv-release -- generate-recipe-fixtures \
   --mysql release/artifacts/recipes/mysql/recipe.toml \
   --postgres release/artifacts/recipes/postgres/recipe.toml \
   --mailpit release/artifacts/recipes/mailpit/recipe.toml \
+  --caddy release/artifacts/recipes/caddy/recipe.toml \
   --rustfs release/artifacts/recipes/rustfs/recipe.toml \
   --archives /tmp/pv-recipe-fixtures/archives \
   --records /tmp/pv-recipe-fixtures/records \
@@ -74,9 +75,9 @@ cargo run -p pv-release -- generate-manifest \
   --base-url https://artifacts.example.test
 ```
 
-These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real managed-resource artifacts. Real artifacts are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
+These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real managed-resource artifacts. Real native artifacts, including Caddy, are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
 
-The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` currently resolves native resource lanes to `darwin-arm64` for the Apple Silicon/staging RC, while `darwin-amd64` remains explicitly dispatchable for diagnostics and the conditional `darwin-amd64` gate. Composer remains a single `platform=any` artifact so full-resource runs do not duplicate Composer identities.
+The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` currently resolves native resource lanes to `darwin-arm64` for the Apple Silicon/staging RC, except for Caddy, whose native downloaded-binary lane includes both `darwin-arm64` and `darwin-amd64` so one Caddy source run can satisfy the publication gate. `darwin-amd64` remains explicitly dispatchable for diagnostics and the conditional `darwin-amd64` gate on the other native lanes. Composer remains a single `platform=any` artifact so full-resource runs do not duplicate Composer identities.
 
 ## Cloudflare R2 Publication
 

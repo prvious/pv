@@ -29,8 +29,8 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     assert_snapshot!(summary, @r#"
     track_default=all
     platform_default=all
-    platform_description=Artifact platform: all uses the current preview matrix (currently darwin-arm64); choose darwin-arm64 or darwin-amd64 explicitly for one platform
-    platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
+    platform_description=Artifact platform: all uses the current preview matrix (native lanes are darwin-arm64; Caddy includes darwin-amd64); choose darwin-arm64 or darwin-amd64 explicitly for one platform
+    platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
     staticphp_comment_present=true
     staticphp_work_cleanup_restores_write_permission=true
     "#);
@@ -81,13 +81,13 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    jobs=["validate", "build-php", "build-composer", "build-redis", "build-mysql", "build-postgres", "build-mailpit", "build-rustfs"]
-    upload_steps=8
-    archive_upload_paths=7
-    manifest_upload_paths=7
-    record_upload_paths=7
-    recipe_track_envs=8
-    track_upload_names=8
+    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres", "build-mailpit", "build-rustfs"]
+    upload_steps=9
+    archive_upload_paths=8
+    manifest_upload_paths=8
+    record_upload_paths=8
+    recipe_track_envs=9
+    track_upload_names=9
     staticphp_failure_logs=true
     "###);
 
@@ -105,8 +105,8 @@ fn artifact_recipes_track_all_expands_requested_track_sets() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    track_matrices=["track: ${{ fromJSON(inputs.track == 'all' && '[\"8.3\",\"8.4\",\"8.5\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"2\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.8\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.0\",\"8.4\",\"9.7\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"17\",\"18\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}"]
-    validated_resource_tracks=["all:all", "php:all | php:8.3 | php:8.4 | php:8.5", "composer:all | composer:2", "redis:all | redis:8.8", "mysql:all | mysql:8.0 | mysql:8.4 | mysql:9.7", "postgres:all | postgres:17 | postgres:18", "mailpit:all | mailpit:1", "rustfs:all | rustfs:1"]
+    track_matrices=["track: ${{ fromJSON(inputs.track == 'all' && '[\"8.3\",\"8.4\",\"8.5\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"2\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"2\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.8\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.0\",\"8.4\",\"9.7\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"17\",\"18\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}"]
+    validated_resource_tracks=["all:all", "php:all | php:8.3 | php:8.4 | php:8.5", "composer:all | composer:2", "redis:all | redis:8.8", "mysql:all | mysql:8.0 | mysql:8.4 | mysql:9.7", "postgres:all | postgres:17 | postgres:18", "mailpit:all | mailpit:1", "rustfs:all | rustfs:1", "caddy:all | caddy:2"]
     "###);
 
     Ok(())

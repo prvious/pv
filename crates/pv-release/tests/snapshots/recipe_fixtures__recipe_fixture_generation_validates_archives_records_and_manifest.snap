@@ -7,6 +7,51 @@ expression: manifest_json
   "minimum_pv_version": "0.1.0",
   "resources": [
     {
+      "name": "caddy",
+      "default_track": "2",
+      "tracks": [
+        {
+          "name": "2",
+          "artifacts": [
+            {
+              "artifact_version": "2.11.4-pv1",
+              "upstream_version": "2.11.4",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-amd64",
+              "url": "https://artifacts.example.test/resources/caddy/2/2.11.4-pv1/darwin-amd64/caddy-2.11.4-pv1-darwin-amd64.tar.gz",
+              "sha256": "3ca29148c78a42f0f6bf9eb5197776be3e2702034fd3e849b56351b16ff61dfc",
+              "size": 204,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_amd64.tar.gz",
+                "source_sha256": "34bc9e5cceee8d67844ef51da624f5b79e8d070f27236e050c3f0066a2dba534",
+                "recipe": "release/artifacts/recipes/caddy/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "2.11.4-pv1",
+              "upstream_version": "2.11.4",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/resources/caddy/2/2.11.4-pv1/darwin-arm64/caddy-2.11.4-pv1-darwin-arm64.tar.gz",
+              "sha256": "971d6e47b096ef61456445cffbd991ca677b3b2e9160d2fb52d1c5a42ac63b40",
+              "size": 204,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_arm64.tar.gz",
+                "source_sha256": "9efb0af2d6cf09cfb5053c0e51721b9b3d4956d346234f39368d943d25a3c9a7",
+                "recipe": "release/artifacts/recipes/caddy/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "composer",
       "default_track": "2",
       "tracks": [

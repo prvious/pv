@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       resource:
-        description: "Resource to build: all, php, composer, redis, mysql, postgres, mailpit, rustfs"
+        description: "Resource to build: all, php, composer, redis, mysql, postgres, mailpit, rustfs, caddy"
         required: true
         default: "all"
         type: choice
@@ -17,13 +17,14 @@ on:
           - postgres
           - mailpit
           - rustfs
+          - caddy
       track:
-        description: "Track to build: all; PHP 8.3/8.4/8.5; MySQL 8.0/8.4/9.7; Postgres 17/18; Redis 8.8; Composer 2; Mailpit 1; RustFS 1"
+        description: "Track to build: all; PHP 8.3/8.4/8.5; MySQL 8.0/8.4/9.7; Postgres 17/18; Redis 8.8; Composer 2; Mailpit 1; RustFS 1; Caddy 2"
         required: true
         default: "all"
         type: string
       platform:
-        description: "Artifact platform: all uses the current preview matrix (currently darwin-arm64); choose darwin-arm64 or darwin-amd64 explicitly for one platform"
+        description: "Artifact platform: all uses the current preview matrix (native lanes are darwin-arm64; Caddy includes darwin-amd64); choose darwin-arm64 or darwin-amd64 explicitly for one platform"
         required: true
         default: "all"
         type: choice
@@ -69,6 +70,7 @@ jobs:
             postgres:all | postgres:17 | postgres:18) ;;
             mailpit:all | mailpit:1) ;;
             rustfs:all | rustfs:1) ;;
+            caddy:all | caddy:2) ;;
             *)
               printf '%s\n' "unsupported resource/track combination: $PV_RECIPE_RESOURCE/$PV_RECIPE_TRACK" >&2
               exit 1
@@ -87,6 +89,7 @@ jobs:
             --mysql release/artifacts/recipes/mysql/recipe.toml \
             --postgres release/artifacts/recipes/postgres/recipe.toml \
             --mailpit release/artifacts/recipes/mailpit/recipe.toml \
+            --caddy release/artifacts/recipes/caddy/recipe.toml \
             --rustfs release/artifacts/recipes/rustfs/recipe.toml \
             --archives "$fixtures_dir/archives" \
             --records "$fixtures_dir/records" \
@@ -214,6 +217,76 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pv-artifact-recipes-php-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-caddy:
+    name: "caddy ${{ matrix.track }} ${{ matrix.platform }}"
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'caddy' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        track: ${{ fromJSON(inputs.track == 'all' && '["2"]' || format('["{0}"]', inputs.track)) }}
+        # Caddy is a native downloaded binary, so its all-platform source run
+        # includes both native identities for one publication gate.
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64","darwin-amd64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Caddy artifact
+        env:
+          PV_RECIPE_TRACK: ${{ matrix.track }}
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+          mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
+
+          release/artifacts/recipes/caddy/build.sh
+
+          rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
+
+      - name: Generate manifest from records
+        env:
+          PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
+          PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
+          PV_MANIFEST_DEFAULTS: ${{ runner.temp }}/pv-default-tracks.toml
+        run: |
+          set -eu
+
+          cat >"$PV_MANIFEST_DEFAULTS" <<DEFAULT_TRACKS
+          [[resource]]
+          name = "caddy"
+          default_track = "${{ matrix.track }}"
+
+          DEFAULT_TRACKS
+
+          cargo run -p pv-release -- generate-manifest \
+            --records "$PV_ARTIFACT_RECORD_DIR" \
+            --revocations release/artifacts/revocations \
+            --defaults "$PV_MANIFEST_DEFAULTS" \
+            --output "$PV_ARTIFACT_OUT_DIR/manifest.json" \
+            --base-url https://artifacts.example.test
+
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-caddy-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
