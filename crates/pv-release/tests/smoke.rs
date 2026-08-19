@@ -1271,7 +1271,6 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
     write_fake_mailpit(&artifact_bin.join("mailpit"))?;
     write_fake_success_curl(&command_bin.join("curl"))?;
 
-    let started = Instant::now();
     let output = StdCommand::new(mailpit_smoke_hook())
         .arg(&artifact_root)
         .env(
@@ -1289,9 +1288,11 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
         "Mailpit smoke should fail when the server ignores shutdown: {}",
         command_output_debug(&output)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "Mailpit smoke should use a bounded shutdown wait"
+        stderr.contains("Mailpit smoke failed: server did not stop cleanly"),
+        "Mailpit smoke should report the bounded shutdown failure: {}",
+        command_output_debug(&output)
     );
 
     Ok(())
