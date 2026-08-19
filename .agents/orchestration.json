@@ -1,0 +1,22 @@
+{
+  "worker": {
+    "agent_type": "codex",
+    "model": "gpt-5.6-luna",
+    "effort": "max"
+  },
+  "tester": {
+    "agent_type": "codex",
+    "model": "gpt-5.6-luna",
+    "effort": "max"
+  },
+  "reviewer": {
+    "agent_type": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh"
+  },
+  "planner": {
+    "agent_type": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh"
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "pr-review-toolkit"
+  short_description: "Coordinate concurrent pull-request specialists"
+  default_prompt: "Use $pr-review-toolkit to delegate applicable specialists through the active delegation facility, run advisory review concurrently by default, and preserve each specialist's scoring and output contract."
