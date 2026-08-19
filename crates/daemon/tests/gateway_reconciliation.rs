@@ -12,9 +12,9 @@ use rcgen::generate_simple_self_signed;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::{Value, json};
 use state::{
-    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject,
-    fs,
+    Database, GatewayPort, LinkProjectInput, PortAssignment, PortOwner, PortRequest, ProjectMode,
+    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus,
+    RuntimeSubject, fs,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -586,20 +586,9 @@ document_root: public
         &[("8.4", ports[2])],
     )?;
     let assignments = database.assigned_ports()?;
-    let stale_gateway_admin_port = assignments
-        .iter()
-        .find_map(|assignment| {
-            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
-        })
+    let stale_gateway_admin_port = gateway_admin_port(&assignments)
         .ok_or_else(|| anyhow::anyhow!("missing Gateway admin port assignment"))?;
-    let stale_worker_admin_port = assignments
-        .iter()
-        .find_map(|assignment| match &assignment.owner {
-            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
-                Some(assignment.port)
-            }
-            _ => None,
-        })
+    let stale_worker_admin_port = php_worker_admin_port(&assignments, "8.4")
         .ok_or_else(|| anyhow::anyhow!("missing worker admin port assignment"))?;
     drop(database);
 
@@ -609,20 +598,9 @@ document_root: public
     reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(2)).await?;
 
     let assignments = Database::open(&paths)?.assigned_ports()?;
-    let gateway_admin_port = assignments
-        .iter()
-        .find_map(|assignment| {
-            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
-        })
+    let gateway_admin_port = gateway_admin_port(&assignments)
         .ok_or_else(|| anyhow::anyhow!("missing reallocated Gateway admin port"))?;
-    let worker_admin_port = assignments
-        .iter()
-        .find_map(|assignment| match &assignment.owner {
-            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
-                Some(assignment.port)
-            }
-            _ => None,
-        })
+    let worker_admin_port = php_worker_admin_port(&assignments, "8.4")
         .ok_or_else(|| anyhow::anyhow!("missing reallocated worker admin port"))?;
 
     assert_ne!(gateway_admin_port, stale_gateway_admin_port);
@@ -649,15 +627,8 @@ async fn gateway_reconciliation_attributes_admin_port_recovery_errors_to_worker(
         ports[1],
         &[("8.4", ports[2])],
     )?;
-    let worker_admin_port = database
-        .assigned_ports()?
-        .into_iter()
-        .find_map(|assignment| match assignment.owner {
-            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
-                Some(assignment.port)
-            }
-            _ => None,
-        })
+    let assignments = database.assigned_ports()?;
+    let worker_admin_port = php_worker_admin_port(&assignments, "8.4")
         .ok_or_else(|| anyhow::anyhow!("missing worker admin port assignment"))?;
     drop(database);
 
@@ -817,12 +788,8 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     )
     .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    let gateway_admin_port = Database::open(&paths)?
-        .assigned_ports()?
-        .into_iter()
-        .find_map(|assignment| {
-            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
-        })
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+    let gateway_admin_port = gateway_admin_port(&assignments)
         .ok_or_else(|| anyhow::anyhow!("missing Gateway admin port assignment"))?;
     assert_ne!(gateway_admin_port, ports[2]);
     legacy_process.stop(Duration::from_secs(1)).await?;
@@ -3516,6 +3483,23 @@ fn seed_runtime_ports(
     }
 
     Ok(())
+}
+
+fn gateway_admin_port(assignments: &[PortAssignment]) -> Option<u16> {
+    assignments.iter().find_map(|assignment| {
+        (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
+    })
+}
+
+fn php_worker_admin_port(assignments: &[PortAssignment], runtime_key: &str) -> Option<u16> {
+    assignments
+        .iter()
+        .find_map(|assignment| match &assignment.owner {
+            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == runtime_key => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
 }
 
 fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
