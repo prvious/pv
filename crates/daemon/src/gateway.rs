@@ -1339,7 +1339,7 @@ async fn start_or_adopt_promoted_runtime(
     subject: RuntimeSubject,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
     let matching_runtime = match supervisor.verify_ownership(&spec) {
-        Ok(Some(_)) => true,
+        Ok(Some(runtime)) => !runtime.replacement_required(),
         Ok(None) => false,
         Err(error) => {
             let error = match promoted_config.rollback() {
@@ -1441,6 +1441,55 @@ async fn start_or_adopt_promoted_runtime(
     }
 }
 
+async fn load_runtime_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    client: CaddyAdminClient,
+    admin_endpoint: CaddyAdminEndpoint,
+    content: Vec<u8>,
+) -> Result<(), RuntimeTransactionError> {
+    match supervisor.mark_replacement_required(spec) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(RuntimeTransactionError::new(
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            ));
+        }
+        Err(error) => return Err(RuntimeTransactionError::new(error)),
+    }
+
+    match client
+        .load_caddyfile_with(
+            admin_endpoint,
+            content,
+            runtime_ownership_verifier(paths, spec),
+        )
+        .await
+    {
+        Ok(()) => match supervisor.clear_replacement_required(spec) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(RuntimeTransactionError::preserve_promoted_config(
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            )),
+            Err(error) => Err(RuntimeTransactionError::preserve_promoted_config(error)),
+        },
+        Err(
+            error @ CaddyAdminError::RequestOutcomeUnknown {
+                operation: CaddyAdminOperation::Load,
+                ..
+            },
+        ) => Err(RuntimeTransactionError::preserve_promoted_config(
+            error.into(),
+        )),
+        Err(error) => {
+            let _clear_result = supervisor.clear_replacement_required(spec);
+
+            Err(RuntimeTransactionError::new(error.into()))
+        }
+    }
+}
+
 async fn start_or_adopt_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
@@ -1464,23 +1513,15 @@ async fn start_or_adopt_runtime(
 
             let active_content = read_config_bytes(&spec.config_path)?;
             let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
-            let load_error = client
-                .load_caddyfile_with(
-                    admin_endpoint,
-                    active_content,
-                    runtime_ownership_verifier(paths, spec),
-                )
-                .await;
-            if let Err(error) = load_error {
-                let error = DaemonError::from(error);
-                return Err(match &error {
-                    DaemonError::CaddyAdmin(CaddyAdminError::RequestOutcomeUnknown {
-                        operation: CaddyAdminOperation::Load,
-                        ..
-                    }) => RuntimeTransactionError::preserve_promoted_config(error),
-                    _ => RuntimeTransactionError::new(error),
-                });
-            }
+            load_runtime_config(
+                paths,
+                supervisor,
+                spec,
+                client,
+                admin_endpoint,
+                active_content,
+            )
+            .await?;
             verify_runtime_ownership(supervisor, spec)?;
 
             if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
@@ -1653,12 +1694,12 @@ async fn compensate_commit_failure(
             restore_runtime_after_failed_load(paths, supervisor, spec, readiness, commit_error)
                 .await
         }
-        Ok(()) => stop_runtime_after_failed_commit(supervisor, spec, commit_error).await,
+        Ok(()) => stop_runtime_after_failed_transaction(supervisor, spec, commit_error).await,
         Err(rollback_error) => runtime_config_rollback_failed_error(commit_error, rollback_error),
     }
 }
 
-async fn stop_runtime_after_failed_commit(
+async fn stop_runtime_after_failed_transaction(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     original_error: DaemonError,
@@ -1703,15 +1744,17 @@ async fn restore_runtime_after_failed_load(
         Err(error) => return compound_runtime_restore_error(original_error, error),
     };
     let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
-    if let Err(error) = client
-        .load_caddyfile_with(
-            readiness.admin_endpoint,
-            restored_content,
-            runtime_ownership_verifier(paths, spec),
-        )
-        .await
+    if let Err(error) = load_runtime_config(
+        paths,
+        supervisor,
+        spec,
+        client,
+        readiness.admin_endpoint,
+        restored_content,
+    )
+    .await
     {
-        return compound_runtime_restore_error(original_error, error.into());
+        return compound_runtime_restore_error(original_error, error.error);
     }
     if let Err(error) = verify_runtime_ownership(supervisor, spec) {
         return compound_runtime_restore_error(original_error, error);

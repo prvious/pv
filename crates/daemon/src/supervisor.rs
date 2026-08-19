@@ -104,6 +104,7 @@ pub struct OwnedRuntime {
     pid: u32,
     command: Utf8PathBuf,
     arguments: Vec<String>,
+    replacement_required: bool,
     process_start_identity: platform::ProcessStartIdentity,
     process_executable_identity: Option<ProcessExecutableIdentity>,
     log_path: Utf8PathBuf,
@@ -165,6 +166,8 @@ struct RuntimeMetadata {
     resource_name: String,
     #[serde(default)]
     track: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    replacement_required: bool,
     log_path: String,
     started_at: String,
     #[serde(default)]
@@ -256,6 +259,7 @@ impl ProcessSupervisor {
                 pid,
                 command: spec.command.clone(),
                 arguments: spec.arguments.clone(),
+                replacement_required: metadata.replacement_required,
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
                 log_path: spec.log_path.clone(),
@@ -265,6 +269,49 @@ impl ProcessSupervisor {
         }
 
         Ok(None)
+    }
+
+    pub fn mark_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        self.set_replacement_required(spec, true)
+    }
+
+    pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
+        self.set_replacement_required(spec, false)
+    }
+
+    fn set_replacement_required(
+        &self,
+        spec: &ProcessSpec,
+        replacement_required: bool,
+    ) -> Result<bool, DaemonError> {
+        require_process_containment()?;
+        let Some(pid) = read_pid_file(&spec.pid_path)? else {
+            return Ok(false);
+        };
+        let Some(mut metadata) = read_runtime_metadata(&spec.metadata_path)? else {
+            return Ok(false);
+        };
+        let Some(process_start_identity) = metadata.process_start_identity else {
+            return Ok(false);
+        };
+
+        if !metadata.matches(spec, pid)
+            || !live_process_matches(
+                pid,
+                &spec.command,
+                &spec.arguments,
+                process_start_identity,
+                metadata.process_executable_identity.as_ref(),
+            )?
+        {
+            return Ok(false);
+        }
+
+        metadata.replacement_required = replacement_required;
+        let encoded = serde_json::to_string(&metadata)?;
+        fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
+
+        Ok(true)
     }
 
     pub fn adopt(&self, spec: &ProcessSpec) -> Result<Option<AdoptedProcess>, DaemonError> {
@@ -306,6 +353,7 @@ impl ProcessSupervisor {
                     pid,
                     command: spec.command,
                     arguments: spec.arguments,
+                    replacement_required: metadata.replacement_required,
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                     log_path: spec.log_path,
@@ -379,6 +427,10 @@ impl ManagedProcess {
 impl OwnedRuntime {
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    pub fn replacement_required(&self) -> bool {
+        self.replacement_required
     }
 
     fn matches_live(&self) -> Result<bool, DaemonError> {
@@ -888,6 +940,7 @@ fn write_runtime_metadata(
         config_path: spec.config_path.to_string(),
         resource_name: spec.resource_name.clone(),
         track: spec.track.clone(),
+        replacement_required: false,
         log_path: spec.log_path.to_string(),
         started_at,
         process_start_identity: Some(process_start_identity),
@@ -1052,6 +1105,10 @@ impl RuntimeMetadata {
             && self.track == spec.track
             && self.log_path == spec.log_path.as_str()
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn private_environment_fingerprint(environment: &BTreeMap<String, String>) -> Option<String> {

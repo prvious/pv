@@ -1848,13 +1848,13 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_reports_unknown_load_without_compensation() -> Result<()> {
+async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
-    let ports = available_loopback_ports(4)?;
+    let ports = available_loopback_ports(6)?;
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -1873,8 +1873,8 @@ async fn gateway_reconciliation_reports_unknown_load_without_compensation() -> R
         &paths.gateway_root_config(),
         json!({
             "late_accept": [true],
-            "late_apply_delay_ms": [350],
-            "load_delay_ms": [350],
+            "late_apply_delay_ms": [2000],
+            "load_delay_ms": [2000],
             "load_statuses": [200]
         }),
     )?;
@@ -1887,14 +1887,40 @@ async fn gateway_reconciliation_reports_unknown_load_without_compensation() -> R
 
     let result =
         reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(150)).await;
-    // The candidate applies after the timeout. Before the fix, the immediate compensation
-    // applied the previous root first, then this late candidate overwrote it.
     let initial_load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
-    let candidate_root = initial_load_bodies
+    let first_candidate_root = initial_load_bodies
         .first()
         .ok_or_else(|| anyhow::anyhow!("fake admin did not record the candidate load"))?
         .clone();
-    wait_for_fake_admin_current_bytes(&paths.gateway_root_config(), &candidate_root).await?;
+    let unknown_runtime_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let unknown_runtime_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::CaddyAdmin(
+            CaddyAdminError::RequestOutcomeUnknown {
+                operation: daemon::CaddyAdminOperation::Load,
+                ..
+            }
+        ))
+    ));
+    assert_eq!(first_gateway_pid, unknown_runtime_pid);
+    assert_eq!(
+        read_test_bytes(paths.gateway_root_config())?,
+        first_candidate_root
+    );
+    assert_eq!(unknown_runtime_metadata["replacement_required"], true);
+    assert_eq!(initial_load_bodies.len(), 1);
+    assert_ne!(initial_load_bodies[0], previous_root);
+
+    let mut database = Database::open(&paths)?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
+    seed_runtime_ports(&paths, &mut database, ports[4], ports[5], &[])?;
+    drop(database);
+
     let recovery_summary = reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
         Duration::from_millis(250),
@@ -1907,32 +1933,25 @@ async fn gateway_reconciliation_reports_unknown_load_without_compensation() -> R
     let current_config = fake_admin_current_bytes(&paths.gateway_root_config())?;
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let requests = fake_admin_requests(&paths.gateway_root_config())?;
+    let replacement_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
-    assert!(matches!(
-        result,
-        Err(DaemonError::CaddyAdmin(
-            CaddyAdminError::RequestOutcomeUnknown {
-                operation: daemon::CaddyAdminOperation::Load,
-                ..
-            }
-        ))
-    ));
     assert_eq!(recovery_summary, "Gateway runtime reconciled");
-    assert_eq!(first_gateway_pid, second_gateway_pid);
-    assert_eq!(root_after, candidate_root);
-    assert_eq!(current_config, candidate_root);
-    assert_eq!(load_bodies.len(), 2);
-    assert_ne!(load_bodies[0], previous_root);
-    assert_eq!(load_bodies[0], load_bodies[1]);
+    assert_ne!(first_gateway_pid, second_gateway_pid);
+    wait_for_process_exit(first_gateway_pid).await?;
+    assert_ne!(root_after, first_candidate_root);
+    assert_eq!(current_config, root_after);
+    assert_ne!(replacement_metadata["replacement_required"], true);
+    assert_eq!(load_bodies, initial_load_bodies);
     assert_eq!(
         requests
             .iter()
             .filter(|request| request["method"] == "POST" && request["path"] == "/load")
             .map(|request| request["status"].as_u64())
             .collect::<Vec<_>>(),
-        vec![Some(200), Some(200)]
+        vec![Some(200)]
     );
 
     Ok(())
@@ -3098,19 +3117,6 @@ fn fake_admin_current_bytes(config_path: &Utf8Path) -> Result<Vec<u8>> {
         .unwrap_or_else(|| Utf8Path::new("."))
         .join("fake-admin-current.bin");
     read_test_bytes(path)
-}
-
-async fn wait_for_fake_admin_current_bytes(config_path: &Utf8Path, expected: &[u8]) -> Result<()> {
-    timeout(Duration::from_secs(2), async {
-        loop {
-            if fake_admin_current_bytes(config_path)? == expected {
-                return Ok(());
-            }
-            sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("fake admin did not apply the expected load in time"))?
 }
 
 #[expect(

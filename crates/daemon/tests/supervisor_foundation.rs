@@ -567,6 +567,27 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 
     assert_eq!(owned.pid(), process.pid());
     assert_eq!(adopted.pid(), process.pid());
+    assert!(supervisor.mark_replacement_required(&spec)?);
+    assert_eq!(
+        runtime_metadata(process.metadata_path())?["replacement_required"],
+        true
+    );
+    let replacement = supervisor
+        .verify_ownership(&spec)?
+        .ok_or_else(|| anyhow!("replacement-required runtime lost ownership"))?;
+    assert!(replacement.replacement_required());
+    assert!(supervisor.adopt(&spec)?.is_some());
+    let replacement = supervisor
+        .adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        .ok_or_else(|| anyhow!("replacement-required runtime was not adoptable by its record"))?;
+    assert_eq!(replacement.pid(), process.pid());
+    assert!(supervisor.clear_replacement_required(&spec)?);
+    assert!(
+        !supervisor
+            .verify_ownership(&spec)?
+            .ok_or_else(|| anyhow!("cleared runtime lost ownership"))?
+            .replacement_required()
+    );
 
     process.stop(Duration::from_secs(1)).await?;
 
