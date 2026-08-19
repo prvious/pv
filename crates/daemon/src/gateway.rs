@@ -1407,20 +1407,32 @@ async fn start_or_adopt_promoted_runtime(
         Err(RuntimeTransactionError {
             error,
             restore_active_runtime,
+            config_disposition,
         }) => {
-            let error = match promoted_config.rollback() {
-                Ok(()) if restore_active_runtime => {
-                    restore_runtime_after_failed_load(
-                        paths,
-                        supervisor,
-                        &spec,
-                        restoration_readiness,
-                        error,
-                    )
-                    .await
+            let error = match config_disposition {
+                RuntimeConfigDisposition::Rollback => match promoted_config.rollback() {
+                    Ok(()) if restore_active_runtime => {
+                        restore_runtime_after_failed_load(
+                            paths,
+                            supervisor,
+                            &spec,
+                            restoration_readiness,
+                            error,
+                        )
+                        .await
+                    }
+                    Ok(()) => error,
+                    Err(rollback_error) => {
+                        runtime_config_rollback_failed_error(error, rollback_error)
+                    }
+                },
+                RuntimeConfigDisposition::Preserve => {
+                    // An unknown load may still apply in Caddy after the client returns. Keep
+                    // the desired promoted tree on disk and do not issue a competing load whose
+                    // ordering cannot be established.
+                    let _cleanup_result = promoted_config.commit();
+                    error
                 }
-                Ok(()) => error,
-                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
             };
             record_runtime_error(paths, subject, &error)?;
 
@@ -1461,11 +1473,13 @@ async fn start_or_adopt_runtime(
                 .await;
             if let Err(error) = load_error {
                 let error = DaemonError::from(error);
-                if caddy_load_may_have_been_accepted(&error) {
-                    return Err(RuntimeTransactionError::requiring_restore(error));
-                }
-
-                return Err(RuntimeTransactionError::new(error));
+                return Err(match &error {
+                    DaemonError::CaddyAdmin(CaddyAdminError::RequestOutcomeUnknown {
+                        operation: CaddyAdminOperation::Load,
+                        ..
+                    }) => RuntimeTransactionError::preserve_promoted_config(error),
+                    _ => RuntimeTransactionError::new(error),
+                });
             }
             verify_runtime_ownership(supervisor, spec)?;
 
@@ -1584,6 +1598,13 @@ struct RuntimeTransactionSuccess {
 struct RuntimeTransactionError {
     error: DaemonError,
     restore_active_runtime: bool,
+    config_disposition: RuntimeConfigDisposition,
+}
+
+#[derive(Debug)]
+enum RuntimeConfigDisposition {
+    Rollback,
+    Preserve,
 }
 
 impl RuntimeTransactionError {
@@ -1591,6 +1612,7 @@ impl RuntimeTransactionError {
         Self {
             error,
             restore_active_runtime: false,
+            config_disposition: RuntimeConfigDisposition::Rollback,
         }
     }
 
@@ -1598,6 +1620,15 @@ impl RuntimeTransactionError {
         Self {
             error,
             restore_active_runtime: true,
+            config_disposition: RuntimeConfigDisposition::Rollback,
+        }
+    }
+
+    fn preserve_promoted_config(error: DaemonError) -> Self {
+        Self {
+            error,
+            restore_active_runtime: false,
+            config_disposition: RuntimeConfigDisposition::Preserve,
         }
     }
 }
@@ -1739,21 +1770,6 @@ fn runtime_ownership_verifier(paths: &PvPaths, spec: &ProcessSpec) -> CaddyAdmin
         let supervisor = ProcessSupervisor::new(paths.clone());
         verify_runtime_ownership_for_admin(&supervisor, &spec, operation)
     })
-}
-
-fn caddy_load_may_have_been_accepted(error: &DaemonError) -> bool {
-    matches!(
-        error,
-        DaemonError::CaddyAdmin(
-            CaddyAdminError::RequestTimedOut {
-                operation: CaddyAdminOperation::Load,
-                ..
-            } | CaddyAdminError::RequestOutcomeUnknown {
-                operation: CaddyAdminOperation::Load,
-                ..
-            }
-        )
-    )
 }
 
 fn compound_runtime_restore_error(original: DaemonError, restored: DaemonError) -> DaemonError {

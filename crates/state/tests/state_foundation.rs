@@ -3037,6 +3037,85 @@ fn legacy_port_insert_contract_survives_named_resource_port_migration() -> Resul
 }
 
 #[test]
+fn current_admin_assignments_remain_readable_by_previous_port_decoder() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let extension_runtime_key =
+        state::php_runtime_key("8.4", &["redis".to_owned(), "xdebug".to_owned()])?;
+
+    database.assign_gateway_ports(|_port| true)?;
+    database.assign_php_worker_ports("8.4", |_port| true)?;
+    database.assign_php_worker_ports(&extension_runtime_key, |_port| true)?;
+    let current_assignments = database.assigned_ports()?;
+    assert!(
+        current_assignments
+            .iter()
+            .any(|assignment| { assignment.owner == PortOwner::Gateway(GatewayPort::Admin) })
+    );
+    assert!(current_assignments.iter().any(|assignment| {
+        assignment.owner
+            == PortOwner::PhpWorkerAdmin {
+                php_runtime_key: extension_runtime_key.clone(),
+            }
+    }));
+    drop(database);
+
+    let connection = Connection::open(paths.db())?;
+    let mut statement = connection.prepare(
+        "SELECT resource_name, track, port_name
+        FROM resource_ports
+        ORDER BY resource_name, track, port_name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut previous_resource_rows = Vec::new();
+    let previous_managed_resource_identity_is_valid = |value: &str| {
+        !value.is_empty()
+            && value != "."
+            && value != ".."
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    };
+
+    for row in rows {
+        let (resource_name, track, port_name) = row?;
+        if !previous_managed_resource_identity_is_valid(&resource_name)
+            || !previous_managed_resource_identity_is_valid(&track)
+            || track == "latest"
+            || !previous_managed_resource_identity_is_valid(&port_name)
+        {
+            return Err(anyhow!(
+                "previous port decoder rejected resource:{resource_name}:{track}:{port_name}"
+            ));
+        }
+
+        previous_resource_rows.push((resource_name, track, port_name));
+    }
+
+    assert_eq!(
+        previous_resource_rows,
+        vec![
+            ("caddy".to_string(), "2".to_string(), "admin".to_string(),),
+            ("php".to_string(), "8.4".to_string(), "admin".to_string(),),
+            (
+                "php".to_string(),
+                "8.4".to_string(),
+                "admin.redis.xdebug".to_string(),
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

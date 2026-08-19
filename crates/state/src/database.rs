@@ -24,6 +24,10 @@ const MAX_DNS_LABEL_LENGTH: usize = 63;
 const MAX_HOSTNAME_LENGTH: usize = 253;
 const RESERVED_HOSTNAME: &str = "pv.test";
 const RESERVED_TRACK_NAME: &str = "latest";
+const CADDY_RESOURCE_NAME: &str = "caddy";
+const CADDY_RESOURCE_TRACK: &str = "2";
+const ADMIN_RESOURCE_PORT_NAME: &str = "admin";
+const PHP_RESOURCE_NAME: &str = "php";
 const PROJECT_ENV_OBSERVED_SUBJECT_KIND: &str = "project_env";
 const RUNTIME_OBSERVED_SUBJECT_KIND: &str = "runtime";
 const PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND: &str = "php_runtime_worker";
@@ -2594,6 +2598,12 @@ impl PortOwner {
                 owner_track: String::new(),
                 owner_port: String::new(),
             }),
+            Self::Gateway(GatewayPort::Admin) => Ok(PortIdentity {
+                owner_kind: "resource",
+                owner_id: CADDY_RESOURCE_NAME.to_string(),
+                owner_track: CADDY_RESOURCE_TRACK.to_string(),
+                owner_port: ADMIN_RESOURCE_PORT_NAME.to_string(),
+            }),
             Self::Gateway(gateway_port) => Ok(PortIdentity {
                 owner_kind: "gateway",
                 owner_id: gateway_port.as_str().to_string(),
@@ -2612,12 +2622,24 @@ impl PortOwner {
             }
             Self::PhpWorkerAdmin { php_runtime_key } => {
                 validate_php_runtime_key(php_runtime_key)?;
+                let (owner_track, owner_port) =
+                    if let Some((php_track, extensions)) = php_runtime_key.split_once('+') {
+                        (
+                            php_track.to_owned(),
+                            format!(
+                                "{ADMIN_RESOURCE_PORT_NAME}.{}",
+                                extensions.replace('+', ".")
+                            ),
+                        )
+                    } else {
+                        (php_runtime_key.clone(), ADMIN_RESOURCE_PORT_NAME.to_owned())
+                    };
 
                 Ok(PortIdentity {
-                    owner_kind: "php_worker_admin",
-                    owner_id: "php".to_string(),
-                    owner_track: php_runtime_key.clone(),
-                    owner_port: String::new(),
+                    owner_kind: "resource",
+                    owner_id: PHP_RESOURCE_NAME.to_string(),
+                    owner_track,
+                    owner_port,
                 })
             }
             Self::Resource { name, track, port } => {
@@ -2684,6 +2706,41 @@ impl PortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
                 reason: "php worker admin ports must use owner id `php`, include a php runtime key, and use an empty owner port",
             }),
+            "resource"
+                if owner_id == CADDY_RESOURCE_NAME
+                    && owner_track == CADDY_RESOURCE_TRACK
+                    && owner_port == ADMIN_RESOURCE_PORT_NAME =>
+            {
+                Ok(Self::Gateway(GatewayPort::Admin))
+            }
+            "resource"
+                if owner_id == PHP_RESOURCE_NAME
+                    && !owner_track.is_empty()
+                    && (owner_port == ADMIN_RESOURCE_PORT_NAME
+                        || owner_port.starts_with("admin.")) =>
+            {
+                let php_runtime_key = if owner_port == ADMIN_RESOURCE_PORT_NAME {
+                    owner_track
+                } else if let Some(extensions) = owner_port.strip_prefix("admin.")
+                    && !extensions.is_empty()
+                {
+                    format!("{owner_track}+{}", extensions.replace('.', "+"))
+                } else {
+                    return Err(StateError::InvalidPortOwner {
+                        owner: describe_port_identity(
+                            &owner_kind,
+                            &owner_id,
+                            &owner_track,
+                            &owner_port,
+                        ),
+                        reason: "PHP worker admin resource ports must use `admin` or `admin.<extension>`",
+                    });
+                };
+                let owner = Self::PhpWorkerAdmin { php_runtime_key };
+                owner.identity()?;
+
+                Ok(owner)
+            }
             "resource"
                 if !owner_id.is_empty() && !owner_track.is_empty() && !owner_port.is_empty() =>
             {

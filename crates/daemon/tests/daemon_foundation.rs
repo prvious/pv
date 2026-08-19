@@ -589,6 +589,26 @@ fn available_foundation_gateway_ports() -> Result<[u16; 3]> {
         .map_err(|_| anyhow!("expected three available gateway ports"))
 }
 
+fn reserve_foundation_ports(count: usize, start: u16, end: u16) -> Result<Vec<StdTcpListener>> {
+    let mut listeners = Vec::with_capacity(count);
+
+    for port in start..=end {
+        match StdTcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => listeners.push(listener),
+            Err(error) if error.kind() == ErrorKind::AddrInUse => continue,
+            Err(error) => return Err(error.into()),
+        }
+
+        if listeners.len() == count {
+            return Ok(listeners);
+        }
+    }
+
+    Err(anyhow!(
+        "expected {count} available foundation ports in {start}..={end}"
+    ))
+}
+
 struct SeededGatewayGuard {
     paths: PvPaths,
     daemon: Option<daemon::RunningDaemon>,
@@ -987,6 +1007,27 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
+    let worker_port_reservations = reserve_foundation_ports(2, 40_000, 44_999)?;
+    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
+    let worker_admin_port = worker_port_reservations[1].local_addr()?.port();
+    database.assign_port(
+        PortRequest::php_worker(
+            php_track,
+            worker_service_port,
+            worker_service_port,
+            worker_service_port,
+        ),
+        |_port| true,
+    )?;
+    database.assign_port(
+        PortRequest::php_worker_admin(
+            php_track,
+            worker_admin_port,
+            worker_admin_port,
+            worker_admin_port,
+        ),
+        |_port| true,
+    )?;
     drop(database);
 
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
@@ -1011,6 +1052,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     gateway_guard.attach_worker(php_track);
+    drop(worker_port_reservations);
     let client_paths = paths.clone();
     let completed_result = tokio::task::spawn_blocking(move || {
         daemon::run_job_blocking(client_paths, "reconcile", "system")

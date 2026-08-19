@@ -1467,6 +1467,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::io::{self, Write};
+    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
@@ -1481,8 +1482,8 @@ mod tests {
     use rcgen::generate_simple_self_signed;
     use serde_json::json;
     use state::{
-        Database, JobStatus, LinkProjectInput, ProjectManagedResourceInput, PvPaths, StateError,
-        UpdateLock,
+        Database, GatewayPort, JobStatus, LinkProjectInput, PortRequest,
+        ProjectManagedResourceInput, PvPaths, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
@@ -1701,7 +1702,12 @@ mod tests {
             .into_iter()
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
-        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(
+            job.status,
+            JobStatus::Succeeded,
+            "unexpected persisted job error: {:?}",
+            job.error
+        );
 
         Ok(())
     }
@@ -1714,15 +1720,22 @@ mod tests {
         seed_installed_caddy(&paths, tempdir.path())?;
         let _caddy_guard = SeededCaddyGuard::new(paths.clone());
 
-        let prior_failure_id = {
+        let (prior_system_failure_id, prior_gateway_failure_id) = {
             let mut database = Database::open(&paths)?;
-            let failure = database.start_job("reconcile", "system")?;
+            let system_failure = database.start_job("reconcile", "system")?;
             database.fail_job_with_subject(
-                &failure.id,
+                &system_failure.id,
                 "prior system reconciliation failure",
                 &state::JobDiagnosticSubject::SystemReconciliation,
             )?;
-            failure.id
+            let gateway_failure = database.start_job("reconcile", "gateway")?;
+            database.fail_job_with_subject(
+                &gateway_failure.id,
+                "prior gateway reconciliation failure",
+                &state::JobDiagnosticSubject::GatewayRuntime,
+            )?;
+
+            (system_failure.id, gateway_failure.id)
         };
         let manifest = state::fs::read_to_string(&paths.downloads().join("manifest.json"))?;
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
@@ -1739,12 +1752,15 @@ mod tests {
         assert_eq!(summary, "current; reconciled: Gateway runtime reconciled");
         let database = Database::open(&paths)?;
         let unresolved = database.unresolved_job_failures()?;
-        assert_eq!(unresolved.len(), 1);
-        assert_eq!(unresolved[0].job.id, prior_failure_id);
-        assert_eq!(
-            unresolved[0].subject,
-            state::JobDiagnosticSubject::SystemReconciliation
-        );
+        assert_eq!(unresolved.len(), 2);
+        assert!(unresolved.iter().any(|failure| {
+            failure.job.id == prior_system_failure_id
+                && failure.subject == state::JobDiagnosticSubject::SystemReconciliation
+        }));
+        assert!(unresolved.iter().any(|failure| {
+            failure.job.id == prior_gateway_failure_id
+                && failure.subject == state::JobDiagnosticSubject::GatewayRuntime
+        }));
 
         Ok(())
     }
@@ -2851,6 +2867,7 @@ mod tests {
         )?;
 
         let mut database = Database::open(paths)?;
+        seed_gateway_ports(&mut database)?;
         database.record_managed_resource_track_installed(
             "caddy",
             CADDY_TEST_TRACK,
@@ -2858,6 +2875,35 @@ mod tests {
             &release_path,
         )?;
 
+        Ok(())
+    }
+
+    fn seed_gateway_ports(database: &mut Database) -> anyhow::Result<()> {
+        let mut listeners = Vec::with_capacity(3);
+        let mut ports = Vec::with_capacity(3);
+        while ports.len() < 3 {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port();
+            if ports.contains(&port) {
+                continue;
+            }
+
+            ports.push(port);
+            listeners.push(listener);
+        }
+
+        for (gateway_port, port) in [
+            (GatewayPort::Http, ports[0]),
+            (GatewayPort::Https, ports[1]),
+            (GatewayPort::Admin, ports[2]),
+        ] {
+            database.assign_port(
+                PortRequest::gateway(gateway_port, port, port, port),
+                |_port| true,
+            )?;
+        }
+
+        drop(listeners);
         Ok(())
     }
 

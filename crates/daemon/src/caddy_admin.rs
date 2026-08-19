@@ -76,7 +76,9 @@ pub enum CaddyAdminError {
         timeout_ms: u128,
     },
 
-    #[error("Caddy admin {operation} request to {endpoint} may have been accepted: {reason}")]
+    #[error(
+        "Caddy admin {operation} request to {endpoint} may still be executing or may have been accepted: {reason}"
+    )]
     RequestOutcomeUnknown {
         endpoint: CaddyAdminEndpoint,
         operation: CaddyAdminOperation,

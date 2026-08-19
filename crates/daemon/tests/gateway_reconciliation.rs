@@ -17,6 +17,7 @@ use state::{
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -627,9 +628,11 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     let legacy_release = tempdir.path().join("fake-caddy-legacy-release");
     let caddy_executable = caddy_release.join("bin/caddy");
     let legacy_executable = legacy_release.join("bin/caddy");
+    let legacy_server = Utf8PathBuf::from(format!("{legacy_executable}.server.py"));
 
     write_fake_caddy(&caddy_executable)?;
     write_fake_caddy_legacy(&legacy_executable)?;
+    set_executable(&legacy_server)?;
 
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed(
@@ -638,8 +641,14 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         "fake-caddy-pv1",
         &caddy_release,
     )?;
-    let ports = available_loopback_ports(2)?;
+    let port_reservations = reserve_loopback_ports_in_range(3, 40_000, 44_999)?;
+    let ports = loopback_ports(&port_reservations)?;
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Admin))?;
+    database.assign_port(
+        PortRequest::gateway(GatewayPort::Admin, ports[2], ports[2], ports[2]),
+        |_port| true,
+    )?;
     drop(database);
 
     fs::write_sensitive_file(
@@ -647,11 +656,21 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         &format!("{{\n    admin off\n    http_port {}\n}}\n", ports[0]),
     )?;
     let mut legacy_spec = gateway_process_spec(&paths, &CaddyCliCommand::caddy(&legacy_executable));
+    // Keep the recorded fixture identity stable while macOS schedules parallel tests.
+    legacy_spec.command = legacy_server;
+    legacy_spec.arguments = vec![paths.gateway_root_config().to_string()];
     legacy_spec.resource_name = "gateway".to_owned();
     legacy_spec.track = "core".to_owned();
     let supervisor = ProcessSupervisor::new(paths.clone());
+    drop(port_reservations);
     let legacy_process = supervisor.start(legacy_spec).await?;
     let legacy_pid = legacy_process.pid();
+    assert!(
+        supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata(),)?
+            .is_some(),
+        "legacy fixture must be adoptable before reconciliation"
+    );
 
     let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
@@ -828,7 +847,7 @@ document_root: public
         let (_stream, _address) = tokio::net::TcpListener::from_std(https_listener)?
             .accept()
             .await?;
-        sleep(Duration::from_secs(5)).await;
+        sleep(Duration::from_secs(30)).await;
 
         Ok::<(), std::io::Error>(())
     });
@@ -859,7 +878,7 @@ document_root: public
     drop(database);
 
     let result = timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)),
     )
     .await;
@@ -1829,14 +1848,13 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_compensates_a_late_accepted_load_timeout() -> Result<()> {
+async fn gateway_reconciliation_reports_unknown_load_without_compensation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
-    let old_ports = available_loopback_ports(2)?;
-    let new_ports = available_loopback_ports(2)?;
+    let ports = available_loopback_ports(4)?;
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -1844,7 +1862,7 @@ async fn gateway_reconciliation_compensates_a_late_accepted_load_timeout() -> Re
         "fake-caddy-pv1",
         &caddy_release,
     )?;
-    seed_runtime_ports(&paths, &mut database, old_ports[0], old_ports[1], &[])?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
@@ -1854,22 +1872,35 @@ async fn gateway_reconciliation_compensates_a_late_accepted_load_timeout() -> Re
     write_fake_admin_control(
         &paths.gateway_root_config(),
         json!({
-            "late_accept": [true, false],
-            "late_apply_delay_ms": [50, 0],
-            "load_delay_ms": [500, 0],
-            "load_statuses": [200, 200]
+            "late_accept": [true],
+            "late_apply_delay_ms": [350],
+            "load_delay_ms": [350],
+            "load_statuses": [200]
         }),
     )?;
 
     let mut database = Database::open(&paths)?;
     database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
     database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
-    seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
+    seed_runtime_ports(&paths, &mut database, ports[2], ports[3], &[])?;
     drop(database);
 
     let result =
         reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(150)).await;
-    sleep(Duration::from_millis(600)).await;
+    // The candidate applies after the timeout. Before the fix, the immediate compensation
+    // applied the previous root first, then this late candidate overwrote it.
+    let initial_load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
+    let candidate_root = initial_load_bodies
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("fake admin did not record the candidate load"))?
+        .clone();
+    wait_for_fake_admin_current_bytes(&paths.gateway_root_config(), &candidate_root).await?;
+    let recovery_summary = reconcile_gateway_runtimes_with_pf_state_for_test(
+        &paths,
+        Duration::from_millis(250),
+        GatewayPfRoutingState::Unknown,
+    )
+    .await?;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
@@ -1888,12 +1919,13 @@ async fn gateway_reconciliation_compensates_a_late_accepted_load_timeout() -> Re
             }
         ))
     ));
+    assert_eq!(recovery_summary, "Gateway runtime reconciled");
     assert_eq!(first_gateway_pid, second_gateway_pid);
-    assert_eq!(root_after, previous_root);
-    assert_eq!(current_config, previous_root);
+    assert_eq!(root_after, candidate_root);
+    assert_eq!(current_config, candidate_root);
     assert_eq!(load_bodies.len(), 2);
     assert_ne!(load_bodies[0], previous_root);
-    assert_eq!(load_bodies[1], previous_root);
+    assert_eq!(load_bodies[0], load_bodies[1]);
     assert_eq!(
         requests
             .iter()
@@ -3068,6 +3100,19 @@ fn fake_admin_current_bytes(config_path: &Utf8Path) -> Result<Vec<u8>> {
     read_test_bytes(path)
 }
 
+async fn wait_for_fake_admin_current_bytes(config_path: &Utf8Path, expected: &[u8]) -> Result<()> {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if fake_admin_current_bytes(config_path)? == expected {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("fake admin did not apply the expected load in time"))?
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "stateful admin fixture assertions must compare exact request bytes"
@@ -3275,7 +3320,10 @@ fn seed_runtime_ports(
     php_workers: &[(&str, u16)],
 ) -> Result<()> {
     seed_gateway_test_tls(paths)?;
-    let worker_admin_ports = available_loopback_ports(php_workers.len())?;
+    let admin_ports = available_loopback_ports(php_workers.len() + 1)?;
+    let (gateway_admin_port, worker_admin_ports) = admin_ports
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("missing seeded gateway admin port"))?;
     database.assign_port(
         PortRequest::gateway(
             GatewayPort::Http,
@@ -3294,19 +3342,23 @@ fn seed_runtime_ports(
         ),
         |_port| true,
     )?;
+    database.assign_port(
+        PortRequest::gateway(
+            GatewayPort::Admin,
+            *gateway_admin_port,
+            *gateway_admin_port,
+            *gateway_admin_port,
+        ),
+        |_port| true,
+    )?;
 
-    for (index, (php_track, port)) in php_workers.iter().enumerate() {
+    for ((php_track, port), admin_port) in php_workers.iter().zip(worker_admin_ports) {
         database.assign_port(
             PortRequest::php_worker(*php_track, *port, *port, *port),
             |_port| true,
         )?;
         database.assign_port(
-            PortRequest::php_worker_admin(
-                *php_track,
-                worker_admin_ports[index],
-                worker_admin_ports[index],
-                worker_admin_ports[index],
-            ),
+            PortRequest::php_worker_admin(*php_track, *admin_port, *admin_port, *admin_port),
             |_port| true,
         )?;
     }
@@ -3335,6 +3387,11 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
 }
 
 fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
+    let listeners = reserve_loopback_ports(count)?;
+    loopback_ports(&listeners)
+}
+
+fn reserve_loopback_ports(count: usize) -> Result<Vec<TcpListener>> {
     let mut listeners = Vec::with_capacity(count);
     let mut ports = Vec::with_capacity(count);
 
@@ -3349,9 +3406,32 @@ fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
         listeners.push(listener);
     }
 
-    drop(listeners);
+    Ok(listeners)
+}
 
-    Ok(ports)
+fn reserve_loopback_ports_in_range(count: usize, start: u16, end: u16) -> Result<Vec<TcpListener>> {
+    let mut listeners = Vec::with_capacity(count);
+
+    for port in start..=end {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => listeners.push(listener),
+            Err(error) if error.kind() == ErrorKind::AddrInUse => continue,
+            Err(error) => return Err(error.into()),
+        }
+
+        if listeners.len() == count {
+            return Ok(listeners);
+        }
+    }
+
+    bail!("expected {count} available loopback ports in {start}..={end}")
+}
+
+fn loopback_ports(listeners: &[TcpListener]) -> Result<Vec<u16>> {
+    listeners
+        .iter()
+        .map(|listener| Ok(listener.local_addr()?.port()))
+        .collect()
 }
 
 #[cfg(unix)]

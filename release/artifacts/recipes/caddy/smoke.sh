@@ -17,13 +17,24 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
-available_port() {
+available_ports() {
   python3 - <<'PY'
 import socket
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    sock.bind(("127.0.0.1", 0))
-    print(sock.getsockname()[1])
+sockets = []
+try:
+    for _ in range(4):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sockets.append(sock)
+
+    ports = [sock.getsockname()[1] for sock in sockets]
+    if len(set(ports)) != len(ports):
+        raise RuntimeError("allocator returned duplicate loopback ports")
+    print(" ".join(str(port) for port in ports))
+finally:
+    for sock in sockets:
+        sock.close()
 PY
 }
 
@@ -159,10 +170,20 @@ config_path="$tmp_dir/Caddyfile"
 changed_config_path="$tmp_dir/Caddyfile.changed"
 invalid_config_path="$tmp_dir/Caddyfile.invalid"
 caddy_log="$tmp_dir/caddy.log"
-backend_port=$(available_port)
-http_port=$(available_port)
-https_port=$(available_port)
-admin_port=$(available_port)
+port_list=$(available_ports)
+backend_port=
+http_port=
+https_port=
+admin_port=
+extra_port=
+IFS=' ' read -r backend_port http_port https_port admin_port extra_port <<EOF
+$port_list
+EOF
+[ -n "$backend_port" ] &&
+  [ -n "$http_port" ] &&
+  [ -n "$https_port" ] &&
+  [ -n "$admin_port" ] &&
+  [ -z "$extra_port" ] || die "allocator did not return exactly four loopback ports"
 trap cleanup 0
 initial_checks_passed=0
 
