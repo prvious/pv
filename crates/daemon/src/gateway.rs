@@ -15,7 +15,7 @@ use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
-    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
+    Database, GatewayPort, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     ProjectEnvObservedStatus, ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
     StateError, fs,
 };
@@ -226,7 +226,10 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         return Ok(CADDY_NOT_INSTALLED.to_owned());
     };
 
-    let plan = match build_runtime_plan(paths) {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let plan = match recover_unowned_admin_port_assignments(paths, &supervisor)
+        .and_then(|()| build_runtime_plan(paths))
+    {
         Ok(plan) => plan,
         Err(error) => {
             record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
@@ -234,7 +237,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             return Err(error);
         }
     };
-    let supervisor = ProcessSupervisor::new(paths.clone());
     let mut worker_commands = Vec::new();
 
     for worker in &plan.workers {
@@ -2372,6 +2374,41 @@ fn additional_hostnames(
 
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+fn recover_unowned_admin_port_assignments(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+) -> Result<(), DaemonError> {
+    let mut database = Database::open(paths)?;
+
+    for assignment in database.assigned_ports()? {
+        let runtime_paths = match &assignment.owner {
+            PortOwner::Gateway(GatewayPort::Admin) => {
+                Some((paths.gateway_pid(), paths.gateway_runtime_metadata()))
+            }
+            PortOwner::PhpWorkerAdmin { php_runtime_key } => Some((
+                paths.worker_pid(php_runtime_key),
+                paths.worker_runtime_metadata(php_runtime_key),
+            )),
+            _ => None,
+        };
+        let Some((pid_path, metadata_path)) = runtime_paths else {
+            continue;
+        };
+
+        if local_loopback_port_available(assignment.port)
+            || supervisor
+                .adopt_recorded(&pid_path, &metadata_path)?
+                .is_some()
+        {
+            continue;
+        }
+
+        database.release_port(assignment.owner)?;
+    }
+
+    Ok(())
 }
 
 fn caddyfile_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {

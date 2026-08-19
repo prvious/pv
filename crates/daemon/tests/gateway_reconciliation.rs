@@ -546,6 +546,96 @@ document_root: public
 }
 
 #[tokio::test]
+async fn gateway_reconciliation_reallocates_unowned_occupied_admin_ports() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let release_path = tempdir.path().join("fake-frankenphp-release");
+    let fake_frankenphp = release_path.join("bin/frankenphp");
+
+    write_fake_frankenphp(&fake_frankenphp)?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &release_path,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    let assignments = database.assigned_ports()?;
+    let stale_gateway_admin_port = assignments
+        .iter()
+        .find_map(|assignment| {
+            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing Gateway admin port assignment"))?;
+    let stale_worker_admin_port = assignments
+        .iter()
+        .find_map(|assignment| match &assignment.owner {
+            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing worker admin port assignment"))?;
+    drop(database);
+
+    let _gateway_foreign_listener = TcpListener::bind(("127.0.0.1", stale_gateway_admin_port))?;
+    let _worker_foreign_listener = TcpListener::bind(("127.0.0.1", stale_worker_admin_port))?;
+
+    reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(2)).await?;
+
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+    let gateway_admin_port = assignments
+        .iter()
+        .find_map(|assignment| {
+            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing reallocated Gateway admin port"))?;
+    let worker_admin_port = assignments
+        .iter()
+        .find_map(|assignment| match &assignment.owner {
+            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing reallocated worker admin port"))?;
+
+    assert_ne!(gateway_admin_port, stale_gateway_admin_port);
+    assert_ne!(worker_admin_port, stale_worker_admin_port);
+    assert!(paths.gateway_pid().exists());
+    assert!(paths.worker_pid("8.4").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_replaces_legacy_runtime_identities_once() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
