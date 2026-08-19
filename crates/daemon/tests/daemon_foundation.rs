@@ -7,7 +7,6 @@ use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
-use rustix::process::{Pid, test_kill_process_group};
 use serde_json::{Value, json};
 use state::{
     AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus,
@@ -762,9 +761,7 @@ async fn stop_seeded_worker(paths: &PvPaths, worker_track: Option<&str>) -> Resu
                 sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
                 continue;
             };
-            let pid = worker.pid();
             worker.stop(Duration::from_secs(1)).await?;
-            wait_for_seeded_gateway_group_exit(pid).await?;
 
             state::fs::remove_file_if_exists(&worker_pid_path)?;
             state::fs::remove_file_if_exists(&worker_metadata_path)?;
@@ -817,9 +814,7 @@ async fn stop_seeded_gateway(paths: &PvPaths) -> Result<()> {
                 sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
                 continue;
             };
-            let pid = gateway.pid();
             gateway.stop(Duration::from_secs(1)).await?;
-            wait_for_seeded_gateway_group_exit(pid).await?;
 
             state::fs::remove_file_if_exists(&paths.gateway_pid())?;
             state::fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
@@ -835,40 +830,6 @@ async fn stop_seeded_gateway(paths: &PvPaths) -> Result<()> {
         }
 
         sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
-    }
-}
-
-async fn wait_for_seeded_gateway_group_exit(pid: u32) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        if !seeded_gateway_group_exists(pid)? {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "seeded Caddy process group {pid} remained after bounded stop"
-            ));
-        }
-
-        sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
-    }
-}
-
-fn seeded_gateway_group_exists(pid: u32) -> Result<bool> {
-    let raw_pid = i32::try_from(pid)?;
-    let process_group =
-        Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid seeded Caddy process id {pid}"))?;
-
-    match test_kill_process_group(process_group) {
-        Ok(()) => Ok(true),
-        Err(source) => {
-            let error = io::Error::from(source);
-            if error.kind() == ErrorKind::NotFound || error.raw_os_error() == Some(3) {
-                return Ok(false);
-            }
-
-            Err(error.into())
-        }
     }
 }
 
