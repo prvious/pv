@@ -4,7 +4,7 @@ expression: manifest_json
 ---
 {
   "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
+  "minimum_pv_version": "0.2.3",
   "resources": [
     {
       "name": "caddy",
