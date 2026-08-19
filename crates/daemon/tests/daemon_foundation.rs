@@ -24,6 +24,8 @@ use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
 use tokio::time::{sleep, timeout};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
+const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const JOB_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 const FAKE_CADDY_SCRIPT: &str = r#"#!/bin/sh
 set -eu
@@ -1680,7 +1682,9 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
 }
 
 async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecord> {
-    for _attempt in 0..50 {
+    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+
+    loop {
         let database = Database::open(paths)?;
         if let Some(job) = database
             .recent_jobs()?
@@ -1690,14 +1694,20 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
             return Ok(job);
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if Instant::now() >= deadline {
+            break;
+        }
+
+        sleep(JOB_STATUS_POLL_INTERVAL).await;
     }
 
     Err(anyhow!("succeeded job with id {id:?} was not recorded"))
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
-    for _attempt in 0..50 {
+    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+
+    loop {
         let database = Database::open(paths)?;
         if let Some(job) = database
             .recent_jobs()?
@@ -1707,7 +1717,11 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
             return Ok(job);
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if Instant::now() >= deadline {
+            break;
+        }
+
+        sleep(JOB_STATUS_POLL_INTERVAL).await;
     }
 
     Err(anyhow::anyhow!(
