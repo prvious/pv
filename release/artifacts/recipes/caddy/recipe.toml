@@ -2,7 +2,7 @@
 resources = ["caddy"]
 default_track = "2"
 platforms = ["darwin-arm64", "darwin-amd64"]
-minimum_pv_version = "0.1.0"
+minimum_pv_version = "0.2.3"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
