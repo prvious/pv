@@ -40,7 +40,7 @@ Recipe TOML files use a shared `[recipe]` plus `[[tracks]]` schema. Resource-spe
 
 `recipes/composer/composer.toml` is the data source for Composer track `2`. Composer is packaged as a `platform: "any"` artifact.
 
-The native downloaded-binary recipes cover the PV-managed Caddy track `2` plus MySQL tracks `8.0`, `8.4`, and `9.7`; Postgres tracks `17` and `18`; Redis track `8.8`; Mailpit track `1`; and RustFS track `1`.
+The native Managed Resource recipes cover the PV-managed Caddy track `2` plus MySQL tracks `8.0`, `8.4`, and `9.7`; Postgres tracks `17` and `18`; Redis track `8.8`; Mailpit track `1`; and RustFS track `1`.
 
 `default-tracks.toml` gives the manifest generator explicit default tracks for generated resources: PHP/FrankenPHP `8.5`, Caddy `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only.
 
