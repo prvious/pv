@@ -13,7 +13,8 @@ use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::{Value, json};
 use state::{
     Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject,
+    fs,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -636,6 +637,52 @@ document_root: public
 }
 
 #[tokio::test]
+async fn gateway_reconciliation_attributes_admin_port_recovery_errors_to_worker() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let ports = available_loopback_ports(3)?;
+    let mut database = Database::open(&paths)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    let worker_admin_port = database
+        .assigned_ports()?
+        .into_iter()
+        .find_map(|assignment| match assignment.owner {
+            PortOwner::PhpWorkerAdmin { php_runtime_key } if php_runtime_key == "8.4" => {
+                Some(assignment.port)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing worker admin port assignment"))?;
+    drop(database);
+
+    let _foreign_admin_listener = TcpListener::bind(("127.0.0.1", worker_admin_port))?;
+    fs::write_sensitive_file(&paths.worker_pid("8.4"), &std::process::id().to_string())?;
+    fs::write_sensitive_file(&paths.worker_runtime_metadata("8.4"), "invalid metadata")?;
+
+    let Err(_error) = reconcile_gateway_runtimes(&paths).await else {
+        bail!("invalid worker metadata must fail reconciliation");
+    };
+
+    let states = Database::open(&paths)?.runtime_observed_states()?;
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        states[0].subject,
+        RuntimeSubject::PhpWorker {
+            php_track: "8.4".to_owned(),
+        }
+    );
+    assert_eq!(states[0].status, RuntimeObservedStatus::Failed);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_replaces_legacy_runtime_identities_once() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -753,6 +800,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     legacy_spec.track = "core".to_owned();
     let supervisor = ProcessSupervisor::new(paths.clone());
     drop(port_reservations);
+    let _foreign_admin_listener = TcpListener::bind(("127.0.0.1", ports[2]))?;
     let legacy_process = supervisor.start(legacy_spec).await?;
     let legacy_pid = legacy_process.pid();
     assert!(
@@ -769,6 +817,14 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     )
     .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    let gateway_admin_port = Database::open(&paths)?
+        .assigned_ports()?
+        .into_iter()
+        .find_map(|assignment| {
+            (assignment.owner == PortOwner::Gateway(GatewayPort::Admin)).then_some(assignment.port)
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing Gateway admin port assignment"))?;
+    assert_ne!(gateway_admin_port, ports[2]);
     legacy_process.stop(Duration::from_secs(1)).await?;
     wait_for_process_exit(legacy_pid).await?;
 

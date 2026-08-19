@@ -227,9 +227,12 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     };
 
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let plan = match recover_unowned_admin_port_assignments(paths, &supervisor)
-        .and_then(|()| build_runtime_plan(paths))
-    {
+    if let Err((subject, error)) = recover_unowned_admin_port_assignments(paths, &supervisor) {
+        record_runtime_error(paths, subject, &error)?;
+
+        return Err(*error);
+    }
+    let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
             record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
@@ -2379,36 +2382,65 @@ fn local_loopback_port_available(port: u16) -> bool {
 fn recover_unowned_admin_port_assignments(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
-) -> Result<(), DaemonError> {
-    let mut database = Database::open(paths)?;
+) -> Result<(), (RuntimeSubject, Box<DaemonError>)> {
+    let mut database =
+        Database::open(paths).map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
+    let assignments = database
+        .assigned_ports()
+        .map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
 
-    for assignment in database.assigned_ports()? {
-        let runtime_paths = match &assignment.owner {
-            PortOwner::Gateway(GatewayPort::Admin) => {
-                Some((paths.gateway_pid(), paths.gateway_runtime_metadata()))
-            }
+    for assignment in assignments {
+        let runtime = match &assignment.owner {
+            PortOwner::Gateway(GatewayPort::Admin) => Some((
+                RuntimeSubject::Gateway,
+                paths.gateway_pid(),
+                paths.gateway_runtime_metadata(),
+                paths.gateway_root_config(),
+            )),
             PortOwner::PhpWorkerAdmin { php_runtime_key } => Some((
+                php_runtime_subject(php_runtime_key),
                 paths.worker_pid(php_runtime_key),
                 paths.worker_runtime_metadata(php_runtime_key),
+                paths.worker_root_config(php_runtime_key),
             )),
             _ => None,
         };
-        let Some((pid_path, metadata_path)) = runtime_paths else {
+        let Some((subject, pid_path, metadata_path, config_path)) = runtime else {
             continue;
         };
 
-        if local_loopback_port_available(assignment.port)
-            || supervisor
-                .adopt_recorded(&pid_path, &metadata_path)?
-                .is_some()
+        if local_loopback_port_available(assignment.port) {
+            continue;
+        }
+        let recorded_runtime = supervisor
+            .adopt_recorded(&pid_path, &metadata_path)
+            .map_err(|error| (subject.clone(), Box::new(error)))?;
+        if recorded_runtime.is_some()
+            && runtime_config_uses_admin_port(&config_path, assignment.port)
+                .map_err(|error| (subject.clone(), Box::new(error)))?
         {
             continue;
         }
 
-        database.release_port(assignment.owner)?;
+        database
+            .release_port(assignment.owner)
+            .map_err(|error| (subject, Box::new(error.into())))?;
     }
 
     Ok(())
+}
+
+fn runtime_config_uses_admin_port(
+    config_path: &Utf8Path,
+    assigned_port: u16,
+) -> Result<bool, DaemonError> {
+    match fs::read_to_string(config_path) {
+        Ok(config) => Ok(optional_config_port(&config, "admin 127.0.0.1:")? == Some(assigned_port)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn caddyfile_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {
