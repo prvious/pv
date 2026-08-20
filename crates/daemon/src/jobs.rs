@@ -763,7 +763,7 @@ async fn complete_update_job_inner(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<CompletedUpdateJob, FailedUpdateJob> {
-    let report = if runtime_catalog.is_none() {
+    let mut report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
         tokio::task::spawn_blocking(move || {
@@ -785,37 +785,140 @@ async fn complete_update_job_inner(
         )
     }
     .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::UpdateAssessment))?;
-    let project_report =
-        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await
-            .map_err(|error| {
-                FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation)
-            })?;
-    let gateway_summary = reconcile_gateway_runtimes(paths)
-        .await
-        .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::GatewayRuntime))?;
-    let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
-    let coverage = if report.updated_count == 0 {
-        Vec::new()
-    } else {
-        completed_system_reconciliation_coverage(paths, &project_report).map_err(|error| {
-            FailedUpdateJob::new(error, JobDiagnosticSubject::SystemReconciliation)
-        })?
-    };
 
-    let summary = if report.updated_count == 0 {
-        format!(
-            "{}; reconciled: {reconciliation_summary}",
-            unchanged_update_summary(&report)
+    if let Some(update_error) = report.take_failure() {
+        return Err(reconcile_partial_update_failure(
+            paths,
+            runtime_catalog,
+            progress,
+            update_error,
         )
-    } else {
-        format!(
-            "updated {} artifact(s); reconciled: {reconciliation_summary}",
-            report.updated_count
-        )
-    };
+        .await);
+    }
+
+    if report.updated_count == 0 {
+        return Ok(CompletedUpdateJob {
+            summary: unchanged_update_summary(&report),
+            coverage: Vec::new(),
+        });
+    }
+
+    let project_report = complete_update_step_with_caddy_compensation(
+        paths,
+        &report,
+        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
+            .await,
+        JobDiagnosticSubject::SystemReconciliation,
+    )
+    .await?;
+    let gateway_summary = complete_update_step_with_caddy_compensation(
+        paths,
+        &report,
+        reconcile_gateway_runtimes(paths).await,
+        JobDiagnosticSubject::GatewayRuntime,
+    )
+    .await?;
+    let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
+    let coverage = complete_update_step_with_caddy_compensation(
+        paths,
+        &report,
+        completed_system_reconciliation_coverage(paths, &project_report),
+        JobDiagnosticSubject::SystemReconciliation,
+    )
+    .await?;
+
+    let summary = format!(
+        "updated {} artifact(s); reconciled: {reconciliation_summary}",
+        report.updated_count
+    );
 
     Ok(CompletedUpdateJob { summary, coverage })
+}
+
+async fn complete_update_step_with_caddy_compensation<T>(
+    paths: &PvPaths,
+    report: &ManagedResourceUpdateReport,
+    result: Result<T, DaemonError>,
+    subject: JobDiagnosticSubject,
+) -> Result<T, FailedUpdateJob> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(compensate_caddy_update_failure(paths, report, error, subject).await),
+    }
+}
+
+async fn compensate_caddy_update_failure(
+    paths: &PvPaths,
+    report: &ManagedResourceUpdateReport,
+    original_error: DaemonError,
+    subject: JobDiagnosticSubject,
+) -> FailedUpdateJob {
+    match report.rollback_caddy(paths) {
+        Ok(true) => match reconcile_gateway_runtimes(paths).await {
+            Ok(_summary) => FailedUpdateJob::new(
+                original_error,
+                if subject == JobDiagnosticSubject::GatewayRuntime {
+                    JobDiagnosticSubject::UpdateAssessment
+                } else {
+                    subject
+                },
+            ),
+            Err(recovery_error) => FailedUpdateJob::new(
+                caddy_compensation_error(original_error, recovery_error),
+                subject,
+            ),
+        },
+        Ok(false) => FailedUpdateJob::new(original_error, subject),
+        Err(rollback_error) => FailedUpdateJob::new(
+            caddy_compensation_error(original_error, rollback_error),
+            subject,
+        ),
+    }
+}
+
+async fn reconcile_partial_update_failure(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+    update_error: DaemonError,
+) -> FailedUpdateJob {
+    if let Err(reconciliation_error) =
+        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
+            .await
+    {
+        return FailedUpdateJob::new(
+            partial_update_reconciliation_error(update_error, reconciliation_error),
+            JobDiagnosticSubject::UpdateAssessment,
+        );
+    }
+    if let Err(reconciliation_error) = reconcile_gateway_runtimes(paths).await {
+        return FailedUpdateJob::new(
+            partial_update_reconciliation_error(update_error, reconciliation_error),
+            JobDiagnosticSubject::UpdateAssessment,
+        );
+    }
+
+    FailedUpdateJob::new(update_error, JobDiagnosticSubject::UpdateAssessment)
+}
+
+fn partial_update_reconciliation_error(
+    update_error: DaemonError,
+    reconciliation_error: DaemonError,
+) -> DaemonError {
+    DaemonError::PartialUpdateReconciliationFailed {
+        source: Box::new(update_error),
+        reconciliation: Box::new(reconciliation_error),
+    }
+}
+
+fn caddy_compensation_error(
+    original_error: DaemonError,
+    compensation_error: DaemonError,
+) -> DaemonError {
+    DaemonError::CaddyUpdateCompensationFailed {
+        source: Box::new(original_error),
+        compensation: Box::new(compensation_error),
+    }
 }
 
 fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
@@ -1480,9 +1583,10 @@ mod tests {
     use futures_util::StreamExt;
     use insta::{Settings, assert_debug_snapshot};
     use rcgen::generate_simple_self_signed;
+    use rusqlite::Connection;
     use serde_json::json;
     use state::{
-        Database, GatewayPort, JobStatus, LinkProjectInput, PortRequest,
+        Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortRequest,
         ProjectManagedResourceInput, PvPaths, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
@@ -1679,7 +1783,7 @@ mod tests {
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths, tempdir.path())?;
+        seed_installed_caddy(&paths)?;
         let _caddy_guard = SeededCaddyGuard::new(paths.clone());
         let job_id = start_reconciliation_job(&paths, "system")?;
         let (client, server) = duplex(64);
@@ -1717,8 +1821,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_cached_php_pair(&paths, tempdir.path())?;
-        seed_installed_caddy(&paths, tempdir.path())?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        seed_installed_caddy(&paths)?;
 
         let (prior_system_failure_id, prior_gateway_failure_id) = {
             let mut database = Database::open(&paths)?;
@@ -1733,6 +1836,11 @@ mod tests {
                 &gateway_failure.id,
                 "prior gateway reconciliation failure",
                 &state::JobDiagnosticSubject::GatewayRuntime,
+            )?;
+            database.record_managed_resource_track_desired(
+                "php",
+                PHP_TEST_TRACK,
+                state::ManagedResourceDesiredState::Installed,
             )?;
 
             (system_failure.id, gateway_failure.id)
@@ -1749,7 +1857,7 @@ mod tests {
 
         let summary = complete_update_job(&paths, &job_id, Some(&catalog)).await?;
 
-        assert_eq!(summary, "current; reconciled: Gateway runtime reconciled");
+        assert_eq!(summary, "current");
         let database = Database::open(&paths)?;
         let unresolved = database.unresolved_job_failures()?;
         assert_eq!(unresolved.len(), 2);
@@ -1761,6 +1869,157 @@ mod tests {
             failure.job.id == prior_gateway_failure_id
                 && failure.subject == state::JobDiagnosticSubject::GatewayRuntime
         }));
+        let php_track = database
+            .managed_resource_tracks()?
+            .into_iter()
+            .find(|record| record.resource_name == "php" && record.track == PHP_TEST_TRACK)
+            .ok_or_else(|| anyhow::anyhow!("missing desired PHP track"))?;
+        assert_eq!(
+            php_track.desired_state,
+            state::ManagedResourceDesiredState::Installed
+        );
+        assert!(php_track.current_artifact_path.is_none());
+        assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caddy_update_rolls_back_artifact_and_recovers_gateway_after_failure()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let (client, _total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "caddy",
+            CADDY_TEST_TRACK,
+            "2.11.5-pv1",
+            "caddy-2.11.5-pv1-any.tar.gz",
+            "bin/caddy",
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            client,
+        )?;
+        let job_id = start_update_job(&paths)?;
+
+        complete_update_job(&paths, &job_id, Some(&catalog))
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("Caddy update unexpectedly succeeded"))?;
+
+        let old_release = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("releases")
+            .join(CADDY_TEST_ARTIFACT_VERSION);
+        let new_release = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("releases")
+            .join("2.11.5-pv1");
+        let current_path = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("current");
+        assert_eq!(
+            state::fs::read_link(&current_path)?,
+            Utf8PathBuf::from(format!("releases/{CADDY_TEST_ARTIFACT_VERSION}")),
+        );
+        assert!(state::fs::path_entry_exists(&old_release)?);
+        assert!(state::fs::path_entry_exists(&new_release)?);
+
+        let database = Database::open(&paths)?;
+        let caddy_track = database
+            .managed_resource_tracks()?
+            .into_iter()
+            .find(|record| record.resource_name == "caddy" && record.track == CADDY_TEST_TRACK)
+            .ok_or_else(|| anyhow::anyhow!("missing Caddy track"))?;
+        assert_eq!(
+            caddy_track.installed_version.as_deref(),
+            Some(CADDY_TEST_ARTIFACT_VERSION)
+        );
+        assert_eq!(caddy_track.current_artifact_path, Some(old_release));
+        assert!(state::fs::path_entry_exists(&paths.gateway_pid())?);
+
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing update job {job_id}"))?;
+        assert_eq!(job.status, JobStatus::Failed);
+        let failure = database
+            .unresolved_job_failures()?
+            .into_iter()
+            .find(|failure| failure.job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing update failure {job_id}"))?;
+        assert_eq!(failure.subject, JobDiagnosticSubject::UpdateAssessment);
+
+        Ok(())
+    }
+
+    #[test]
+    fn caddy_rollback_restores_new_pointer_when_database_update_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let (client, _total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "caddy",
+            CADDY_TEST_TRACK,
+            "2.11.5-pv1",
+            "caddy-2.11.5-pv1-any.tar.gz",
+            "bin/caddy",
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            client,
+        )?;
+        let report = crate::managed_resources::update_installed_with_progress(
+            paths.clone(),
+            Some(&catalog),
+            &resources::NoDownloadProgress,
+        )?;
+        let database_lock = Connection::open(paths.db().as_std_path())?;
+        database_lock.execute_batch("BEGIN EXCLUSIVE")?;
+
+        let rollback_error = report
+            .rollback_caddy(&paths)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("Caddy rollback unexpectedly succeeded"))?;
+
+        database_lock.execute_batch("ROLLBACK")?;
+        assert!(matches!(
+            rollback_error,
+            crate::DaemonError::ManagedResourceCommand(
+                resources::ManagedResourceCommandError::State(_)
+            )
+        ));
+        let new_release = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("releases")
+            .join("2.11.5-pv1");
+        let current_path = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("current");
+        assert_eq!(
+            state::fs::read_link(&current_path)?,
+            Utf8PathBuf::from("releases/2.11.5-pv1"),
+        );
+        assert!(state::fs::path_entry_exists(&new_release)?);
+        let caddy_track =
+            Database::open(&paths)?.managed_resource_track("caddy", CADDY_TEST_TRACK)?;
+        assert_eq!(caddy_track.installed_version.as_deref(), Some("2.11.5-pv1"));
+        assert_eq!(caddy_track.current_artifact_path, Some(new_release));
 
         Ok(())
     }
@@ -1770,7 +2029,7 @@ mod tests {
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths, tempdir.path())?;
+        seed_installed_caddy(&paths)?;
         let _caddy_guard = SeededCaddyGuard::new(paths.clone());
         let (client, _total_bytes) = scripted_artifact_client(
             tempdir.path(),
@@ -2027,12 +2286,20 @@ mod tests {
                 (composer_url.to_string(), composer_archive),
             ]),
         };
+        let installed_mailpit_release = paths.resources().join("mailpit/1.0/releases/1.0.0-pv1");
+        let installed_mailpit_executable = installed_mailpit_release.join("bin/pv-fake-mailpit");
+        state::fs::write_sensitive_file(&installed_mailpit_executable, "#!/bin/sh\nexit 0\n")?;
+        set_executable(&installed_mailpit_executable)?;
+        state::fs::symlink_file(
+            &Utf8PathBuf::from("releases/1.0.0-pv1"),
+            &paths.resources().join("mailpit/1.0/current"),
+        )?;
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_installed(
             "mailpit",
             "1.0",
             "1.0.0-pv1",
-            &paths.resources().join("mailpit/1.0/current"),
+            &installed_mailpit_release,
         )?;
         database.record_managed_resource_track_desired(
             "composer",
@@ -2855,9 +3122,23 @@ mod tests {
         create_archive(&archive_parent, archive_path, &root_name)
     }
 
-    fn seed_installed_caddy(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
-        let release_path = tempdir.join("installed-caddy");
+    fn seed_installed_caddy(paths: &PvPaths) -> anyhow::Result<()> {
+        let release_path = paths
+            .resources()
+            .join("caddy")
+            .join(CADDY_TEST_TRACK)
+            .join("releases")
+            .join(CADDY_TEST_ARTIFACT_VERSION);
         write_caddy_fixture(&release_path.join("bin/caddy"))?;
+        let current_path = release_path
+            .parent()
+            .and_then(Utf8Path::parent)
+            .ok_or_else(|| anyhow::anyhow!("missing Caddy track directory"))?
+            .join("current");
+        state::fs::symlink_file(
+            &Utf8PathBuf::from(format!("releases/{CADDY_TEST_ARTIFACT_VERSION}")),
+            &current_path,
+        )?;
 
         let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
         state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;

@@ -46,6 +46,13 @@ pub enum ManagedResourceCommandError {
         original_error: Box<ManagedResourceCommandError>,
         rollback_error: ResourcesError,
     },
+
+    #[error("{source}")]
+    PartialUpdate {
+        #[source]
+        source: Box<ManagedResourceCommandError>,
+        update: ManagedResourceUpdate,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -579,6 +586,9 @@ impl ManagedResourceCommands {
         if installed_tracks.is_empty() {
             return Ok(ManagedResourceUpdate { installs });
         }
+        for record in &installed_tracks {
+            self.validate_installed_track(record)?;
+        }
 
         let refresh = ArtifactManifestCache::new(self.paths.downloads())
             .refresh_latest(&self.manifest_url, client)?;
@@ -614,9 +624,11 @@ impl ManagedResourceCommands {
         let mut tracks = BTreeSet::new();
 
         for record in self.list(Some(php.resource_name()))? {
+            self.validate_installed_track(&record)?;
             tracks.insert(record.track().clone());
         }
         for record in self.list(Some(frankenphp.resource_name()))? {
+            self.validate_installed_track(&record)?;
             tracks.insert(record.track().clone());
         }
 
@@ -761,12 +773,13 @@ impl ManagedResourceCommands {
         let track = composer_track()?;
         let installed_tracks = self.list(Some(composer.resource_name()))?;
         let mut installs = Vec::new();
-        if !installed_tracks
+        let Some(installed) = installed_tracks
             .iter()
-            .any(|record| record.track() == &track)
-        {
+            .find(|record| record.track() == &track)
+        else {
             return Ok(ManagedResourceUpdate { installs });
-        }
+        };
+        self.validate_installed_track(installed)?;
 
         let refresh = ArtifactManifestCache::new(self.paths.downloads())
             .refresh_latest(&self.manifest_url, client)?;
@@ -811,15 +824,25 @@ impl ManagedResourceCommands {
             progress,
         };
 
-        self.update_installed_php_pairs(&installed_tracks, manifest, &mut installs, context)?;
-        self.update_installed_composer(&installed_tracks, manifest, &mut installs, context)?;
-        self.update_installed_resources(
+        if let Err(error) =
+            self.update_installed_php_pairs(&installed_tracks, manifest, &mut installs, context)
+        {
+            return Err(partial_update_error(error, installs));
+        }
+        if let Err(error) =
+            self.update_installed_composer(&installed_tracks, manifest, &mut installs, context)
+        {
+            return Err(partial_update_error(error, installs));
+        }
+        if let Err(error) = self.update_installed_resources(
             &installed_tracks,
             resource_adapters,
             manifest,
             &mut installs,
             context,
-        )?;
+        ) {
+            return Err(partial_update_error(error, installs));
+        }
 
         Ok(ManagedResourceUpdate { installs })
     }
@@ -960,6 +983,7 @@ impl ManagedResourceCommands {
         let Some(installed) = installed else {
             return Ok(true);
         };
+        self.validate_installed_track(installed)?;
 
         if latest_artifact.artifact_version() != installed.installed_version() {
             return Ok(true);
@@ -973,6 +997,20 @@ impl ManagedResourceCommands {
         )?;
 
         Ok(current_artifact.is_some_and(|artifact| artifact.revocation_state().is_revoked()))
+    }
+
+    fn validate_installed_track(
+        &self,
+        installed: &ManagedResourceTrack,
+    ) -> ManagedResourceCommandResult<()> {
+        ArtifactInstaller::new(self.paths.resources()).validate_installed_release(
+            installed.resource_name(),
+            installed.track(),
+            installed.installed_version(),
+            installed.current_artifact_path(),
+        )?;
+
+        Ok(())
     }
 
     pub fn check_updates(
@@ -1155,6 +1193,72 @@ impl ManagedResourceRevokedLatest {
 impl ManagedResourceUpdate {
     pub fn installs(&self) -> &[ManagedResourceInstall] {
         &self.installs
+    }
+
+    pub fn rollback_caddy(&self, paths: &PvPaths) -> ManagedResourceCommandResult<bool> {
+        let Some(install) = self
+            .installs
+            .iter()
+            .find(|install| install.resource_name.as_str() == "caddy")
+        else {
+            return Ok(false);
+        };
+        let Some(previous_release) = install.artifact_install.previous_release() else {
+            return Ok(false);
+        };
+        let Some(releases_dir) = install.current_artifact_path.parent() else {
+            return Err(ResourcesError::InvalidArtifactLayout {
+                resource: install.resource_name.as_str().to_string(),
+                reason: format!(
+                    "installed artifact path `{}` has no release directory",
+                    install.current_artifact_path
+                ),
+            }
+            .into());
+        };
+        let previous_artifact_path = releases_dir.join(previous_release);
+
+        let installer = ArtifactInstaller::new(paths.resources());
+        installer.switch_to_previous_release(&install.artifact_install)?;
+        let record_previous_release = || -> ManagedResourceCommandResult<()> {
+            let mut database = Database::open(paths)?;
+            database.record_managed_resource_track_installed(
+                install.resource_name.as_str(),
+                install.track.as_str(),
+                previous_release,
+                &previous_artifact_path,
+            )?;
+
+            Ok(())
+        };
+        if let Err(original_error) = record_previous_release() {
+            if let Err(rollback_error) =
+                installer.switch_to_installed_release(&install.artifact_install)
+            {
+                return Err(ManagedResourceCommandError::RollbackFailed {
+                    original_error: Box::new(original_error),
+                    rollback_error,
+                });
+            }
+
+            return Err(original_error);
+        }
+
+        Ok(true)
+    }
+}
+
+fn partial_update_error(
+    error: ManagedResourceCommandError,
+    installs: Vec<ManagedResourceInstall>,
+) -> ManagedResourceCommandError {
+    if installs.is_empty() {
+        return error;
+    }
+
+    ManagedResourceCommandError::PartialUpdate {
+        source: Box::new(error),
+        update: ManagedResourceUpdate { installs },
     }
 }
 

@@ -17,6 +17,8 @@ fn gateway_config_renderer_outputs_gateway_caddyfile() -> Result<()> {
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
+        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
+        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
@@ -65,6 +67,8 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
         ca_certificate_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/caddy"),
+        access_log_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/logs/gateway/access.log"),
+        error_log_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/logs/gateway/error.log"),
         projects_config_glob: Utf8PathBuf::from(
             "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile",
         ),
@@ -99,6 +103,8 @@ fn config_renderers_reject_control_characters_in_path_tokens() {
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca\n.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
+        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
+        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
@@ -121,6 +127,8 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
+        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
+        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
@@ -150,6 +158,8 @@ fn gateway_config_renderer_imports_project_configs_when_requested() -> Result<()
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
         storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
+        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
+        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
         projects_config_glob: Utf8PathBuf::from(
             "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
         ),
@@ -171,6 +181,7 @@ fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
         primary_hostname: "acme.test".to_owned(),
         hostnames: vec!["api.acme.test".to_owned()],
         worker_port: 45001,
+        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
     };
 
     assert_snapshot!(render_gateway_project_config(&route)?);

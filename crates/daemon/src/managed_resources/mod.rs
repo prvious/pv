@@ -154,10 +154,22 @@ pub(crate) struct ManagedResourceRuntimeCatalog {
     http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct ManagedResourceUpdateReport {
     pub installed_count: usize,
     pub updated_count: usize,
+    update: resources::ManagedResourceUpdate,
+    failure: Option<DaemonError>,
+}
+
+impl ManagedResourceUpdateReport {
+    pub(crate) fn rollback_caddy(&self, paths: &PvPaths) -> Result<bool, DaemonError> {
+        self.update.rollback_caddy(paths).map_err(DaemonError::from)
+    }
+
+    pub(crate) fn take_failure(&mut self) -> Option<DaemonError> {
+        self.failure.take()
+    }
 }
 
 impl ManagedResourceRuntimeCatalog {
@@ -370,24 +382,41 @@ fn update_installed_with_catalog(
         catalog.install_options.target_platform,
     );
     let installed_count = commands.list(None)?.len();
-    let mut artifact_adapters = catalog.artifact_adapters()?;
-    artifact_adapters.insert(0, resources::caddy_adapter()?);
+    let artifact_adapters = update_artifact_adapters(catalog)?;
     let resource_adapters = artifact_adapters
         .iter()
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
-    let update = if let Some(client) = catalog.http_client.as_deref() {
-        commands.update_all_installed_with_progress(&resource_adapters, client, progress)?
+    let update_result = if let Some(client) = catalog.http_client.as_deref() {
+        commands.update_all_installed_with_progress(&resource_adapters, client, progress)
     } else {
         let client = resources::UreqResourceHttpClient::default();
 
-        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)?
+        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)
+    };
+    let (update, failure) = match update_result {
+        Ok(update) => (update, None),
+        Err(resources::ManagedResourceCommandError::PartialUpdate { source, update }) => {
+            (update, Some((*source).into()))
+        }
+        Err(error) => return Err(error.into()),
     };
 
     Ok(ManagedResourceUpdateReport {
         installed_count,
         updated_count: update.installs().len(),
+        update,
+        failure,
     })
+}
+
+fn update_artifact_adapters(
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {
+    let mut artifact_adapters = catalog.artifact_adapters()?;
+    artifact_adapters.push(resources::caddy_adapter()?);
+
+    Ok(artifact_adapters)
 }
 
 fn protocol_update_check_track(

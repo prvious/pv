@@ -137,6 +137,51 @@ fn managed_resource_commands_keep_installed_state_when_update_validation_fails()
 }
 
 #[test]
+fn managed_resource_commands_reject_update_when_current_pointer_is_missing() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
+    let first_manifest = manifest_with_artifacts(&[&first_artifact]);
+    let second_manifest = manifest_with_artifacts(&[&first_artifact, &second_artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&first_manifest)
+        .with_bytes(first_artifact.bytes())
+        .with_text(&second_manifest)
+        .with_bytes(second_artifact.bytes());
+    let installed = commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let current_path = installed
+        .current_artifact_path()
+        .parent()
+        .and_then(Utf8Path::parent)
+        .ok_or_else(|| anyhow::anyhow!("missing installed track directory"))?
+        .join("current");
+    fs::delete_file(&current_path)?;
+
+    let failed_update = commands.update(&adapter, &client);
+    let listed_after_failure = commands.list(Some(adapter.resource_name()))?;
+
+    assert!(matches!(
+        failed_update,
+        Err(ManagedResourceCommandError::Resources(
+            ResourcesError::InvalidArtifactLayout { .. }
+        ))
+    ));
+    assert!(fs::path_entry_exists(installed.current_artifact_path())?);
+    assert_eq!(client.byte_request_count(), 1);
+    assert_eq!(listed_after_failure.len(), 1);
+    assert_eq!(
+        listed_after_failure[0].installed_version().as_str(),
+        "7.2.5-pv1"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_report_revoked_latest_fallback() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1583,6 +1628,111 @@ fn managed_resource_commands_update_all_installed_groups_from_one_manifest_refre
         manifest_refreshes_during_update,
         client.byte_request_count(),
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_report_completed_installs_after_later_update_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let redis = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let caddy = FakeAdapter::new("caddy", &["bin/pv-fake-resource"])?;
+    let redis_artifact = fixture_artifact_for(
+        "redis",
+        "7.2.5-pv1",
+        "darwin-arm64",
+        &[("bin/pv-fake-resource", "redis first")],
+    )?;
+    let redis_update_artifact = fixture_artifact_for(
+        "redis",
+        "7.2.6-pv1",
+        "darwin-arm64",
+        &[("bin/pv-fake-resource", "redis update")],
+    )?;
+    let caddy_artifact = fixture_artifact_for(
+        "caddy",
+        "2.11.4-pv1",
+        "darwin-arm64",
+        &[("bin/pv-fake-resource", "caddy first")],
+    )?;
+    let caddy_update_artifact = fixture_artifact_for(
+        "caddy",
+        "2.11.5-pv1",
+        "darwin-arm64",
+        &[("bin/pv-fake-resource", "caddy update")],
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "redis",
+            "7.2",
+            vec![manifest_track("7.2", vec![&redis_artifact])],
+        ),
+        manifest_resource(
+            "caddy",
+            "2",
+            vec![manifest_track("2", vec![&caddy_artifact])],
+        ),
+    ]);
+    let update_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "redis",
+            "7.2",
+            vec![manifest_track(
+                "7.2",
+                vec![&redis_artifact, &redis_update_artifact],
+            )],
+        ),
+        manifest_resource(
+            "caddy",
+            "2",
+            vec![manifest_track(
+                "2",
+                vec![&caddy_artifact, &caddy_update_artifact],
+            )],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(redis_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(caddy_artifact.bytes())
+        .with_text(&update_manifest)
+        .with_bytes(redis_update_artifact.bytes());
+
+    commands.install(&redis, TrackSelector::Latest, &client)?;
+    commands.install(&caddy, TrackSelector::Latest, &client)?;
+    let resource_adapters: [&dyn ResourceAdapter; 2] = [&redis, &caddy];
+    let error = commands
+        .update_all_installed(&resource_adapters, &client)
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("update unexpectedly succeeded"))?;
+    let (source, partial_update) = match error {
+        ManagedResourceCommandError::PartialUpdate { source, update } => (*source, update),
+        error => bail!("completed Redis update was not reported: {error}"),
+    };
+
+    assert!(matches!(
+        source,
+        ManagedResourceCommandError::Resources(ResourcesError::HttpRequestFailed { .. })
+    ));
+    assert_eq!(partial_update.installs().len(), 1);
+    assert_eq!(
+        partial_update.installs()[0].resource_name().as_str(),
+        "redis"
+    );
+    let listed = commands.list(None)?;
+    let redis_track = listed
+        .iter()
+        .find(|track| track.resource_name().as_str() == "redis")
+        .ok_or_else(|| anyhow::anyhow!("missing Redis track"))?;
+    let caddy_track = listed
+        .iter()
+        .find(|track| track.resource_name().as_str() == "caddy")
+        .ok_or_else(|| anyhow::anyhow!("missing Caddy track"))?;
+    assert_eq!(redis_track.installed_version().as_str(), "7.2.6-pv1");
+    assert_eq!(caddy_track.installed_version().as_str(), "2.11.4-pv1");
 
     Ok(())
 }

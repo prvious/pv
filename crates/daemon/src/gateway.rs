@@ -801,7 +801,7 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> Proce
         arguments: command.run_arguments(&paths.gateway_root_config()),
         private_environment: caddy_xdg_environment(paths),
         config_path: paths.gateway_root_config(),
-        log_path: paths.gateway_log(),
+        log_path: paths.gateway_error_log(),
         pid_path: paths.gateway_pid(),
         metadata_path: paths.gateway_runtime_metadata(),
         resource_name: "caddy".to_owned(),
@@ -1133,7 +1133,7 @@ async fn reconcile_gateway_config(
     command: &CaddyCliCommand,
     plan: &RuntimePlan,
 ) -> Result<GatewayConfigReconciliation, DaemonError> {
-    let routes = gateway_project_routes(plan);
+    let routes = gateway_project_routes(paths, plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = gateway_project_config_fragments(paths, &routes)?;
@@ -1146,6 +1146,8 @@ async fn reconcile_gateway_config(
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
+        access_log_path: paths.gateway_access_log(),
+        error_log_path: paths.gateway_error_log(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -1163,6 +1165,8 @@ async fn reconcile_gateway_config(
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
+        access_log_path: paths.gateway_access_log(),
+        error_log_path: paths.gateway_error_log(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -1432,9 +1436,8 @@ async fn start_or_adopt_promoted_runtime(
                     }
                 },
                 RuntimeConfigDisposition::Preserve => {
-                    // An unknown load may still apply in Caddy after the client returns. Keep
-                    // the desired promoted tree on disk and do not issue a competing load whose
-                    // ordering cannot be established.
+                    // Keep the desired promoted tree when runtime state is uncertain. The branch
+                    // that selected this disposition owns the specific recovery rationale.
                     let _cleanup_result = promoted_config.commit();
                     error
                 }
@@ -1586,11 +1589,7 @@ async fn start_or_adopt_runtime(
             .map_err(DaemonError::from)
         {
             record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-            process.stop(Duration::from_secs(1)).await?;
-            delete_optional_file(&spec.pid_path)?;
-            delete_optional_file(&spec.metadata_path)?;
-
-            return Err(RuntimeTransactionError::new(error));
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
         }
 
         if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
@@ -1608,22 +1607,17 @@ async fn start_or_adopt_runtime(
                     restore_active_runtime: false,
                 });
             }
-            process.stop(Duration::from_secs(1)).await?;
-            delete_optional_file(&spec.pid_path)?;
-            delete_optional_file(&spec.metadata_path)?;
-
-            return Err(RuntimeTransactionError::new(error));
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
         }
 
         if process.has_exited()? {
-            return Err(RuntimeTransactionError::new(
-                DaemonError::UnexpectedProtocolResponse {
-                    reason: format!(
-                        "runtime `{}` exited before readiness was verified",
-                        spec.name
-                    ),
-                },
-            ));
+            let error = DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "runtime `{}` exited before readiness was verified",
+                    spec.name
+                ),
+            };
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
         }
 
         Ok(RuntimeTransactionSuccess {
@@ -1632,6 +1626,60 @@ async fn start_or_adopt_runtime(
         })
     }
     .await
+}
+
+async fn cleanup_fresh_runtime(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    process: ManagedProcess,
+    readiness_error: DaemonError,
+) -> RuntimeTransactionError {
+    if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
+        match supervisor.mark_replacement_required(spec) {
+            Ok(true) => {
+                // Keep the promoted config and marked runtime metadata when the process may still
+                // be alive. The next reconciliation replaces it without a disk/runtime split.
+                return RuntimeTransactionError::preserve_promoted_config(
+                    runtime_cleanup_failed_error(&spec.name, readiness_error, cleanup_error),
+                );
+            }
+            Ok(false) => {}
+            Err(replacement_error) => {
+                return RuntimeTransactionError::preserve_promoted_config(
+                    runtime_cleanup_failed_error(
+                        &spec.name,
+                        readiness_error,
+                        runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
+                    ),
+                );
+            }
+        }
+    }
+
+    match cleanup_fresh_runtime_files(spec) {
+        Ok(()) => RuntimeTransactionError::new(readiness_error),
+        Err(cleanup_error) => RuntimeTransactionError::new(runtime_cleanup_failed_error(
+            &spec.name,
+            readiness_error,
+            cleanup_error,
+        )),
+    }
+}
+
+fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
+    let pid_error = delete_optional_file(&spec.pid_path).err();
+    let metadata_error = delete_optional_file(&spec.metadata_path).err();
+
+    match (pid_error, metadata_error) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(pid_error), Some(metadata_error)) => Err(DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "failed to remove runtime `{}` pid file: {pid_error}; failed to remove metadata file: {metadata_error}",
+                spec.name
+            ),
+        }),
+    }
 }
 
 #[derive(Debug)]
@@ -1935,7 +1983,7 @@ fn loopback_listener_port_snapshot() -> String {
     }
 }
 
-fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
+fn gateway_project_routes(paths: &PvPaths, plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
     plan.workers
         .iter()
         .flat_map(|worker| {
@@ -1945,6 +1993,7 @@ fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
                 primary_hostname: project.primary_hostname.clone(),
                 hostnames: project.hostnames.clone(),
                 worker_port: worker.port,
+                access_log_path: paths.gateway_access_log(),
             })
         })
         .collect()
@@ -2210,6 +2259,18 @@ fn runtime_config_rollback_failed_error(
         daemon_error_as_caddy_admin(original),
         daemon_error_as_caddy_admin_for_operation(rollback, CaddyAdminOperation::Rollback),
     ))
+}
+
+fn runtime_cleanup_failed_error(
+    runtime: &str,
+    original: DaemonError,
+    cleanup: DaemonError,
+) -> DaemonError {
+    DaemonError::RuntimeCleanupFailed {
+        runtime: runtime.to_owned(),
+        source: Box::new(original),
+        cleanup: Box::new(cleanup),
+    }
 }
 
 #[expect(
@@ -2772,6 +2833,7 @@ mod tests {
                 primary_hostname: "preserved.test".to_owned(),
                 hostnames: Vec::new(),
                 worker_port: 8123,
+                access_log_path: paths.gateway_access_log(),
             }],
         )?;
 

@@ -27,6 +27,30 @@ pub enum DaemonError {
         cleanup: Box<DaemonError>,
     },
 
+    #[error("{source}; additionally failed to clean up runtime `{runtime}` transaction: {cleanup}")]
+    RuntimeCleanupFailed {
+        runtime: String,
+        #[source]
+        source: Box<DaemonError>,
+        cleanup: Box<DaemonError>,
+    },
+
+    #[error("Caddy update failed with `{source}`; compensation also failed: {compensation}")]
+    CaddyUpdateCompensationFailed {
+        #[source]
+        source: Box<DaemonError>,
+        compensation: Box<DaemonError>,
+    },
+
+    #[error(
+        "Managed Resource update failed with `{source}`; reconciliation also failed: {reconciliation}"
+    )]
+    PartialUpdateReconciliationFailed {
+        #[source]
+        source: Box<DaemonError>,
+        reconciliation: Box<DaemonError>,
+    },
+
     #[error("daemon socket is already in use at {path}")]
     SocketInUse { path: String },
 

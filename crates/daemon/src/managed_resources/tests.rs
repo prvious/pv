@@ -19,7 +19,8 @@ use rcgen::{
     PKCS_ECDSA_P256_SHA256,
 };
 use resources::{
-    ManagedResourceCommandError, ResourceName, ResourcesError, RuntimeArtifactAdapter,
+    ManagedResourceCommandError, ResourceAdapter, ResourceName, ResourcesError,
+    RuntimeArtifactAdapter,
 };
 use serde::Deserialize;
 use state::{
@@ -226,6 +227,19 @@ fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() -> Result
         catalog.install_options.manifest_url,
         resources::default_artifact_manifest_url()
     );
+
+    Ok(())
+}
+
+#[test]
+fn caddy_updates_after_other_managed_resources() -> Result<()> {
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+    let resource_names = super::update_artifact_adapters(&catalog)?
+        .into_iter()
+        .map(|adapter| adapter.resource_name().as_str().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(resource_names, ["mailpit", "caddy"]);
 
     Ok(())
 }

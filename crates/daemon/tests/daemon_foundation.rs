@@ -402,6 +402,10 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let executable_install =
         AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &caddy_executable)?;
     state::fs::rename(executable_install.binary_path(), &caddy_executable)?;
+    state::fs::symlink_file(
+        camino::Utf8Path::new("releases/2.11.4-pv1"),
+        &paths.resources().join("caddy/2/current"),
+    )?;
     let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
     state::fs::write_sensitive_file(
@@ -439,10 +443,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
     let caddy_record = database.managed_resource_track("caddy", "2")?;
 
-    assert_eq!(
-        completed.summary,
-        "current; reconciled: Gateway runtime reconciled"
-    );
+    assert_eq!(completed.summary, "current");
     assert!(!completed.summary.contains("updated"));
     assert_eq!(job.kind, "update");
     assert_eq!(job.scope, "system");

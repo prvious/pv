@@ -9,6 +9,9 @@ use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
 static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) const GATEWAY_HEALTH_HOSTNAME: &str = "pv-gateway.localhost";
 pub(crate) const GATEWAY_HEALTH_PATH: &str = "/__pv/health";
+const LOG_ROLL_KEEP: u8 = 5;
+const LOG_ROLL_KEEP_FOR: &str = "720h";
+const LOG_ROLL_SIZE: &str = "10MiB";
 
 pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String {
     format!("pv-gateway-health-v1:{http_port}:{https_port}")
@@ -22,6 +25,8 @@ pub struct GatewayConfigInput {
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
+    pub access_log_path: Utf8PathBuf,
+    pub error_log_path: Utf8PathBuf,
     pub projects_config_glob: Utf8PathBuf,
     pub import_project_configs: bool,
 }
@@ -33,6 +38,7 @@ pub struct GatewayProjectRoute {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub worker_port: u16,
+    pub access_log_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +64,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("{\n");
     output.push_str(&format!("    admin 127.0.0.1:{}\n", input.admin_port));
     output.push_str("    persist_config off\n");
+    append_file_log(&mut output, "    ", input.error_log_path.as_str())?;
     output.push_str("    storage file_system {\n");
     output.push_str(&format!(
         "        root {}\n",
@@ -83,10 +90,23 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
     output.push_str(&format!(
-        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+    ));
+    append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
+    output.push_str(&format!(
+        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
     output.push_str(&format!(
-        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    tls {{\n        issuer internal {{\n            ca local\n        }}\n    }}\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+    ));
+    append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
+    output.push_str("    tls {\n");
+    output.push_str("        issuer internal {\n");
+    output.push_str("            ca local\n");
+    output.push_str("        }\n");
+    output.push_str("    }\n");
+    output.push_str(&format!(
+        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
 
     if input.import_project_configs {
@@ -99,6 +119,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
         output.push('\n');
         output.push_str(&format!("http://127.0.0.1:{} {{\n", input.http_port));
         output.push_str("    bind 127.0.0.1 ::1\n");
+        append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
         output.push_str("    respond \"PV Gateway is running\" 404\n");
         output.push_str("}\n");
     }
@@ -131,6 +152,7 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
         comma_separated_hostnames(&route.primary_hostname, &route.hostnames)?
     ));
     output.push_str("    bind 127.0.0.1 ::1\n");
+    append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
     output.push_str("    tls {\n");
     output.push_str("        issuer internal {\n");
     output.push_str("            ca local\n");
@@ -385,6 +407,15 @@ fn quoted_caddyfile_token(value: &str) -> Result<String, DaemonError> {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
 
     Ok(format!("\"{escaped}\""))
+}
+
+fn append_file_log(output: &mut String, indentation: &str, path: &str) -> Result<(), DaemonError> {
+    let path = quoted_caddyfile_token(path)?;
+    output.push_str(&format!(
+        "{indentation}log {{\n{indentation}    output file {path} {{\n{indentation}        roll_size {LOG_ROLL_SIZE}\n{indentation}        roll_keep {LOG_ROLL_KEEP}\n{indentation}        roll_keep_for {LOG_ROLL_KEEP_FOR}\n{indentation}    }}\n{indentation}    format json\n{indentation}}}\n"
+    ));
+
+    Ok(())
 }
 
 fn candidate_path_for(path: &Utf8Path) -> Utf8PathBuf {

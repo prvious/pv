@@ -6,6 +6,14 @@ Gateway:
 {
     admin 127.0.0.1:42019
     persist_config off
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/error.log" {
+            roll_size 10MiB
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     storage file_system {
         root "/Users/Alice Smith/.pv/certificates/caddy"
     }
@@ -24,11 +32,27 @@ Gateway:
 
 http://pv-gateway.localhost {
     bind 127.0.0.1 ::1
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
+            roll_size 10MiB
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     respond /__pv/health "pv-gateway-health-v1:48080:48443" 200
 }
 
 https://pv-gateway.localhost {
     bind 127.0.0.1 ::1
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
+            roll_size 10MiB
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     tls {
         issuer internal {
             ca local

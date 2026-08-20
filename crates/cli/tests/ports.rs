@@ -571,6 +571,62 @@ fn ports_install_fails_on_low_port_conflict_before_writing_prepared_artifacts() 
 }
 
 #[test]
+fn ports_install_preserves_existing_gateway_assignments_after_later_failure() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+    let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        &system_anchor_path,
+        &system_pf_conf_path,
+    )
+    .with_active_pf_read_failing_when_unloaded();
+    let paths = pv_paths(&home);
+
+    let mut database = Database::open(&paths)?;
+    let seeded = database.assign_gateway_ports(|port| {
+        port == GATEWAY_HTTP_PREFERRED_PORT
+            || port == GATEWAY_HTTPS_PREFERRED_PORT
+            || port == GATEWAY_ADMIN_PREFERRED_PORT
+    })?;
+    drop(database);
+
+    write_file(
+        &system_anchor_path,
+        &PfRedirectConfig::new(seeded.http.port, seeded.https.port).render_anchor(),
+    )?;
+    write_file(&system_pf_conf_path, &PfConfReference.render())?;
+
+    let output = run_pv(&["ports:install"], &environment)?;
+    let assignments = Database::open(&paths)?.assigned_ports()?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(assignments.iter().any(|assignment| {
+        assignment.owner == PortOwner::Gateway(state::GatewayPort::Http)
+            && assignment.port == seeded.http.port
+    }));
+    assert!(assignments.iter().any(|assignment| {
+        assignment.owner == PortOwner::Gateway(state::GatewayPort::Https)
+            && assignment.port == seeded.https.port
+    }));
+    assert!(assignments.iter().any(|assignment| {
+        assignment.owner == PortOwner::Gateway(state::GatewayPort::Admin)
+            && assignment.port == seeded.admin.port
+    }));
+    assert_eq!(assignments.len(), 3);
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, assignments));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn ports_status_reports_canonical_routing_states_without_mutating_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
