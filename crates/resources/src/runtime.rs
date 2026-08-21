@@ -73,6 +73,13 @@ pub fn frankenphp_adapter() -> Result<RuntimeArtifactAdapter> {
     ))
 }
 
+pub fn caddy_adapter() -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new("caddy")?,
+        "bin/caddy",
+    ))
+}
+
 pub fn composer_adapter() -> Result<RuntimeArtifactAdapter> {
     Ok(RuntimeArtifactAdapter::new(
         ResourceName::new("composer")?,
@@ -145,6 +152,20 @@ mod tests {
 
         let missing = adapter.validate_installation(tempdir.path());
         state::fs::write_sensitive_file(&tempdir.path().join("bin/rustfs"), "")?;
+        let present = adapter.validate_installation(tempdir.path());
+
+        assert_debug_snapshot!((missing, present));
+
+        Ok(())
+    }
+
+    #[test]
+    fn caddy_adapter_requires_caddy_binary() -> Result<()> {
+        let tempdir = tempdir()?;
+        let adapter = super::caddy_adapter()?;
+
+        let missing = adapter.validate_installation(tempdir.path());
+        state::fs::write_sensitive_file(&tempdir.path().join("bin/caddy"), "")?;
         let present = adapter.validate_installation(tempdir.path());
 
         assert_debug_snapshot!((missing, present));

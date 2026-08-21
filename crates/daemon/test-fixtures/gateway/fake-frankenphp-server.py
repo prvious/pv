@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 import http.server
+import glob
 import re
-import signal
 import socketserver
 import ssl
 import sys
 import threading
 
-
-signal.signal(signal.SIGUSR1, signal.SIG_IGN)
 
 with open(sys.argv[1], encoding="utf-8") as config_file:
     config = config_file.read()
@@ -33,6 +31,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/config/":
+            body = b"{}\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/__pv/health":
             body = gateway_health_response.encode("utf-8")
             self.send_response(200)
@@ -43,6 +49,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         super().do_GET()
 
+    def do_POST(self):
+        if self.path != "/load":
+            self.send_error(404)
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(content_length)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
 
 class Server(http.server.ThreadingHTTPServer):
     def server_bind(self):
@@ -51,12 +68,28 @@ class Server(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-http_port = int(required(r"^# PV_FAKE_PORT (\d+)$"))
+http_port = None
+http_port_setting = optional(r"^\s*http_port (\d+)$")
+if http_port_setting is not None:
+    http_port = int(http_port_setting)
+else:
+    import_path = required(r'^\s*import\s+"([^"]+)"$')
+    for fragment_path in glob.glob(import_path):
+        with open(fragment_path, encoding="utf-8") as fragment_file:
+            fragment = fragment_file.read()
+        match = re.search(r"\bhttp://[^\s,]+:(\d+)\b", fragment)
+        if match:
+            http_port = int(match.group(1))
+            break
+if http_port is None:
+    raise SystemExit("missing fake worker service port")
+admin_port = int(required(r"^\s*admin 127\.0\.0\.1:(\d+)$"))
 https_port = optional(r"^\s*https_port (\d+)$")
 gateway_health_response = f"pv-gateway-health-v1:{http_port}:{https_port}"
 cert_path = optional(r'^\s*cert "([^"]+)"$')
 key_path = optional(r'^\s*key "([^"]+)"$')
 servers = [Server(("127.0.0.1", http_port), Handler)]
+admin_server = Server(("127.0.0.1", admin_port), Handler)
 
 if https_port is not None and cert_path is not None and key_path is not None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -65,7 +98,7 @@ if https_port is not None and cert_path is not None and key_path is not None:
     https_server.socket = context.wrap_socket(https_server.socket, server_side=True)
     servers.append(https_server)
 
-for server in servers[1:]:
+for server in [admin_server, *servers[1:]]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 

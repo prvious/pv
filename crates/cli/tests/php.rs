@@ -2022,6 +2022,7 @@ fn record_installed_php(
     let artifact = runtime_fixture_artifact("php", version, "bin/php", TargetPlatform::DarwinArm64);
     prepare_existing_release(home, track, &artifact)?;
     let release = release_path(home, track, &artifact);
+    point_current_release(home, track, &artifact)?;
     let mut database = Database::open(&pv_paths(home))?;
     database.record_managed_resource_track_installed("php", track, version, &release)?;
 
@@ -2034,20 +2035,40 @@ fn record_installed_php_pair(
     artifacts: &PhpPairArtifacts,
 ) -> anyhow::Result<()> {
     prepare_existing_php_pair_releases(home, track, artifacts)?;
-    let mut database = Database::open(&pv_paths(home))?;
     let php_release = release_path(home, track, &artifacts.php);
+    point_current_release(home, track, &artifacts.php)?;
+    let frankenphp_release = release_path(home, track, &artifacts.frankenphp);
+    point_current_release(home, track, &artifacts.frankenphp)?;
+    let mut database = Database::open(&pv_paths(home))?;
     database.record_managed_resource_track_installed(
         "php",
         track,
         &artifacts.php.version,
         &php_release,
     )?;
-    let frankenphp_release = release_path(home, track, &artifacts.frankenphp);
     database.record_managed_resource_track_installed(
         "frankenphp",
         track,
         &artifacts.frankenphp.version,
         &frankenphp_release,
+    )?;
+
+    Ok(())
+}
+
+fn point_current_release(
+    home: &Utf8Path,
+    track: &str,
+    artifact: &FixtureArtifact,
+) -> anyhow::Result<()> {
+    let current = pv_paths(home)
+        .resources()
+        .join(&artifact.resource_name)
+        .join(track)
+        .join("current");
+    fs::symlink_file(
+        &Utf8PathBuf::from(format!("releases/{}", artifact.version)),
+        &current,
     )?;
 
     Ok(())

@@ -13,6 +13,7 @@ const RECENT_JOB_LIMIT: i64 = 100;
 pub const DNS_PREFERRED_PORT: u16 = 35353;
 pub const GATEWAY_HTTP_PREFERRED_PORT: u16 = 48080;
 pub const GATEWAY_HTTPS_PREFERRED_PORT: u16 = 48443;
+pub const GATEWAY_ADMIN_PREFERRED_PORT: u16 = 2019;
 pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
 pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
 const PROJECT_ID_LENGTH: usize = 10;
@@ -23,6 +24,10 @@ const MAX_DNS_LABEL_LENGTH: usize = 63;
 const MAX_HOSTNAME_LENGTH: usize = 253;
 const RESERVED_HOSTNAME: &str = "pv.test";
 const RESERVED_TRACK_NAME: &str = "latest";
+const CADDY_RESOURCE_NAME: &str = "caddy";
+const CADDY_RESOURCE_TRACK: &str = "2";
+const ADMIN_RESOURCE_PORT_NAME: &str = "admin";
+const PHP_RESOURCE_NAME: &str = "php";
 const PROJECT_ENV_OBSERVED_SUBJECT_KIND: &str = "project_env";
 const RUNTIME_OBSERVED_SUBJECT_KIND: &str = "runtime";
 const PHP_RUNTIME_WORKER_OBSERVED_SUBJECT_KIND: &str = "php_runtime_worker";
@@ -115,7 +120,7 @@ impl JobDiagnosticSubject {
             ["project", id] if !id.is_empty() => Self::Project {
                 id: (*id).to_owned(),
             },
-            ["resource", name, _track] if matches!(*name, "php" | "frankenphp") => {
+            ["resource", name, _track] if matches!(*name, "caddy" | "php" | "frankenphp") => {
                 Self::GatewayRuntime
             }
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
@@ -181,6 +186,7 @@ pub struct PortRequest {
 pub enum GatewayPort {
     Http,
     Https,
+    Admin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +194,9 @@ pub enum PortOwner {
     Dns,
     Gateway(GatewayPort),
     PhpWorker {
+        php_runtime_key: String,
+    },
+    PhpWorkerAdmin {
         php_runtime_key: String,
     },
     Resource {
@@ -208,6 +217,13 @@ pub struct PortAssignment {
 pub struct GatewayPortAssignments {
     pub http: PortAssignment,
     pub https: PortAssignment,
+    pub admin: PortAssignment,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhpWorkerPortAssignments {
+    pub service: PortAssignment,
+    pub admin: PortAssignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2076,10 +2092,54 @@ impl Database {
             &mut assigned_ports,
             &mut is_available,
         )?;
+        let admin = assign_port_in_transaction(
+            &transaction,
+            PortRequest::pv_gateway_admin(),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
 
         transaction.commit()?;
 
-        Ok(GatewayPortAssignments { http, https })
+        Ok(GatewayPortAssignments { http, https, admin })
+    }
+
+    pub fn assign_php_worker_ports(
+        &mut self,
+        php_runtime_key: impl Into<String>,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<PhpWorkerPortAssignments, StateError> {
+        let php_runtime_key = php_runtime_key.into();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
+        let service = assign_port_in_transaction(
+            &transaction,
+            PortRequest::php_worker(
+                php_runtime_key.clone(),
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+        let admin = assign_port_in_transaction(
+            &transaction,
+            PortRequest::php_worker_admin(
+                php_runtime_key,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+
+        transaction.commit()?;
+
+        Ok(PhpWorkerPortAssignments { service, admin })
     }
 
     pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {
@@ -2420,6 +2480,15 @@ impl PortRequest {
         )
     }
 
+    pub fn pv_gateway_admin() -> Self {
+        Self::gateway(
+            GatewayPort::Admin,
+            GATEWAY_ADMIN_PREFERRED_PORT,
+            RUNTIME_PORT_FALLBACK_START,
+            RUNTIME_PORT_FALLBACK_END,
+        )
+    }
+
     pub fn php_worker(
         php_runtime_key: impl Into<String>,
         preferred_port: u16,
@@ -2428,6 +2497,22 @@ impl PortRequest {
     ) -> Self {
         Self::new(
             PortOwner::PhpWorker {
+                php_runtime_key: php_runtime_key.into(),
+            },
+            preferred_port,
+            fallback_start,
+            fallback_end,
+        )
+    }
+
+    pub fn php_worker_admin(
+        php_runtime_key: impl Into<String>,
+        preferred_port: u16,
+        fallback_start: u16,
+        fallback_end: u16,
+    ) -> Self {
+        Self::new(
+            PortOwner::PhpWorkerAdmin {
                 php_runtime_key: php_runtime_key.into(),
             },
             preferred_port,
@@ -2513,6 +2598,12 @@ impl PortOwner {
                 owner_track: String::new(),
                 owner_port: String::new(),
             }),
+            Self::Gateway(GatewayPort::Admin) => Ok(PortIdentity {
+                owner_kind: "resource",
+                owner_id: CADDY_RESOURCE_NAME.to_string(),
+                owner_track: CADDY_RESOURCE_TRACK.to_string(),
+                owner_port: ADMIN_RESOURCE_PORT_NAME.to_string(),
+            }),
             Self::Gateway(gateway_port) => Ok(PortIdentity {
                 owner_kind: "gateway",
                 owner_id: gateway_port.as_str().to_string(),
@@ -2527,6 +2618,28 @@ impl PortOwner {
                     owner_id: "php".to_string(),
                     owner_track: php_runtime_key.clone(),
                     owner_port: String::new(),
+                })
+            }
+            Self::PhpWorkerAdmin { php_runtime_key } => {
+                validate_php_runtime_key(php_runtime_key)?;
+                let (owner_track, owner_port) =
+                    if let Some((php_track, extensions)) = php_runtime_key.split_once('+') {
+                        (
+                            php_track.to_owned(),
+                            format!(
+                                "{ADMIN_RESOURCE_PORT_NAME}.{}",
+                                extensions.replace('+', ".")
+                            ),
+                        )
+                    } else {
+                        (php_runtime_key.clone(), ADMIN_RESOURCE_PORT_NAME.to_owned())
+                    };
+
+                Ok(PortIdentity {
+                    owner_kind: "resource",
+                    owner_id: PHP_RESOURCE_NAME.to_string(),
+                    owner_track,
+                    owner_port,
                 })
             }
             Self::Resource { name, track, port } => {
@@ -2563,7 +2676,7 @@ impl PortOwner {
             }
             "gateway" => Err(StateError::InvalidPortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
-                reason: "gateway ports must use owner id `http` or `https` with empty owner track and port",
+                reason: "gateway ports must use owner id `http`, `https`, or `admin` with empty owner track and port",
             }),
             "php_worker"
                 if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
@@ -2579,6 +2692,55 @@ impl PortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
                 reason: "php worker ports must use owner id `php`, include a php runtime key, and use an empty owner port",
             }),
+            "php_worker_admin"
+                if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
+            {
+                let owner = Self::PhpWorkerAdmin {
+                    php_runtime_key: owner_track,
+                };
+                owner.identity()?;
+
+                Ok(owner)
+            }
+            "php_worker_admin" => Err(StateError::InvalidPortOwner {
+                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
+                reason: "php worker admin ports must use owner id `php`, include a php runtime key, and use an empty owner port",
+            }),
+            "resource"
+                if owner_id == CADDY_RESOURCE_NAME
+                    && owner_track == CADDY_RESOURCE_TRACK
+                    && owner_port == ADMIN_RESOURCE_PORT_NAME =>
+            {
+                Ok(Self::Gateway(GatewayPort::Admin))
+            }
+            "resource"
+                if owner_id == PHP_RESOURCE_NAME
+                    && !owner_track.is_empty()
+                    && (owner_port == ADMIN_RESOURCE_PORT_NAME
+                        || owner_port.starts_with("admin.")) =>
+            {
+                let php_runtime_key = if owner_port == ADMIN_RESOURCE_PORT_NAME {
+                    owner_track
+                } else if let Some(extensions) = owner_port.strip_prefix("admin.")
+                    && !extensions.is_empty()
+                {
+                    format!("{owner_track}+{}", extensions.replace('.', "+"))
+                } else {
+                    return Err(StateError::InvalidPortOwner {
+                        owner: describe_port_identity(
+                            &owner_kind,
+                            &owner_id,
+                            &owner_track,
+                            &owner_port,
+                        ),
+                        reason: "PHP worker admin resource ports must use `admin` or `admin.<extension>`",
+                    });
+                };
+                let owner = Self::PhpWorkerAdmin { php_runtime_key };
+                owner.identity()?;
+
+                Ok(owner)
+            }
             "resource"
                 if !owner_id.is_empty() && !owner_track.is_empty() && !owner_port.is_empty() =>
             {
@@ -2606,6 +2768,9 @@ impl PortOwner {
             Self::PhpWorker { php_runtime_key } => {
                 format!("php worker {php_runtime_key:?}")
             }
+            Self::PhpWorkerAdmin { php_runtime_key } => {
+                format!("php worker admin {php_runtime_key:?}")
+            }
             Self::Resource { name, track, port } => {
                 format!("resource {name:?} track {track:?} port {port:?}")
             }
@@ -2618,6 +2783,7 @@ impl GatewayPort {
         match self {
             Self::Http => "http",
             Self::Https => "https",
+            Self::Admin => "admin",
         }
     }
 
@@ -2625,9 +2791,10 @@ impl GatewayPort {
         match owner_id {
             "http" => Ok(Self::Http),
             "https" => Ok(Self::Https),
+            "admin" => Ok(Self::Admin),
             _ => Err(StateError::InvalidPortOwner {
                 owner: format!("gateway:{owner_id}:"),
-                reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
+                reason: "gateway ports must use owner id `http`, `https`, or `admin` and an empty owner track",
             }),
         }
     }

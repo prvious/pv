@@ -4,6 +4,14 @@ expression: render_gateway_project_config(&route)?
 ---
 acme.test, api.acme.test {
     bind 127.0.0.1 ::1
+    log {
+        output file "/Users/alice/.pv/logs/gateway/access.log" {
+            roll_size 10MiB
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     tls {
         issuer internal {
             ca local

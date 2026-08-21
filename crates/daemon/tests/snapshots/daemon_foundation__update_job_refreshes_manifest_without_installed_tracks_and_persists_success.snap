@@ -1,0 +1,20 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: snapshot
+---
+(
+    "current",
+    "update",
+    "system",
+    Succeeded,
+    Some(
+        "current",
+    ),
+    1,
+    Installed,
+    Some(
+        "2.11.4-pv1",
+    ),
+    true,
+    1,
+)

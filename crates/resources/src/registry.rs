@@ -130,6 +130,17 @@ static RESOURCES: &[ResourceDescriptor] = &[
         ),
     },
     ResourceDescriptor {
+        name: "caddy",
+        aliases: &[],
+        kind: ResourceKind::Runtime,
+        capabilities: RUNTIME_CAPABILITIES,
+        allocation_kind: None,
+        env_placeholder_contract: EnvPlaceholderContract::new(
+            NO_ENV_PLACEHOLDERS,
+            NO_ENV_PLACEHOLDERS,
+        ),
+    },
+    ResourceDescriptor {
         name: "composer",
         aliases: &[],
         kind: ResourceKind::Tool,

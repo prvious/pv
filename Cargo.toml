@@ -1,6 +1,6 @@
 [package]
 name = "pv"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 publish = false
 
@@ -64,6 +64,7 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0", features = ["codec"] }
 toml = "1.1.2"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
 x509-parser = "0.18.1"
 yaml_serde = "0.10.4"

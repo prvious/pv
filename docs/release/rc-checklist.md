@@ -17,7 +17,7 @@ Use this checklist for PV-125 release candidate validation. The current RC targe
 | Artifact manifest URL |  |
 | Workflow run IDs |  |
 
-Default-track matrix under validation: PHP/FrankenPHP `8.5`, Composer `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Mailpit `1`, and RustFS `1`.
+Default-track matrix under validation: PHP/FrankenPHP `8.5`, Caddy `2`, Composer `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Mailpit `1`, and RustFS `1`.
 
 ## Artifact Publication
 
@@ -65,6 +65,7 @@ Default-track matrix under validation: PHP/FrankenPHP `8.5`, Composer `2`, MySQL
 | Check | Evidence |
 | ----- | -------- |
 | PHP/FrankenPHP `8.5` installs as a matched pair. |  |
+| Caddy `2` installs as the standalone Gateway and passes loopback admin/health reload smoke coverage. |  |
 | Composer `2` runs through the PV PHP shim. |  |
 | MySQL `8.4` starts, passes readiness, and allocates databases. |  |
 | Postgres `18` starts, passes readiness, and allocates databases. |  |

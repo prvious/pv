@@ -485,7 +485,6 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
     use std::time::Duration;
 
     use camino_tempfile::tempdir;

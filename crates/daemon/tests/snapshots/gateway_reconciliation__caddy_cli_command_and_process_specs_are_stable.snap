@@ -19,7 +19,7 @@ expression: snapshot
     ],
     ProcessSpec {
         name: "gateway",
-        command: "<tempdir>/frankenphp",
+        command: "<tempdir>/caddy",
         arguments: [
             "run",
             "--config",
@@ -32,11 +32,11 @@ expression: snapshot
             "XDG_DATA_HOME": "<redacted>",
         },
         config_path: "<tempdir>/home/.pv/config/gateway/Caddyfile",
-        log_path: "<tempdir>/home/.pv/logs/gateway/gateway.log",
+        log_path: "<tempdir>/home/.pv/logs/gateway/error.log",
         pid_path: "<tempdir>/home/.pv/run/gateway.pid",
         metadata_path: "<tempdir>/home/.pv/run/gateway.json",
-        resource_name: "gateway",
-        track: "core",
+        resource_name: "caddy",
+        track: "2",
     },
     ProcessSpec {
         name: "php-worker-8.4",
@@ -58,7 +58,7 @@ expression: snapshot
         log_path: "<tempdir>/home/.pv/logs/workers/php-8.4.log",
         pid_path: "<tempdir>/home/.pv/run/workers/php-8.4.pid",
         metadata_path: "<tempdir>/home/.pv/run/workers/php-8.4.json",
-        resource_name: "php-worker",
+        resource_name: "frankenphp",
         track: "8.4",
     },
 )

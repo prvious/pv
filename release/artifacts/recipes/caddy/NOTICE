@@ -1,0 +1,8 @@
+PV packages the official upstream Caddy 2.11.4 macOS binaries from:
+https://github.com/caddyserver/caddy/releases/tag/v2.11.4
+
+Upstream Caddy source for this artifact is tracked at:
+https://github.com/caddyserver/caddy/tree/v2.11.4
+
+Caddy is licensed under the Apache License 2.0; see LICENSE in this archive.
+The upstream Caddy 2.11.4 release archive does not provide a standalone NOTICE file.

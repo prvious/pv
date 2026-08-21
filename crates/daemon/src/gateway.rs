@@ -2,22 +2,25 @@ use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::io;
 use std::net::TcpListener;
 use std::process::{ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
-use resources::{ResourceAdapter, frankenphp_adapter};
+use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
-    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, ProjectMode, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, StateError, fs,
+    Database, GatewayPort, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
+    ProjectEnvObservedStatus, ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    StateError, fs,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::gateway_config::{
     GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GatewayConfigInput, GatewayProjectRoute,
@@ -31,35 +34,63 @@ use crate::project_env::{
 };
 use crate::structured_log;
 use crate::supervisor::{ManagedProcess, probe_readiness_once};
-use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
+use crate::{
+    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
+};
 
 #[expect(
     clippy::disallowed_types,
-    reason = "daemon runtime owns FrankenPHP config validation process execution"
+    reason = "daemon runtime owns managed Caddy CLI config validation process execution"
 )]
-type FrankenphpProcessCommand = tokio::process::Command;
+type RuntimeProcessCommand = tokio::process::Command;
 
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
+const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
-pub(crate) const FRANKENPHP_NOT_INSTALLED: &str =
-    "Gateway runtime skipped; FrankenPHP is not installed";
+pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrankenphpCommand {
+pub struct CaddyCliCommand {
     executable: Utf8PathBuf,
+    runtime_label: RuntimeLabel,
 }
 
-impl FrankenphpCommand {
-    pub fn new(executable: impl Into<Utf8PathBuf>) -> Self {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeLabel {
+    Caddy,
+    FrankenPhp,
+}
+
+impl RuntimeLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Caddy => "Caddy",
+            Self::FrankenPhp => "FrankenPHP",
+        }
+    }
+}
+
+impl CaddyCliCommand {
+    pub fn caddy(executable: impl Into<Utf8PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            runtime_label: RuntimeLabel::Caddy,
+        }
+    }
+
+    pub fn frankenphp(executable: impl Into<Utf8PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+            runtime_label: RuntimeLabel::FrankenPhp,
         }
     }
 
@@ -68,11 +99,15 @@ impl FrankenphpCommand {
     }
 
     pub fn validate_arguments(&self, config_path: &Utf8Path) -> Vec<String> {
-        frankenphp_config_arguments("validate", config_path)
+        caddyfile_arguments("validate", config_path)
     }
 
     pub fn run_arguments(&self, config_path: &Utf8Path) -> Vec<String> {
-        frankenphp_config_arguments("run", config_path)
+        caddyfile_arguments("run", config_path)
+    }
+
+    fn runtime_label(&self) -> &'static str {
+        self.runtime_label.as_str()
     }
 }
 
@@ -86,6 +121,7 @@ pub struct RuntimePlan {
 pub struct GatewayRuntimePlan {
     pub http_port: u16,
     pub https_port: u16,
+    pub admin_port: u16,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
@@ -106,6 +142,7 @@ pub struct PhpWorkerRuntimePlan {
     pub runtime_key: String,
     pub loaded_modules: Vec<resources::PhpExtensionModule>,
     pub port: u16,
+    pub admin_port: u16,
     pub projects: Vec<RuntimeProject>,
 }
 
@@ -121,7 +158,7 @@ pub struct RuntimeProject {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InstalledFrankenphpRuntime {
-    command: FrankenphpCommand,
+    command: CaddyCliCommand,
     artifact_root: Utf8PathBuf,
 }
 
@@ -178,17 +215,23 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     readiness_timeout: Duration,
     pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
-    let Some(gateway_command) = first_installed_frankenphp_command(paths)? else {
+    let Some(gateway_command) = first_installed_caddy_command(paths)? else {
         record_runtime_observed(
             paths,
             RuntimeSubject::Gateway,
             RuntimeObservedStatus::Stopped,
-            Some(FRANKENPHP_NOT_INSTALLED),
+            Some(CADDY_NOT_INSTALLED),
         )?;
 
-        return Ok(FRANKENPHP_NOT_INSTALLED.to_owned());
+        return Ok(CADDY_NOT_INSTALLED.to_owned());
     };
 
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    if let Err((subject, error)) = recover_unowned_admin_port_assignments(paths, &supervisor) {
+        record_runtime_error(paths, subject, &error)?;
+
+        return Err(*error);
+    }
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
@@ -197,7 +240,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             return Err(error);
         }
     };
-    let supervisor = ProcessSupervisor::new(paths.clone());
     let mut worker_commands = Vec::new();
 
     for worker in &plan.workers {
@@ -259,6 +301,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 },
                 failure_policy: ReadinessFailurePolicy::FailRuntime,
                 timeout: readiness_timeout,
+                admin_endpoint: CaddyAdminEndpoint::new(worker.admin_port),
             },
             subject.clone(),
         )
@@ -326,6 +369,7 @@ fn gateway_readiness_plan(
         check,
         failure_policy,
         timeout,
+        admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_port),
     }
 }
 
@@ -334,6 +378,156 @@ struct RuntimeReadinessPlan {
     check: ReadinessCheck,
     failure_policy: ReadinessFailurePolicy,
     timeout: Duration,
+    admin_endpoint: CaddyAdminEndpoint,
+}
+
+fn previous_runtime_readiness(
+    promoted_config: &PromotedConfigTree,
+    readiness: &RuntimeReadinessPlan,
+) -> Result<RuntimeReadinessPlan, DaemonError> {
+    let Some(previous_root_content) = promoted_config.previous_root_content() else {
+        return Ok(readiness.clone());
+    };
+    previous_runtime_readiness_from_parts(
+        previous_root_content,
+        promoted_config.previous_fragment_contents(),
+        readiness,
+    )
+}
+
+fn previous_runtime_readiness_from_parts(
+    previous_root_content: &str,
+    previous_fragment_contents: &[String],
+    readiness: &RuntimeReadinessPlan,
+) -> Result<RuntimeReadinessPlan, DaemonError> {
+    let http_port = match optional_config_port(previous_root_content, "http_port ")? {
+        Some(port) => Some(port),
+        None => previous_fragment_contents
+            .iter()
+            .find_map(|fragment| fragment_port(fragment))
+            .transpose()?,
+    };
+    let https_port = optional_config_port(previous_root_content, "https_port ")?;
+    let admin_port = previous_admin_port(previous_root_content)?;
+    let check = previous_readiness_check(&readiness.check, http_port, https_port)?;
+
+    Ok(RuntimeReadinessPlan {
+        check,
+        admin_endpoint: CaddyAdminEndpoint::new(admin_port),
+        ..readiness.clone()
+    })
+}
+
+fn previous_readiness_check(
+    check: &ReadinessCheck,
+    http_port: Option<u16>,
+    https_port: Option<u16>,
+) -> Result<ReadinessCheck, DaemonError> {
+    match check {
+        ReadinessCheck::Tcp { host, .. } => Ok(ReadinessCheck::Tcp {
+            host: host.clone(),
+            port: http_port.ok_or_else(missing_previous_service_port)?,
+        }),
+        ReadinessCheck::GatewayHttps {
+            http_host,
+            https_host,
+            server_name,
+            ca_certificate_path,
+            ..
+        } => {
+            let Some(https_port) = https_port else {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: "previous gateway config is missing https_port".to_owned(),
+                });
+            };
+            let Some(http_port) = http_port else {
+                return Err(missing_previous_service_port());
+            };
+
+            Ok(ReadinessCheck::GatewayHttps {
+                http_host: http_host.clone(),
+                http_port,
+                https_host: https_host.clone(),
+                https_port,
+                server_name: server_name.clone(),
+                ca_certificate_path: ca_certificate_path.clone(),
+            })
+        }
+        ReadinessCheck::GatewayIdentity {
+            http_host,
+            http_port: probe_http_port,
+            https_host,
+            https_port: probe_https_port,
+            server_name,
+            path,
+            ca_certificate_path,
+            ..
+        } => {
+            let Some(https_port) = https_port else {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: "previous gateway config is missing https_port".to_owned(),
+                });
+            };
+            let Some(http_port) = http_port else {
+                return Err(missing_previous_service_port());
+            };
+
+            Ok(ReadinessCheck::GatewayIdentity {
+                http_host: http_host.clone(),
+                http_port: *probe_http_port,
+                https_host: https_host.clone(),
+                https_port: *probe_https_port,
+                server_name: server_name.clone(),
+                path: path.clone(),
+                expected_body: gateway_health_response(http_port, https_port),
+                ca_certificate_path: ca_certificate_path.clone(),
+            })
+        }
+        _ => Ok(check.clone()),
+    }
+}
+
+fn optional_config_port(config: &str, prefix: &str) -> Result<Option<u16>, DaemonError> {
+    let Some(port) = config
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix(prefix))
+    else {
+        return Ok(None);
+    };
+    port.trim()
+        .parse()
+        .map(Some)
+        .map_err(|error| DaemonError::UnexpectedProtocolResponse {
+            reason: format!("previous runtime config has invalid port `{port}`: {error}"),
+        })
+}
+
+fn previous_admin_port(config: &str) -> Result<u16, DaemonError> {
+    optional_config_port(config, "admin 127.0.0.1:")?.ok_or_else(|| {
+        DaemonError::UnexpectedProtocolResponse {
+            reason: "previous runtime config is missing an enabled admin port".to_owned(),
+        }
+    })
+}
+
+fn fragment_port(fragment: &str) -> Option<Result<u16, DaemonError>> {
+    fragment.split_whitespace().find_map(|token| {
+        let token = token.trim_end_matches(',');
+        let token = token.strip_prefix("http://")?;
+        let (_host, port) = token.rsplit_once(':')?;
+        Some(
+            port.parse()
+                .map_err(|error| DaemonError::UnexpectedProtocolResponse {
+                    reason: format!("previous worker fragment has invalid port `{port}`: {error}"),
+                }),
+        )
+    })
+}
+
+fn missing_previous_service_port() -> DaemonError {
+    DaemonError::UnexpectedProtocolResponse {
+        reason: "previous runtime config is missing a service port".to_owned(),
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -488,7 +682,7 @@ fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<Str
 }
 
 pub async fn validate_config(
-    command: &FrankenphpCommand,
+    command: &CaddyCliCommand,
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
 ) -> Result<(), DaemonError> {
@@ -503,7 +697,8 @@ pub async fn validate_config(
 
     Err(DaemonError::UnexpectedProtocolResponse {
         reason: format!(
-            "FrankenPHP config validation failed for {config_path}: status={status}; stdout={stdout}; stderr={stderr}",
+            "{runtime} config validation failed for {config_path}: status={status}; stdout={stdout}; stderr={stderr}",
+            runtime = command.runtime_label(),
             status = output.status
         ),
     })
@@ -516,11 +711,11 @@ struct ValidationOutput {
 }
 
 async fn run_validation_command(
-    command: &FrankenphpCommand,
+    command: &CaddyCliCommand,
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
 ) -> Result<ValidationOutput, DaemonError> {
-    let mut command_process = FrankenphpProcessCommand::new(command.executable());
+    let mut command_process = RuntimeProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
         .stdout(Stdio::piped())
@@ -536,7 +731,7 @@ async fn run_validation_command(
     let mut child = command_process.spawn()?;
     let Some(pid) = child.id() else {
         return Err(DaemonError::MissingProcessId {
-            name: "FrankenPHP config validation".to_owned(),
+            name: format!("{} config validation", command.runtime_label()),
         });
     };
     let stdout = tokio::spawn(read_child_output(child.stdout.take()));
@@ -547,7 +742,11 @@ async fn run_validation_command(
             terminate_validation_process(pid, &mut child).await;
 
             return Err(DaemonError::ProtocolTimedOut {
-                phase: "FrankenPHP config validation",
+                phase: match command.runtime_label() {
+                    "Caddy" => "Caddy config validation",
+                    "FrankenPHP" => "FrankenPHP config validation",
+                    _ => "runtime config validation",
+                },
             });
         }
     };
@@ -595,25 +794,25 @@ fn validation_process_group(pid: u32) -> Option<Pid> {
     i32::try_from(pid).ok().and_then(Pid::from_raw)
 }
 
-pub fn gateway_process_spec(paths: &PvPaths, command: &FrankenphpCommand) -> ProcessSpec {
+pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> ProcessSpec {
     ProcessSpec {
         name: "gateway".to_owned(),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.gateway_root_config()),
-        private_environment: frankenphp_xdg_environment(paths),
+        private_environment: caddy_xdg_environment(paths),
         config_path: paths.gateway_root_config(),
-        log_path: paths.gateway_log(),
+        log_path: paths.gateway_error_log(),
         pid_path: paths.gateway_pid(),
         metadata_path: paths.gateway_runtime_metadata(),
-        resource_name: "gateway".to_owned(),
-        track: "core".to_owned(),
+        resource_name: "caddy".to_owned(),
+        track: "2".to_owned(),
     }
 }
 
 pub fn worker_process_spec(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
-    command: &FrankenphpCommand,
+    command: &CaddyCliCommand,
     artifact_root: &Utf8Path,
 ) -> Result<ProcessSpec, DaemonError> {
     Ok(ProcessSpec {
@@ -625,7 +824,7 @@ pub fn worker_process_spec(
         log_path: paths.worker_log(&worker.runtime_key),
         pid_path: paths.worker_pid(&worker.runtime_key),
         metadata_path: paths.worker_runtime_metadata(&worker.runtime_key),
-        resource_name: "php-worker".to_owned(),
+        resource_name: "frankenphp".to_owned(),
         track: worker.runtime_key.clone(),
     })
 }
@@ -740,6 +939,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         gateway: GatewayRuntimePlan {
             http_port: gateway_ports.http.port,
             https_port: gateway_ports.https.port,
+            admin_port: gateway_ports.admin.port,
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
             storage_path: gateway_storage_path(paths)?,
@@ -841,21 +1041,15 @@ fn append_runtime_project(
             entry.get_mut().projects.push(runtime_project);
         }
         btree_map::Entry::Vacant(entry) => {
-            let assignment = database.assign_port(
-                PortRequest::php_worker(
-                    &runtime.runtime_key,
-                    RUNTIME_PORT_FALLBACK_START,
-                    RUNTIME_PORT_FALLBACK_START,
-                    RUNTIME_PORT_FALLBACK_END,
-                ),
-                local_loopback_port_available,
-            )?;
+            let assignments = database
+                .assign_php_worker_ports(&runtime.runtime_key, local_loopback_port_available)?;
 
             entry.insert(PhpWorkerRuntimePlan {
                 php_track: runtime.track,
                 runtime_key: runtime.runtime_key,
                 loaded_modules: runtime.loaded_modules,
-                port: assignment.port,
+                port: assignments.service.port,
+                admin_port: assignments.admin.port,
                 projects: vec![runtime_project],
             });
         }
@@ -936,10 +1130,10 @@ fn installed_php_release(
 
 async fn reconcile_gateway_config(
     paths: &PvPaths,
-    command: &FrankenphpCommand,
+    command: &CaddyCliCommand,
     plan: &RuntimePlan,
 ) -> Result<GatewayConfigReconciliation, DaemonError> {
-    let routes = gateway_project_routes(plan);
+    let routes = gateway_project_routes(paths, plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let fragments = gateway_project_config_fragments(paths, &routes)?;
@@ -948,9 +1142,12 @@ async fn reconcile_gateway_config(
     let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
+        admin_port: plan.gateway.admin_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
+        access_log_path: paths.gateway_access_log(),
+        error_log_path: paths.gateway_error_log(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -964,9 +1161,12 @@ async fn reconcile_gateway_config(
     let candidate_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
+        admin_port: plan.gateway.admin_port,
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
+        access_log_path: paths.gateway_access_log(),
+        error_log_path: paths.gateway_error_log(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         import_project_configs,
     }) {
@@ -984,7 +1184,7 @@ async fn reconcile_gateway_config(
                 config_path: paths.gateway_root_config(),
                 candidate_content: &candidate_content,
                 active_content: &active_content,
-                private_environment: frankenphp_xdg_environment(paths),
+                private_environment: caddy_xdg_environment(paths),
                 promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
                 command,
             };
@@ -1011,7 +1211,7 @@ struct GatewayConfigReconciliation {
 
 async fn reconcile_worker_config(
     paths: &PvPaths,
-    command: &FrankenphpCommand,
+    command: &CaddyCliCommand,
     artifact_root: &Utf8Path,
     worker: &PhpWorkerRuntimePlan,
 ) -> Result<PromotedConfigTree, DaemonError> {
@@ -1046,6 +1246,7 @@ async fn reconcile_worker_config(
     let active_content = match render_php_worker_config(&PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
+        admin_port: worker.admin_port,
         projects_config_glob: active_dir.join("*.Caddyfile"),
         projects: projects.clone(),
     }) {
@@ -1059,6 +1260,7 @@ async fn reconcile_worker_config(
     let candidate_content = match render_php_worker_config(&PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
+        admin_port: worker.admin_port,
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         projects,
     }) {
@@ -1100,7 +1302,7 @@ struct RuntimeConfigTreePromotion<'a, PromoteFragments> {
     active_content: &'a str,
     private_environment: BTreeMap<String, String>,
     promote_fragments: PromoteFragments,
-    command: &'a FrankenphpCommand,
+    command: &'a CaddyCliCommand,
 }
 
 async fn promote_runtime_config_tree<PromoteFragments>(
@@ -1140,16 +1342,70 @@ where
 async fn start_or_adopt_promoted_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
-    promoted_config: PromotedConfigTree,
+    mut promoted_config: PromotedConfigTree,
     spec: ProcessSpec,
     readiness: RuntimeReadinessPlan,
     subject: RuntimeSubject,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
-    let result = start_or_adopt_runtime(paths, supervisor, spec, readiness, subject.clone()).await;
+    let matching_runtime = match supervisor.verify_ownership(&spec) {
+        Ok(Some(runtime)) => !runtime.replacement_required(),
+        Ok(None) => false,
+        Err(error) => {
+            let error = match promoted_config.rollback() {
+                Ok(()) => error,
+                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+            };
+            record_runtime_error(paths, subject, &error)?;
+
+            return Err(error);
+        }
+    };
+    let previous_readiness = if matching_runtime {
+        match previous_runtime_readiness(&promoted_config, &readiness) {
+            Ok(readiness) => Some(readiness),
+            Err(error) => {
+                let error = match promoted_config.rollback() {
+                    Ok(()) => error,
+                    Err(rollback_error) => {
+                        runtime_config_rollback_failed_error(error, rollback_error)
+                    }
+                };
+                record_runtime_error(paths, subject, &error)?;
+
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let restoration_readiness = previous_readiness
+        .as_ref()
+        .map_or(&readiness, |readiness| readiness);
+    let result = start_or_adopt_runtime(
+        paths,
+        supervisor,
+        &spec,
+        readiness.clone(),
+        matching_runtime,
+    )
+    .await;
 
     match result {
-        Ok(outcome) => {
-            if let Err(error) = promoted_config.commit() {
+        Ok(RuntimeTransactionSuccess {
+            outcome,
+            restore_active_runtime,
+        }) => {
+            if let Err(commit_error) = promoted_config.commit() {
+                let error = compensate_commit_failure(
+                    paths,
+                    supervisor,
+                    &spec,
+                    restoration_readiness,
+                    promoted_config,
+                    commit_error,
+                    restore_active_runtime,
+                )
+                .await;
                 record_runtime_error(paths, subject, &error)?;
 
                 return Err(error);
@@ -1157,15 +1413,88 @@ async fn start_or_adopt_promoted_runtime(
 
             Ok(outcome)
         }
-        Err(error) => {
-            if let Err(rollback_error) = promoted_config.rollback() {
-                let error = runtime_config_rollback_failed_error(error, rollback_error);
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
-            }
+        Err(RuntimeTransactionError {
+            error,
+            restore_active_runtime,
+            config_disposition,
+        }) => {
+            let error = *error;
+            let error = match config_disposition {
+                RuntimeConfigDisposition::Rollback => match promoted_config.rollback() {
+                    Ok(()) if restore_active_runtime => {
+                        restore_runtime_after_failed_load(
+                            paths,
+                            supervisor,
+                            &spec,
+                            restoration_readiness,
+                            error,
+                        )
+                        .await
+                    }
+                    Ok(()) => error,
+                    Err(rollback_error) => {
+                        runtime_config_rollback_failed_error(error, rollback_error)
+                    }
+                },
+                RuntimeConfigDisposition::Preserve => {
+                    // Keep the desired promoted tree when runtime state is uncertain. The branch
+                    // that selected this disposition owns the specific recovery rationale.
+                    let _cleanup_result = promoted_config.commit();
+                    error
+                }
+            };
+            record_runtime_error(paths, subject, &error)?;
 
             Err(error)
+        }
+    }
+}
+
+async fn load_runtime_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    client: CaddyAdminClient,
+    admin_endpoint: CaddyAdminEndpoint,
+    content: Vec<u8>,
+) -> Result<(), RuntimeTransactionError> {
+    match supervisor.mark_replacement_required(spec) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(RuntimeTransactionError::new(
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            ));
+        }
+        Err(error) => return Err(RuntimeTransactionError::new(error)),
+    }
+
+    match client
+        .load_caddyfile_with(
+            admin_endpoint,
+            content,
+            runtime_ownership_verifier(paths, spec),
+        )
+        .await
+    {
+        Ok(()) => match supervisor.clear_replacement_required(spec) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(RuntimeTransactionError::preserve_promoted_config(
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            )),
+            Err(error) => Err(RuntimeTransactionError::preserve_promoted_config(error)),
+        },
+        Err(
+            error @ CaddyAdminError::RequestOutcomeUnknown {
+                operation: CaddyAdminOperation::Load,
+                ..
+            },
+        ) => Err(RuntimeTransactionError::preserve_promoted_config(
+            error.into(),
+        )),
+        Err(error) => {
+            let _clear_result = supervisor.clear_replacement_required(spec);
+
+            Err(RuntimeTransactionError::new(error.into()))
         }
     }
 }
@@ -1173,83 +1502,431 @@ async fn start_or_adopt_promoted_runtime(
 async fn start_or_adopt_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
-    spec: ProcessSpec,
+    spec: &ProcessSpec,
     readiness: RuntimeReadinessPlan,
-    subject: RuntimeSubject,
-) -> Result<RuntimeReadinessOutcome, DaemonError> {
+    matching_runtime: bool,
+) -> Result<RuntimeTransactionSuccess, RuntimeTransactionError> {
     let RuntimeReadinessPlan {
         check,
         failure_policy,
         timeout: readiness_timeout,
+        admin_endpoint,
     } = readiness;
-    let result = async {
-        if supervisor.adopt(&spec)?.is_some() {
-            if supervisor.reload(&spec)? {
-                if let Err(error) = wait_for_readiness(check, readiness_timeout).await {
-                    if failure_policy == ReadinessFailurePolicy::PreserveRuntime
-                        && supervisor.verify_ownership(&spec)?.is_some()
-                    {
-                        return Ok(RuntimeReadinessOutcome::Unverified);
-                    }
-
-                    return Err(error);
-                }
-
-                return Ok(RuntimeReadinessOutcome::Verified);
+    async {
+        if matching_runtime {
+            if supervisor.verify_ownership(spec)?.is_none() {
+                return Err(RuntimeTransactionError::new(
+                    CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+                ));
             }
 
-            return Err(DaemonError::UnexpectedProtocolResponse {
-                reason: format!(
-                    "runtime `{}` could not be reloaded because PV ownership changed",
-                    spec.name
-                ),
+            let active_content = read_config_bytes(&spec.config_path)?;
+            let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
+            load_runtime_config(
+                paths,
+                supervisor,
+                spec,
+                client,
+                admin_endpoint,
+                active_content,
+            )
+            .await?;
+            verify_runtime_ownership(supervisor, spec)?;
+
+            if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
+                verify_runtime_ownership(supervisor, spec)
+            })
+            .await
+            {
+                if failure_policy == ReadinessFailurePolicy::PreserveRuntime
+                    && supervisor.verify_ownership(spec)?.is_some()
+                    && client
+                        .wait_until_ready_with(
+                            admin_endpoint,
+                            readiness_timeout,
+                            runtime_ownership_verifier(paths, spec),
+                        )
+                        .await
+                        .is_ok()
+                {
+                    return Ok(RuntimeTransactionSuccess {
+                        outcome: RuntimeReadinessOutcome::Unverified,
+                        restore_active_runtime: true,
+                    });
+                }
+
+                return Err(RuntimeTransactionError::requiring_restore(error));
+            }
+            verify_runtime_ownership(supervisor, spec)?;
+
+            return Ok(RuntimeTransactionSuccess {
+                outcome: RuntimeReadinessOutcome::Verified,
+                restore_active_runtime: true,
             });
         } else if let Some(adopted) =
             supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
         {
             adopted.stop(Duration::from_secs(1)).await?;
         } else if foreign_listener_is_ready(&check).await {
-            return Err(DaemonError::UnexpectedProtocolResponse {
-                reason: format!(
-                    "runtime `{}` is listening but no PV-owned process could be verified",
-                    spec.name
-                ),
-            });
+            return Err(RuntimeTransactionError::new(
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "runtime `{}` is listening but no PV-owned process could be verified",
+                        spec.name
+                    ),
+                },
+            ));
         }
 
         let mut process = supervisor.start(spec.clone()).await?;
-        if let Err(error) = wait_for_readiness(check, readiness_timeout).await {
-            record_runtime_readiness_diagnostics(paths, &spec, &mut process, &error);
-            if failure_policy == ReadinessFailurePolicy::PreserveRuntime && !process.has_exited()? {
-                return Ok(RuntimeReadinessOutcome::Unverified);
+        if let Err(error) = CaddyAdminClient::new()
+            .with_timeout(readiness_timeout)
+            .wait_until_ready_with(
+                admin_endpoint,
+                readiness_timeout,
+                runtime_ownership_verifier(paths, spec),
+            )
+            .await
+            .map_err(DaemonError::from)
+        {
+            record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        }
+
+        if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
+            verify_runtime_ownership(supervisor, spec)
+        })
+        .await
+        {
+            record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
+            if failure_policy == ReadinessFailurePolicy::PreserveRuntime
+                && !process.has_exited()?
+                && supervisor.verify_ownership(spec)?.is_some()
+            {
+                return Ok(RuntimeTransactionSuccess {
+                    outcome: RuntimeReadinessOutcome::Unverified,
+                    restore_active_runtime: false,
+                });
             }
-
-            process.stop(Duration::from_secs(1)).await?;
-
-            return Err(error);
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
         }
 
         if process.has_exited()? {
-            return Err(DaemonError::UnexpectedProtocolResponse {
+            let error = DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
                     "runtime `{}` exited before readiness was verified",
                     spec.name
                 ),
-            });
+            };
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
         }
 
-        Ok(RuntimeReadinessOutcome::Verified)
+        Ok(RuntimeTransactionSuccess {
+            outcome: RuntimeReadinessOutcome::Verified,
+            restore_active_runtime: false,
+        })
     }
-    .await;
+    .await
+}
 
-    match result {
-        Ok(outcome) => Ok(outcome),
-        Err(error) => {
-            record_runtime_error(paths, subject, &error)?;
-
-            Err(error)
+async fn cleanup_fresh_runtime(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    process: ManagedProcess,
+    readiness_error: DaemonError,
+) -> RuntimeTransactionError {
+    if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
+        match supervisor.mark_replacement_required(spec) {
+            Ok(true) => {
+                // Keep the promoted config and marked runtime metadata when the process may still
+                // be alive. The next reconciliation replaces it without a disk/runtime split.
+                return RuntimeTransactionError::preserve_promoted_config(
+                    runtime_cleanup_failed_error(&spec.name, readiness_error, cleanup_error),
+                );
+            }
+            Ok(false) => {}
+            Err(replacement_error) => {
+                return RuntimeTransactionError::preserve_promoted_config(
+                    runtime_cleanup_failed_error(
+                        &spec.name,
+                        readiness_error,
+                        runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
+                    ),
+                );
+            }
         }
     }
+
+    match cleanup_fresh_runtime_files(spec) {
+        Ok(()) => RuntimeTransactionError::new(readiness_error),
+        Err(cleanup_error) => RuntimeTransactionError::new(runtime_cleanup_failed_error(
+            &spec.name,
+            readiness_error,
+            cleanup_error,
+        )),
+    }
+}
+
+fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
+    let pid_error = delete_optional_file(&spec.pid_path).err();
+    let metadata_error = delete_optional_file(&spec.metadata_path).err();
+
+    match (pid_error, metadata_error) {
+        (None, None) => Ok(()),
+        (Some(error), None) | (None, Some(error)) => Err(error),
+        (Some(pid_error), Some(metadata_error)) => Err(DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "failed to remove runtime `{}` pid file: {pid_error}; failed to remove metadata file: {metadata_error}",
+                spec.name
+            ),
+        }),
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeTransactionSuccess {
+    outcome: RuntimeReadinessOutcome,
+    restore_active_runtime: bool,
+}
+
+#[derive(Debug)]
+struct RuntimeTransactionError {
+    error: Box<DaemonError>,
+    restore_active_runtime: bool,
+    config_disposition: RuntimeConfigDisposition,
+}
+
+#[derive(Debug)]
+enum RuntimeConfigDisposition {
+    Rollback,
+    Preserve,
+}
+
+impl RuntimeTransactionError {
+    fn new(error: DaemonError) -> Self {
+        Self {
+            error: Box::new(error),
+            restore_active_runtime: false,
+            config_disposition: RuntimeConfigDisposition::Rollback,
+        }
+    }
+
+    fn requiring_restore(error: DaemonError) -> Self {
+        Self {
+            error: Box::new(error),
+            restore_active_runtime: true,
+            config_disposition: RuntimeConfigDisposition::Rollback,
+        }
+    }
+
+    fn preserve_promoted_config(error: DaemonError) -> Self {
+        Self {
+            error: Box::new(error),
+            restore_active_runtime: false,
+            config_disposition: RuntimeConfigDisposition::Preserve,
+        }
+    }
+}
+
+impl From<DaemonError> for RuntimeTransactionError {
+    fn from(error: DaemonError) -> Self {
+        Self::new(error)
+    }
+}
+
+async fn compensate_commit_failure(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    readiness: &RuntimeReadinessPlan,
+    promoted_config: PromotedConfigTree,
+    commit_error: DaemonError,
+    restore_active_runtime: bool,
+) -> DaemonError {
+    match promoted_config.rollback() {
+        Ok(()) if restore_active_runtime => {
+            restore_runtime_after_failed_load(paths, supervisor, spec, readiness, commit_error)
+                .await
+        }
+        Ok(()) => stop_runtime_after_failed_transaction(supervisor, spec, commit_error).await,
+        Err(rollback_error) => runtime_config_rollback_failed_error(commit_error, rollback_error),
+    }
+}
+
+async fn stop_runtime_after_failed_transaction(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    original_error: DaemonError,
+) -> DaemonError {
+    let adopted = match supervisor.adopt(spec) {
+        Ok(adopted) => adopted,
+        Err(error) => return compound_runtime_restore_error(original_error, error),
+    };
+    let Some(adopted) = adopted else {
+        return compound_runtime_restore_error(
+            original_error,
+            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+        );
+    };
+
+    if let Err(error) = adopted.stop(Duration::from_secs(1)).await {
+        return compound_runtime_restore_error(original_error, error);
+    }
+    if let Err(error) = delete_optional_file(&spec.pid_path) {
+        return compound_runtime_restore_error(original_error, error);
+    }
+    if let Err(error) = delete_optional_file(&spec.metadata_path) {
+        return compound_runtime_restore_error(original_error, error);
+    }
+
+    original_error
+}
+
+async fn restore_runtime_after_failed_load(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    readiness: &RuntimeReadinessPlan,
+    original_error: DaemonError,
+) -> DaemonError {
+    if let Err(error) = verify_runtime_ownership(supervisor, spec) {
+        return compound_runtime_restore_error(original_error, error);
+    }
+
+    let restored_content = match read_config_bytes(&spec.config_path) {
+        Ok(content) => content,
+        Err(error) => return compound_runtime_restore_error(original_error, error),
+    };
+    let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+    if let Err(error) = load_runtime_config(
+        paths,
+        supervisor,
+        spec,
+        client,
+        readiness.admin_endpoint,
+        restored_content,
+    )
+    .await
+    {
+        return compound_runtime_restore_error(original_error, *error.error);
+    }
+    if let Err(error) = verify_runtime_ownership(supervisor, spec) {
+        return compound_runtime_restore_error(original_error, error);
+    }
+    if let Err(error) = client
+        .wait_until_ready_with(
+            readiness.admin_endpoint,
+            readiness.timeout,
+            runtime_ownership_verifier(paths, spec),
+        )
+        .await
+    {
+        return compound_runtime_restore_error(original_error, error.into());
+    }
+    if let Err(error) = wait_for_owned_readiness(readiness.check.clone(), readiness.timeout, || {
+        verify_runtime_ownership(supervisor, spec)
+    })
+    .await
+    {
+        return compound_runtime_restore_error(original_error, error);
+    }
+
+    original_error
+}
+
+fn verify_runtime_ownership(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+) -> Result<(), DaemonError> {
+    verify_runtime_ownership_for_admin(supervisor, spec, CaddyAdminOperation::Readiness)
+        .map_err(DaemonError::from)
+}
+
+fn verify_runtime_ownership_for_admin(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    operation: CaddyAdminOperation,
+) -> Result<(), CaddyAdminError> {
+    match supervisor.verify_ownership(spec) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(CaddyAdminError::runtime_ownership_changed(
+            spec.name.clone(),
+        )),
+        Err(error) => Err(CaddyAdminError::TaskFailed {
+            operation,
+            reason: error.to_string(),
+        }),
+    }
+}
+
+fn runtime_ownership_verifier(paths: &PvPaths, spec: &ProcessSpec) -> CaddyAdminVerifier {
+    let paths = paths.clone();
+    let spec = spec.clone();
+
+    Arc::new(move |operation| {
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        verify_runtime_ownership_for_admin(&supervisor, &spec, operation)
+    })
+}
+
+fn compound_runtime_restore_error(original: DaemonError, restored: DaemonError) -> DaemonError {
+    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
+        daemon_error_as_caddy_admin(original),
+        daemon_error_as_caddy_admin_for_operation(restored, CaddyAdminOperation::Rollback),
+    ))
+}
+
+fn daemon_error_as_caddy_admin(error: DaemonError) -> CaddyAdminError {
+    daemon_error_as_caddy_admin_for_operation(error, CaddyAdminOperation::Readiness)
+}
+
+fn daemon_error_as_caddy_admin_for_operation(
+    error: DaemonError,
+    operation: CaddyAdminOperation,
+) -> CaddyAdminError {
+    match error {
+        DaemonError::CaddyAdmin(error) => error,
+        error => CaddyAdminError::TaskFailed {
+            operation,
+            reason: error.to_string(),
+        },
+    }
+}
+
+async fn wait_for_owned_readiness<BeforeProbe>(
+    check: ReadinessCheck,
+    readiness_timeout: Duration,
+    mut before_probe: BeforeProbe,
+) -> Result<(), DaemonError>
+where
+    BeforeProbe: FnMut() -> Result<(), DaemonError>,
+{
+    let started_at = Instant::now();
+    let mut last_error = None;
+
+    while let Some(remaining) = readiness_timeout
+        .checked_sub(started_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+    {
+        before_probe()?;
+        let probe_timeout = remaining.min(OWNED_READINESS_PROBE_TIMEOUT);
+        match timeout(probe_timeout, probe_readiness_once(&check)).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => {
+                last_error = Some(error.to_string());
+                sleep(remaining.min(OWNED_READINESS_POLL_INTERVAL)).await;
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    Err(DaemonError::ReadinessTimedOut {
+        check: format!("{check:?}"),
+        timeout_ms: readiness_timeout.as_millis(),
+        last_error,
+    })
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1307,7 +1984,7 @@ fn loopback_listener_port_snapshot() -> String {
     }
 }
 
-fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
+fn gateway_project_routes(paths: &PvPaths, plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
     plan.workers
         .iter()
         .flat_map(|worker| {
@@ -1317,6 +1994,7 @@ fn gateway_project_routes(plan: &RuntimePlan) -> Vec<GatewayProjectRoute> {
                 primary_hostname: project.primary_hostname.clone(),
                 hostnames: project.hostnames.clone(),
                 worker_port: worker.port,
+                access_log_path: paths.gateway_access_log(),
             })
         })
         .collect()
@@ -1459,6 +2137,9 @@ fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<()
     database.release_port(PortOwner::PhpWorker {
         php_runtime_key: runtime_key.to_owned(),
     })?;
+    database.release_port(PortOwner::PhpWorkerAdmin {
+        php_runtime_key: runtime_key.to_owned(),
+    })?;
 
     Ok(())
 }
@@ -1575,11 +2256,30 @@ fn runtime_config_rollback_failed_error(
     original: DaemonError,
     rollback: DaemonError,
 ) -> DaemonError {
-    DaemonError::UnexpectedProtocolResponse {
-        reason: format!(
-            "Gateway runtime config rollback failed after runtime reconciliation failed: {original}; rollback failed: {rollback}"
-        ),
+    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
+        daemon_error_as_caddy_admin(original),
+        daemon_error_as_caddy_admin_for_operation(rollback, CaddyAdminOperation::Rollback),
+    ))
+}
+
+fn runtime_cleanup_failed_error(
+    runtime: &str,
+    original: DaemonError,
+    cleanup: DaemonError,
+) -> DaemonError {
+    DaemonError::RuntimeCleanupFailed {
+        runtime: runtime.to_owned(),
+        source: Box::new(original),
+        cleanup: Box::new(cleanup),
     }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Caddy admin load must preserve the promoted root bytes exactly, including trailing bytes"
+)]
+fn read_config_bytes(path: &Utf8Path) -> Result<Vec<u8>, DaemonError> {
+    Ok(std::fs::read(path)?)
 }
 
 fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
@@ -1592,16 +2292,31 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
     }
 }
 
-fn first_installed_frankenphp_command(
-    paths: &PvPaths,
-) -> Result<Option<FrankenphpCommand>, DaemonError> {
+fn first_installed_caddy_command(paths: &PvPaths) -> Result<Option<CaddyCliCommand>, DaemonError> {
     let database = Database::open(paths)?;
-    let mut tracks = installed_frankenphp_tracks(&database)?;
-    let Some(record) = tracks.pop() else {
+    let Some(record) = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .find(|record| {
+            record.resource_name == "caddy"
+                && record.track == "2"
+                && record.desired_state == ManagedResourceDesiredState::Installed
+                && record.installed_version.is_some()
+                && record.current_artifact_path.is_some()
+        })
+    else {
         return Ok(None);
     };
+    let Some(artifact_path) = record.current_artifact_path else {
+        return Ok(None);
+    };
+    let adapter = caddy_adapter()?;
 
-    Ok(Some(frankenphp_command_from_record(record)?))
+    adapter.validate_installation(&artifact_path)?;
+
+    Ok(Some(CaddyCliCommand::caddy(
+        adapter.executable_path(&artifact_path),
+    )))
 }
 
 fn installed_frankenphp_runtime_for_track(
@@ -1633,12 +2348,6 @@ fn installed_frankenphp_tracks(
         .collect())
 }
 
-fn frankenphp_command_from_record(
-    record: ManagedResourceTrackRecord,
-) -> Result<FrankenphpCommand, DaemonError> {
-    Ok(frankenphp_runtime_from_record(record)?.command)
-}
-
 fn frankenphp_runtime_from_record(
     record: ManagedResourceTrackRecord,
 ) -> Result<InstalledFrankenphpRuntime, DaemonError> {
@@ -1655,7 +2364,7 @@ fn frankenphp_runtime_from_record(
     adapter.validate_installation(&artifact_path)?;
 
     Ok(InstalledFrankenphpRuntime {
-        command: FrankenphpCommand::new(adapter.executable_path(&artifact_path)),
+        command: CaddyCliCommand::frankenphp(adapter.executable_path(&artifact_path)),
         artifact_root: artifact_path,
     })
 }
@@ -1732,7 +2441,71 @@ fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {
+fn recover_unowned_admin_port_assignments(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+) -> Result<(), (RuntimeSubject, Box<DaemonError>)> {
+    let mut database =
+        Database::open(paths).map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
+    let assignments = database
+        .assigned_ports()
+        .map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
+
+    for assignment in assignments {
+        let runtime = match &assignment.owner {
+            PortOwner::Gateway(GatewayPort::Admin) => Some((
+                RuntimeSubject::Gateway,
+                paths.gateway_pid(),
+                paths.gateway_runtime_metadata(),
+                paths.gateway_root_config(),
+            )),
+            PortOwner::PhpWorkerAdmin { php_runtime_key } => Some((
+                php_runtime_subject(php_runtime_key),
+                paths.worker_pid(php_runtime_key),
+                paths.worker_runtime_metadata(php_runtime_key),
+                paths.worker_root_config(php_runtime_key),
+            )),
+            _ => None,
+        };
+        let Some((subject, pid_path, metadata_path, config_path)) = runtime else {
+            continue;
+        };
+
+        if local_loopback_port_available(assignment.port) {
+            continue;
+        }
+        let recorded_runtime = supervisor
+            .adopt_recorded(&pid_path, &metadata_path)
+            .map_err(|error| (subject.clone(), Box::new(error)))?;
+        if recorded_runtime.is_some()
+            && runtime_config_uses_admin_port(&config_path, assignment.port)
+                .map_err(|error| (subject.clone(), Box::new(error)))?
+        {
+            continue;
+        }
+
+        database
+            .release_port(assignment.owner)
+            .map_err(|error| (subject, Box::new(error.into())))?;
+    }
+
+    Ok(())
+}
+
+fn runtime_config_uses_admin_port(
+    config_path: &Utf8Path,
+    assigned_port: u16,
+) -> Result<bool, DaemonError> {
+    match fs::read_to_string(config_path) {
+        Ok(config) => Ok(optional_config_port(&config, "admin 127.0.0.1:")? == Some(assigned_port)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn caddyfile_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {
     vec![
         action.to_owned(),
         "--config".to_owned(),
@@ -1742,7 +2515,7 @@ fn frankenphp_config_arguments(action: &str, config_path: &Utf8Path) -> Vec<Stri
     ]
 }
 
-fn frankenphp_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
+fn caddy_xdg_environment(paths: &PvPaths) -> BTreeMap<String, String> {
     BTreeMap::from([
         (
             "XDG_CONFIG_HOME".to_owned(),
@@ -1760,7 +2533,7 @@ fn frankenphp_worker_environment(
     worker: &PhpWorkerRuntimePlan,
     artifact_root: &Utf8Path,
 ) -> Result<BTreeMap<String, String>, DaemonError> {
-    let mut environment = frankenphp_xdg_environment(paths);
+    let mut environment = caddy_xdg_environment(paths);
     environment.extend(resources::php_runtime_environment(
         paths,
         &worker.php_track,
@@ -1801,7 +2574,7 @@ mod tests {
         RuntimePlan, classify_gateway_pf_routing_state, gateway_project_config_fragments,
         gateway_public_readiness_check, gateway_readiness_check_for_ports,
         gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
-        project_config_file_name,
+        previous_runtime_readiness_from_parts, project_config_file_name,
     };
 
     #[test]
@@ -1855,6 +2628,36 @@ mod tests {
                 path: "/__pv/health".to_string(),
                 expected_body: "pv-gateway-health-v1:45080:45443".to_string(),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn previous_runtime_readiness_uses_previous_root_admin_endpoint() -> Result<()> {
+        let plan = runtime_plan();
+        let readiness = gateway_readiness_plan(
+            &plan,
+            None,
+            GatewayPfRoutingState::Inactive,
+            Duration::from_secs(1),
+        );
+        let previous = previous_runtime_readiness_from_parts(
+            "{\n    admin 127.0.0.1:41019\n    http_port 45080\n    https_port 45443\n}\n",
+            &[],
+            &readiness,
+        )?;
+
+        assert_eq!(
+            previous.admin_endpoint,
+            super::CaddyAdminEndpoint::new(41019)
+        );
+        assert_eq!(
+            previous.check,
+            ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_owned(),
+                port: 45080,
             }
         );
 
@@ -2031,6 +2834,7 @@ mod tests {
                 primary_hostname: "preserved.test".to_owned(),
                 hostnames: Vec::new(),
                 worker_port: 8123,
+                access_log_path: paths.gateway_access_log(),
             }],
         )?;
 
@@ -2049,6 +2853,7 @@ mod tests {
             gateway: GatewayRuntimePlan {
                 http_port: 45080,
                 https_port: 45443,
+                admin_port: 42019,
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
                 ca_private_key_path: Utf8PathBuf::from("/tmp/pv-missing-ca-key.pem"),
                 storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),

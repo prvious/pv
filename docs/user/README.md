@@ -31,7 +31,7 @@ pv setup
 
 Fresh setup fetches the Managed Resource artifact manifest before planning default resources. If the fetch fails and a cached manifest exists, PV may use the cached manifest with a warning. If no cached manifest exists, setup fails before default-resource planning and remains safe to rerun.
 
-Current default setup tracks are PHP/FrankenPHP `8.5`, Composer `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Mailpit `1`, and RustFS `1`. Setup installs the desired default resources but does not start backing services until a linked Project needs them.
+Current default setup tracks are PHP/FrankenPHP `8.5`, Caddy `2`, Composer `2`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Mailpit `1`, and RustFS `1`. Setup installs the desired default resources but does not start backing services until a linked Project needs them.
 
 ## Shell Integration
 

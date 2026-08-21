@@ -4,11 +4,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use camino::{Utf8Path, Utf8PathBuf};
 use state::fs;
 
-use crate::DaemonError;
+use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
 
 static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) const GATEWAY_HEALTH_HOSTNAME: &str = "pv-gateway.localhost";
 pub(crate) const GATEWAY_HEALTH_PATH: &str = "/__pv/health";
+const LOG_ROLL_KEEP: u8 = 5;
+const LOG_ROLL_KEEP_FOR: &str = "720h";
+const LOG_ROLL_SIZE: &str = "10MiB";
 
 pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String {
     format!("pv-gateway-health-v1:{http_port}:{https_port}")
@@ -18,9 +21,12 @@ pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String
 pub struct GatewayConfigInput {
     pub http_port: u16,
     pub https_port: u16,
+    pub admin_port: u16,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
+    pub access_log_path: Utf8PathBuf,
+    pub error_log_path: Utf8PathBuf,
     pub projects_config_glob: Utf8PathBuf,
     pub import_project_configs: bool,
 }
@@ -32,12 +38,14 @@ pub struct GatewayProjectRoute {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub worker_port: u16,
+    pub access_log_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpWorkerConfigInput {
     pub php_track: String,
     pub port: u16,
+    pub admin_port: u16,
     pub projects_config_glob: Utf8PathBuf,
     pub projects: Vec<PhpWorkerProject>,
 }
@@ -53,9 +61,10 @@ pub struct PhpWorkerProject {
 pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
     let health_response = gateway_health_response(input.http_port, input.https_port);
-    output.push_str(&format!("# PV_FAKE_PORT {}\n", input.http_port));
     output.push_str("{\n");
-    output.push_str("    admin off\n");
+    output.push_str(&format!("    admin 127.0.0.1:{}\n", input.admin_port));
+    output.push_str("    persist_config off\n");
+    append_file_log(&mut output, "    ", input.error_log_path.as_str())?;
     output.push_str("    storage file_system {\n");
     output.push_str(&format!(
         "        root {}\n",
@@ -81,10 +90,23 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
     output.push_str(&format!(
-        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+    ));
+    append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
+    output.push_str(&format!(
+        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
     output.push_str(&format!(
-        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n    tls {{\n        issuer internal {{\n            ca local\n        }}\n    }}\n    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+    ));
+    append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
+    output.push_str("    tls {\n");
+    output.push_str("        issuer internal {\n");
+    output.push_str("            ca local\n");
+    output.push_str("        }\n");
+    output.push_str("    }\n");
+    output.push_str(&format!(
+        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
 
     if input.import_project_configs {
@@ -97,6 +119,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
         output.push('\n');
         output.push_str(&format!("http://127.0.0.1:{} {{\n", input.http_port));
         output.push_str("    bind 127.0.0.1 ::1\n");
+        append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
         output.push_str("    respond \"PV Gateway is running\" 404\n");
         output.push_str("}\n");
     }
@@ -106,8 +129,12 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
 
 pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
-    output.push_str(&format!("# PV_FAKE_PORT {}\n", input.port));
+    output.push_str("{\n");
+    output.push_str(&format!("    admin 127.0.0.1:{}\n", input.admin_port));
+    output.push_str("    persist_config off\n");
+    output.push_str("}\n");
     if !input.projects.is_empty() {
+        output.push('\n');
         output.push_str(&format!(
             "import {}\n",
             quoted_caddyfile_token(input.projects_config_glob.as_str())?
@@ -125,6 +152,7 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
         comma_separated_hostnames(&route.primary_hostname, &route.hostnames)?
     ));
     output.push_str("    bind 127.0.0.1 ::1\n");
+    append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
     output.push_str("    tls {\n");
     output.push_str("        issuer internal {\n");
     output.push_str("            ca local\n");
@@ -179,6 +207,11 @@ where
     Promote: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
 {
     let candidate_path = candidate_path_for(path);
+    let previous_root_content = if path.exists() {
+        Some(fs::read_to_string(path)?)
+    } else {
+        None
+    };
     write_candidate_config(&candidate_path, candidate_content)?;
 
     if let Err(error) = validate(candidate_path.clone()).await {
@@ -207,17 +240,30 @@ where
         }
     };
 
-    Ok(PromotedConfigTree { root, fragments })
+    Ok(PromotedConfigTree {
+        root,
+        fragments,
+        previous_root_content,
+    })
 }
 
 #[derive(Debug)]
 pub(crate) struct PromotedConfigTree {
     root: PromotedConfigFile,
     fragments: PromotedConfigDir,
+    previous_root_content: Option<String>,
 }
 
 impl PromotedConfigTree {
-    pub(crate) fn commit(self) -> Result<(), DaemonError> {
+    pub(crate) fn previous_root_content(&self) -> Option<&str> {
+        self.previous_root_content.as_deref()
+    }
+
+    pub(crate) fn previous_fragment_contents(&self) -> &[String] {
+        self.fragments.previous_contents()
+    }
+
+    pub(crate) fn commit(&mut self) -> Result<(), DaemonError> {
         self.fragments.commit()?;
         self.root.commit()
     }
@@ -242,7 +288,7 @@ struct PromotedConfigFile {
 }
 
 impl PromotedConfigFile {
-    fn commit(self) -> Result<(), DaemonError> {
+    fn commit(&mut self) -> Result<(), DaemonError> {
         if self.active_existed {
             delete_optional_config(&self.backup_path)?;
         }
@@ -265,10 +311,15 @@ pub(crate) struct PromotedConfigDir {
     active_dir: Utf8PathBuf,
     backup_dir: Utf8PathBuf,
     active_existed: bool,
+    previous_contents: Vec<String>,
 }
 
 impl PromotedConfigDir {
-    fn commit(self) -> Result<(), DaemonError> {
+    fn previous_contents(&self) -> &[String] {
+        &self.previous_contents
+    }
+
+    fn commit(&mut self) -> Result<(), DaemonError> {
         if self.active_existed {
             delete_optional_dir(&self.backup_dir)?;
         }
@@ -358,6 +409,15 @@ fn quoted_caddyfile_token(value: &str) -> Result<String, DaemonError> {
     Ok(format!("\"{escaped}\""))
 }
 
+fn append_file_log(output: &mut String, indentation: &str, path: &str) -> Result<(), DaemonError> {
+    let path = quoted_caddyfile_token(path)?;
+    output.push_str(&format!(
+        "{indentation}log {{\n{indentation}    output file {path} {{\n{indentation}        roll_size {LOG_ROLL_SIZE}\n{indentation}        roll_keep {LOG_ROLL_KEEP}\n{indentation}        roll_keep_for {LOG_ROLL_KEEP_FOR}\n{indentation}    }}\n{indentation}    format json\n{indentation}}}\n"
+    ));
+
+    Ok(())
+}
+
 fn candidate_path_for(path: &Utf8Path) -> Utf8PathBuf {
     let file_name = path.file_name().unwrap_or("config");
     let process_id = std::process::id();
@@ -414,6 +474,14 @@ pub(crate) fn promote_config_dir(
 ) -> Result<PromotedConfigDir, DaemonError> {
     let backup_dir = backup_path_for(active_dir);
     let active_existed = active_dir.exists();
+    let previous_contents = if active_existed {
+        fs::read_dir_paths(active_dir)?
+            .into_iter()
+            .map(|path| fs::read_to_string(&path).map_err(DaemonError::from))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     delete_optional_dir(&backup_dir)?;
     if active_existed {
         rename_config_dir(active_dir, &backup_dir)?;
@@ -431,6 +499,7 @@ pub(crate) fn promote_config_dir(
         active_dir: active_dir.to_path_buf(),
         backup_dir,
         active_existed,
+        previous_contents,
     })
 }
 
@@ -485,8 +554,22 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
 }
 
 fn rollback_failed_error(original: DaemonError, rollback: DaemonError) -> DaemonError {
-    DaemonError::UnexpectedProtocolResponse {
-        reason: format!("Gateway config promotion failed: {original}; rollback failed: {rollback}"),
+    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
+        daemon_error_as_caddy_admin(original, CaddyAdminOperation::Load),
+        daemon_error_as_caddy_admin(rollback, CaddyAdminOperation::Rollback),
+    ))
+}
+
+fn daemon_error_as_caddy_admin(
+    error: DaemonError,
+    operation: CaddyAdminOperation,
+) -> CaddyAdminError {
+    match error {
+        DaemonError::CaddyAdmin(error) => error,
+        error => CaddyAdminError::TaskFailed {
+            operation,
+            reason: error.to_string(),
+        },
     }
 }
 
@@ -520,12 +603,69 @@ mod tests {
         )
         .await;
 
+        let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
+            original_error,
+            restored_error,
+        })) = result
+        else {
+            return Err("expected a typed compound promotion rollback error".into());
+        };
         assert!(matches!(
-            result,
-            Err(DaemonError::UnexpectedProtocolResponse { reason })
+            original_error.as_ref(),
+            CaddyAdminError::TaskFailed { operation: CaddyAdminOperation::Load, reason }
                 if reason.contains("fragment promotion failed")
-                    && reason.contains("rollback failed")
         ));
+        assert!(matches!(
+            restored_error.as_ref(),
+            CaddyAdminError::TaskFailed {
+                operation: CaddyAdminOperation::Rollback,
+                ..
+            }
+        ));
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn commit_failure_keeps_a_rollback_handle_for_disk_compensation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempdir()?;
+        let root_config = tempdir.path().join("Caddyfile");
+        let active_dir = tempdir.path().join("active-fragments");
+        let candidate_dir = tempdir.path().join("candidate-fragments");
+        create_dir_all(&active_dir)?;
+        create_dir_all(&candidate_dir)?;
+        state::fs::write_sensitive_file(&root_config, "active\n")?;
+        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
+        state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
+
+        let mut promoted = promote_validated_config_tree_async(
+            &root_config,
+            "candidate\n",
+            "active\n",
+            |_candidate_path| async { Ok(()) },
+            || promote_config_dir(&active_dir, &candidate_dir),
+        )
+        .await?;
+
+        rustix::fs::chmod(
+            promoted.fragments.backup_dir.as_std_path(),
+            rustix::fs::Mode::from_raw_mode(0o500),
+        )?;
+        let commit_result = promoted.commit();
+        rustix::fs::chmod(
+            promoted.fragments.backup_dir.as_std_path(),
+            rustix::fs::Mode::from_raw_mode(0o700),
+        )?;
+        assert!(commit_result.is_err());
+
+        promoted.rollback()?;
+        assert_eq!(state::fs::read_to_string(&root_config)?, "active\n");
+        assert_eq!(
+            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
+            "old\n"
+        );
 
         Ok(())
     }
@@ -536,6 +676,16 @@ mod tests {
     )]
     fn create_dir(path: &Utf8Path) -> Result<(), DaemonError> {
         std::fs::create_dir(path)?;
+
+        Ok(())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test fixture creates the candidate fragment tree"
+    )]
+    fn create_dir_all(path: &Utf8Path) -> Result<(), DaemonError> {
+        std::fs::create_dir_all(path)?;
 
         Ok(())
     }

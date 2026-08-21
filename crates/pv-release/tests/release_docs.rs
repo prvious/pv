@@ -57,6 +57,7 @@ fn release_docs_cover_rc_sections_and_default_track_matrix() -> Result<()> {
     for (resource, expected_track) in [
         ("php", "8.5"),
         ("frankenphp", "8.5"),
+        ("caddy", "2"),
         ("composer", "2"),
         ("mysql", "8.4"),
         ("postgres", "18"),
@@ -74,6 +75,7 @@ fn release_docs_cover_rc_sections_and_default_track_matrix() -> Result<()> {
     let combined_docs = format!("{checklist}\n{user_docs}\n{implementation}\n{artifact_docs}");
     for required_text in [
         "PHP/FrankenPHP `8.5`",
+        "Caddy `2`",
         "Composer `2`",
         "MySQL `8.4`",
         "Postgres `18`",

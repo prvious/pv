@@ -1,3 +1,4 @@
+pub mod caddy_admin;
 mod client;
 mod dns;
 mod error;
@@ -25,6 +26,10 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use caddy_admin::{
+    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
+    CaddyAdminVerifier, LOOPBACK_HOST, MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
+};
 pub use client::{
     CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
     managed_resource_update_check_blocking, run_job_blocking, run_job_with_events_blocking,
