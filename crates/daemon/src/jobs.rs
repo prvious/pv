@@ -41,13 +41,16 @@ struct CompletedUpdateJob {
 }
 
 struct FailedUpdateJob {
-    error: DaemonError,
+    error: Box<DaemonError>,
     subject: JobDiagnosticSubject,
 }
 
 impl FailedUpdateJob {
-    const fn new(error: DaemonError, subject: JobDiagnosticSubject) -> Self {
-        Self { error, subject }
+    fn new(error: DaemonError, subject: JobDiagnosticSubject) -> Self {
+        Self {
+            error: Box::new(error),
+            subject,
+        }
     }
 }
 
@@ -755,7 +758,7 @@ async fn complete_update_job_with_progress(
 
     result
         .map(|completed| completed.summary)
-        .map_err(|failure| failure.error)
+        .map_err(|failure| *failure.error)
 }
 
 async fn complete_update_job_inner(

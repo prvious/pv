@@ -1418,6 +1418,7 @@ async fn start_or_adopt_promoted_runtime(
             restore_active_runtime,
             config_disposition,
         }) => {
+            let error = *error;
             let error = match config_disposition {
                 RuntimeConfigDisposition::Rollback => match promoted_config.rollback() {
                     Ok(()) if restore_active_runtime => {
@@ -1690,7 +1691,7 @@ struct RuntimeTransactionSuccess {
 
 #[derive(Debug)]
 struct RuntimeTransactionError {
-    error: DaemonError,
+    error: Box<DaemonError>,
     restore_active_runtime: bool,
     config_disposition: RuntimeConfigDisposition,
 }
@@ -1704,7 +1705,7 @@ enum RuntimeConfigDisposition {
 impl RuntimeTransactionError {
     fn new(error: DaemonError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             restore_active_runtime: false,
             config_disposition: RuntimeConfigDisposition::Rollback,
         }
@@ -1712,7 +1713,7 @@ impl RuntimeTransactionError {
 
     fn requiring_restore(error: DaemonError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             restore_active_runtime: true,
             config_disposition: RuntimeConfigDisposition::Rollback,
         }
@@ -1720,7 +1721,7 @@ impl RuntimeTransactionError {
 
     fn preserve_promoted_config(error: DaemonError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             restore_active_runtime: false,
             config_disposition: RuntimeConfigDisposition::Preserve,
         }
@@ -1807,7 +1808,7 @@ async fn restore_runtime_after_failed_load(
     )
     .await
     {
-        return compound_runtime_restore_error(original_error, error.error);
+        return compound_runtime_restore_error(original_error, *error.error);
     }
     if let Err(error) = verify_runtime_ownership(supervisor, spec) {
         return compound_runtime_restore_error(original_error, error);
