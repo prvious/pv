@@ -448,17 +448,17 @@ struct RecipeEnvPaths<'a> {
 }
 
 fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
-    let mut chunks = values.chunks_exact(3);
+    let (chunks, remainder) = values.as_chunks::<3>();
     let source_inputs = chunks
-        .by_ref()
-        .map(|chunk| SourceInputRequest {
-            name: chunk[0].clone(),
-            source_url: chunk[1].clone(),
-            source_sha256: chunk[2].clone(),
+        .iter()
+        .map(|[name, source_url, source_sha256]| SourceInputRequest {
+            name: name.clone(),
+            source_url: source_url.clone(),
+            source_sha256: source_sha256.clone(),
         })
         .collect::<Vec<_>>();
 
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         anyhow::bail!("each --source-input requires NAME URL SHA256");
     }
 
@@ -466,17 +466,17 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
 }
 
 fn parse_php_extensions(values: &[String]) -> anyhow::Result<Vec<PhpExtensionRecordRequest>> {
-    let mut chunks = values.chunks_exact(3);
+    let (chunks, remainder) = values.as_chunks::<3>();
     let php_extensions = chunks
-        .by_ref()
-        .map(|chunk| PhpExtensionRecordRequest {
-            name: chunk[0].clone(),
-            load_kind: chunk[1].clone(),
-            path: chunk[2].clone(),
+        .iter()
+        .map(|[name, load_kind, path]| PhpExtensionRecordRequest {
+            name: name.clone(),
+            load_kind: load_kind.clone(),
+            path: path.clone(),
         })
         .collect::<Vec<_>>();
 
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         anyhow::bail!("each --php-extension requires NAME LOAD_KIND PATH");
     }
 

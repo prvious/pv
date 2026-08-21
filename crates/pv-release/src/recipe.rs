@@ -925,21 +925,14 @@ pub fn php_recipe_env(
     let php_version = track.php_version();
     let php_source_url = track.php_source_url();
     let php_source_sha256 = track.php_source_sha256().as_str();
-    let source_url;
-    let source_sha256;
-    let upstream_version;
-    match resource {
-        PhpRecipeResource::Php => {
-            upstream_version = php_version.to_string();
-            source_url = php_source_url;
-            source_sha256 = php_source_sha256;
-        }
-        PhpRecipeResource::Frankenphp => {
-            upstream_version = format!("{php_version}-frankenphp{}", recipe.frankenphp_version());
-            source_url = recipe.frankenphp_source_url();
-            source_sha256 = recipe.frankenphp_source_sha256().as_str();
-        }
-    }
+    let (upstream_version, source_url, source_sha256) = match resource {
+        PhpRecipeResource::Php => (php_version.to_string(), php_source_url, php_source_sha256),
+        PhpRecipeResource::Frankenphp => (
+            format!("{php_version}-frankenphp{}", recipe.frankenphp_version()),
+            recipe.frankenphp_source_url(),
+            recipe.frankenphp_source_sha256().as_str(),
+        ),
+    };
 
     let pv_build_revision = recipe.pv_build_revision();
     let artifact_version = format!("{upstream_version}-{pv_build_revision}");
