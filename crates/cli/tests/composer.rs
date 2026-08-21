@@ -857,6 +857,7 @@ fn record_installed_php(
     let artifact = runtime_fixture_artifact("php", version, "bin/php", TargetPlatform::DarwinArm64);
     prepare_existing_release(home, track, &artifact)?;
     let release = release_path(home, track, &artifact);
+    point_current_release(home, track, &artifact)?;
     let mut database = Database::open(&pv_paths(home))?;
     database.record_managed_resource_track_installed("php", track, version, &release)?;
 
@@ -870,6 +871,7 @@ fn record_installed_composer(
 ) -> anyhow::Result<Utf8PathBuf> {
     prepare_existing_release(home, track, artifact)?;
     let release = release_path(home, track, artifact);
+    point_current_release(home, track, artifact)?;
     let mut database = Database::open(&pv_paths(home))?;
     database.record_managed_resource_track_installed(
         "composer",
@@ -879,6 +881,24 @@ fn record_installed_composer(
     )?;
 
     Ok(release)
+}
+
+fn point_current_release(
+    home: &Utf8Path,
+    track: &str,
+    artifact: &FixtureArtifact,
+) -> anyhow::Result<()> {
+    let current = pv_paths(home)
+        .resources()
+        .join(&artifact.resource_name)
+        .join(track)
+        .join("current");
+    fs::symlink_file(
+        &Utf8PathBuf::from(format!("releases/{}", artifact.version)),
+        &current,
+    )?;
+
+    Ok(())
 }
 
 fn release_path(home: &Utf8Path, track: &str, artifact: &FixtureArtifact) -> Utf8PathBuf {
