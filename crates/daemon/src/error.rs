@@ -4,7 +4,7 @@ use config::ConfigError;
 use hickory_proto::ProtoError;
 use hickory_proto::serialize::binary::DecodeError;
 use protocol::ProtocolError;
-use resources::{ManagedResourceCommandError, ResourcesError};
+use resources::{ManagedResourceCommandError, ManagedResourceUpdate, ResourcesError};
 use serde_json::Error as JsonError;
 use state::StateError;
 use thiserror::Error;
@@ -49,6 +49,16 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
         reconciliation: Box<DaemonError>,
+    },
+
+    #[error(
+        "Managed Resource update partially completed: {}; remaining update failed: {source}",
+        managed_resource_partial_update_summary(.update)
+    )]
+    ManagedResourcePartialUpdateFailed {
+        update: ManagedResourceUpdate,
+        #[source]
+        source: Box<DaemonError>,
     },
 
     #[error("daemon socket is already in use at {path}")]
@@ -175,4 +185,25 @@ pub enum DaemonError {
 
 fn default_install_failures(failures: &[String]) -> String {
     failures.join("; ")
+}
+
+fn managed_resource_partial_update_summary(update: &ManagedResourceUpdate) -> String {
+    let installs = update
+        .installs()
+        .iter()
+        .map(|install| {
+            format!(
+                "{} track {} to {}",
+                install.resource_name(),
+                install.track(),
+                install.artifact_version()
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        "updated {} artifact(s) ({})",
+        installs.len(),
+        installs.join(", ")
+    )
 }

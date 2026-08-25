@@ -1888,6 +1888,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_update_reconciliation_failure_reports_completed_artifacts()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        let composer_update_version = "2.8.1-pv1";
+        let composer_update_archive_path = tempdir.path().join("composer-2.8.1-pv1-any.tar.gz");
+        seed_artifact_archive(
+            tempdir.path(),
+            &composer_update_archive_path,
+            "composer",
+            composer_update_version,
+            "composer.phar",
+        )?;
+        let composer_update_archive = read_file(&composer_update_archive_path)?;
+        let composer_update_url = "https://artifacts.example.test/composer-2.8.1-pv1-any.tar.gz";
+        let caddy_update_url = "https://artifacts.example.test/caddy-2.11.5-pv1-any.tar.gz";
+        let manifest = serde_json::to_string(&json!({
+            "schema_version": 1,
+            "minimum_pv_version": "0.1.0",
+            "resources": [
+                {
+                    "name": "composer",
+                    "default_track": COMPOSER_TEST_TRACK,
+                    "tracks": [{
+                        "name": COMPOSER_TEST_TRACK,
+                        "artifacts": [manifest_artifact(
+                            composer_update_version,
+                            "2.8.1",
+                            composer_update_url,
+                            &sha256_file(&composer_update_archive_path)?,
+                            composer_update_archive.len() as u64,
+                        )],
+                    }],
+                },
+                {
+                    "name": "caddy",
+                    "default_track": CADDY_TEST_TRACK,
+                    "tracks": [{
+                        "name": CADDY_TEST_TRACK,
+                        "artifacts": [manifest_artifact(
+                            "2.11.5-pv1",
+                            "2.11.5",
+                            caddy_update_url,
+                            &"0".repeat(64),
+                            1,
+                        )],
+                    }],
+                },
+            ],
+        }))?;
+        seed_installed_artifact(
+            &paths,
+            "composer",
+            COMPOSER_TEST_TRACK,
+            COMPOSER_TEST_ARTIFACT_VERSION,
+            "composer.phar",
+        )?;
+        seed_installed_artifact(
+            &paths,
+            "caddy",
+            CADDY_TEST_TRACK,
+            CADDY_TEST_ARTIFACT_VERSION,
+            "bin/caddy",
+        )?;
+
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            MultiArtifactClient {
+                manifest,
+                archives: BTreeMap::from([(
+                    composer_update_url.to_string(),
+                    composer_update_archive,
+                )]),
+            },
+        )?;
+        let job_id = start_update_job(&paths)?;
+        let events = update_events(paths.clone(), &job_id, &catalog).await?;
+        let streamed_error = events
+            .iter()
+            .find(|event| {
+                event.get("type").and_then(serde_json::Value::as_str) == Some("job_failed")
+            })
+            .and_then(|event| event.get("error"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing streamed update failure"))?;
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing update job {job_id}"))?;
+        let persisted_error = job
+            .error
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("missing persisted update failure"))?;
+        assert_eq!(streamed_error, persisted_error);
+        let failure = database
+            .unresolved_job_failures()?
+            .into_iter()
+            .find(|failure| failure.job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing unresolved update failure {job_id}"))?;
+        let composer_track = database.managed_resource_track("composer", COMPOSER_TEST_TRACK)?;
+        let composer_current = state::fs::read_link(
+            &paths
+                .resources()
+                .join("composer")
+                .join(COMPOSER_TEST_TRACK)
+                .join("current"),
+        )?;
+
+        let mut settings = Settings::clone_current();
+        settings.add_filter(r"pid \d+", "pid <pid>");
+        settings.bind(|| {
+            assert_debug_snapshot!(
+                "partial_update_reconciliation_and_reporting",
+                (
+                    streamed_error,
+                    job.status,
+                    failure.subject,
+                    composer_track.installed_version,
+                    composer_current,
+                )
+            );
+        });
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn caddy_update_rolls_back_artifact_and_recovers_gateway_after_failure()
     -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -3064,6 +3194,21 @@ mod tests {
         job_id: &str,
         catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let events = update_events(paths, job_id, catalog).await?;
+
+        Ok(events
+            .into_iter()
+            .filter(|event| {
+                event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress")
+            })
+            .collect())
+    }
+
+    async fn update_events(
+        paths: PvPaths,
+        job_id: &str,
+        catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let (client, daemon) = duplex(64 * 1024);
 
         stream_started_update_job(
@@ -3076,15 +3221,12 @@ mod tests {
         .await?;
 
         let mut reader = protocol::transport(client);
-        let mut download_progress = Vec::new();
+        let mut events = Vec::new();
         while let Some(line) = reader.next().await {
-            let event = serde_json::from_str::<serde_json::Value>(&line?)?;
-            if event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress") {
-                download_progress.push(event);
-            }
+            events.push(serde_json::from_str::<serde_json::Value>(&line?)?);
         }
 
-        Ok(download_progress)
+        Ok(events)
     }
 
     fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
@@ -3382,6 +3524,40 @@ mod tests {
         state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
         set_executable(&executable)?;
         create_archive(&archive_parent, archive_path, &root_name)
+    }
+
+    fn seed_installed_artifact(
+        paths: &PvPaths,
+        resource_name: &str,
+        track: &str,
+        artifact_version: &str,
+        executable_relative_path: &str,
+    ) -> anyhow::Result<()> {
+        let release_path = paths
+            .resources()
+            .join(resource_name)
+            .join(track)
+            .join("releases")
+            .join(artifact_version);
+        let executable = release_path.join(executable_relative_path);
+        state::fs::write_sensitive_file(&executable, "#!/bin/sh\nexit 0\n")?;
+        set_executable(&executable)?;
+        state::fs::symlink_file(
+            &Utf8PathBuf::from(format!("releases/{artifact_version}")),
+            &paths
+                .resources()
+                .join(resource_name)
+                .join(track)
+                .join("current"),
+        )?;
+        Database::open(paths)?.record_managed_resource_track_installed(
+            resource_name,
+            track,
+            artifact_version,
+            &release_path,
+        )?;
+
+        Ok(())
     }
 
     #[derive(Debug)]

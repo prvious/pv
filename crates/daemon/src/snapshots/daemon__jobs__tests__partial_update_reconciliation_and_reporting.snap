@@ -1,0 +1,13 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: "(streamed_error, job.status, failure.subject,\ncomposer_track.installed_version, composer_current,)"
+---
+(
+    "Managed Resource update failed with `Managed Resource update partially completed: updated 1 artifact(s) (composer track 2 to 2.8.1-pv1); remaining update failed: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/caddy-2.11.5-pv1-any.tar.gz`: missing scripted archive`; reconciliation also failed: process `gateway` started without observable identity for pid <pid>",
+    Failed,
+    UpdateAssessment,
+    Some(
+        "2.8.1-pv1",
+    ),
+    "releases/2.8.1-pv1",
+)

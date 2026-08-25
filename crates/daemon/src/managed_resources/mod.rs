@@ -168,7 +168,12 @@ impl ManagedResourceUpdateReport {
     }
 
     pub(crate) fn take_failure(&mut self) -> Option<DaemonError> {
-        self.failure.take()
+        self.failure
+            .take()
+            .map(|source| DaemonError::ManagedResourcePartialUpdateFailed {
+                update: self.update.clone(),
+                source: Box::new(source),
+            })
     }
 }
 
