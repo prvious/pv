@@ -453,7 +453,7 @@ fn quoted_caddyfile_token(value: &str) -> Result<String, DaemonError> {
 fn append_file_log(output: &mut String, indentation: &str, path: &str) -> Result<(), DaemonError> {
     let path = quoted_caddyfile_token(path)?;
     output.push_str(&format!(
-        "{indentation}log {{\n{indentation}    output file {path} {{\n{indentation}        roll_size {LOG_ROLL_SIZE}\n{indentation}        roll_keep {LOG_ROLL_KEEP}\n{indentation}        roll_keep_for {LOG_ROLL_KEEP_FOR}\n{indentation}    }}\n{indentation}    format json\n{indentation}}}\n"
+        "{indentation}log {{\n{indentation}    output file {path} {{\n{indentation}        roll_size {LOG_ROLL_SIZE}\n{indentation}        roll_uncompressed\n{indentation}        roll_keep {LOG_ROLL_KEEP}\n{indentation}        roll_keep_for {LOG_ROLL_KEEP_FOR}\n{indentation}    }}\n{indentation}    format json\n{indentation}}}\n"
     ));
 
     Ok(())

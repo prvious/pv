@@ -350,11 +350,19 @@ fn rotated_log_paths(active_path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, Execute
         return Ok(Vec::new());
     };
     let rotated_prefix = format!("{file_name}.");
+    let plain_rotated_prefix = file_name
+        .strip_suffix(".log")
+        .map(|stem| format!("{stem}-"));
     let mut paths = state::fs::read_dir_paths(parent)?
         .into_iter()
         .filter(|path| {
             path.file_name()
-                .map(|candidate| candidate.starts_with(&rotated_prefix))
+                .map(|candidate| {
+                    candidate.starts_with(&rotated_prefix)
+                        || plain_rotated_prefix.as_deref().is_some_and(|prefix| {
+                            candidate.starts_with(prefix) && candidate.ends_with(".log")
+                        })
+                })
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();

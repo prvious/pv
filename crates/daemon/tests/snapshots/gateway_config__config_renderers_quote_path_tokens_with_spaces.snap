@@ -9,6 +9,7 @@ Gateway:
     log {
         output file "/Users/Alice Smith/.pv/logs/gateway/error.log" {
             roll_size 10MiB
+            roll_uncompressed
             roll_keep 5
             roll_keep_for 720h
         }
@@ -35,6 +36,7 @@ http://pv-gateway.localhost {
     log {
         output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
             roll_size 10MiB
+            roll_uncompressed
             roll_keep 5
             roll_keep_for 720h
         }
@@ -48,6 +50,7 @@ https://pv-gateway.localhost {
     log {
         output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
             roll_size 10MiB
+            roll_uncompressed
             roll_keep 5
             roll_keep_for 720h
         }
