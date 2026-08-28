@@ -6,6 +6,7 @@ use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use http_body_util::{BodyExt as _, Full};
 use hyper::client::conn::http1;
+use hyper::header::HOST;
 use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
@@ -246,6 +247,7 @@ impl CaddyAdminClient {
         let request = Request::builder()
             .method(Method::POST)
             .uri("/load")
+            .header(HOST, "localhost")
             .header("content-type", "text/caddyfile")
             .body(Full::new(Bytes::copy_from_slice(bytes.as_ref())))
             .map_err(|error| CaddyAdminError::TaskFailed {
@@ -331,6 +333,7 @@ impl CaddyAdminClient {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/config/")
+            .header(HOST, "localhost")
             .body(Full::new(Bytes::new()))
             .map_err(|error| CaddyAdminError::TaskFailed {
                 operation: CaddyAdminOperation::Readiness,

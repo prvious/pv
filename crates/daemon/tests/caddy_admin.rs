@@ -58,6 +58,7 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
 struct RecordedRequest {
     method: String,
     target: String,
+    host: Option<String>,
     content_type: Option<String>,
     body: Vec<u8>,
 }
@@ -78,6 +79,7 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
 
     assert_eq!(request.method, "POST");
     assert_eq!(request.target, "/load");
+    assert_eq!(request.host.as_deref(), Some("localhost"));
     assert_eq!(request.content_type.as_deref(), Some("text/caddyfile"));
     assert_eq!(request.body, body);
 
@@ -324,8 +326,10 @@ async fn wait_until_ready_uses_config_endpoint_until_admin_is_ready() -> Result<
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "GET");
     assert_eq!(requests[0].target, "/config/");
+    assert_eq!(requests[0].host.as_deref(), Some("localhost"));
     assert_eq!(requests[1].method, "GET");
     assert_eq!(requests[1].target, "/config/");
+    assert_eq!(requests[1].host.as_deref(), Some("localhost"));
 
     Ok(())
 }
@@ -428,6 +432,7 @@ fn read_request(stream: &mut UnixStream) -> Result<RecordedRequest> {
         .to_owned();
 
     let mut content_length = 0_usize;
+    let mut host = None;
     let mut content_type = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -435,6 +440,8 @@ fn read_request(stream: &mut UnixStream) -> Result<RecordedRequest> {
         };
         if name.eq_ignore_ascii_case("content-length") {
             content_length = value.trim().parse()?;
+        } else if name.eq_ignore_ascii_case("host") {
+            host = Some(value.trim().to_owned());
         } else if name.eq_ignore_ascii_case("content-type") {
             content_type = Some(value.trim().to_owned());
         }
@@ -454,6 +461,7 @@ fn read_request(stream: &mut UnixStream) -> Result<RecordedRequest> {
     Ok(RecordedRequest {
         method,
         target,
+        host,
         content_type,
         body,
     })
