@@ -366,16 +366,18 @@ For each PHP runtime identity, PV generates a worker root config that imports pe
 
 ### Gateway and worker reload contract
 
-PV allocates and persists a distinct admin port in `pv.db` for the standalone Caddy Gateway and for every FrankenPHP worker. Each admin endpoint binds to `127.0.0.1`; the Gateway prefers port `2019`, while the Gateway and workers use the shared `45000-48999` fallback range when needed. Admin ports are never derived from service ports.
+PV gives the standalone Caddy Gateway and every FrankenPHP worker a deterministic Unix-domain admin socket under `~/.pv/run/`. The Gateway uses `gateway-admin.sock`; workers use `worker-admin-<runtime-hash>.sock`, where the hash is derived from the full PHP runtime identity so socket paths remain short. Admin endpoints are not allocated TCP ports and are not persisted in `pv.db`. The state migration removes obsolete Gateway and worker admin-port rows.
 
-Every generated Gateway and worker root Caddyfile includes the following global options, using its own persisted admin assignment:
+Every generated Gateway and worker root Caddyfile includes the following global options, using its own absolute socket path:
 
 ```caddyfile
-admin 127.0.0.1:<admin-port>
+admin "unix/<absolute-socket-path>|0600"
 persist_config off
 ```
 
-PV-generated config files and `pv.db` remain authoritative. Caddy must not create a competing autosave config. The daemon reloads a runtime only by sending the promoted active root Caddyfile, byte-for-byte including its trailing newlines, as a whole-config `POST /load` request with `Content-Type: text/caddyfile` to that process's admin endpoint. This contract is identical on every platform; Unix reload signals, `caddy reload` commands, and platform-conditional reload branches are not part of PV.
+The `~/.pv/run/` directory is owner-only (`0700`), and Caddy creates each admin socket as owner-only (`0600`). After connecting, the daemon verifies the peer process group against the managed runtime's root PID on that same socket before sending any HTTP bytes. There is no TCP admin fallback. A recorded runtime whose active config does not use its desired Unix socket, including a pre-migration TCP or `admin off` runtime, is stopped and replaced before any admin request.
+
+PV-generated config files and `pv.db` remain authoritative. Caddy must not create a competing autosave config. The daemon reloads a runtime only by sending the promoted active root Caddyfile, byte-for-byte including its trailing newlines, as a whole-config `POST /load` request with `Content-Type: text/caddyfile` to that process's admin socket. Unix reload signals and `caddy reload` commands are not part of PV.
 
 When no matching PV-owned process exists, PV validates the candidate with the correct managed binary, promotes the active config, starts the process, and requires both admin readiness through `GET /config/` and the existing Gateway or worker readiness checks before committing the config. A process replacement is allowed when the process is absent or its recorded runtime identity/spec is obsolete; it is not a reload fallback.
 

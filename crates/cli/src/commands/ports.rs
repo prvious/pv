@@ -93,9 +93,6 @@ pub(crate) fn install(
     let had_https_assignment = existing_assignments
         .iter()
         .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Https));
-    let had_admin_assignment = existing_assignments
-        .iter()
-        .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Admin));
     let assignments = database.assign_gateway_ports(|port| !listening_ports.contains(&port))?;
     let config = pf_config_from_assignments(&assignments);
     let reference = PfConfReference;
@@ -107,24 +104,14 @@ pub(crate) fn install(
     if let Err(error) =
         state::fs::write_sensitive_file(&prepared_anchor_path, &config.render_anchor())
     {
-        release_new_gateway_ports(
-            &mut database,
-            had_http_assignment,
-            had_https_assignment,
-            had_admin_assignment,
-        )?;
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
         return Err(error.into());
     }
     if let Err(error) =
         state::fs::write_sensitive_file(&prepared_reference_path, &reference.render())
     {
-        release_new_gateway_ports(
-            &mut database,
-            had_http_assignment,
-            had_https_assignment,
-            had_admin_assignment,
-        )?;
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
         return Err(error.into());
     }
@@ -150,12 +137,7 @@ pub(crate) fn install(
     if let Some(exit_code) =
         write_pf_install_blocker(&mut output, &system_anchor_state, &system_reference_state)?
     {
-        release_new_gateway_ports(
-            &mut database,
-            had_http_assignment,
-            had_https_assignment,
-            had_admin_assignment,
-        )?;
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
         return Ok(exit_code);
     }
@@ -172,7 +154,6 @@ pub(crate) fn install(
                     &mut database,
                     had_http_assignment,
                     had_https_assignment,
-                    had_admin_assignment,
                 )?;
 
                 return Err(error.into());
@@ -200,12 +181,7 @@ pub(crate) fn install(
         &system_anchor_path,
         &system_pf_conf_path,
     ) {
-        release_new_gateway_ports(
-            &mut database,
-            had_http_assignment,
-            had_https_assignment,
-            had_admin_assignment,
-        )?;
+        release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
         return Err(error.into());
     }
@@ -215,7 +191,6 @@ pub(crate) fn install(
         &mut database,
         had_http_assignment,
         had_https_assignment,
-        had_admin_assignment,
     )?;
     refresh_gateway_observation_after_pf_repair(environment, &paths, &config, &mut database)?;
     output.line("Installed system pf redirect config")?;
@@ -271,19 +246,13 @@ fn ensure_active_gateway_ports(
     database: &mut Database,
     had_http_assignment: bool,
     had_https_assignment: bool,
-    had_admin_assignment: bool,
 ) -> Result<(), ExecuteError> {
     let active_config = match environment
         .active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::Interactive)
     {
         Ok(active_config) => active_config,
         Err(error) => {
-            release_new_gateway_ports(
-                database,
-                had_http_assignment,
-                had_https_assignment,
-                had_admin_assignment,
-            )?;
+            release_new_gateway_ports(database, had_http_assignment, had_https_assignment)?;
 
             return Err(error.into());
         }
@@ -293,12 +262,7 @@ fn ensure_active_gateway_ports(
         return Ok(());
     }
 
-    release_new_gateway_ports(
-        database,
-        had_http_assignment,
-        had_https_assignment,
-        had_admin_assignment,
-    )?;
+    release_new_gateway_ports(database, had_http_assignment, had_https_assignment)?;
 
     Err(CliError::PfRedirectsInactive.into())
 }
@@ -307,7 +271,6 @@ fn release_new_gateway_ports(
     database: &mut Database,
     had_http_assignment: bool,
     had_https_assignment: bool,
-    had_admin_assignment: bool,
 ) -> Result<(), ExecuteError> {
     if !had_http_assignment {
         database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
@@ -315,10 +278,6 @@ fn release_new_gateway_ports(
     if !had_https_assignment {
         database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
     }
-    if !had_admin_assignment {
-        database.release_port(PortOwner::Gateway(GatewayPort::Admin))?;
-    }
-
     Ok(())
 }
 

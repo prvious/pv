@@ -15,7 +15,7 @@ use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
-    Database, GatewayPort, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
+    Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     ProjectEnvObservedStatus, ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
     StateError, fs,
 };
@@ -121,7 +121,7 @@ pub struct RuntimePlan {
 pub struct GatewayRuntimePlan {
     pub http_port: u16,
     pub https_port: u16,
-    pub admin_port: u16,
+    pub admin_socket_path: Utf8PathBuf,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
@@ -142,7 +142,7 @@ pub struct PhpWorkerRuntimePlan {
     pub runtime_key: String,
     pub loaded_modules: Vec<resources::PhpExtensionModule>,
     pub port: u16,
-    pub admin_port: u16,
+    pub admin_socket_path: Utf8PathBuf,
     pub projects: Vec<RuntimeProject>,
 }
 
@@ -227,11 +227,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     };
 
     let supervisor = ProcessSupervisor::new(paths.clone());
-    if let Err((subject, error)) = recover_unowned_admin_port_assignments(paths, &supervisor) {
-        record_runtime_error(paths, subject, &error)?;
-
-        return Err(*error);
-    }
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
@@ -301,7 +296,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 },
                 failure_policy: ReadinessFailurePolicy::FailRuntime,
                 timeout: readiness_timeout,
-                admin_endpoint: CaddyAdminEndpoint::new(worker.admin_port),
+                admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
             },
             subject.clone(),
         )
@@ -369,7 +364,7 @@ fn gateway_readiness_plan(
         check,
         failure_policy,
         timeout,
-        admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_port),
+        admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
     }
 }
 
@@ -408,12 +403,10 @@ fn previous_runtime_readiness_from_parts(
             .transpose()?,
     };
     let https_port = optional_config_port(previous_root_content, "https_port ")?;
-    let admin_port = previous_admin_port(previous_root_content)?;
     let check = previous_readiness_check(&readiness.check, http_port, https_port)?;
 
     Ok(RuntimeReadinessPlan {
         check,
-        admin_endpoint: CaddyAdminEndpoint::new(admin_port),
         ..readiness.clone()
     })
 }
@@ -500,14 +493,6 @@ fn optional_config_port(config: &str, prefix: &str) -> Result<Option<u16>, Daemo
         .map_err(|error| DaemonError::UnexpectedProtocolResponse {
             reason: format!("previous runtime config has invalid port `{port}`: {error}"),
         })
-}
-
-fn previous_admin_port(config: &str) -> Result<u16, DaemonError> {
-    optional_config_port(config, "admin 127.0.0.1:")?.ok_or_else(|| {
-        DaemonError::UnexpectedProtocolResponse {
-            reason: "previous runtime config is missing an enabled admin port".to_owned(),
-        }
-    })
 }
 
 fn fragment_port(fragment: &str) -> Option<Result<u16, DaemonError>> {
@@ -849,6 +834,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                     &[],
                 )?;
                 append_persisted_runtime_project(
+                    paths,
                     &mut database,
                     &mut projects_by_runtime_key,
                     project,
@@ -860,6 +846,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             Some(config_file) => {
                 if config_file.config.serve != (project.mode == ProjectMode::Served) {
                     append_persisted_runtime_project(
+                        paths,
                         &mut database,
                         &mut projects_by_runtime_key,
                         project,
@@ -877,6 +864,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                             &[],
                         )?;
                         append_persisted_runtime_project(
+                            paths,
                             &mut database,
                             &mut projects_by_runtime_key,
                             project,
@@ -918,6 +906,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         };
 
         append_runtime_project(
+            paths,
             &mut database,
             &mut projects_by_runtime_key,
             runtime,
@@ -939,7 +928,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         gateway: GatewayRuntimePlan {
             http_port: gateway_ports.http.port,
             https_port: gateway_ports.https.port,
-            admin_port: gateway_ports.admin.port,
+            admin_socket_path: paths.gateway_admin_socket(),
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
             storage_path: gateway_storage_path(paths)?,
@@ -980,6 +969,7 @@ fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
 }
 
 fn append_persisted_runtime_project(
+    paths: &PvPaths,
     database: &mut Database,
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     project: state::ProjectRecord,
@@ -1027,10 +1017,17 @@ fn append_persisted_runtime_project(
         document_root: project.path,
     };
 
-    append_runtime_project(database, projects_by_runtime_key, runtime, runtime_project)
+    append_runtime_project(
+        paths,
+        database,
+        projects_by_runtime_key,
+        runtime,
+        runtime_project,
+    )
 }
 
 fn append_runtime_project(
+    paths: &PvPaths,
     database: &mut Database,
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     runtime: ResolvedPhpRuntime,
@@ -1043,13 +1040,14 @@ fn append_runtime_project(
         btree_map::Entry::Vacant(entry) => {
             let assignments = database
                 .assign_php_worker_ports(&runtime.runtime_key, local_loopback_port_available)?;
+            let admin_socket_path = paths.worker_admin_socket(&runtime.runtime_key);
 
             entry.insert(PhpWorkerRuntimePlan {
                 php_track: runtime.track,
                 runtime_key: runtime.runtime_key,
                 loaded_modules: runtime.loaded_modules,
                 port: assignments.service.port,
-                admin_port: assignments.admin.port,
+                admin_socket_path,
                 projects: vec![runtime_project],
             });
         }
@@ -1142,7 +1140,7 @@ async fn reconcile_gateway_config(
     let active_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
-        admin_port: plan.gateway.admin_port,
+        admin_socket_path: plan.gateway.admin_socket_path.clone(),
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
@@ -1161,7 +1159,7 @@ async fn reconcile_gateway_config(
     let candidate_content = match render_gateway_config(&GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
-        admin_port: plan.gateway.admin_port,
+        admin_socket_path: plan.gateway.admin_socket_path.clone(),
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
         storage_path: plan.gateway.storage_path.clone(),
@@ -1246,7 +1244,7 @@ async fn reconcile_worker_config(
     let active_content = match render_php_worker_config(&PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
-        admin_port: worker.admin_port,
+        admin_socket_path: worker.admin_socket_path.clone(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         projects: projects.clone(),
     }) {
@@ -1260,7 +1258,7 @@ async fn reconcile_worker_config(
     let candidate_content = match render_php_worker_config(&PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
-        admin_port: worker.admin_port,
+        admin_socket_path: worker.admin_socket_path.clone(),
         projects_config_glob: candidate_dir.join("*.Caddyfile"),
         projects,
     }) {
@@ -1348,7 +1346,14 @@ async fn start_or_adopt_promoted_runtime(
     subject: RuntimeSubject,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
     let matching_runtime = match supervisor.verify_ownership(&spec) {
-        Ok(Some(runtime)) => !runtime.replacement_required(),
+        Ok(Some(runtime)) => {
+            !runtime.replacement_required()
+                && promoted_config
+                    .previous_root_content()
+                    .is_some_and(|config| {
+                        runtime_config_uses_admin_endpoint(config, &readiness.admin_endpoint)
+                    })
+        }
         Ok(None) => false,
         Err(error) => {
             let error = match promoted_config.rollback() {
@@ -1450,12 +1455,18 @@ async fn start_or_adopt_promoted_runtime(
     }
 }
 
+fn runtime_config_uses_admin_endpoint(config: &str, endpoint: &CaddyAdminEndpoint) -> bool {
+    let expected = format!("admin \"unix/{}|0600\"", endpoint.path());
+
+    config.lines().any(|line| line.trim() == expected)
+}
+
 async fn load_runtime_config(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     client: CaddyAdminClient,
-    admin_endpoint: CaddyAdminEndpoint,
+    admin_endpoint: &CaddyAdminEndpoint,
     content: Vec<u8>,
 ) -> Result<(), RuntimeTransactionError> {
     match supervisor.mark_replacement_required(spec) {
@@ -1527,7 +1538,7 @@ async fn start_or_adopt_runtime(
                 supervisor,
                 spec,
                 client,
-                admin_endpoint,
+                &admin_endpoint,
                 active_content,
             )
             .await?;
@@ -1542,7 +1553,7 @@ async fn start_or_adopt_runtime(
                     && supervisor.verify_ownership(spec)?.is_some()
                     && client
                         .wait_until_ready_with(
-                            admin_endpoint,
+                            &admin_endpoint,
                             readiness_timeout,
                             runtime_ownership_verifier(paths, spec),
                         )
@@ -1578,11 +1589,12 @@ async fn start_or_adopt_runtime(
             ));
         }
 
+        delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
         let mut process = supervisor.start(spec.clone()).await?;
         if let Err(error) = CaddyAdminClient::new()
             .with_timeout(readiness_timeout)
             .wait_until_ready_with(
-                admin_endpoint,
+                &admin_endpoint,
                 readiness_timeout,
                 runtime_ownership_verifier(paths, spec),
             )
@@ -1803,7 +1815,7 @@ async fn restore_runtime_after_failed_load(
         supervisor,
         spec,
         client,
-        readiness.admin_endpoint,
+        &readiness.admin_endpoint,
         restored_content,
     )
     .await
@@ -1815,7 +1827,7 @@ async fn restore_runtime_after_failed_load(
     }
     if let Err(error) = client
         .wait_until_ready_with(
-            readiness.admin_endpoint,
+            &readiness.admin_endpoint,
             readiness.timeout,
             runtime_ownership_verifier(paths, spec),
         )
@@ -1839,6 +1851,7 @@ fn verify_runtime_ownership(
     spec: &ProcessSpec,
 ) -> Result<(), DaemonError> {
     verify_runtime_ownership_for_admin(supervisor, spec, CaddyAdminOperation::Readiness)
+        .map(|_pid| ())
         .map_err(DaemonError::from)
 }
 
@@ -1846,9 +1859,9 @@ fn verify_runtime_ownership_for_admin(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     operation: CaddyAdminOperation,
-) -> Result<(), CaddyAdminError> {
+) -> Result<Option<u32>, CaddyAdminError> {
     match supervisor.verify_ownership(spec) {
-        Ok(Some(_)) => Ok(()),
+        Ok(Some(runtime)) => Ok(Some(runtime.pid())),
         Ok(None) => Err(CaddyAdminError::runtime_ownership_changed(
             spec.name.clone(),
         )),
@@ -2131,13 +2144,11 @@ fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<()
     delete_optional_file(&paths.worker_pid(runtime_key))?;
     delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
     delete_optional_file(&paths.worker_root_config(runtime_key))?;
+    delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
     delete_optional_dir(&paths.worker_projects_config_dir(runtime_key))?;
 
     let mut database = Database::open(paths)?;
     database.release_port(PortOwner::PhpWorker {
-        php_runtime_key: runtime_key.to_owned(),
-    })?;
-    database.release_port(PortOwner::PhpWorkerAdmin {
         php_runtime_key: runtime_key.to_owned(),
     })?;
 
@@ -2441,70 +2452,6 @@ fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-fn recover_unowned_admin_port_assignments(
-    paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
-) -> Result<(), (RuntimeSubject, Box<DaemonError>)> {
-    let mut database =
-        Database::open(paths).map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
-    let assignments = database
-        .assigned_ports()
-        .map_err(|error| (RuntimeSubject::Gateway, Box::new(error.into())))?;
-
-    for assignment in assignments {
-        let runtime = match &assignment.owner {
-            PortOwner::Gateway(GatewayPort::Admin) => Some((
-                RuntimeSubject::Gateway,
-                paths.gateway_pid(),
-                paths.gateway_runtime_metadata(),
-                paths.gateway_root_config(),
-            )),
-            PortOwner::PhpWorkerAdmin { php_runtime_key } => Some((
-                php_runtime_subject(php_runtime_key),
-                paths.worker_pid(php_runtime_key),
-                paths.worker_runtime_metadata(php_runtime_key),
-                paths.worker_root_config(php_runtime_key),
-            )),
-            _ => None,
-        };
-        let Some((subject, pid_path, metadata_path, config_path)) = runtime else {
-            continue;
-        };
-
-        if local_loopback_port_available(assignment.port) {
-            continue;
-        }
-        let recorded_runtime = supervisor
-            .adopt_recorded(&pid_path, &metadata_path)
-            .map_err(|error| (subject.clone(), Box::new(error)))?;
-        if recorded_runtime.is_some()
-            && runtime_config_uses_admin_port(&config_path, assignment.port)
-                .map_err(|error| (subject.clone(), Box::new(error)))?
-        {
-            continue;
-        }
-
-        database
-            .release_port(assignment.owner)
-            .map_err(|error| (subject, Box::new(error.into())))?;
-    }
-
-    Ok(())
-}
-
-fn runtime_config_uses_admin_port(
-    config_path: &Utf8Path,
-    assigned_port: u16,
-) -> Result<bool, DaemonError> {
-    match fs::read_to_string(config_path) {
-        Ok(config) => Ok(optional_config_port(&config, "admin 127.0.0.1:")? == Some(assigned_port)),
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 fn caddyfile_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {
     vec![
         action.to_owned(),
@@ -2635,7 +2582,7 @@ mod tests {
     }
 
     #[test]
-    fn previous_runtime_readiness_uses_previous_root_admin_endpoint() -> Result<()> {
+    fn previous_runtime_readiness_keeps_desired_admin_socket() -> Result<()> {
         let plan = runtime_plan();
         let readiness = gateway_readiness_plan(
             &plan,
@@ -2651,7 +2598,7 @@ mod tests {
 
         assert_eq!(
             previous.admin_endpoint,
-            super::CaddyAdminEndpoint::new(41019)
+            super::CaddyAdminEndpoint::new("/tmp/pv-gateway-admin.sock")
         );
         assert_eq!(
             previous.check,
@@ -2853,7 +2800,7 @@ mod tests {
             gateway: GatewayRuntimePlan {
                 http_port: 45080,
                 https_port: 45443,
-                admin_port: 42019,
+                admin_socket_path: Utf8PathBuf::from("/tmp/pv-gateway-admin.sock"),
                 ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
                 ca_private_key_path: Utf8PathBuf::from("/tmp/pv-missing-ca-key.pem"),
                 storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),

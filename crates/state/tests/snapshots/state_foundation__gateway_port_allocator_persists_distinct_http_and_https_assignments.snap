@@ -18,13 +18,6 @@ expression: "(assigned, reused, database.assigned_ports()?)"
             port: 48443,
             updated_at: "<timestamp>",
         },
-        admin: PortAssignment {
-            owner: Gateway(
-                Admin,
-            ),
-            port: 2019,
-            updated_at: "<timestamp>",
-        },
     },
     GatewayPortAssignments {
         http: PortAssignment {
@@ -41,13 +34,6 @@ expression: "(assigned, reused, database.assigned_ports()?)"
             port: 48443,
             updated_at: "<timestamp>",
         },
-        admin: PortAssignment {
-            owner: Gateway(
-                Admin,
-            ),
-            port: 2019,
-            updated_at: "<timestamp>",
-        },
     },
     [
         PortAssignment {
@@ -62,13 +48,6 @@ expression: "(assigned, reused, database.assigned_ports()?)"
                 Https,
             ),
             port: 48443,
-            updated_at: "<timestamp>",
-        },
-        PortAssignment {
-            owner: Gateway(
-                Admin,
-            ),
-            port: 2019,
             updated_at: "<timestamp>",
         },
     ],

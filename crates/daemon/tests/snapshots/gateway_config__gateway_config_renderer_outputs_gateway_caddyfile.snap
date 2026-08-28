@@ -3,7 +3,7 @@ source: crates/daemon/tests/gateway_config.rs
 expression: rendered
 ---
 {
-    admin 127.0.0.1:42019
+    admin "unix//Users/alice/.pv/run/gateway-admin.sock|0600"
     persist_config off
     log {
         output file "/Users/alice/.pv/logs/gateway/error.log" {

@@ -16,9 +16,8 @@ use platform::{
     PfConfReference, PfRedirectConfig, ResolverConfig,
 };
 use state::{
-    Database, GATEWAY_ADMIN_PREFERRED_PORT, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus,
-    RuntimeSubject,
+    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject,
+    PvPaths, RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -416,9 +415,7 @@ fn seed_required_checks(
 ) -> anyhow::Result<()> {
     let mut database = Database::open(paths)?;
     database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
 
     let launch_agent = LaunchAgentConfig::new(

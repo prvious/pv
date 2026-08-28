@@ -1,9 +1,9 @@
 ---
 source: crates/daemon/tests/gateway_config.rs
-expression: render_php_worker_config(&input)?
+expression: rendered
 ---
 {
-    admin 127.0.0.1:45002
+    admin "unix//Users/alice/.pv/run/worker-admin-163c820d9576.sock|0600"
     persist_config off
 }
 

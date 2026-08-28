@@ -546,7 +546,7 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
     )?;
 
     let mut database = Database::open(paths)?;
-    let [http_port, https_port, admin_port] = available_foundation_gateway_ports()?;
+    let [http_port, https_port] = available_foundation_gateway_ports()?;
     database.record_managed_resource_track_installed(
         "caddy",
         "2",
@@ -561,19 +561,14 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
         PortRequest::gateway(GatewayPort::Https, https_port, https_port, https_port),
         |_port| true,
     )?;
-    database.assign_port(
-        PortRequest::gateway(GatewayPort::Admin, admin_port, admin_port, admin_port),
-        |_port| true,
-    )?;
-
     Ok(())
 }
 
-fn available_foundation_gateway_ports() -> Result<[u16; 3]> {
-    let mut listeners = Vec::with_capacity(3);
-    let mut ports = Vec::with_capacity(3);
+fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
+    let mut listeners = Vec::with_capacity(2);
+    let mut ports = Vec::with_capacity(2);
 
-    while ports.len() < 3 {
+    while ports.len() < 2 {
         let listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let port = listener.local_addr()?.port();
         if ports.contains(&port) {
@@ -588,7 +583,7 @@ fn available_foundation_gateway_ports() -> Result<[u16; 3]> {
 
     ports
         .try_into()
-        .map_err(|_| anyhow!("expected three available gateway ports"))
+        .map_err(|_| anyhow!("expected two available gateway ports"))
 }
 
 fn reserve_foundation_ports(count: usize, start: u16, end: u16) -> Result<Vec<StdTcpListener>> {
@@ -971,24 +966,14 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
-    let worker_port_reservations = reserve_foundation_ports(2, 40_000, 44_999)?;
+    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
     let worker_service_port = worker_port_reservations[0].local_addr()?.port();
-    let worker_admin_port = worker_port_reservations[1].local_addr()?.port();
     database.assign_port(
         PortRequest::php_worker(
             php_track,
             worker_service_port,
             worker_service_port,
             worker_service_port,
-        ),
-        |_port| true,
-    )?;
-    database.assign_port(
-        PortRequest::php_worker_admin(
-            php_track,
-            worker_admin_port,
-            worker_admin_port,
-            worker_admin_port,
         ),
         |_port| true,
     )?;

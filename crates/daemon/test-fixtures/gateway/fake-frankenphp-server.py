@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import http.server
 import glob
+import os
 import re
 import socketserver
 import ssl
@@ -68,6 +69,10 @@ class Server(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+class AdminServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 http_port = None
 http_port_setting = optional(r"^\s*http_port (\d+)$")
 if http_port_setting is not None:
@@ -83,13 +88,14 @@ else:
             break
 if http_port is None:
     raise SystemExit("missing fake worker service port")
-admin_port = int(required(r"^\s*admin 127\.0\.0\.1:(\d+)$"))
+admin_socket = required(r'^\s*admin "unix/([^"|]+)\|0600"$')
 https_port = optional(r"^\s*https_port (\d+)$")
 gateway_health_response = f"pv-gateway-health-v1:{http_port}:{https_port}"
 cert_path = optional(r'^\s*cert "([^"]+)"$')
 key_path = optional(r'^\s*key "([^"]+)"$')
 servers = [Server(("127.0.0.1", http_port), Handler)]
-admin_server = Server(("127.0.0.1", admin_port), Handler)
+admin_server = AdminServer(admin_socket, Handler)
+os.chmod(admin_socket, 0o600)
 
 if https_port is not None and cert_path is not None and key_path is not None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

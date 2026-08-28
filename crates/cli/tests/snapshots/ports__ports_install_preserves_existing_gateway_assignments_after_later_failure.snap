@@ -27,12 +27,5 @@ expression: "(output, assignments)"
             port: 48443,
             updated_at: "<timestamp>",
         },
-        PortAssignment {
-            owner: Gateway(
-                Admin,
-            ),
-            port: 2019,
-            updated_at: "<timestamp>",
-        },
     ],
 )

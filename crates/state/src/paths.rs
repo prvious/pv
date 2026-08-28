@@ -1,4 +1,5 @@
 use camino::{Utf8Path, Utf8PathBuf};
+use sha2::{Digest, Sha256};
 
 use crate::StateError;
 
@@ -96,6 +97,17 @@ impl PvPaths {
 
     pub fn daemon_socket(&self) -> Utf8PathBuf {
         self.run().join("pv.sock")
+    }
+
+    pub fn gateway_admin_socket(&self) -> Utf8PathBuf {
+        self.run().join("gateway-admin.sock")
+    }
+
+    pub fn worker_admin_socket(&self, php_runtime: &str) -> Utf8PathBuf {
+        let digest = format!("{:x}", Sha256::digest(php_runtime.as_bytes()));
+
+        self.run()
+            .join(format!("worker-admin-{}.sock", &digest[..12]))
     }
 
     pub fn daemon_startup_error(&self) -> Utf8PathBuf {

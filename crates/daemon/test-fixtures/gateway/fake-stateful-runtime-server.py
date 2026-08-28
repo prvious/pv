@@ -136,7 +136,7 @@ else:
             break
 if http_port is None:
     raise SystemExit(f"missing fake {runtime_name} service port")
-admin_port = int(setting(r"^\s*admin 127\.0\.0\.1:(\d+)$", initial_config))
+admin_socket = setting(r'^\s*admin "unix/([^"|]+)\|0600"$', initial_config)
 https_port = optional_setting(r"^\s*https_port (\d+)$", initial_config)
 cert_path = optional_setting(r'^\s*cert "([^"]+)"$', initial_config)
 key_path = optional_setting(r'^\s*key "([^"]+)"$', initial_config)
@@ -222,8 +222,13 @@ class Server(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+class AdminServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 servers = [Server(("127.0.0.1", http_port), Handler)]
-admin_server = Server(("127.0.0.1", admin_port), Handler)
+admin_server = AdminServer(admin_socket, Handler)
+os.chmod(admin_socket, 0o600)
 
 if https_port is not None and cert_path is not None and key_path is not None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

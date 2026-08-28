@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::ProcessSupervisor;
 use daemon::gateway::{
@@ -200,7 +200,7 @@ fn default_worker_plan(php_track: &str) -> PhpWorkerRuntimePlan {
         runtime_key: php_track.to_owned(),
         loaded_modules: Vec::new(),
         port: 0,
-        admin_port: 0,
+        admin_socket_path: Utf8PathBuf::from("/tmp/pv-worker-admin.sock"),
         projects: Vec::new(),
     }
 }

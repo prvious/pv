@@ -1,11 +1,19 @@
 use std::fmt;
-use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+use camino::{Utf8Path, Utf8PathBuf};
+use http_body_util::{BodyExt as _, Full};
+use hyper::client::conn::http1;
+use hyper::{Method, Request};
+use hyper_util::rt::TokioIo;
+#[cfg(unix)]
+use rustix::process::{Pid, getpgid};
 use thiserror::Error;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
-pub const LOOPBACK_HOST: &str = "127.0.0.1";
 pub const MAX_RESPONSE_DETAIL_BYTES: usize = 4096;
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -14,33 +22,25 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// The loopback address and port for one Caddy admin endpoint.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The Unix-domain socket path for one Caddy admin endpoint.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CaddyAdminEndpoint {
-    port: u16,
+    path: Utf8PathBuf,
 }
 
 impl CaddyAdminEndpoint {
-    pub const fn new(port: u16) -> Self {
-        Self { port }
+    pub fn new(path: impl Into<Utf8PathBuf>) -> Self {
+        Self { path: path.into() }
     }
 
-    pub const fn host(self) -> &'static str {
-        LOOPBACK_HOST
-    }
-
-    pub const fn port(self) -> u16 {
-        self.port
-    }
-
-    pub fn url(self, path: &str) -> String {
-        format!("http://{}:{}{}", self.host(), self.port, path)
+    pub fn path(&self) -> &Utf8Path {
+        &self.path
     }
 }
 
 impl fmt::Display for CaddyAdminEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}", self.host(), self.port)
+        self.path.fmt(formatter)
     }
 }
 
@@ -92,6 +92,15 @@ pub enum CaddyAdminError {
         reason: Box<Self>,
     },
 
+    #[error(
+        "Caddy admin endpoint {endpoint} belongs to process group {actual_process_group}, expected managed process group {expected_process_group}"
+    )]
+    PeerProcessGroupMismatch {
+        endpoint: CaddyAdminEndpoint,
+        expected_process_group: i32,
+        actual_process_group: i32,
+    },
+
     #[error("Caddy admin load at {endpoint} was rejected with HTTP {status}: {detail}")]
     LoadRejected {
         endpoint: CaddyAdminEndpoint,
@@ -132,8 +141,9 @@ pub enum CaddyAdminError {
     },
 }
 
+/// Verifies runtime ownership and returns its root process id when peer validation is required.
 pub type CaddyAdminVerifier =
-    Arc<dyn Fn(CaddyAdminOperation) -> Result<(), CaddyAdminError> + Send + Sync>;
+    Arc<dyn Fn(CaddyAdminOperation) -> Result<Option<u32>, CaddyAdminError> + Send + Sync>;
 
 impl CaddyAdminError {
     pub fn runtime_ownership_changed(runtime: impl Into<String>) -> Self {
@@ -220,7 +230,7 @@ impl CaddyAdminClient {
 
     pub async fn load_caddyfile(
         self,
-        endpoint: CaddyAdminEndpoint,
+        endpoint: &CaddyAdminEndpoint,
         bytes: impl AsRef<[u8]>,
     ) -> Result<(), CaddyAdminError> {
         self.load_caddyfile_with(endpoint, bytes, no_op_verifier())
@@ -229,25 +239,37 @@ impl CaddyAdminClient {
 
     pub async fn load_caddyfile_with(
         self,
-        endpoint: CaddyAdminEndpoint,
+        endpoint: &CaddyAdminEndpoint,
         bytes: impl AsRef<[u8]>,
         verifier: CaddyAdminVerifier,
     ) -> Result<(), CaddyAdminError> {
-        let body = bytes.as_ref().to_vec();
-        let operation = CaddyAdminOperation::Load;
-        let timeout = self.timeouts.overall;
-        let agent = self.agent_for(timeout);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/load")
+            .header("content-type", "text/caddyfile")
+            .body(Full::new(Bytes::copy_from_slice(bytes.as_ref())))
+            .map_err(|error| CaddyAdminError::TaskFailed {
+                operation: CaddyAdminOperation::Load,
+                reason: error.to_string(),
+            })?;
+        let response = self
+            .send(endpoint, CaddyAdminOperation::Load, request, verifier, true)
+            .await?;
 
-        run_blocking(operation, move || {
-            verify_before_request(&verifier, endpoint, operation)?;
-            load_caddyfile_blocking(agent, endpoint, body, timeout)
+        if is_success(response.status) {
+            return Ok(());
+        }
+
+        Err(CaddyAdminError::LoadRejected {
+            endpoint: endpoint.clone(),
+            status: response.status,
+            detail: response.detail,
         })
-        .await
     }
 
     pub async fn wait_until_ready(
         self,
-        endpoint: CaddyAdminEndpoint,
+        endpoint: &CaddyAdminEndpoint,
         readiness_timeout: Duration,
     ) -> Result<(), CaddyAdminError> {
         self.wait_until_ready_with(endpoint, readiness_timeout, no_op_verifier())
@@ -256,7 +278,7 @@ impl CaddyAdminClient {
 
     pub async fn wait_until_ready_with(
         self,
-        endpoint: CaddyAdminEndpoint,
+        endpoint: &CaddyAdminEndpoint,
         readiness_timeout: Duration,
         verifier: CaddyAdminVerifier,
     ) -> Result<(), CaddyAdminError> {
@@ -302,257 +324,191 @@ impl CaddyAdminClient {
 
     async fn get_config(
         self,
-        endpoint: CaddyAdminEndpoint,
+        endpoint: &CaddyAdminEndpoint,
         timeout: Duration,
         verifier: CaddyAdminVerifier,
     ) -> Result<(), CaddyAdminError> {
-        let operation = CaddyAdminOperation::Readiness;
-        let agent = self.agent_for(timeout);
-
-        run_blocking(operation, move || {
-            verify_before_request(&verifier, endpoint, operation)?;
-            get_config_blocking(agent, endpoint, timeout)
-        })
-        .await
-    }
-
-    fn agent_for(self, overall_timeout: Duration) -> ureq::Agent {
-        let overall_timeout = overall_timeout.min(self.timeouts.overall);
-        let connect_timeout = self.timeouts.connect.min(overall_timeout);
-        let write_timeout = self.timeouts.write.min(overall_timeout);
-        let read_timeout = self.timeouts.read.min(overall_timeout);
-
-        ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(overall_timeout))
-            .timeout_resolve(Some(connect_timeout))
-            .timeout_connect(Some(connect_timeout))
-            .timeout_send_request(Some(write_timeout))
-            .timeout_send_body(Some(write_timeout))
-            .timeout_recv_response(Some(read_timeout))
-            .timeout_recv_body(Some(read_timeout))
-            .build()
-            .into()
-    }
-}
-
-fn no_op_verifier() -> CaddyAdminVerifier {
-    Arc::new(|_operation| Ok(()))
-}
-
-fn verify_before_request(
-    verifier: &CaddyAdminVerifier,
-    endpoint: CaddyAdminEndpoint,
-    operation: CaddyAdminOperation,
-) -> Result<(), CaddyAdminError> {
-    verifier(operation).map_err(|reason| CaddyAdminError::RequestNotSent {
-        endpoint,
-        operation,
-        reason: Box::new(reason),
-    })
-}
-
-fn is_verifier_failure(error: &CaddyAdminError) -> bool {
-    matches!(
-        error,
-        CaddyAdminError::RequestNotSent { reason, .. }
-            if matches!(
-                reason.as_ref(),
-                CaddyAdminError::RuntimeOwnershipChanged { .. }
-                    | CaddyAdminError::TaskFailed { .. }
-            )
-    )
-}
-
-/// Loads a complete active Caddyfile through the loopback admin API.
-pub async fn load_caddyfile(
-    endpoint: CaddyAdminEndpoint,
-    bytes: impl AsRef<[u8]>,
-) -> Result<(), CaddyAdminError> {
-    CaddyAdminClient::default()
-        .load_caddyfile(endpoint, bytes)
-        .await
-}
-
-/// Waits for the Caddy admin API to expose its configuration endpoint.
-pub async fn wait_until_ready(
-    endpoint: CaddyAdminEndpoint,
-    timeout: Duration,
-) -> Result<(), CaddyAdminError> {
-    CaddyAdminClient::default()
-        .wait_until_ready(endpoint, timeout)
-        .await
-}
-
-async fn run_blocking<T, Operation>(
-    operation: CaddyAdminOperation,
-    task: Operation,
-) -> Result<T, CaddyAdminError>
-where
-    T: Send + 'static,
-    Operation: FnOnce() -> Result<T, CaddyAdminError> + Send + 'static,
-{
-    match tokio::task::spawn_blocking(task).await {
-        Ok(result) => result,
-        Err(error) => Err(CaddyAdminError::TaskFailed {
-            operation,
-            reason: error.to_string(),
-        }),
-    }
-}
-
-fn load_caddyfile_blocking(
-    agent: ureq::Agent,
-    endpoint: CaddyAdminEndpoint,
-    bytes: Vec<u8>,
-    timeout: Duration,
-) -> Result<(), CaddyAdminError> {
-    let mut response = agent
-        .post(endpoint.url("/load"))
-        .content_type("text/caddyfile")
-        .send(bytes)
-        .map_err(|source| {
-            map_request_error(endpoint, CaddyAdminOperation::Load, timeout, source)
-        })?;
-    let status = response.status().as_u16();
-
-    if is_success(status) {
-        return Ok(());
-    }
-
-    let detail = bounded_response_detail(&mut response);
-    Err(CaddyAdminError::LoadRejected {
-        endpoint,
-        status,
-        detail,
-    })
-}
-
-fn get_config_blocking(
-    agent: ureq::Agent,
-    endpoint: CaddyAdminEndpoint,
-    timeout: Duration,
-) -> Result<(), CaddyAdminError> {
-    let response = agent
-        .get(endpoint.url("/config/"))
-        .call()
-        .map_err(|source| {
-            map_request_error(endpoint, CaddyAdminOperation::Readiness, timeout, source)
-        })?;
-    let status = response.status().as_u16();
-
-    if is_success(status) {
-        Ok(())
-    } else {
-        Err(CaddyAdminError::UnexpectedReadinessStatus { endpoint, status })
-    }
-}
-
-fn map_request_error(
-    endpoint: CaddyAdminEndpoint,
-    operation: CaddyAdminOperation,
-    timeout: Duration,
-    source: ureq::Error,
-) -> CaddyAdminError {
-    let reason = source.to_string();
-    match source {
-        ureq::Error::Timeout(ureq::Timeout::Resolve | ureq::Timeout::Connect) => request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::RequestTimedOut {
-                endpoint,
-                operation,
-                timeout_ms: timeout.as_millis(),
-            },
-        ),
-        ureq::Error::Timeout(timeout_reason) if operation == CaddyAdminOperation::Load => {
-            CaddyAdminError::RequestOutcomeUnknown {
-                endpoint,
-                operation,
-                reason: format!("request timed out during {timeout_reason:?}"),
-            }
-        }
-        ureq::Error::Timeout(_) => CaddyAdminError::RequestTimedOut {
-            endpoint,
-            operation,
-            timeout_ms: timeout.as_millis(),
-        },
-        ureq::Error::Io(error) if error.kind() == std::io::ErrorKind::TimedOut => {
-            if operation == CaddyAdminOperation::Load {
-                CaddyAdminError::RequestOutcomeUnknown {
-                    endpoint,
-                    operation,
-                    reason: error.to_string(),
-                }
-            } else {
-                CaddyAdminError::RequestTimedOut {
-                    endpoint,
-                    operation,
-                    timeout_ms: timeout.as_millis(),
-                }
-            }
-        }
-        ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable { endpoint, reason },
-        ),
-        ureq::Error::Io(error) if operation == CaddyAdminOperation::Load => match error.kind() {
-            std::io::ErrorKind::AddrNotAvailable
-            | std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::NetworkDown
-            | std::io::ErrorKind::NetworkUnreachable
-            | std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::HostUnreachable => request_not_sent(
-                endpoint,
-                operation,
-                CaddyAdminError::EndpointUnavailable {
-                    endpoint,
-                    reason: error.to_string(),
-                },
-            ),
-            _ => CaddyAdminError::RequestOutcomeUnknown {
-                endpoint,
-                operation,
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/config/")
+            .body(Full::new(Bytes::new()))
+            .map_err(|error| CaddyAdminError::TaskFailed {
+                operation: CaddyAdminOperation::Readiness,
                 reason: error.to_string(),
+            })?;
+        let response = self
+            .with_timeout(timeout)
+            .send(
+                endpoint,
+                CaddyAdminOperation::Readiness,
+                request,
+                verifier,
+                false,
+            )
+            .await?;
+
+        if is_success(response.status) {
+            Ok(())
+        } else {
+            Err(CaddyAdminError::UnexpectedReadinessStatus {
+                endpoint: endpoint.clone(),
+                status: response.status,
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    async fn send(
+        self,
+        endpoint: &CaddyAdminEndpoint,
+        operation: CaddyAdminOperation,
+        request: Request<Full<Bytes>>,
+        verifier: CaddyAdminVerifier,
+        include_response_detail: bool,
+    ) -> Result<AdminResponse, CaddyAdminError> {
+        let started_at = Instant::now();
+        let connect_timeout = self.timeouts.connect.min(self.timeouts.overall);
+        let stream = match tokio::time::timeout(
+            connect_timeout,
+            UnixStream::connect(endpoint.path().as_std_path()),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                return Err(request_not_sent(
+                    endpoint,
+                    operation,
+                    CaddyAdminError::EndpointUnavailable {
+                        endpoint: endpoint.clone(),
+                        reason: error.to_string(),
+                    },
+                ));
+            }
+            Err(_) => {
+                return Err(request_not_sent(
+                    endpoint,
+                    operation,
+                    CaddyAdminError::RequestTimedOut {
+                        endpoint: endpoint.clone(),
+                        operation,
+                        timeout_ms: connect_timeout.as_millis(),
+                    },
+                ));
+            }
+        };
+
+        let expected_pid = verify_before_request(&verifier, endpoint, operation)?;
+        if let Some(expected_pid) = expected_pid {
+            verify_peer_process_group(&stream, endpoint, operation, expected_pid)?;
+        }
+
+        let remaining = self.timeouts.overall.saturating_sub(started_at.elapsed());
+        let exchange_timeout =
+            remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
+        match tokio::time::timeout(
+            exchange_timeout,
+            exchange_request(request, stream, include_response_detail, self.timeouts.read),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => Err(map_exchange_error(endpoint, operation, error)),
+            Err(_) if operation == CaddyAdminOperation::Load => {
+                Err(CaddyAdminError::RequestOutcomeUnknown {
+                    endpoint: endpoint.clone(),
+                    operation,
+                    reason: format!("request timed out after {}ms", exchange_timeout.as_millis()),
+                })
+            }
+            Err(_) => Err(CaddyAdminError::RequestTimedOut {
+                endpoint: endpoint.clone(),
+                operation,
+                timeout_ms: exchange_timeout.as_millis(),
+            }),
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn send(
+        self,
+        endpoint: &CaddyAdminEndpoint,
+        operation: CaddyAdminOperation,
+        _request: Request<Full<Bytes>>,
+        _verifier: CaddyAdminVerifier,
+        _include_response_detail: bool,
+    ) -> Result<AdminResponse, CaddyAdminError> {
+        Err(request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::EndpointUnavailable {
+                endpoint: endpoint.clone(),
+                reason: "Unix-domain Caddy admin sockets are unsupported on this platform"
+                    .to_owned(),
             },
-        },
-        ureq::Error::Io(_) | ureq::Error::Tls(_) => request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable { endpoint, reason },
-        ),
-        _ if operation == CaddyAdminOperation::Load => CaddyAdminError::RequestOutcomeUnknown {
-            endpoint,
-            operation,
-            reason,
-        },
-        _ => CaddyAdminError::EndpointUnavailable { endpoint, reason },
+        ))
     }
 }
 
-fn request_not_sent(
-    endpoint: CaddyAdminEndpoint,
-    operation: CaddyAdminOperation,
-    reason: CaddyAdminError,
-) -> CaddyAdminError {
-    CaddyAdminError::RequestNotSent {
-        endpoint,
-        operation,
-        reason: Box::new(reason),
-    }
+#[derive(Debug)]
+struct AdminResponse {
+    status: u16,
+    detail: String,
 }
 
-fn bounded_response_detail(response: &mut ureq::http::Response<ureq::Body>) -> String {
-    let read_limit = (MAX_RESPONSE_DETAIL_BYTES as u64).saturating_add(1);
-    let mut reader = response.body_mut().as_reader().take(read_limit);
-    let mut bytes = Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES.saturating_add(1));
+#[cfg(unix)]
+async fn exchange_request(
+    request: Request<Full<Bytes>>,
+    stream: UnixStream,
+    include_response_detail: bool,
+    read_timeout: Duration,
+) -> Result<AdminResponse, hyper::Error> {
+    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
+    let connection_task = tokio::spawn(connection);
+    let response = match sender.send_request(request).await {
+        Ok(response) => response,
+        Err(error) => {
+            connection_task.abort();
+            return Err(error);
+        }
+    };
+    let status = response.status().as_u16();
+    let detail = if include_response_detail && !is_success(status) {
+        bounded_response_detail(response.into_body(), read_timeout).await
+    } else {
+        String::new()
+    };
+    connection_task.abort();
 
-    let Ok(_) = reader.read_to_end(&mut bytes) else {
+    Ok(AdminResponse { status, detail })
+}
+
+#[cfg(unix)]
+async fn bounded_response_detail(mut body: hyper::body::Incoming, timeout: Duration) -> String {
+    let read = async {
+        let mut bytes = Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES.saturating_add(1));
+
+        while bytes.len() <= MAX_RESPONSE_DETAIL_BYTES {
+            let Some(frame) = body.frame().await else {
+                break;
+            };
+            let Ok(frame) = frame else {
+                return None;
+            };
+            let Some(data) = frame.data_ref() else {
+                continue;
+            };
+            let remaining = MAX_RESPONSE_DETAIL_BYTES
+                .saturating_add(1)
+                .saturating_sub(bytes.len());
+            bytes.extend_from_slice(&data[..data.len().min(remaining)]);
+        }
+
+        Some(bytes)
+    };
+    let Ok(Some(mut bytes)) = tokio::time::timeout(timeout, read).await else {
         return "<response detail unavailable>".to_owned();
     };
-
     let truncated = bytes.len() > MAX_RESPONSE_DETAIL_BYTES;
     bytes.truncate(MAX_RESPONSE_DETAIL_BYTES);
     let mut detail = match String::from_utf8(bytes) {
@@ -567,13 +523,162 @@ fn bounded_response_detail(response: &mut ureq::http::Response<ureq::Body>) -> S
     detail
 }
 
+#[cfg(unix)]
+fn verify_peer_process_group(
+    stream: &UnixStream,
+    endpoint: &CaddyAdminEndpoint,
+    operation: CaddyAdminOperation,
+    expected_pid: u32,
+) -> Result<(), CaddyAdminError> {
+    let peer_pid = stream
+        .peer_cred()
+        .map_err(|error| {
+            request_not_sent(
+                endpoint,
+                operation,
+                CaddyAdminError::EndpointUnavailable {
+                    endpoint: endpoint.clone(),
+                    reason: format!("failed to inspect peer credentials: {error}"),
+                },
+            )
+        })?
+        .pid()
+        .ok_or_else(|| {
+            request_not_sent(
+                endpoint,
+                operation,
+                CaddyAdminError::EndpointUnavailable {
+                    endpoint: endpoint.clone(),
+                    reason: "peer process id is unavailable".to_owned(),
+                },
+            )
+        })?;
+    let expected_pid = process_pid(expected_pid).map_err(|reason| {
+        request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::EndpointUnavailable {
+                endpoint: endpoint.clone(),
+                reason,
+            },
+        )
+    })?;
+    let peer_pid = Pid::from_raw(peer_pid).ok_or_else(|| {
+        request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::EndpointUnavailable {
+                endpoint: endpoint.clone(),
+                reason: "peer process id must be positive".to_owned(),
+            },
+        )
+    })?;
+    let expected_process_group = getpgid(Some(expected_pid)).map_err(|error| {
+        request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::EndpointUnavailable {
+                endpoint: endpoint.clone(),
+                reason: format!("failed to inspect managed process group: {error}"),
+            },
+        )
+    })?;
+    let actual_process_group = getpgid(Some(peer_pid)).map_err(|error| {
+        request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::EndpointUnavailable {
+                endpoint: endpoint.clone(),
+                reason: format!("failed to inspect peer process group: {error}"),
+            },
+        )
+    })?;
+
+    if actual_process_group != expected_process_group {
+        return Err(request_not_sent(
+            endpoint,
+            operation,
+            CaddyAdminError::PeerProcessGroupMismatch {
+                endpoint: endpoint.clone(),
+                expected_process_group: expected_process_group.as_raw_pid(),
+                actual_process_group: actual_process_group.as_raw_pid(),
+            },
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_pid(pid: u32) -> Result<Pid, String> {
+    let raw_pid = i32::try_from(pid).map_err(|error| error.to_string())?;
+
+    Pid::from_raw(raw_pid).ok_or_else(|| "process id must be positive".to_owned())
+}
+
+fn no_op_verifier() -> CaddyAdminVerifier {
+    Arc::new(|_operation| Ok(None))
+}
+
+fn verify_before_request(
+    verifier: &CaddyAdminVerifier,
+    endpoint: &CaddyAdminEndpoint,
+    operation: CaddyAdminOperation,
+) -> Result<Option<u32>, CaddyAdminError> {
+    verifier(operation).map_err(|reason| request_not_sent(endpoint, operation, reason))
+}
+
+fn is_verifier_failure(error: &CaddyAdminError) -> bool {
+    matches!(
+        error,
+        CaddyAdminError::RequestNotSent { reason, .. }
+            if matches!(
+                reason.as_ref(),
+                CaddyAdminError::RuntimeOwnershipChanged { .. }
+                    | CaddyAdminError::PeerProcessGroupMismatch { .. }
+                    | CaddyAdminError::TaskFailed { .. }
+            )
+    )
+}
+
+fn map_exchange_error(
+    endpoint: &CaddyAdminEndpoint,
+    operation: CaddyAdminOperation,
+    error: hyper::Error,
+) -> CaddyAdminError {
+    if operation == CaddyAdminOperation::Load {
+        CaddyAdminError::RequestOutcomeUnknown {
+            endpoint: endpoint.clone(),
+            operation,
+            reason: error.to_string(),
+        }
+    } else {
+        CaddyAdminError::EndpointUnavailable {
+            endpoint: endpoint.clone(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+fn request_not_sent(
+    endpoint: &CaddyAdminEndpoint,
+    operation: CaddyAdminOperation,
+    reason: CaddyAdminError,
+) -> CaddyAdminError {
+    CaddyAdminError::RequestNotSent {
+        endpoint: endpoint.clone(),
+        operation,
+        reason: Box::new(reason),
+    }
+}
+
 fn readiness_timeout_error(
-    endpoint: CaddyAdminEndpoint,
+    endpoint: &CaddyAdminEndpoint,
     timeout: Duration,
     last_error: Option<String>,
 ) -> CaddyAdminError {
     CaddyAdminError::AdminReadinessTimedOut {
-        endpoint,
+        endpoint: endpoint.clone(),
         timeout_ms: timeout.as_millis(),
         last_error,
     }
@@ -590,4 +695,24 @@ fn readiness_error_detail(error: &CaddyAdminError) -> String {
 
 fn is_success(status: u16) -> bool {
     (200..300).contains(&status)
+}
+
+/// Loads a complete active Caddyfile through its Unix-domain admin socket.
+pub async fn load_caddyfile(
+    endpoint: &CaddyAdminEndpoint,
+    bytes: impl AsRef<[u8]>,
+) -> Result<(), CaddyAdminError> {
+    CaddyAdminClient::default()
+        .load_caddyfile(endpoint, bytes)
+        .await
+}
+
+/// Waits for the Caddy admin API to expose its configuration endpoint.
+pub async fn wait_until_ready(
+    endpoint: &CaddyAdminEndpoint,
+    timeout: Duration,
+) -> Result<(), CaddyAdminError> {
+    CaddyAdminClient::default()
+        .wait_until_ready(endpoint, timeout)
+        .await
 }

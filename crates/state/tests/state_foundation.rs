@@ -8,9 +8,9 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
-    AppReleaseLayout, Database, EnvContextValues, GATEWAY_ADMIN_PREFERRED_PORT,
-    GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject,
-    JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
+    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject, JobStatus,
+    ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode, ProjectRecord,
     PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
@@ -97,6 +97,18 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
     assert_eq!(
         paths.gateway_pid().as_str(),
         "/Users/alice/.pv/run/gateway.pid"
+    );
+    assert_eq!(
+        paths.gateway_admin_socket().as_str(),
+        "/Users/alice/.pv/run/gateway-admin.sock"
+    );
+    assert_eq!(
+        paths.worker_admin_socket("8.4+redis+xdebug").as_str(),
+        "/Users/alice/.pv/run/worker-admin-cbeeaf58d4fd.sock"
+    );
+    assert_ne!(
+        paths.worker_admin_socket("8.4+redis+xdebug"),
+        paths.worker_admin_socket("8.4+redis")
     );
     assert_eq!(
         paths.gateway_runtime_metadata().as_str(),
@@ -294,6 +306,125 @@ fn database_runs_migrations_and_exposes_core_schema() -> Result<()> {
     let database = Database::open(&paths)?;
 
     assert_debug_snapshot!(database.inspect()?);
+
+    Ok(())
+}
+
+#[test]
+fn admin_port_migration_removes_current_and_legacy_rows() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let old_migrations = [
+        Migration::new(
+            1,
+            "core_state_schema",
+            include_str!("../src/sql/001_core_state_schema.sql"),
+        ),
+        Migration::new(
+            2,
+            "managed_resource_removal_intent",
+            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+        Migration::new(
+            3,
+            "project_primary_hostname_updates",
+            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
+        ),
+        Migration::new(
+            4,
+            "project_original_path",
+            include_str!("../src/sql/004_project_original_path.sql"),
+        ),
+        Migration::new(
+            5,
+            "project_resource_requirements",
+            include_str!("../src/sql/005_project_resource_requirements.sql"),
+        ),
+        Migration::new(
+            6,
+            "global_php_default",
+            include_str!("../src/sql/006_global_php_default.sql"),
+        ),
+        Migration::new(
+            7,
+            "resource_port_roles",
+            include_str!("../src/sql/007_resource_port_roles.sql"),
+        ),
+        Migration::new(
+            8,
+            "project_php_runtime_extensions",
+            include_str!("../src/sql/008_project_php_runtime_extensions.sql"),
+        ),
+        Migration::new(
+            9,
+            "project_mode_and_slug",
+            include_str!("../src/sql/009_project_mode_and_slug.sql"),
+        ),
+        Migration::new(
+            10,
+            "job_diagnostic_outcomes",
+            include_str!("../src/sql/010_job_diagnostic_outcomes.sql"),
+        ),
+    ];
+    let mut database = state::testing::open_with_migrations(&paths, &old_migrations)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "INSERT INTO resource_ports
+                (resource_name, track, port_name, port, updated_at)
+             VALUES
+                ('caddy', '2', 'admin', 2019, '2026-08-27T00:00:00Z'),
+                ('php', '8.4', 'admin', 45000, '2026-08-27T00:00:00Z'),
+                ('php', '8.4', 'admin.redis', 45001, '2026-08-27T00:00:00Z'),
+                ('redis', '7.2', 'service', 45002, '2026-08-27T00:00:00Z');
+
+             INSERT INTO ports
+                (owner_kind, owner_id, owner_track, port, updated_at)
+             VALUES
+                ('gateway', 'admin', '', 45003, '2026-08-27T00:00:00Z'),
+                ('php_worker_admin', 'php', '8.3', 45004, '2026-08-27T00:00:00Z'),
+                ('gateway', 'http', '', 48080, '2026-08-27T00:00:00Z');",
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+
+    let database = Database::open(&paths)?;
+
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM pv_migrations
+             WHERE version = 11 AND name = 'remove_admin_ports'",
+        )?,
+        1
+    );
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM resource_ports
+             WHERE (resource_name = 'caddy' AND track = '2' AND port_name = 'admin')
+             OR (resource_name = 'php' AND (port_name = 'admin' OR port_name LIKE 'admin.%'))",
+        )?,
+        0
+    );
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM ports
+             WHERE (owner_kind = 'gateway' AND owner_id = 'admin')
+             OR owner_kind = 'php_worker_admin'",
+        )?,
+        0
+    );
+    assert_eq!(
+        state::testing::query_i64(&database, "SELECT COUNT(*) FROM resource_ports")?,
+        1
+    );
+    assert_eq!(
+        state::testing::query_i64(&database, "SELECT COUNT(*) FROM ports")?,
+        1
+    );
 
     Ok(())
 }
@@ -3037,85 +3168,6 @@ fn legacy_port_insert_contract_survives_named_resource_port_migration() -> Resul
 }
 
 #[test]
-fn current_admin_assignments_remain_readable_by_previous_port_decoder() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let extension_runtime_key =
-        state::php_runtime_key("8.4", &["redis".to_owned(), "xdebug".to_owned()])?;
-
-    database.assign_gateway_ports(|_port| true)?;
-    database.assign_php_worker_ports("8.4", |_port| true)?;
-    database.assign_php_worker_ports(&extension_runtime_key, |_port| true)?;
-    let current_assignments = database.assigned_ports()?;
-    assert!(
-        current_assignments
-            .iter()
-            .any(|assignment| { assignment.owner == PortOwner::Gateway(GatewayPort::Admin) })
-    );
-    assert!(current_assignments.iter().any(|assignment| {
-        assignment.owner
-            == PortOwner::PhpWorkerAdmin {
-                php_runtime_key: extension_runtime_key.clone(),
-            }
-    }));
-    drop(database);
-
-    let connection = Connection::open(paths.db())?;
-    let mut statement = connection.prepare(
-        "SELECT resource_name, track, port_name
-        FROM resource_ports
-        ORDER BY resource_name, track, port_name",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    let mut previous_resource_rows = Vec::new();
-    let previous_managed_resource_identity_is_valid = |value: &str| {
-        !value.is_empty()
-            && value != "."
-            && value != ".."
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-    };
-
-    for row in rows {
-        let (resource_name, track, port_name) = row?;
-        if !previous_managed_resource_identity_is_valid(&resource_name)
-            || !previous_managed_resource_identity_is_valid(&track)
-            || track == "latest"
-            || !previous_managed_resource_identity_is_valid(&port_name)
-        {
-            return Err(anyhow!(
-                "previous port decoder rejected resource:{resource_name}:{track}:{port_name}"
-            ));
-        }
-
-        previous_resource_rows.push((resource_name, track, port_name));
-    }
-
-    assert_eq!(
-        previous_resource_rows,
-        vec![
-            ("caddy".to_string(), "2".to_string(), "admin".to_string(),),
-            ("php".to_string(), "8.4".to_string(), "admin".to_string(),),
-            (
-                "php".to_string(),
-                "8.4".to_string(),
-                "admin.redis.xdebug".to_string(),
-            ),
-        ]
-    );
-
-    Ok(())
-}
-
-#[test]
 fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3143,30 +3195,28 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
 }
 
 #[test]
-fn gateway_port_allocator_persists_distinct_http_and_https_assignments() -> Result<()> {
+fn gateway_port_allocator_persists_only_http_and_https_assignments() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
     let assigned = database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
     let reused = database.assign_gateway_ports(|_port| false)?;
 
     assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
     assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
-    assert_eq!(assigned.admin.port, GATEWAY_ADMIN_PREFERRED_PORT);
     assert_eq!(assigned.http.owner, PortOwner::Gateway(GatewayPort::Http));
     assert_eq!(assigned.https.owner, PortOwner::Gateway(GatewayPort::Https));
-    assert_eq!(assigned.admin.owner, PortOwner::Gateway(GatewayPort::Admin));
     assert_eq!(reused.http.port, assigned.http.port);
     assert_eq!(reused.https.port, assigned.https.port);
-    assert_eq!(reused.admin.port, assigned.admin.port);
 
     with_normalized_timestamps(|| {
-        assert_debug_snapshot!((assigned, reused, database.assigned_ports()?));
+        assert_debug_snapshot!(
+            "gateway_port_allocator_persists_distinct_http_and_https_assignments",
+            (assigned, reused, database.assigned_ports()?)
+        );
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -3185,65 +3235,6 @@ fn gateway_port_allocator_uses_fallbacks_when_preferred_ports_are_unavailable() 
 
     assert_eq!(assigned.http.port, RUNTIME_PORT_FALLBACK_START);
     assert_eq!(assigned.https.port, RUNTIME_PORT_FALLBACK_START + 1);
-    assert_eq!(assigned.admin.port, GATEWAY_ADMIN_PREFERRED_PORT);
-
-    Ok(())
-}
-
-#[test]
-fn gateway_port_allocator_falls_back_for_occupied_admin_preference_without_collisions() -> Result<()>
-{
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    database.assign_port(
-        PortRequest::resource(
-            "mysql",
-            "8.4",
-            RUNTIME_PORT_FALLBACK_START,
-            RUNTIME_PORT_FALLBACK_START,
-            RUNTIME_PORT_FALLBACK_END,
-        ),
-        |_port| true,
-    )?;
-    let assigned = database.assign_gateway_ports(|port| port != GATEWAY_ADMIN_PREFERRED_PORT)?;
-
-    assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
-    assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
-    assert_eq!(assigned.admin.port, RUNTIME_PORT_FALLBACK_START + 1);
-
-    Ok(())
-}
-
-#[test]
-fn gateway_port_allocator_rolls_back_when_admin_cannot_be_assigned() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let error = match database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
-    }) {
-        Ok(assignments) => {
-            return Err(anyhow!(
-                "admin assignment should fail, but assigned {assignments:?}"
-            ));
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        StateError::NoAvailablePort {
-            name,
-            preferred_port: GATEWAY_ADMIN_PREFERRED_PORT,
-            fallback_start: RUNTIME_PORT_FALLBACK_START,
-            fallback_end: RUNTIME_PORT_FALLBACK_END,
-            ..
-        } if name == "gateway admin"
-    ));
-    assert!(database.assigned_ports()?.is_empty());
 
     Ok(())
 }
@@ -3332,7 +3323,7 @@ fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
 }
 
 #[test]
-fn php_worker_port_allocator_persists_distinct_service_and_admin_pair() -> Result<()> {
+fn php_worker_port_allocator_persists_only_service_assignment() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -3343,47 +3334,13 @@ fn php_worker_port_allocator_persists_distinct_service_and_admin_pair() -> Resul
     let reused = reopened.assign_php_worker_ports("8.4", |_port| false)?;
 
     assert_eq!(assigned.service.port, RUNTIME_PORT_FALLBACK_START);
-    assert_eq!(assigned.admin.port, RUNTIME_PORT_FALLBACK_START + 1);
-    assert_ne!(assigned.service.port, assigned.admin.port);
     assert_eq!(
         assigned.service.owner,
         PortOwner::PhpWorker {
             php_runtime_key: "8.4".to_owned(),
         }
     );
-    assert_eq!(
-        assigned.admin.owner,
-        PortOwner::PhpWorkerAdmin {
-            php_runtime_key: "8.4".to_owned(),
-        }
-    );
     assert_eq!(reused, assigned);
-
-    Ok(())
-}
-
-#[test]
-fn php_worker_port_allocator_rolls_back_when_admin_pair_member_cannot_be_assigned() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let error = match database
-        .assign_php_worker_ports("8.4", |port| port == RUNTIME_PORT_FALLBACK_START)
-    {
-        Ok(assignments) => {
-            return Err(anyhow!(
-                "admin assignment should fail after service assignment, but assigned {assignments:?}"
-            ));
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        StateError::NoAvailablePort { name, .. } if name == "php worker admin \"8.4\""
-    ));
-    assert!(database.assigned_ports()?.is_empty());
 
     Ok(())
 }

@@ -21,7 +21,7 @@ pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String
 pub struct GatewayConfigInput {
     pub http_port: u16,
     pub https_port: u16,
-    pub admin_port: u16,
+    pub admin_socket_path: Utf8PathBuf,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
@@ -45,7 +45,7 @@ pub struct GatewayProjectRoute {
 pub struct PhpWorkerConfigInput {
     pub php_track: String,
     pub port: u16,
-    pub admin_port: u16,
+    pub admin_socket_path: Utf8PathBuf,
     pub projects_config_glob: Utf8PathBuf,
     pub projects: Vec<PhpWorkerProject>,
 }
@@ -62,7 +62,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     let mut output = String::new();
     let health_response = gateway_health_response(input.http_port, input.https_port);
     output.push_str("{\n");
-    output.push_str(&format!("    admin 127.0.0.1:{}\n", input.admin_port));
+    append_admin_socket(&mut output, &input.admin_socket_path)?;
     output.push_str("    persist_config off\n");
     append_file_log(&mut output, "    ", input.error_log_path.as_str())?;
     output.push_str("    storage file_system {\n");
@@ -130,7 +130,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
 pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
     output.push_str("{\n");
-    output.push_str(&format!("    admin 127.0.0.1:{}\n", input.admin_port));
+    append_admin_socket(&mut output, &input.admin_socket_path)?;
     output.push_str("    persist_config off\n");
     output.push_str("}\n");
     if !input.projects.is_empty() {
@@ -413,6 +413,16 @@ fn append_file_log(output: &mut String, indentation: &str, path: &str) -> Result
     let path = quoted_caddyfile_token(path)?;
     output.push_str(&format!(
         "{indentation}log {{\n{indentation}    output file {path} {{\n{indentation}        roll_size {LOG_ROLL_SIZE}\n{indentation}        roll_keep {LOG_ROLL_KEEP}\n{indentation}        roll_keep_for {LOG_ROLL_KEEP_FOR}\n{indentation}    }}\n{indentation}    format json\n{indentation}}}\n"
+    ));
+
+    Ok(())
+}
+
+fn append_admin_socket(output: &mut String, path: &Utf8Path) -> Result<(), DaemonError> {
+    let endpoint = format!("unix/{}|0600", path.as_str());
+    output.push_str(&format!(
+        "    admin {}\n",
+        quoted_caddyfile_token(&endpoint)?
     ));
 
     Ok(())

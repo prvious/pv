@@ -1,10 +1,13 @@
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::Shutdown;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt as _;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
+use camino_tempfile::tempdir;
 use daemon::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminTimeouts,
     MAX_RESPONSE_DETAIL_BYTES,
@@ -20,12 +23,12 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
     ));
 
     let original_error = CaddyAdminError::AdminReadinessTimedOut {
-        endpoint: CaddyAdminEndpoint::new(48080),
+        endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
         timeout_ms: 15_000,
         last_error: Some("HTTP status 503".to_owned()),
     };
     let restored_error = CaddyAdminError::LoadRejected {
-        endpoint: CaddyAdminEndpoint::new(48080),
+        endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
         status: 422,
         detail: "restored config rejected".to_owned(),
     };
@@ -66,7 +69,7 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
     apps {}
 }\n";
 
-    test_client().load_caddyfile(endpoint, body).await?;
+    test_client().load_caddyfile(&endpoint, body).await?;
     let requests = server.await??;
     let request = requests
         .into_iter()
@@ -86,7 +89,9 @@ async fn load_caddyfile_maps_rejection_and_caps_response_detail() -> Result<()> 
     let response_body = vec![b'x'; MAX_RESPONSE_DETAIL_BYTES + 128];
     let (endpoint, server) = spawn_response_server(vec![http_response(422, &response_body)])?;
 
-    let result = test_client().load_caddyfile(endpoint, b"candidate\n").await;
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
     let requests = server.await??;
     assert_eq!(requests.len(), 1);
 
@@ -102,11 +107,12 @@ async fn load_caddyfile_maps_rejection_and_caps_response_detail() -> Result<()> 
 
 #[tokio::test]
 async fn load_caddyfile_distinguishes_connection_failure() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
-    drop(listener);
+    let temp_dir = tempdir()?;
+    let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("missing.sock"));
 
-    let result = test_client().load_caddyfile(endpoint, b"candidate\n").await;
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
 
     let Err(CaddyAdminError::RequestNotSent {
         endpoint: actual,
@@ -126,10 +132,10 @@ async fn load_caddyfile_distinguishes_connection_failure() -> Result<()> {
 }
 
 #[tokio::test]
-async fn verifier_failure_is_not_sent_to_the_admin_endpoint() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
+async fn verifier_failure_sends_no_http_request_bytes() -> Result<()> {
+    let temp_dir = tempdir()?;
+    let listener = UnixListener::bind(temp_dir.path().join("admin.sock"))?;
+    let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("admin.sock"));
     let verifier = Arc::new(|operation| {
         Err(CaddyAdminError::runtime_ownership_changed(format!(
             "{operation} verifier"
@@ -137,7 +143,7 @@ async fn verifier_failure_is_not_sent_to_the_admin_endpoint() -> Result<()> {
     });
 
     let result = test_client()
-        .load_caddyfile_with(endpoint, b"candidate\n", verifier)
+        .load_caddyfile_with(&endpoint, b"candidate\n", verifier)
         .await;
 
     let Err(CaddyAdminError::RequestNotSent {
@@ -154,19 +160,19 @@ async fn verifier_failure_is_not_sent_to_the_admin_endpoint() -> Result<()> {
         CaddyAdminError::RuntimeOwnershipChanged { runtime }
             if runtime == "load verifier"
     ));
-    assert!(matches!(
-        listener.accept(),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-    ));
+    let (mut stream, _) = listener.accept()?;
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes)?;
+    assert!(bytes.is_empty());
 
     Ok(())
 }
 
 #[tokio::test]
 async fn readiness_verifier_failure_is_not_masked_by_poll_timeout() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
+    let temp_dir = tempdir()?;
+    let listener = UnixListener::bind(temp_dir.path().join("admin.sock"))?;
+    let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("admin.sock"));
     let verifier = Arc::new(|operation| {
         Err(CaddyAdminError::runtime_ownership_changed(format!(
             "{operation} verifier"
@@ -174,7 +180,7 @@ async fn readiness_verifier_failure_is_not_masked_by_poll_timeout() -> Result<()
     });
 
     let result = test_client()
-        .wait_until_ready_with(endpoint, Duration::from_millis(500), verifier)
+        .wait_until_ready_with(&endpoint, Duration::from_millis(500), verifier)
         .await;
 
     assert!(matches!(
@@ -185,19 +191,64 @@ async fn readiness_verifier_failure_is_not_masked_by_poll_timeout() -> Result<()
             ..
         }) if matches!(reason.as_ref(), CaddyAdminError::RuntimeOwnershipChanged { .. })
     ));
+    let (mut stream, _) = listener.accept()?;
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes)?;
+    assert!(bytes.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "peer-credential fixture needs an unrelated process group"
+)]
+async fn mismatched_peer_process_group_receives_no_http_request_bytes() -> Result<()> {
+    let temp_dir = tempdir()?;
+    let socket_path = temp_dir.path().join("admin.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let endpoint = CaddyAdminEndpoint::new(socket_path);
+    let server = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+        let _temp_dir = temp_dir;
+        let (mut stream, _) = listener.accept()?;
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes)?;
+
+        Ok(bytes)
+    });
+    let mut foreign_process = std::process::Command::new("sleep")
+        .arg("5")
+        .process_group(0)
+        .spawn()?;
+    let foreign_pid = foreign_process.id();
+    let verifier = Arc::new(move |_operation| Ok(Some(foreign_pid)));
+
+    let result = test_client()
+        .load_caddyfile_with(&endpoint, b"candidate\n", verifier)
+        .await;
+    let _kill_result = foreign_process.kill();
+    let _wait_result = foreign_process.wait();
+    let received = server.await??;
+
     assert!(matches!(
-        listener.accept(),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        result,
+        Err(CaddyAdminError::RequestNotSent { reason, .. })
+            if matches!(reason.as_ref(), CaddyAdminError::PeerProcessGroupMismatch { .. })
     ));
+    assert!(received.is_empty());
 
     Ok(())
 }
 
 #[tokio::test]
 async fn load_caddyfile_has_a_bounded_request_timeout() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
+    let temp_dir = tempdir()?;
+    let socket_path = temp_dir.path().join("admin.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let endpoint = CaddyAdminEndpoint::new(socket_path);
     let server = tokio::task::spawn_blocking(move || -> Result<()> {
+        let _temp_dir = temp_dir;
         let (mut stream, _) = listener.accept()?;
         let _request = read_request(&mut stream)?;
         thread::sleep(Duration::from_millis(250));
@@ -213,7 +264,7 @@ async fn load_caddyfile_has_a_bounded_request_timeout() -> Result<()> {
         Duration::from_millis(75),
         Duration::from_millis(5),
     ));
-    let result = client.load_caddyfile(endpoint, b"candidate\n").await;
+    let result = client.load_caddyfile(&endpoint, b"candidate\n").await;
 
     let Err(CaddyAdminError::RequestOutcomeUnknown {
         endpoint: actual, ..
@@ -229,16 +280,21 @@ async fn load_caddyfile_has_a_bounded_request_timeout() -> Result<()> {
 
 #[tokio::test]
 async fn load_caddyfile_maps_an_unclassified_transport_failure_to_unknown() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
+    let temp_dir = tempdir()?;
+    let socket_path = temp_dir.path().join("admin.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let endpoint = CaddyAdminEndpoint::new(socket_path);
     let server = tokio::task::spawn_blocking(move || -> Result<()> {
+        let _temp_dir = temp_dir;
         let (mut stream, _) = listener.accept()?;
         let _request = read_request(&mut stream)?;
         stream.write_all(b"not-an-http-response")?;
         Ok(())
     });
 
-    let result = test_client().load_caddyfile(endpoint, b"candidate\n").await;
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
     server.await??;
 
     assert!(matches!(
@@ -261,7 +317,7 @@ async fn wait_until_ready_uses_config_endpoint_until_admin_is_ready() -> Result<
     ])?;
 
     test_client()
-        .wait_until_ready(endpoint, Duration::from_millis(500))
+        .wait_until_ready(&endpoint, Duration::from_millis(500))
         .await?;
     let requests = server.await??;
 
@@ -279,7 +335,7 @@ async fn wait_until_ready_reports_a_bounded_readiness_timeout() -> Result<()> {
     let (endpoint, server) = spawn_response_server(vec![http_response(503, b"starting")])?;
 
     let result = test_client()
-        .wait_until_ready(endpoint, Duration::from_millis(80))
+        .wait_until_ready(&endpoint, Duration::from_millis(80))
         .await;
     let requests = server.await??;
     assert_eq!(requests.len(), 1);
@@ -311,9 +367,12 @@ fn test_client() -> CaddyAdminClient {
 fn spawn_response_server(
     responses: Vec<Vec<u8>>,
 ) -> Result<(CaddyAdminEndpoint, JoinHandle<Result<Vec<RecordedRequest>>>)> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let endpoint = CaddyAdminEndpoint::new(listener.local_addr()?.port());
+    let temp_dir = tempdir()?;
+    let socket_path = temp_dir.path().join("admin.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let endpoint = CaddyAdminEndpoint::new(socket_path);
     let server = tokio::task::spawn_blocking(move || -> Result<Vec<RecordedRequest>> {
+        let _temp_dir = temp_dir;
         let mut requests = Vec::with_capacity(responses.len());
 
         for response in responses {
@@ -330,7 +389,7 @@ fn spawn_response_server(
     Ok((endpoint, server))
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<RecordedRequest> {
+fn read_request(stream: &mut UnixStream) -> Result<RecordedRequest> {
     const MAX_REQUEST_HEADER_BYTES: usize = 64 * 1024;
 
     let mut request_bytes = Vec::new();

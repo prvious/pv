@@ -11,9 +11,8 @@ use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
 use state::{
-    Database, GATEWAY_ADMIN_PREFERRED_PORT, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, PortOwner, PvPaths, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PortOwner, PvPaths,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 #[derive(Debug)]
@@ -431,9 +430,6 @@ fn ports_install_refuses_non_pv_owned_system_anchor() -> anyhow::Result<()> {
         ) || matches!(
             assignment.owner,
             PortOwner::Gateway(state::GatewayPort::Https)
-        ) || matches!(
-            assignment.owner,
-            PortOwner::Gateway(state::GatewayPort::Admin)
         )
     }));
     assert!(environment.operations.borrow().is_empty());
@@ -589,9 +585,7 @@ fn ports_install_preserves_existing_gateway_assignments_after_later_failure() ->
 
     let mut database = Database::open(&paths)?;
     let seeded = database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
     drop(database);
 
@@ -613,11 +607,7 @@ fn ports_install_preserves_existing_gateway_assignments_after_later_failure() ->
         assignment.owner == PortOwner::Gateway(state::GatewayPort::Https)
             && assignment.port == seeded.https.port
     }));
-    assert!(assignments.iter().any(|assignment| {
-        assignment.owner == PortOwner::Gateway(state::GatewayPort::Admin)
-            && assignment.port == seeded.admin.port
-    }));
-    assert_eq!(assignments.len(), 3);
+    assert_eq!(assignments.len(), 2);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, assignments));
@@ -651,9 +641,7 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
 
     let mut database = Database::open(&paths)?;
     database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
     drop(database);
     write_file(&paths.pf_anchor_config(), &current_anchor)?;
@@ -704,9 +692,7 @@ fn ports_status_uses_gateway_identity_when_unprivileged_pfctl_is_denied() -> any
     let config = PfRedirectConfig::new(48080, 48443);
     let mut database = Database::open(&paths)?;
     database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
     drop(database);
     write_file(&paths.pf_anchor_config(), &config.render_anchor())?;
@@ -813,9 +799,7 @@ fn ports_install_reuses_persisted_gateway_ports_even_when_they_have_listeners() 
     let paths = pv_paths(&home);
     let mut database = Database::open(&paths)?;
     let seeded = database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT
-            || port == GATEWAY_HTTPS_PREFERRED_PORT
-            || port == GATEWAY_ADMIN_PREFERRED_PORT
+        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
     drop(database);
 

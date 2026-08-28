@@ -4,7 +4,7 @@ expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
 ---
 Gateway:
 {
-    admin 127.0.0.1:42019
+    admin "unix//Users/Alice Smith/.pv/run/gateway-admin.sock|0600"
     persist_config off
     log {
         output file "/Users/Alice Smith/.pv/logs/gateway/error.log" {
@@ -65,7 +65,7 @@ import "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile"
 
 Worker:
 {
-    admin 127.0.0.1:45002
+    admin "unix//Users/Alice Smith/.pv/run/worker-admin-163c820d9576.sock|0600"
     persist_config off
 }
 

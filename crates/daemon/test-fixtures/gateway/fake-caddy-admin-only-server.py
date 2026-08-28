@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import http.server
+import os
 import re
 import socketserver
 import sys
@@ -8,10 +9,10 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as config_file:
     config = config_file.read()
 
-match = re.search(r"^\s*admin 127\.0\.0\.1:(\d+)$", config, re.MULTILINE)
+match = re.search(r'^\s*admin "unix/([^"|]+)\|0600"$', config, re.MULTILINE)
 if not match:
     raise SystemExit("missing fake Caddy admin setting")
-admin_port = int(match.group(1))
+admin_socket = match.group(1)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -41,12 +42,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
 
-class Server(http.server.ThreadingHTTPServer):
-    def server_bind(self):
-        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[:2]
+class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
 
 
-with Server(("127.0.0.1", admin_port), Handler) as server:
+with Server(admin_socket, Handler) as server:
+    os.chmod(admin_socket, 0o600)
     server.serve_forever()

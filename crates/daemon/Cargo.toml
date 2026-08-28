@@ -10,11 +10,15 @@ workspace = true
 [dependencies]
 aws-sdk-s3 = { workspace = true }
 aws-smithy-http-client = { workspace = true }
+bytes = { workspace = true }
 camino = { workspace = true }
 config = { path = "../config" }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 hickory-proto = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 object_store = { workspace = true }
 platform = { path = "../platform" }
 protocol = { path = "../protocol" }
@@ -32,9 +36,8 @@ time = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
-ureq = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 
 [dev-dependencies]

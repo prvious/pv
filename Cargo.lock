@@ -1052,12 +1052,16 @@ dependencies = [
  "anyhow",
  "aws-sdk-s3",
  "aws-smithy-http-client",
+ "bytes",
  "camino",
  "camino-tempfile",
  "config",
  "futures-util",
  "getrandom 0.4.2",
  "hickory-proto",
+ "http-body-util",
+ "hyper 1.10.1",
+ "hyper-util",
  "insta",
  "object_store",
  "platform",
@@ -1079,7 +1083,6 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tokio-util",
- "ureq",
 ]
 
 [[package]]
@@ -3452,6 +3455,7 @@ dependencies = [
  "rusqlite",
  "rustix",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "time",
 ]

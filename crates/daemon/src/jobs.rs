@@ -3305,9 +3305,9 @@ mod tests {
     }
 
     fn seed_gateway_ports(database: &mut Database) -> anyhow::Result<()> {
-        let mut listeners = Vec::with_capacity(3);
-        let mut ports = Vec::with_capacity(3);
-        while ports.len() < 3 {
+        let mut listeners = Vec::with_capacity(2);
+        let mut ports = Vec::with_capacity(2);
+        while ports.len() < 2 {
             let listener = TcpListener::bind("127.0.0.1:0")?;
             let port = listener.local_addr()?.port();
             if ports.contains(&port) {
@@ -3321,7 +3321,6 @@ mod tests {
         for (gateway_port, port) in [
             (GatewayPort::Http, ports[0]),
             (GatewayPort::Https, ports[1]),
-            (GatewayPort::Admin, ports[2]),
         ] {
             database.assign_port(
                 PortRequest::gateway(gateway_port, port, port, port),
