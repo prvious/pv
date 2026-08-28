@@ -1605,16 +1605,27 @@ async fn start_or_adopt_runtime(
     .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        if failure_policy == ReadinessFailurePolicy::PreserveRuntime
-            && !process.has_exited()?
-            && supervisor.verify_ownership(spec)?.is_some()
-        {
-            return Ok(RuntimeReadinessOutcome::Unverified);
+        if failure_policy == ReadinessFailurePolicy::PreserveRuntime {
+            let process_exited = match process.has_exited() {
+                Ok(process_exited) => process_exited,
+                Err(error) => {
+                    return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                }
+            };
+            if !process_exited && supervisor.verify_ownership(spec)?.is_some() {
+                return Ok(RuntimeReadinessOutcome::Unverified);
+            }
         }
         return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
     }
 
-    if process.has_exited()? {
+    let process_exited = match process.has_exited() {
+        Ok(process_exited) => process_exited,
+        Err(error) => {
+            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        }
+    };
+    if process_exited {
         let error = DaemonError::UnexpectedProtocolResponse {
             reason: format!(
                 "runtime `{}` exited before readiness was verified",

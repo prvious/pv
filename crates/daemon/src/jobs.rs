@@ -2218,6 +2218,7 @@ mod tests {
         let task_result = match completion_result {
             Ok(result) => result,
             Err(_error) => {
+                task.abort();
                 let cleanup_result = task.await;
                 return Err(anyhow::anyhow!(
                     "streamed reconciliation exceeded the progress-write assertion budget; completion cleanup result: {cleanup_result:?}"
