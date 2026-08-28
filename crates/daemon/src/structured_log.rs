@@ -92,6 +92,17 @@ pub(crate) fn runtime_readiness_diagnostics(
     );
 }
 
+pub(crate) fn runtime_config_cleanup_failed(paths: &PvPaths, runtime: &str, error: &str) {
+    append_best_effort(
+        paths,
+        "warn",
+        "runtime",
+        "runtime_config_cleanup_failed",
+        "runtime config committed but backup cleanup failed",
+        &[("runtime", runtime), ("error", error)],
+    );
+}
+
 pub(crate) fn project_tls_maintenance_failed(paths: &PvPaths, project_id: &str, error: &str) {
     append_best_effort(
         paths,

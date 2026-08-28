@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use state::fs;
+use thiserror::Error;
 
 use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
 
@@ -263,9 +264,29 @@ impl PromotedConfigTree {
         self.fragments.previous_contents()
     }
 
-    pub(crate) fn commit(&mut self) -> Result<(), DaemonError> {
-        self.fragments.commit()?;
-        self.root.commit()
+    pub(crate) fn cleanup(self) -> Result<(), ConfigBackupCleanupError> {
+        let fragment_backup_path = self.fragments.backup_dir.clone();
+        let root_backup_path = self.root.backup_path.clone();
+        let fragment_cleanup = self.fragments.cleanup();
+        let root_cleanup = self.root.cleanup();
+
+        match (fragment_cleanup, root_cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(source), Ok(())) => Err(ConfigBackupCleanupError::Backup {
+                path: fragment_backup_path,
+                source: Box::new(source),
+            }),
+            (Ok(()), Err(source)) => Err(ConfigBackupCleanupError::Backup {
+                path: root_backup_path,
+                source: Box::new(source),
+            }),
+            (Err(first_error), Err(second_error)) => Err(ConfigBackupCleanupError::Multiple {
+                first_path: fragment_backup_path,
+                first_error: Box::new(first_error),
+                second_path: root_backup_path,
+                second_error: Box::new(second_error),
+            }),
+        }
     }
 
     pub(crate) fn rollback(self) -> Result<(), DaemonError> {
@@ -280,6 +301,26 @@ impl PromotedConfigTree {
     }
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum ConfigBackupCleanupError {
+    #[error("failed to remove config backup `{path}`: {source}")]
+    Backup {
+        path: Utf8PathBuf,
+        #[source]
+        source: Box<DaemonError>,
+    },
+
+    #[error(
+        "failed to remove config backups `{first_path}`: {first_error}; `{second_path}`: {second_error}"
+    )]
+    Multiple {
+        first_path: Utf8PathBuf,
+        first_error: Box<DaemonError>,
+        second_path: Utf8PathBuf,
+        second_error: Box<DaemonError>,
+    },
+}
+
 #[derive(Debug)]
 struct PromotedConfigFile {
     active_path: Utf8PathBuf,
@@ -288,7 +329,7 @@ struct PromotedConfigFile {
 }
 
 impl PromotedConfigFile {
-    fn commit(&mut self) -> Result<(), DaemonError> {
+    fn cleanup(self) -> Result<(), DaemonError> {
         if self.active_existed {
             delete_optional_config(&self.backup_path)?;
         }
@@ -319,7 +360,7 @@ impl PromotedConfigDir {
         &self.previous_contents
     }
 
-    fn commit(&mut self) -> Result<(), DaemonError> {
+    fn cleanup(self) -> Result<(), DaemonError> {
         if self.active_existed {
             delete_optional_dir(&self.backup_dir)?;
         }
@@ -638,7 +679,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn commit_failure_keeps_a_rollback_handle_for_disk_compensation()
+    async fn cleanup_attempts_root_and_fragment_backups_independently_when_fragment_delete_fails()
     -> Result<(), Box<dyn std::error::Error>> {
         let tempdir = tempdir()?;
         let root_config = tempdir.path().join("Caddyfile");
@@ -646,35 +687,88 @@ mod tests {
         let candidate_dir = tempdir.path().join("candidate-fragments");
         create_dir_all(&active_dir)?;
         create_dir_all(&candidate_dir)?;
-        state::fs::write_sensitive_file(&root_config, "active\n")?;
+        state::fs::write_sensitive_file(&root_config, "previous\n")?;
         state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
         state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
 
-        let mut promoted = promote_validated_config_tree_async(
+        let promoted = promote_validated_config_tree_async(
             &root_config,
             "candidate\n",
-            "active\n",
+            "candidate\n",
             |_candidate_path| async { Ok(()) },
             || promote_config_dir(&active_dir, &candidate_dir),
         )
         .await?;
+        let root_backup_path = promoted.root.backup_path.clone();
+        let fragment_backup_path = promoted.fragments.backup_dir.clone();
 
         rustix::fs::chmod(
-            promoted.fragments.backup_dir.as_std_path(),
+            fragment_backup_path.as_std_path(),
             rustix::fs::Mode::from_raw_mode(0o500),
         )?;
-        let commit_result = promoted.commit();
+        let Err(cleanup_error) = promoted.cleanup() else {
+            return Err("fragment cleanup must fail".into());
+        };
         rustix::fs::chmod(
-            promoted.fragments.backup_dir.as_std_path(),
+            fragment_backup_path.as_std_path(),
             rustix::fs::Mode::from_raw_mode(0o700),
         )?;
-        assert!(commit_result.is_err());
-
-        promoted.rollback()?;
-        assert_eq!(state::fs::read_to_string(&root_config)?, "active\n");
+        assert!(matches!(
+            cleanup_error,
+            ConfigBackupCleanupError::Backup { path, .. } if path == fragment_backup_path
+        ));
+        assert!(!root_backup_path.exists());
+        assert!(fragment_backup_path.exists());
+        assert_eq!(state::fs::read_to_string(&root_config)?, "candidate\n");
         assert_eq!(
             state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
-            "old\n"
+            "new\n"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_attempts_root_and_fragment_backups_independently_when_root_delete_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempdir()?;
+        let root_config = tempdir.path().join("Caddyfile");
+        let active_dir = tempdir.path().join("active-fragments");
+        let candidate_dir = tempdir.path().join("candidate-fragments");
+        create_dir_all(&active_dir)?;
+        create_dir_all(&candidate_dir)?;
+        state::fs::write_sensitive_file(&root_config, "previous\n")?;
+        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
+        state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
+
+        let promoted = promote_validated_config_tree_async(
+            &root_config,
+            "candidate\n",
+            "candidate\n",
+            |_candidate_path| async { Ok(()) },
+            || promote_config_dir(&active_dir, &candidate_dir),
+        )
+        .await?;
+        let root_backup_path = promoted.root.backup_path.clone();
+        let fragment_backup_path = promoted.fragments.backup_dir.clone();
+        state::fs::delete_file(&root_backup_path)?;
+        create_dir(&root_backup_path)?;
+
+        let Err(cleanup_error) = promoted.cleanup() else {
+            return Err("root cleanup must fail".into());
+        };
+
+        assert!(matches!(
+            cleanup_error,
+            ConfigBackupCleanupError::Backup { path, .. } if path == root_backup_path
+        ));
+        assert!(root_backup_path.exists());
+        assert!(!fragment_backup_path.exists());
+        assert_eq!(state::fs::read_to_string(&root_config)?, "candidate\n");
+        assert_eq!(
+            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
+            "new\n"
         );
 
         Ok(())

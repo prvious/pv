@@ -1340,7 +1340,7 @@ where
 async fn start_or_adopt_promoted_runtime(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
-    mut promoted_config: PromotedConfigTree,
+    promoted_config: PromotedConfigTree,
     spec: ProcessSpec,
     readiness: RuntimeReadinessPlan,
     subject: RuntimeSubject,
@@ -1396,26 +1396,14 @@ async fn start_or_adopt_promoted_runtime(
     .await;
 
     match result {
-        Ok(RuntimeTransactionSuccess {
-            outcome,
-            restore_active_runtime,
-        }) => {
-            if let Err(commit_error) = promoted_config.commit() {
-                let error = compensate_commit_failure(
+        Ok(RuntimeTransactionSuccess { outcome }) => {
+            if let Err(error) = promoted_config.cleanup() {
+                structured_log::runtime_config_cleanup_failed(
                     paths,
-                    supervisor,
-                    &spec,
-                    restoration_readiness,
-                    promoted_config,
-                    commit_error,
-                    restore_active_runtime,
-                )
-                .await;
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
+                    &spec.name,
+                    &error.to_string(),
+                );
             }
-
             Ok(outcome)
         }
         Err(RuntimeTransactionError {
@@ -1444,7 +1432,13 @@ async fn start_or_adopt_promoted_runtime(
                 RuntimeConfigDisposition::Preserve => {
                     // Keep the desired promoted tree when runtime state is uncertain. The branch
                     // that selected this disposition owns the specific recovery rationale.
-                    let _cleanup_result = promoted_config.commit();
+                    if let Err(cleanup_error) = promoted_config.cleanup() {
+                        structured_log::runtime_config_cleanup_failed(
+                            paths,
+                            &spec.name,
+                            &cleanup_error.to_string(),
+                        );
+                    }
                     error
                 }
             };
@@ -1562,7 +1556,6 @@ async fn start_or_adopt_runtime(
                 {
                     return Ok(RuntimeTransactionSuccess {
                         outcome: RuntimeReadinessOutcome::Unverified,
-                        restore_active_runtime: true,
                     });
                 }
 
@@ -1572,7 +1565,6 @@ async fn start_or_adopt_runtime(
 
             return Ok(RuntimeTransactionSuccess {
                 outcome: RuntimeReadinessOutcome::Verified,
-                restore_active_runtime: true,
             });
         } else if let Some(adopted) =
             supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
@@ -1617,7 +1609,6 @@ async fn start_or_adopt_runtime(
             {
                 return Ok(RuntimeTransactionSuccess {
                     outcome: RuntimeReadinessOutcome::Unverified,
-                    restore_active_runtime: false,
                 });
             }
             return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
@@ -1635,7 +1626,6 @@ async fn start_or_adopt_runtime(
 
         Ok(RuntimeTransactionSuccess {
             outcome: RuntimeReadinessOutcome::Verified,
-            restore_active_runtime: false,
         })
     }
     .await
@@ -1698,7 +1688,6 @@ fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
 #[derive(Debug)]
 struct RuntimeTransactionSuccess {
     outcome: RuntimeReadinessOutcome,
-    restore_active_runtime: bool,
 }
 
 #[derive(Debug)]
@@ -1744,54 +1733,6 @@ impl From<DaemonError> for RuntimeTransactionError {
     fn from(error: DaemonError) -> Self {
         Self::new(error)
     }
-}
-
-async fn compensate_commit_failure(
-    paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    readiness: &RuntimeReadinessPlan,
-    promoted_config: PromotedConfigTree,
-    commit_error: DaemonError,
-    restore_active_runtime: bool,
-) -> DaemonError {
-    match promoted_config.rollback() {
-        Ok(()) if restore_active_runtime => {
-            restore_runtime_after_failed_load(paths, supervisor, spec, readiness, commit_error)
-                .await
-        }
-        Ok(()) => stop_runtime_after_failed_transaction(supervisor, spec, commit_error).await,
-        Err(rollback_error) => runtime_config_rollback_failed_error(commit_error, rollback_error),
-    }
-}
-
-async fn stop_runtime_after_failed_transaction(
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    original_error: DaemonError,
-) -> DaemonError {
-    let adopted = match supervisor.adopt(spec) {
-        Ok(adopted) => adopted,
-        Err(error) => return compound_runtime_restore_error(original_error, error),
-    };
-    let Some(adopted) = adopted else {
-        return compound_runtime_restore_error(
-            original_error,
-            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-        );
-    };
-
-    if let Err(error) = adopted.stop(Duration::from_secs(1)).await {
-        return compound_runtime_restore_error(original_error, error);
-    }
-    if let Err(error) = delete_optional_file(&spec.pid_path) {
-        return compound_runtime_restore_error(original_error, error);
-    }
-    if let Err(error) = delete_optional_file(&spec.metadata_path) {
-        return compound_runtime_restore_error(original_error, error);
-    }
-
-    original_error
 }
 
 async fn restore_runtime_after_failed_load(
