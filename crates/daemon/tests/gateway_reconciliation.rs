@@ -2176,10 +2176,13 @@ async fn gateway_reconciliation_reports_compound_restored_readiness_failure() ->
         original_error.as_ref(),
         CaddyAdminError::TaskFailed { .. } | CaddyAdminError::AdminReadinessTimedOut { .. }
     ));
-    assert!(matches!(
-        restored_error.as_ref(),
-        CaddyAdminError::AdminReadinessTimedOut { .. }
-    ));
+    assert!(
+        matches!(
+            restored_error.as_ref(),
+            CaddyAdminError::AdminReadinessTimedOut { .. }
+        ),
+        "unexpected restored readiness error: {restored_error:#?}"
+    );
     assert_eq!(root_after, previous_root);
     assert_eq!(current_config, previous_root);
     assert_eq!(load_bodies.len(), 2);
