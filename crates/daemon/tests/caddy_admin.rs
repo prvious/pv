@@ -87,6 +87,96 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
 }
 
 #[tokio::test]
+async fn load_caddyfile_accepts_complete_adapter_warnings() -> Result<()> {
+    let warnings = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
+    let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
+
+    test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await?;
+    let requests = server.await??;
+
+    assert_eq!(requests.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_caddyfile_rejects_error_reported_after_adapter_warnings() -> Result<()> {
+    let body = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}
+"#;
+    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
+    let requests = server.await??;
+
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(
+        result,
+        Err(CaddyAdminError::LoadReportedFailure {
+            status: 200,
+            detail,
+            ..
+        }) if detail == "loading config: listener unavailable"
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_caddyfile_does_not_trust_an_error_before_the_complete_body() -> Result<()> {
+    let body = br#"[{"message":"Caddyfile input is not formatted"}]{"error":"load failed"}garbage"#;
+    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
+    let requests = server.await??;
+
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(
+        result,
+        Err(CaddyAdminError::RequestOutcomeUnknown {
+            operation: daemon::CaddyAdminOperation::Load,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_caddyfile_does_not_accept_an_incomplete_success_body() -> Result<()> {
+    let temp_dir = tempdir()?;
+    let socket_path = temp_dir.path().join("admin.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let endpoint = CaddyAdminEndpoint::new(socket_path);
+    let server = tokio::task::spawn_blocking(move || -> Result<()> {
+        let _temp_dir = temp_dir;
+        let (mut stream, _) = listener.accept()?;
+        let _request = read_request(&mut stream)?;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nConnection: close\r\n\r\n[")?;
+        thread::sleep(Duration::from_millis(250));
+
+        Ok(())
+    });
+
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
+    server.await??;
+
+    assert!(matches!(
+        result,
+        Err(CaddyAdminError::RequestOutcomeUnknown {
+            operation: daemon::CaddyAdminOperation::Load,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_caddyfile_maps_rejection_and_caps_response_detail() -> Result<()> {
     let response_body = vec![b'x'; MAX_RESPONSE_DETAIL_BYTES + 128];
     let (endpoint, server) = spawn_response_server(vec![http_response(422, &response_body)])?;

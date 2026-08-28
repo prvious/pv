@@ -484,6 +484,76 @@ async fn assert_uncertain_pf_state_preserves_gateway(
 }
 
 #[tokio::test]
+async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let previous_root = "previous gateway config\n";
+    fs::write_sensitive_file(&paths.gateway_root_config(), previous_root)?;
+    write_fake_admin_control(
+        &paths.gateway_root_config(),
+        json!({"admin_delay_ms": [250]}),
+    )?;
+
+    let corrupt_runtime_metadata = async {
+        for _attempt in 0..100 {
+            let gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+            let admin_ready = fake_admin_requests(&paths.gateway_root_config())?
+                .iter()
+                .any(|request| request["method"] == "GET" && request["path"] == "/config/");
+            if let Some(gateway_pid) = gateway_pid
+                && admin_ready
+            {
+                fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
+                return Ok(gateway_pid);
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        Err(anyhow::anyhow!(
+            "fresh Gateway did not reach delayed admin readiness"
+        ))
+    };
+    let (result, gateway_pid) = tokio::join!(
+        reconcile_gateway_runtimes_with_pf_state_for_test(
+            &paths,
+            Duration::from_millis(500),
+            GatewayPfRoutingState::Unknown,
+        ),
+        corrupt_runtime_metadata,
+    );
+    let gateway_pid = gateway_pid?;
+    let gateway_was_alive = process_is_alive(gateway_pid)?;
+    if gateway_was_alive {
+        stop_runtime_pid(gateway_pid).await?;
+    }
+
+    assert!(matches!(result, Err(DaemonError::Json(_))));
+    assert!(!gateway_was_alive);
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+    assert_eq!(
+        fs::read_to_string(&paths.gateway_root_config())?,
+        previous_root
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_preserves_running_runtimes_on_second_reconcile() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1837,6 +1907,72 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
             .collect::<Vec<_>>(),
         vec![Some(422)]
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_rejects_load_error_reported_with_success_status() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+
+    let old_ports = available_loopback_ports(2)?;
+    let new_ports = available_loopback_ports(2)?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    seed_runtime_ports(&paths, &mut database, old_ports[0], old_ports[1], &[])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let previous_root = read_test_bytes(paths.gateway_root_config())?;
+    write_fake_admin_control(
+        &paths.gateway_root_config(),
+        json!({
+            "load_statuses": [200],
+            "apply_load": [false],
+            "load_response_body": [
+                "[{\"file\":\"Caddyfile\",\"line\":2,\"message\":\"Caddyfile input is not formatted\"}]{\"error\":\"loading config: listener unavailable\"}\n"
+            ],
+        }),
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
+    database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
+    seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
+    drop(database);
+
+    let result =
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
+    let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let root_after = read_test_bytes(paths.gateway_root_config())?;
+    let current_config = fake_admin_current_bytes(&paths.gateway_root_config())?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::CaddyAdmin(
+            CaddyAdminError::LoadReportedFailure {
+                status: 200,
+                detail,
+                ..
+            }
+        )) if detail == "loading config: listener unavailable"
+    ));
+    assert_eq!(first_gateway_pid, second_gateway_pid);
+    assert_eq!(root_after, previous_root);
+    assert_eq!(current_config, previous_root);
 
     Ok(())
 }

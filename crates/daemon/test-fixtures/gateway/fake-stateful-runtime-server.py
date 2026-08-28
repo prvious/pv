@@ -155,6 +155,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/config/":
             status = state.consume_status("admin_statuses")
             state.record_request("GET", self.path, status)
+            try:
+                delay_ms = int(state.consume_value("admin_delay_ms", 0))
+            except (TypeError, ValueError):
+                delay_ms = 0
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
             self.send_body(status, b"{}\n")
             return
 
@@ -179,6 +185,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         status = state.consume_status("load_statuses")
         accepted = 200 <= status < 300
+        apply_load = accepted and bool(state.consume_value("apply_load", True))
         state.record_request("POST", self.path, status, body)
         state.record_load(body)
         try:
@@ -190,7 +197,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             late_apply_delay_ms = int(state.consume_value("late_apply_delay_ms", 0))
         except (TypeError, ValueError):
             late_apply_delay_ms = 0
-        if accepted and late_accept:
+        if apply_load and late_accept:
             time.sleep(max(0, late_apply_delay_ms) / 1000)
             state.apply_config(body)
             remaining_delay_ms = max(0, delay_ms - late_apply_delay_ms)
@@ -199,9 +206,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000)
-            if accepted:
+            if apply_load:
                 state.apply_config(body)
-        self.send_body(status, b"accepted\n" if accepted else b"rejected\n")
+        response_body = state.consume_value("load_response_body", None)
+        if isinstance(response_body, str):
+            response_body = response_body.encode("utf-8")
+        elif accepted:
+            response_body = b""
+        else:
+            response_body = b"rejected\n"
+        self.send_body(status, response_body)
         if accepted and state.consume_value("exit_after_load", False):
             threading.Timer(0.05, os._exit, args=(0,)).start()
 

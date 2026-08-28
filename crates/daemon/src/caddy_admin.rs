@@ -15,12 +15,14 @@ use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
 use rustix::process::{Pid, getpgid};
+use serde_json::Value;
 use thiserror::Error;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
 pub const MAX_RESPONSE_DETAIL_BYTES: usize = 4096;
 
+const MAX_LOAD_RESPONSE_BYTES: usize = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -108,6 +110,13 @@ pub enum CaddyAdminError {
 
     #[error("Caddy admin load at {endpoint} was rejected with HTTP {status}: {detail}")]
     LoadRejected {
+        endpoint: CaddyAdminEndpoint,
+        status: u16,
+        detail: String,
+    },
+
+    #[error("Caddy admin load at {endpoint} failed after returning HTTP {status}: {detail}")]
+    LoadReportedFailure {
         endpoint: CaddyAdminEndpoint,
         status: u16,
         detail: String,
@@ -262,15 +271,27 @@ impl CaddyAdminClient {
             .send(endpoint, CaddyAdminOperation::Load, request, verifier, true)
             .await?;
 
-        if is_success(response.status) {
-            return Ok(());
+        if !is_success(response.status) {
+            return Err(CaddyAdminError::LoadRejected {
+                endpoint: endpoint.clone(),
+                status: response.status,
+                detail: response_detail(&response),
+            });
         }
 
-        Err(CaddyAdminError::LoadRejected {
-            endpoint: endpoint.clone(),
-            status: response.status,
-            detail: response.detail,
-        })
+        match successful_load_response_error(&response) {
+            Ok(None) => Ok(()),
+            Ok(Some(detail)) => Err(CaddyAdminError::LoadReportedFailure {
+                endpoint: endpoint.clone(),
+                status: response.status,
+                detail,
+            }),
+            Err(reason) => Err(CaddyAdminError::RequestOutcomeUnknown {
+                endpoint: endpoint.clone(),
+                operation: CaddyAdminOperation::Load,
+                reason,
+            }),
+        }
     }
 
     pub async fn wait_until_ready(
@@ -415,7 +436,7 @@ impl CaddyAdminClient {
             remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
         match tokio::time::timeout(
             exchange_timeout,
-            exchange_request(request, stream, include_response_detail, self.timeouts.read),
+            exchange_request(request, stream, include_response_detail),
         )
         .await
         {
@@ -460,7 +481,8 @@ impl CaddyAdminClient {
 #[derive(Debug)]
 struct AdminResponse {
     status: u16,
-    detail: String,
+    body: Vec<u8>,
+    body_truncated: bool,
 }
 
 #[cfg(unix)]
@@ -468,7 +490,6 @@ async fn exchange_request(
     request: Request<Full<Bytes>>,
     stream: UnixStream,
     include_response_detail: bool,
-    read_timeout: Duration,
 ) -> Result<AdminResponse, hyper::Error> {
     let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
     let connection_task = tokio::spawn(connection);
@@ -480,54 +501,102 @@ async fn exchange_request(
         }
     };
     let status = response.status().as_u16();
-    let detail = if include_response_detail && !is_success(status) {
-        bounded_response_detail(response.into_body(), read_timeout).await
+    let body = if include_response_detail {
+        bounded_response_body(response.into_body()).await?
     } else {
-        String::new()
+        BoundedResponseBody::default()
     };
     connection_task.abort();
 
-    Ok(AdminResponse { status, detail })
+    Ok(AdminResponse {
+        status,
+        body: body.bytes,
+        body_truncated: body.truncated,
+    })
+}
+
+#[derive(Debug, Default)]
+struct BoundedResponseBody {
+    bytes: Vec<u8>,
+    truncated: bool,
 }
 
 #[cfg(unix)]
-async fn bounded_response_detail(mut body: hyper::body::Incoming, timeout: Duration) -> String {
-    let read = async {
-        let mut bytes = Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES.saturating_add(1));
-
-        while bytes.len() <= MAX_RESPONSE_DETAIL_BYTES {
-            let Some(frame) = body.frame().await else {
-                break;
-            };
-            let Ok(frame) = frame else {
-                return None;
-            };
-            let Some(data) = frame.data_ref() else {
-                continue;
-            };
-            let remaining = MAX_RESPONSE_DETAIL_BYTES
-                .saturating_add(1)
-                .saturating_sub(bytes.len());
-            bytes.extend_from_slice(&data[..data.len().min(remaining)]);
-        }
-
-        Some(bytes)
+async fn bounded_response_body(
+    mut body: hyper::body::Incoming,
+) -> Result<BoundedResponseBody, hyper::Error> {
+    let mut response = BoundedResponseBody {
+        bytes: Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES),
+        truncated: false,
     };
-    let Ok(Some(mut bytes)) = tokio::time::timeout(timeout, read).await else {
-        return "<response detail unavailable>".to_owned();
-    };
-    let truncated = bytes.len() > MAX_RESPONSE_DETAIL_BYTES;
-    bytes.truncate(MAX_RESPONSE_DETAIL_BYTES);
-    let mut detail = match String::from_utf8(bytes) {
+
+    loop {
+        let Some(frame) = body.frame().await else {
+            break;
+        };
+        let frame = frame?;
+        let Some(data) = frame.data_ref() else {
+            continue;
+        };
+        let remaining = MAX_LOAD_RESPONSE_BYTES.saturating_sub(response.bytes.len());
+        response
+            .bytes
+            .extend_from_slice(&data[..data.len().min(remaining)]);
+        response.truncated |= data.len() > remaining;
+    }
+
+    Ok(response)
+}
+
+fn response_detail(response: &AdminResponse) -> String {
+    let detail_length = response.body.len().min(MAX_RESPONSE_DETAIL_BYTES);
+    let mut detail = match String::from_utf8(response.body[..detail_length].to_vec()) {
         Ok(detail) => detail,
         Err(_) => "<non-UTF-8 response detail>".to_owned(),
     };
 
-    if truncated {
+    if response.body_truncated || response.body.len() > MAX_RESPONSE_DETAIL_BYTES {
         detail.push_str("...");
     }
 
     detail
+}
+
+fn successful_load_response_error(response: &AdminResponse) -> Result<Option<String>, String> {
+    if response.body_truncated {
+        return Err(format!(
+            "successful response body exceeded {MAX_LOAD_RESPONSE_BYTES} bytes"
+        ));
+    }
+    if response.body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+
+    let values = serde_json::Deserializer::from_slice(&response.body)
+        .into_iter::<Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("successful response body was not valid JSON: {error}"))?;
+
+    match values.as_slice() {
+        [warnings] if warnings.is_array() => Ok(None),
+        [error] => caddy_api_error(error)
+            .map(str::to_owned)
+            .map(Some)
+            .ok_or_else(|| {
+                "successful response body was neither adapter warnings nor an API error".to_owned()
+            }),
+        [warnings, error] if warnings.is_array() => caddy_api_error(error)
+            .map(str::to_owned)
+            .map(Some)
+            .ok_or_else(|| {
+                "successful response contained unexpected data after adapter warnings".to_owned()
+            }),
+        _ => Err("successful response contained unexpected data".to_owned()),
+    }
+}
+
+fn caddy_api_error(value: &Value) -> Option<&str> {
+    value.get("error").and_then(Value::as_str)
 }
 
 #[cfg(unix)]

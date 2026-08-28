@@ -1612,8 +1612,14 @@ async fn start_or_adopt_runtime(
                     return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
                 }
             };
-            if !process_exited && supervisor.verify_ownership(spec)?.is_some() {
-                return Ok(RuntimeReadinessOutcome::Unverified);
+            if !process_exited {
+                match supervisor.verify_ownership(spec) {
+                    Ok(Some(_runtime)) => return Ok(RuntimeReadinessOutcome::Unverified),
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                    }
+                }
             }
         }
         return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
