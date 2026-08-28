@@ -4,10 +4,14 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
-use http_body_util::{BodyExt as _, Full};
+#[cfg(unix)]
+use http_body_util::BodyExt as _;
+use http_body_util::Full;
+#[cfg(unix)]
 use hyper::client::conn::http1;
 use hyper::header::HOST;
 use hyper::{Method, Request};
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
 use rustix::process::{Pid, getpgid};
@@ -623,6 +627,7 @@ fn no_op_verifier() -> CaddyAdminVerifier {
     Arc::new(|_operation| Ok(None))
 }
 
+#[cfg(unix)]
 fn verify_before_request(
     verifier: &CaddyAdminVerifier,
     endpoint: &CaddyAdminEndpoint,
@@ -644,6 +649,7 @@ fn is_verifier_failure(error: &CaddyAdminError) -> bool {
     )
 }
 
+#[cfg(unix)]
 fn map_exchange_error(
     endpoint: &CaddyAdminEndpoint,
     operation: CaddyAdminOperation,
