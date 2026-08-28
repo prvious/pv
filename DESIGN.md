@@ -395,7 +395,7 @@ Project-serving worker logs are captured per PHP runtime identity, with Project 
 
 Project-serving worker logs are split by PHP runtime identity, such as `~/.pv/logs/workers/php-8.4.log` or `~/.pv/logs/workers/php-8.4+redis.log`, because one worker serves all Projects assigned to that runtime.
 
-Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, and rotated. Gateway logs are split into access and error logs, such as `~/.pv/logs/gateway/access.log` and `~/.pv/logs/gateway/error.log`, using standalone Caddy logging. Structured/JSON logs should be used when the respective Caddy or FrankenPHP runtime supports them cleanly.
+Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, and rotated. Gateway logs are split into access and error logs, such as `~/.pv/logs/gateway/access.log` and `~/.pv/logs/gateway/error.log`, using standalone Caddy logging. Caddy's inherited stdout and stderr are appended to `~/.pv/logs/gateway/supervisor.log` so supervisor diagnostics do not mix with Caddy's error stream. Structured/JSON logs should be used when the respective Caddy or FrankenPHP runtime supports them cleanly.
 
 When routing or Gateway config changes, PV loads the Gateway config through the Caddy admin API contract above. A matching owned Gateway is kept running on load rejection or API unavailability; only an absent or obsolete process may be replaced.
 
@@ -1442,7 +1442,7 @@ When `pv logs --follow` streams multiple files, PV prefixes each line with the s
 
 `pv logs --all --follow` includes every PV-owned log stream, including daemon, LaunchAgent, Gateway, Project-serving workers, and Managed Resource logs, with source prefixes.
 
-`pv logs --gateway` shows both Gateway access and error logs by default when split Gateway logs exist. When following both streams, PV prefixes lines with sources such as `gateway:access` and `gateway:error`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
+`pv logs --gateway` shows Gateway access, error, and supervisor logs by default when split Gateway logs exist, in that order. When following multiple streams, PV prefixes lines with sources such as `gateway:access`, `gateway:error`, and `gateway:supervisor`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
 
 `pv logs --worker <php-runtime>` accepts explicit PHP runtime identities, such as `8.4` or `8.4+redis`, and `latest`. `latest` resolves to the manifest default PHP track without Project-level optional extensions. If the resolved runtime has no log file, PV prints a clear message that no logs exist for that PHP runtime.
 

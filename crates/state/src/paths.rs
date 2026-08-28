@@ -201,6 +201,10 @@ impl PvPaths {
         self.logs().join("gateway/gateway.log")
     }
 
+    pub fn gateway_supervisor_log(&self) -> Utf8PathBuf {
+        self.logs().join("gateway/supervisor.log")
+    }
+
     pub fn gateway_access_log(&self) -> Utf8PathBuf {
         self.logs().join("gateway/access.log")
     }

@@ -91,6 +91,10 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         "/Users/alice/.pv/logs/gateway/gateway.log"
     );
     assert_eq!(
+        paths.gateway_supervisor_log().as_str(),
+        "/Users/alice/.pv/logs/gateway/supervisor.log"
+    );
+    assert_eq!(
         paths.worker_log("8.4").as_str(),
         "/Users/alice/.pv/logs/workers/php-8.4.log"
     );

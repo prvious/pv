@@ -122,6 +122,32 @@ fn logs_gateway_uses_combined_fallback() -> anyhow::Result<()> {
 }
 
 #[test]
+fn logs_gateway_exposes_supervisor_source_after_split_logs() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    write_log(&paths.gateway_log(), "legacy gateway\n")?;
+    write_log(&paths.gateway_supervisor_log(), "supervisor diagnostic\n")?;
+
+    let supervisor_only = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
+
+    assert_eq!(supervisor_only.exit_code, ExitCode::SUCCESS);
+    assert!(supervisor_only.stderr.is_empty());
+
+    write_log(&paths.gateway_access_log(), "access request\n")?;
+    write_log(&paths.gateway_error_log(), "caddy error\n")?;
+
+    let split = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
+
+    assert_eq!(split.exit_code, ExitCode::SUCCESS);
+    assert!(split.stderr.is_empty());
+    assert_debug_snapshot!((supervisor_only, split));
+
+    Ok(())
+}
+
+#[test]
 fn logs_gateway_tails_plain_rotated_access_and_error_logs() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

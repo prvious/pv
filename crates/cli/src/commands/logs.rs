@@ -140,8 +140,12 @@ fn default_sources(paths: &PvPaths) -> Vec<LogSource> {
 fn gateway_sources(paths: &PvPaths) -> Vec<LogSource> {
     let access = paths.gateway_access_log();
     let error = paths.gateway_error_log();
+    let supervisor = paths.gateway_supervisor_log();
 
-    if state::fs::path_exists(&access) || state::fs::path_exists(&error) {
+    if state::fs::path_exists(&access)
+        || state::fs::path_exists(&error)
+        || state::fs::path_exists(&supervisor)
+    {
         return vec![
             LogSource {
                 label: "gateway:access".to_string(),
@@ -150,6 +154,10 @@ fn gateway_sources(paths: &PvPaths) -> Vec<LogSource> {
             LogSource {
                 label: "gateway:error".to_string(),
                 active_path: error,
+            },
+            LogSource {
+                label: "gateway:supervisor".to_string(),
+                active_path: supervisor,
             },
         ];
     }

@@ -2723,6 +2723,7 @@ fn caddy_cli_command_and_process_specs_are_stable() -> Result<()> {
     );
     assert_eq!(gateway.resource_name, "caddy");
     assert_eq!(gateway.track, "2");
+    assert_eq!(gateway.log_path, paths.gateway_supervisor_log());
     assert_eq!(worker.resource_name, "frankenphp");
     assert_eq!(worker.track, "8.4");
 

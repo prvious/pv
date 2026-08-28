@@ -105,6 +105,22 @@ fn gateway_cleanup_error_is_reported_without_masking_request_error() -> Result<(
     Ok(())
 }
 
+#[test]
+fn real_artifact_diagnostics_includes_gateway_supervisor_log() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::write_sensitive_file(&paths.gateway_supervisor_log(), "supervisor failure\n")?;
+
+    let diagnostics = real_artifact_diagnostics(&paths, "8.4");
+
+    assert!(diagnostics.contains(&format!(
+        "--- {} ---\nsupervisor failure\n",
+        paths.gateway_supervisor_log()
+    )));
+
+    Ok(())
+}
+
 fn preserve_gateway_request_result<T>(
     request: Result<T>,
     cleanup: Result<()>,
@@ -132,6 +148,7 @@ fn real_artifact_diagnostics(paths: &PvPaths, php_track: &str) -> String {
         paths.worker_log(php_track),
         paths.gateway_access_log(),
         paths.gateway_error_log(),
+        paths.gateway_supervisor_log(),
         paths.gateway_runtime_metadata(),
         paths.worker_runtime_metadata(php_track),
     ] {

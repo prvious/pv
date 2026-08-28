@@ -786,7 +786,7 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> Proce
         arguments: command.run_arguments(&paths.gateway_root_config()),
         private_environment: caddy_xdg_environment(paths),
         config_path: paths.gateway_root_config(),
-        log_path: paths.gateway_error_log(),
+        log_path: paths.gateway_supervisor_log(),
         pid_path: paths.gateway_pid(),
         metadata_path: paths.gateway_runtime_metadata(),
         resource_name: "caddy".to_owned(),
