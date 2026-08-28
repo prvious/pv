@@ -6,12 +6,6 @@
       "sourceType": "github",
       "skillPath": "skills/pr-review-toolkit/SKILL.md",
       "computedHash": "22a7b6e0c360f8635a85a1448a84e9840acb987359e8eacba7426cfffa89424d"
-    },
-    "using-solo": {
-      "source": "prvious/skills",
-      "sourceType": "github",
-      "skillPath": "skills/using-solo/SKILL.md",
-      "computedHash": "8676eb54d1e9eb33682dca1319fbe3f6720a04069d6b17589743d119b16a83b9"
     }
   }
 }
