@@ -326,12 +326,14 @@ impl ManagedResourceCommands {
         };
         let install =
             self.install_selected_artifact(adapter, track, artifact, revoked_latest, context)?;
-        database.record_managed_resource_track_installed(
+        if let Err(error) = database.record_managed_resource_track_installed(
             adapter.resource_name().as_str(),
             install.track.as_str(),
             install.artifact_version.as_str(),
             &install.current_artifact_path,
-        )?;
+        ) {
+            return Err(self.rollback_after_error(&[&install], error.into()));
+        }
 
         Ok(install)
     }

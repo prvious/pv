@@ -82,6 +82,59 @@ fn managed_resource_commands_install_reports_download_progress() -> Result<()> {
 }
 
 #[test]
+fn managed_resource_commands_install_rolls_back_artifact_when_installed_state_write_fails()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("caddy", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("2.10.2-pv1", "caddy")?;
+    let manifest = manifest_with_resources(&[manifest_resource(
+        "caddy",
+        "2",
+        vec![manifest_track("2", vec![&artifact])],
+    )]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER fail_caddy_installed_state
+            BEFORE UPDATE OF installed_version ON managed_resource_tracks
+            WHEN NEW.resource_name = 'caddy'
+            AND NEW.track = '2'
+            AND NEW.installed_version IS NOT NULL
+            BEGIN
+                SELECT RAISE(ABORT, 'forced installed-state failure');
+            END;",
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+
+    let result = commands.install(&adapter, TrackSelector::Latest, &client);
+
+    assert!(matches!(
+        result,
+        Err(ManagedResourceCommandError::State(
+            state::StateError::Sqlite(_)
+        ))
+    ));
+    assert!(!path_exists(&release_path(
+        &paths,
+        "caddy",
+        "2",
+        artifact.version.as_str(),
+    ))?);
+    assert_eq!(symlink_target(&current_path(&paths, "caddy", "2"))?, None);
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_update_reports_download_progress() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
