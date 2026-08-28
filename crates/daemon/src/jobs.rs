@@ -766,7 +766,7 @@ async fn complete_update_job_inner(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<CompletedUpdateJob, FailedUpdateJob> {
-    let mut report = if runtime_catalog.is_none() {
+    let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
         tokio::task::spawn_blocking(move || {
@@ -789,15 +789,18 @@ async fn complete_update_job_inner(
     }
     .map_err(|error| FailedUpdateJob::new(error, JobDiagnosticSubject::UpdateAssessment))?;
 
-    if let Some(update_error) = report.take_failure() {
-        return Err(reconcile_partial_update_failure(
-            paths,
-            runtime_catalog,
-            progress,
-            update_error,
-        )
-        .await);
-    }
+    let report = match report.into_result() {
+        Ok(report) => report,
+        Err(update_error) => {
+            return Err(reconcile_partial_update_failure(
+                paths,
+                runtime_catalog,
+                progress,
+                update_error,
+            )
+            .await);
+        }
+    };
 
     if report.updated_count == 0 {
         return Ok(CompletedUpdateJob {

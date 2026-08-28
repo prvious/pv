@@ -167,13 +167,15 @@ impl ManagedResourceUpdateReport {
         self.update.rollback_caddy(paths).map_err(DaemonError::from)
     }
 
-    pub(crate) fn take_failure(&mut self) -> Option<DaemonError> {
-        self.failure
-            .take()
-            .map(|source| DaemonError::ManagedResourcePartialUpdateFailed {
-                update: self.update.clone(),
-                source: Box::new(source),
-            })
+    pub(crate) fn into_result(self) -> Result<Self, DaemonError> {
+        let Some(source) = self.failure else {
+            return Ok(self);
+        };
+
+        Err(DaemonError::ManagedResourcePartialUpdateFailed {
+            update: self.update,
+            source: Box::new(source),
+        })
     }
 }
 
@@ -500,9 +502,6 @@ async fn install_missing_desired_resource_tracks(
 
 #[derive(Debug)]
 enum DesiredResourceInstall {
-    Caddy {
-        track: String,
-    },
     PhpPair {
         track: String,
     },
@@ -545,7 +544,6 @@ impl DesiredResourceInstallFailure {
 impl DesiredResourceInstall {
     fn label(&self) -> String {
         match self {
-            DesiredResourceInstall::Caddy { track } => format!("caddy {track}"),
             DesiredResourceInstall::PhpPair { track } => {
                 format!("php/frankenphp {track}")
             }
@@ -631,10 +629,19 @@ fn missing_desired_resource_installs(
         }
     }
 
-    let mut installs = caddy_tracks
-        .into_iter()
-        .map(|track| DesiredResourceInstall::Caddy { track })
-        .collect::<Vec<_>>();
+    let mut installs = Vec::new();
+    if !caddy_tracks.is_empty() {
+        let caddy_adapter = resources::caddy_adapter()?;
+        installs.extend(
+            caddy_tracks
+                .into_iter()
+                .map(|track| DesiredResourceInstall::Runtime {
+                    adapter: caddy_adapter.clone(),
+                    resource_name: "caddy".to_owned(),
+                    track,
+                }),
+        );
+    }
     installs.extend(
         php_pair_tracks
             .into_iter()
@@ -672,16 +679,6 @@ fn install_missing_desired_resource_tracks_blocking(
     for install in installs {
         let label = install.label();
         let result = match install {
-            DesiredResourceInstall::Caddy { track } => {
-                let adapter = resources::caddy_adapter()?;
-                TrackName::new(track)
-                    .map_err(DaemonError::from)
-                    .and_then(|track| {
-                        install_runtime_resource_track_with_progress(
-                            &commands, client, &adapter, "caddy", track, &progress,
-                        )
-                    })
-            }
             DesiredResourceInstall::PhpPair { track } => TrackName::new(track)
                 .map_err(DaemonError::from)
                 .and_then(|track| {

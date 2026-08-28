@@ -447,6 +447,28 @@ struct RecipeEnvPaths<'a> {
     rustfs: Option<&'a Utf8Path>,
 }
 
+#[derive(Clone, Copy)]
+enum RecipeEnvKind {
+    Php,
+    Composer,
+    Backing(BackingRecipeKind),
+}
+
+impl RecipeEnvKind {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Php => "PHP",
+            Self::Composer => "Composer",
+            Self::Backing(BackingRecipeKind::Redis) => "Redis",
+            Self::Backing(BackingRecipeKind::Mysql) => "MySQL",
+            Self::Backing(BackingRecipeKind::Postgres) => "Postgres",
+            Self::Backing(BackingRecipeKind::Mailpit) => "Mailpit",
+            Self::Backing(BackingRecipeKind::Caddy) => "Caddy",
+            Self::Backing(BackingRecipeKind::Rustfs) => "RustFS",
+        }
+    }
+}
+
 fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
     let (chunks, remainder) = values.as_chunks::<3>();
     let source_inputs = chunks
@@ -515,26 +537,17 @@ fn backing_recipe_paths(
     caddy: Option<Utf8PathBuf>,
     rustfs: Option<Utf8PathBuf>,
 ) -> Vec<(BackingRecipeKind, Utf8PathBuf)> {
-    let mut paths = Vec::new();
-    if let Some(path) = redis {
-        paths.push((BackingRecipeKind::Redis, path));
-    }
-    if let Some(path) = mysql {
-        paths.push((BackingRecipeKind::Mysql, path));
-    }
-    if let Some(path) = postgres {
-        paths.push((BackingRecipeKind::Postgres, path));
-    }
-    if let Some(path) = mailpit {
-        paths.push((BackingRecipeKind::Mailpit, path));
-    }
-    if let Some(path) = caddy {
-        paths.push((BackingRecipeKind::Caddy, path));
-    }
-    if let Some(path) = rustfs {
-        paths.push((BackingRecipeKind::Rustfs, path));
-    }
-    paths
+    [
+        redis.map(|path| (BackingRecipeKind::Redis, path)),
+        mysql.map(|path| (BackingRecipeKind::Mysql, path)),
+        postgres.map(|path| (BackingRecipeKind::Postgres, path)),
+        mailpit.map(|path| (BackingRecipeKind::Mailpit, path)),
+        caddy.map(|path| (BackingRecipeKind::Caddy, path)),
+        rustfs.map(|path| (BackingRecipeKind::Rustfs, path)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn print_recipe_env(
@@ -543,112 +556,51 @@ fn print_recipe_env(
     track: &str,
     platform: &str,
 ) -> anyhow::Result<String> {
-    let mut metadata_paths = Vec::new();
-    if let Some(path) = paths.php {
-        metadata_paths.push(("php", path));
-    }
-    if let Some(path) = paths.composer {
-        metadata_paths.push(("composer", path));
-    }
-    if let Some(path) = paths.redis {
-        metadata_paths.push(("redis", path));
-    }
-    if let Some(path) = paths.mysql {
-        metadata_paths.push(("mysql", path));
-    }
-    if let Some(path) = paths.postgres {
-        metadata_paths.push(("postgres", path));
-    }
-    if let Some(path) = paths.mailpit {
-        metadata_paths.push(("mailpit", path));
-    }
-    if let Some(path) = paths.caddy {
-        metadata_paths.push(("caddy", path));
-    }
-    if let Some(path) = paths.rustfs {
-        metadata_paths.push(("rustfs", path));
-    }
+    let metadata_paths = [
+        paths.php.map(|path| (RecipeEnvKind::Php, path)),
+        paths.composer.map(|path| (RecipeEnvKind::Composer, path)),
+        paths
+            .redis
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Redis), path)),
+        paths
+            .mysql
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Mysql), path)),
+        paths
+            .postgres
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Postgres), path)),
+        paths
+            .mailpit
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Mailpit), path)),
+        paths
+            .caddy
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Caddy), path)),
+        paths
+            .rustfs
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Rustfs), path)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
 
     let [(kind, path)] = metadata_paths.as_slice() else {
         anyhow::bail!("print-recipe-env requires exactly one recipe metadata path");
     };
+    let context = format!(
+        "failed to print {} recipe environment for `{path}`",
+        kind.display_name()
+    );
 
-    match *kind {
-        "php" => {
-            let context = format!("failed to print PHP recipe environment for `{path}`");
+    match kind {
+        RecipeEnvKind::Php => {
             crate::recipe::php_recipe_env(path, resource, track, platform).context(context)
         }
-        "composer" => {
-            let context = format!("failed to print Composer recipe environment for `{path}`");
+        RecipeEnvKind::Composer => {
             crate::recipe::composer_recipe_env(path, resource, track, platform).context(context)
         }
-        "redis" => {
-            let context = format!("failed to print Redis recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Redis,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
+        RecipeEnvKind::Backing(kind) => {
+            crate::recipe::backing_recipe_env(path, *kind, resource, track, platform)
+                .context(context)
         }
-        "mysql" => {
-            let context = format!("failed to print MySQL recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Mysql,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "postgres" => {
-            let context = format!("failed to print Postgres recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Postgres,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "mailpit" => {
-            let context = format!("failed to print Mailpit recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Mailpit,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "caddy" => {
-            let context = format!("failed to print Caddy recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Caddy,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "rustfs" => {
-            let context = format!("failed to print RustFS recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Rustfs,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        _ => anyhow::bail!("unsupported recipe metadata path kind `{kind}`"),
     }
 }
 

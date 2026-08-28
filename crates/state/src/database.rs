@@ -211,11 +211,6 @@ pub struct GatewayPortAssignments {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PhpWorkerPortAssignments {
-    pub service: PortAssignment,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectConfigWatch {
     pub project_id: String,
     pub project_path: Utf8PathBuf,
@@ -2086,17 +2081,17 @@ impl Database {
         Ok(GatewayPortAssignments { http, https })
     }
 
-    pub fn assign_php_worker_ports(
+    pub fn assign_php_worker_port(
         &mut self,
         php_runtime_key: impl Into<String>,
         mut is_available: impl FnMut(u16) -> bool,
-    ) -> Result<PhpWorkerPortAssignments, StateError> {
+    ) -> Result<PortAssignment, StateError> {
         let php_runtime_key = php_runtime_key.into();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
-        let service = assign_port_in_transaction(
+        let assignment = assign_port_in_transaction(
             &transaction,
             PortRequest::php_worker(
                 php_runtime_key.clone(),
@@ -2109,7 +2104,7 @@ impl Database {
         )?;
         transaction.commit()?;
 
-        Ok(PhpWorkerPortAssignments { service })
+        Ok(assignment)
     }
 
     pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {

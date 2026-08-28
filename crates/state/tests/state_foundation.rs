@@ -3332,14 +3332,14 @@ fn php_worker_port_allocator_persists_only_service_assignment() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
-    let assigned = database.assign_php_worker_ports("8.4", |_port| true)?;
+    let assigned = database.assign_php_worker_port("8.4", |_port| true)?;
     drop(database);
     let mut reopened = Database::open(&paths)?;
-    let reused = reopened.assign_php_worker_ports("8.4", |_port| false)?;
+    let reused = reopened.assign_php_worker_port("8.4", |_port| false)?;
 
-    assert_eq!(assigned.service.port, RUNTIME_PORT_FALLBACK_START);
+    assert_eq!(assigned.port, RUNTIME_PORT_FALLBACK_START);
     assert_eq!(
-        assigned.service.owner,
+        assigned.owner,
         PortOwner::PhpWorker {
             php_runtime_key: "8.4".to_owned(),
         }

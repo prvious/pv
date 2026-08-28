@@ -20,10 +20,6 @@ request_log_path = state_directory / "fake-admin-requests.jsonl"
 runtime_name = os.environ.get("PV_FAKE_RUNTIME", "runtime")
 
 
-def read_config(path):
-    return path.read_bytes()
-
-
 def setting(pattern, config):
     match = re.search(pattern, config.decode("utf-8"), re.MULTILINE)
     if not match:
@@ -48,8 +44,6 @@ class RuntimeState:
     def control(self):
         try:
             return json.loads(control_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
         except (OSError, json.JSONDecodeError):
             return {}
 
@@ -68,6 +62,7 @@ class RuntimeState:
                     pass
                 return next_value
             return value
+
     def consume_status(self, name):
         with self.lock:
             control = self.control()
@@ -85,10 +80,6 @@ class RuntimeState:
             except OSError:
                 pass
             return status
-
-    def setting(self, name, default):
-        value = self.control().get(name, default)
-        return value
 
     def record_request(self, method, path, status, body=b""):
         with self.lock:
@@ -120,7 +111,7 @@ class RuntimeState:
             current_path.write_bytes(body)
 
 
-initial_config = read_config(config_path)
+initial_config = config_path.read_bytes()
 state = RuntimeState(initial_config)
 http_port = None
 http_port_setting = optional_setting(r"^\s*http_port (\d+)$", initial_config)
@@ -187,6 +178,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(content_length)
         status = state.consume_status("load_statuses")
+        accepted = 200 <= status < 300
         state.record_request("POST", self.path, status, body)
         state.record_load(body)
         try:
@@ -198,7 +190,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             late_apply_delay_ms = int(state.consume_value("late_apply_delay_ms", 0))
         except (TypeError, ValueError):
             late_apply_delay_ms = 0
-        if 200 <= status < 300 and late_accept:
+        if accepted and late_accept:
             time.sleep(max(0, late_apply_delay_ms) / 1000)
             state.apply_config(body)
             remaining_delay_ms = max(0, delay_ms - late_apply_delay_ms)
@@ -207,10 +199,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000)
-            if 200 <= status < 300:
+            if accepted:
                 state.apply_config(body)
-        self.send_body(status, b"accepted\n" if 200 <= status < 300 else b"rejected\n")
-        if 200 <= status < 300 and state.consume_value("exit_after_load", False):
+        self.send_body(status, b"accepted\n" if accepted else b"rejected\n")
+        if accepted and state.consume_value("exit_after_load", False):
             threading.Timer(0.05, os._exit, args=(0,)).start()
 
 

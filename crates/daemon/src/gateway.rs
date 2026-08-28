@@ -77,6 +77,13 @@ impl RuntimeLabel {
             Self::FrankenPhp => "FrankenPHP",
         }
     }
+
+    fn validation_phase(self) -> &'static str {
+        match self {
+            Self::Caddy => "Caddy config validation",
+            Self::FrankenPhp => "FrankenPHP config validation",
+        }
+    }
 }
 
 impl CaddyCliCommand {
@@ -108,6 +115,10 @@ impl CaddyCliCommand {
 
     fn runtime_label(&self) -> &'static str {
         self.runtime_label.as_str()
+    }
+
+    fn validation_phase(&self) -> &'static str {
+        self.runtime_label.validation_phase()
     }
 }
 
@@ -727,11 +738,7 @@ async fn run_validation_command(
             terminate_validation_process(pid, &mut child).await;
 
             return Err(DaemonError::ProtocolTimedOut {
-                phase: match command.runtime_label() {
-                    "Caddy" => "Caddy config validation",
-                    "FrankenPHP" => "FrankenPHP config validation",
-                    _ => "runtime config validation",
-                },
+                phase: command.validation_phase(),
             });
         }
     };
@@ -1038,15 +1045,15 @@ fn append_runtime_project(
             entry.get_mut().projects.push(runtime_project);
         }
         btree_map::Entry::Vacant(entry) => {
-            let assignments = database
-                .assign_php_worker_ports(&runtime.runtime_key, local_loopback_port_available)?;
+            let port_assignment = database
+                .assign_php_worker_port(&runtime.runtime_key, local_loopback_port_available)?;
             let admin_socket_path = paths.worker_admin_socket(&runtime.runtime_key);
 
             entry.insert(PhpWorkerRuntimePlan {
                 php_track: runtime.track,
                 runtime_key: runtime.runtime_key,
                 loaded_modules: runtime.loaded_modules,
-                port: assignments.service.port,
+                port: port_assignment.port,
                 admin_socket_path,
                 projects: vec![runtime_project],
             });
@@ -1383,9 +1390,11 @@ async fn start_or_adopt_promoted_runtime(
     } else {
         None
     };
-    let restoration_readiness = previous_readiness
-        .as_ref()
-        .map_or(&readiness, |readiness| readiness);
+    let restoration_readiness = if let Some(previous_readiness) = &previous_readiness {
+        previous_readiness
+    } else {
+        &readiness
+    };
     let result = start_or_adopt_runtime(
         paths,
         supervisor,
@@ -1396,7 +1405,7 @@ async fn start_or_adopt_promoted_runtime(
     .await;
 
     match result {
-        Ok(RuntimeTransactionSuccess { outcome }) => {
+        Ok(outcome) => {
             if let Err(error) = promoted_config.cleanup() {
                 structured_log::runtime_config_cleanup_failed(
                     paths,
@@ -1510,125 +1519,112 @@ async fn start_or_adopt_runtime(
     spec: &ProcessSpec,
     readiness: RuntimeReadinessPlan,
     matching_runtime: bool,
-) -> Result<RuntimeTransactionSuccess, RuntimeTransactionError> {
+) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
     let RuntimeReadinessPlan {
         check,
         failure_policy,
         timeout: readiness_timeout,
         admin_endpoint,
     } = readiness;
-    async {
-        if matching_runtime {
-            if supervisor.verify_ownership(spec)?.is_none() {
-                return Err(RuntimeTransactionError::new(
-                    CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-                ));
-            }
-
-            let active_content = read_config_bytes(&spec.config_path)?;
-            let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
-            load_runtime_config(
-                paths,
-                supervisor,
-                spec,
-                client,
-                &admin_endpoint,
-                active_content,
-            )
-            .await?;
-            verify_runtime_ownership(supervisor, spec)?;
-
-            if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
-                verify_runtime_ownership(supervisor, spec)
-            })
-            .await
-            {
-                if failure_policy == ReadinessFailurePolicy::PreserveRuntime
-                    && supervisor.verify_ownership(spec)?.is_some()
-                    && client
-                        .wait_until_ready_with(
-                            &admin_endpoint,
-                            readiness_timeout,
-                            runtime_ownership_verifier(paths, spec),
-                        )
-                        .await
-                        .is_ok()
-                {
-                    return Ok(RuntimeTransactionSuccess {
-                        outcome: RuntimeReadinessOutcome::Unverified,
-                    });
-                }
-
-                return Err(RuntimeTransactionError::requiring_restore(error));
-            }
-            verify_runtime_ownership(supervisor, spec)?;
-
-            return Ok(RuntimeTransactionSuccess {
-                outcome: RuntimeReadinessOutcome::Verified,
-            });
-        } else if let Some(adopted) =
-            supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
-        {
-            adopted.stop(Duration::from_secs(1)).await?;
-        } else if foreign_listener_is_ready(&check).await {
+    if matching_runtime {
+        if supervisor.verify_ownership(spec)?.is_none() {
             return Err(RuntimeTransactionError::new(
-                DaemonError::UnexpectedProtocolResponse {
-                    reason: format!(
-                        "runtime `{}` is listening but no PV-owned process could be verified",
-                        spec.name
-                    ),
-                },
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
             ));
         }
 
-        delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
-        let mut process = supervisor.start(spec.clone()).await?;
-        if let Err(error) = CaddyAdminClient::new()
-            .with_timeout(readiness_timeout)
-            .wait_until_ready_with(
-                &admin_endpoint,
-                readiness_timeout,
-                runtime_ownership_verifier(paths, spec),
-            )
-            .await
-            .map_err(DaemonError::from)
-        {
-            record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
-        }
+        let active_content = read_config_bytes(&spec.config_path)?;
+        let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
+        load_runtime_config(
+            paths,
+            supervisor,
+            spec,
+            client,
+            &admin_endpoint,
+            active_content,
+        )
+        .await?;
+        verify_runtime_ownership(supervisor, spec)?;
 
-        if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
+        if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
             verify_runtime_ownership(supervisor, spec)
         })
         .await
         {
-            record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
             if failure_policy == ReadinessFailurePolicy::PreserveRuntime
-                && !process.has_exited()?
                 && supervisor.verify_ownership(spec)?.is_some()
+                && client
+                    .wait_until_ready_with(
+                        &admin_endpoint,
+                        readiness_timeout,
+                        runtime_ownership_verifier(paths, spec),
+                    )
+                    .await
+                    .is_ok()
             {
-                return Ok(RuntimeTransactionSuccess {
-                    outcome: RuntimeReadinessOutcome::Unverified,
-                });
+                return Ok(RuntimeReadinessOutcome::Unverified);
             }
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
-        }
 
-        if process.has_exited()? {
-            let error = DaemonError::UnexpectedProtocolResponse {
+            return Err(RuntimeTransactionError::requiring_restore(error));
+        }
+        verify_runtime_ownership(supervisor, spec)?;
+
+        return Ok(RuntimeReadinessOutcome::Verified);
+    } else if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
+        adopted.stop(Duration::from_secs(1)).await?;
+    } else if foreign_listener_is_ready(&check).await {
+        return Err(RuntimeTransactionError::new(
+            DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
-                    "runtime `{}` exited before readiness was verified",
+                    "runtime `{}` is listening but no PV-owned process could be verified",
                     spec.name
                 ),
-            };
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
-        }
-
-        Ok(RuntimeTransactionSuccess {
-            outcome: RuntimeReadinessOutcome::Verified,
-        })
+            },
+        ));
     }
+
+    delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
+    let mut process = supervisor.start(spec.clone()).await?;
+    if let Err(error) = CaddyAdminClient::new()
+        .with_timeout(readiness_timeout)
+        .wait_until_ready_with(
+            &admin_endpoint,
+            readiness_timeout,
+            runtime_ownership_verifier(paths, spec),
+        )
+        .await
+        .map_err(DaemonError::from)
+    {
+        record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
+        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+    }
+
+    if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
+        verify_runtime_ownership(supervisor, spec)
+    })
     .await
+    {
+        record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
+        if failure_policy == ReadinessFailurePolicy::PreserveRuntime
+            && !process.has_exited()?
+            && supervisor.verify_ownership(spec)?.is_some()
+        {
+            return Ok(RuntimeReadinessOutcome::Unverified);
+        }
+        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+    }
+
+    if process.has_exited()? {
+        let error = DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "runtime `{}` exited before readiness was verified",
+                spec.name
+            ),
+        };
+        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+    }
+
+    Ok(RuntimeReadinessOutcome::Verified)
 }
 
 async fn cleanup_fresh_runtime(
@@ -1683,11 +1679,6 @@ fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
             ),
         }),
     }
-}
-
-#[derive(Debug)]
-struct RuntimeTransactionSuccess {
-    outcome: RuntimeReadinessOutcome,
 }
 
 #[derive(Debug)]

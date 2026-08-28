@@ -107,9 +107,6 @@ pub struct OwnedRuntime {
     replacement_required: bool,
     process_start_identity: platform::ProcessStartIdentity,
     process_executable_identity: Option<ProcessExecutableIdentity>,
-    log_path: Utf8PathBuf,
-    pid_path: Utf8PathBuf,
-    metadata_path: Utf8PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -262,9 +259,6 @@ impl ProcessSupervisor {
                 replacement_required: metadata.replacement_required,
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
-                log_path: spec.log_path.clone(),
-                pid_path: spec.pid_path.clone(),
-                metadata_path: spec.metadata_path.clone(),
             }));
         }
 
@@ -356,9 +350,6 @@ impl ProcessSupervisor {
                     replacement_required: metadata.replacement_required,
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
-                    log_path: spec.log_path,
-                    pid_path: spec.pid_path,
-                    metadata_path: spec.metadata_path,
                 },
             }));
         }
