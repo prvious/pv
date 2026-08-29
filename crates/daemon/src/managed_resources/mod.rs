@@ -27,8 +27,9 @@ use protocol::{
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
-    PortRequest, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject, StateError,
+    PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
 };
 use tokio::time::{sleep, timeout};
 
@@ -64,6 +65,7 @@ pub(crate) struct ManagedResourceRuntimeContext {
     pub data_dir: camino::Utf8PathBuf,
     pub ports: BTreeMap<String, u16>,
     pub env: EnvContextValues,
+    pub postgres_preload_libraries: Vec<PostgresPreloadLibrary>,
 }
 
 pub(crate) enum ManagedResourceReadiness {
@@ -805,6 +807,11 @@ async fn reconcile_resource_track(
                 data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
                 ports,
                 env: track_record.env.clone(),
+                postgres_preload_libraries: if resource.resource_name == "postgres" {
+                    database.postgres_track_preload_libraries(&resource.track)?
+                } else {
+                    Vec::new()
+                },
             };
             let mut runtime_attempt = ResourceRuntimeAttempt {
                 paths,
@@ -1104,7 +1111,11 @@ async fn start_or_adopt_runtime(
 
         return Ok(());
     }
-    if let ManagedResourceReadiness::TcpHttp(check) = readiness
+    if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
+        adopted.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+        delete_optional_file(&spec.pid_path)?;
+        delete_optional_file(&spec.metadata_path)?;
+    } else if let ManagedResourceReadiness::TcpHttp(check) = readiness
         && crate::supervisor::probe_readiness_once(check).await.is_ok()
     {
         return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });

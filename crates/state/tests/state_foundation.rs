@@ -11,10 +11,10 @@ use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
     GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject, JobStatus,
     ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode, ProjectRecord,
-    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
-    RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -779,6 +779,70 @@ fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
         assert_debug_snapshot!(database.managed_resource_tracks()?);
         Ok::<(), anyhow::Error>(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn postgres_track_preload_libraries_default_validate_and_canonicalize() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let empty_17 = database.postgres_track_preload_libraries("17")?;
+    let empty_18 = database.postgres_track_preload_libraries("18")?;
+    let requested = [
+        "pg_duckdb".to_string(),
+        "pg_cron".to_string(),
+        "pg_stat_statements".to_string(),
+        "timescaledb".to_string(),
+        "pg_cron".to_string(),
+    ];
+    let canonical = database.replace_postgres_track_preload_libraries("17", &requested)?;
+    let persisted = database.postgres_track_preload_libraries("17")?;
+    let persisted_18 =
+        database.replace_postgres_track_preload_libraries("18", &["pg_cron".to_string()])?;
+    let unsupported =
+        database.replace_postgres_track_preload_libraries("18", &["postgis".to_string()]);
+    let Err(unsupported) = unsupported else {
+        return Err(anyhow!("expected unsupported PostgreSQL preload library"));
+    };
+
+    assert!(matches!(
+        unsupported,
+        StateError::UnsupportedPostgresPreloadLibrary {
+            ref track,
+            ref library,
+        } if track == "18" && library == "postgis"
+    ));
+    assert_eq!(
+        canonical,
+        vec![
+            PostgresPreloadLibrary::PgStatStatements,
+            PostgresPreloadLibrary::PgCron,
+            PostgresPreloadLibrary::TimescaleDb,
+            PostgresPreloadLibrary::PgDuckDb,
+        ]
+    );
+    assert_eq!(canonical, persisted);
+    assert_eq!(
+        database.postgres_track_preload_libraries("18")?,
+        persisted_18,
+        "rejected replacement must preserve the previous desired state"
+    );
+    let cleared = database.replace_postgres_track_preload_libraries("17", &[])?;
+
+    assert_debug_snapshot!(
+        "postgres_track_preload_libraries_default_validate_and_canonicalize",
+        (
+            empty_17,
+            empty_18,
+            canonical,
+            database.postgres_track_preload_libraries("18")?,
+            unsupported.to_string(),
+            cleared,
+            database.postgres_track_preload_libraries("17")?,
+        )
+    );
 
     Ok(())
 }

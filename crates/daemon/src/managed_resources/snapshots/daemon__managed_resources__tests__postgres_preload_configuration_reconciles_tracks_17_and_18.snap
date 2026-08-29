@@ -1,0 +1,39 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+[
+    PostgresPreloadReconciliationSnapshot {
+        track: "17",
+        default_config: "listen_addresses = '127.0.0.1'\nport = 19067\nunix_socket_directories = ''\nshared_preload_libraries = ''\n",
+        configured_libraries: [
+            PgStatStatements,
+            PgCron,
+            TimescaleDb,
+        ],
+        enabled_config: "listen_addresses = '127.0.0.1'\nport = 19067\nunix_socket_directories = ''\nshared_preload_libraries = 'pg_stat_statements,pg_cron,timescaledb'\ncron.database_name = 'postgres'\ncron.use_background_workers = on\ntimescaledb.telemetry_level = 'off'\n",
+        restarted_after_change: true,
+        stable_after_reconciliation: true,
+        enabled_data_config_matches_runtime_config: true,
+        cleared_config: "listen_addresses = '127.0.0.1'\nport = 19067\nunix_socket_directories = ''\nshared_preload_libraries = ''\n",
+        restarted_after_clear: true,
+        stable_after_clear_reconciliation: true,
+        cleared_data_config_matches_runtime_config: true,
+    },
+    PostgresPreloadReconciliationSnapshot {
+        track: "18",
+        default_config: "listen_addresses = '127.0.0.1'\nport = 19068\nunix_socket_directories = ''\nshared_preload_libraries = ''\n",
+        configured_libraries: [
+            PgStatStatements,
+            PgDuckDb,
+        ],
+        enabled_config: "listen_addresses = '127.0.0.1'\nport = 19068\nunix_socket_directories = ''\nshared_preload_libraries = 'pg_stat_statements,pg_duckdb'\n",
+        restarted_after_change: true,
+        stable_after_reconciliation: true,
+        enabled_data_config_matches_runtime_config: true,
+        cleared_config: "listen_addresses = '127.0.0.1'\nport = 19068\nunix_socket_directories = ''\nshared_preload_libraries = ''\n",
+        restarted_after_clear: true,
+        stable_after_clear_reconciliation: true,
+        cleared_data_config_matches_runtime_config: true,
+    },
+]

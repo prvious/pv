@@ -222,6 +222,38 @@ pub enum ManagedResourceDesiredState {
     Removed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum PostgresPreloadLibrary {
+    PgStatStatements,
+    PgCron,
+    TimescaleDb,
+    PgDuckDb,
+}
+
+impl PostgresPreloadLibrary {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PgStatStatements => "pg_stat_statements",
+            Self::PgCron => "pg_cron",
+            Self::TimescaleDb => "timescaledb",
+            Self::PgDuckDb => "pg_duckdb",
+        }
+    }
+
+    fn from_name(track: &str, library: &str) -> Result<Self, StateError> {
+        match library {
+            "pg_stat_statements" => Ok(Self::PgStatStatements),
+            "pg_cron" => Ok(Self::PgCron),
+            "timescaledb" => Ok(Self::TimescaleDb),
+            "pg_duckdb" => Ok(Self::PgDuckDb),
+            _ => Err(StateError::UnsupportedPostgresPreloadLibrary {
+                track: track.to_string(),
+                library: library.to_string(),
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedResourceTrackRecord {
     pub resource_name: String,
@@ -1609,6 +1641,53 @@ impl Database {
         }
 
         Ok(tracks)
+    }
+
+    pub fn replace_postgres_track_preload_libraries(
+        &mut self,
+        track: &str,
+        libraries: &[String],
+    ) -> Result<Vec<PostgresPreloadLibrary>, StateError> {
+        validate_concrete_track(track)?;
+        let libraries = libraries
+            .iter()
+            .map(|library| PostgresPreloadLibrary::from_name(track, library))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        transaction.execute(
+            "DELETE FROM postgres_track_preload_libraries WHERE track = ?1",
+            params![track],
+        )?;
+        for library in &libraries {
+            transaction.execute(
+                "INSERT INTO postgres_track_preload_libraries (track, library) VALUES (?1, ?2)",
+                params![track, library.as_str()],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(libraries.into_iter().collect())
+    }
+
+    pub fn postgres_track_preload_libraries(
+        &self,
+        track: &str,
+    ) -> Result<Vec<PostgresPreloadLibrary>, StateError> {
+        validate_concrete_track(track)?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT library FROM postgres_track_preload_libraries WHERE track = ?1")?;
+        let rows = statement.query_map(params![track], |row| row.get::<_, String>(0))?;
+        let mut libraries = BTreeSet::new();
+
+        for row in rows {
+            libraries.insert(PostgresPreloadLibrary::from_name(track, &row?)?);
+        }
+
+        Ok(libraries.into_iter().collect())
     }
 
     pub fn replace_project_resource_allocations(

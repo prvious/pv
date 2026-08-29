@@ -172,6 +172,20 @@ pub enum DaemonError {
     },
 
     #[error(
+        "PostgreSQL track `{track}` cannot preload `{library}` because its module is missing at {path}; install an artifact that supplies the library or remove it from the track preload desired state"
+    )]
+    PostgresPreloadLibraryMissing {
+        track: String,
+        library: String,
+        path: camino::Utf8PathBuf,
+    },
+
+    #[error(
+        "PostgreSQL track `{track}` cannot preload `timescaledb` with `pg_duckdb` until their compatibility is validated; remove one library from the track preload desired state"
+    )]
+    UnsafePostgresPreloadCombination { track: String },
+
+    #[error(
         "invalid SQL database identifier `{identifier}`: identifiers must use ASCII alphanumeric characters and underscores"
     )]
     InvalidSqlIdentifier { identifier: String },

@@ -18,6 +18,7 @@ DatabaseInspection {
         "009:project_mode_and_slug",
         "010:job_diagnostic_outcomes",
         "011:remove_admin_ports",
+        "012:postgres_track_preload_libraries",
     ],
     tables: [
         "global_php_default_track",
@@ -26,6 +27,7 @@ DatabaseInspection {
         "managed_resource_tracks",
         "observed_states",
         "ports",
+        "postgres_track_preload_libraries",
         "project_env_observed_warnings",
         "project_hostnames",
         "project_managed_resources",

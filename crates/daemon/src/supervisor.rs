@@ -42,6 +42,7 @@ pub struct ProcessSpec {
     pub arguments: Vec<String>,
     pub private_environment: BTreeMap<String, String>,
     pub config_path: Utf8PathBuf,
+    pub config_fingerprint: Option<String>,
     pub log_path: Utf8PathBuf,
     pub pid_path: Utf8PathBuf,
     pub metadata_path: Utf8PathBuf,
@@ -62,6 +63,9 @@ impl fmt::Debug for ProcessSpec {
             );
         }
         debug.field("config_path", &self.config_path);
+        if let Some(config_fingerprint) = &self.config_fingerprint {
+            debug.field("config_fingerprint", config_fingerprint);
+        }
         debug.field("log_path", &self.log_path);
         debug.field("pid_path", &self.pid_path);
         debug.field("metadata_path", &self.metadata_path);
@@ -159,6 +163,8 @@ struct RuntimeMetadata {
     private_environment_fingerprint: Option<String>,
     #[serde(default)]
     config_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_fingerprint: Option<String>,
     #[serde(default)]
     resource_name: String,
     #[serde(default)]
@@ -929,6 +935,7 @@ fn write_runtime_metadata(
         arguments: spec.arguments.clone(),
         private_environment_fingerprint: private_environment_fingerprint(&spec.private_environment),
         config_path: spec.config_path.to_string(),
+        config_fingerprint: spec.config_fingerprint.clone(),
         resource_name: spec.resource_name.clone(),
         track: spec.track.clone(),
         replacement_required: false,
@@ -1072,6 +1079,7 @@ impl RuntimeMetadata {
             arguments: self.arguments.clone(),
             private_environment: BTreeMap::new(),
             config_path: self.config_path.as_str().into(),
+            config_fingerprint: self.config_fingerprint.clone(),
             log_path: self.log_path.as_str().into(),
             pid_path,
             metadata_path,
@@ -1092,6 +1100,7 @@ impl RuntimeMetadata {
             && self.command == spec.command.as_str()
             && self.arguments == spec.arguments
             && self.config_path == spec.config_path.as_str()
+            && self.config_fingerprint == spec.config_fingerprint
             && self.resource_name == spec.resource_name
             && self.track == spec.track
             && self.log_path == spec.log_path.as_str()
@@ -1163,6 +1172,7 @@ mod tests {
                     ],
                     private_environment: Default::default(),
                     config_path: paths.config().join("startup-descendant.json"),
+                    config_fingerprint: None,
                     log_path: paths.logs().join("startup-descendant.log"),
                     pid_path: paths.run().join("startup-descendant-leader.pid"),
                     metadata_path: metadata_parent_blocker.join("metadata.json"),
